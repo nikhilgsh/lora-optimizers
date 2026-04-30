@@ -22,6 +22,30 @@ import matplotlib.ticker as ticker
 
 DIVERGE_THRESHOLD = 1.5
 
+# ─── per-section configs (kept here so cells are one-line library calls) ──────
+
+# Optimizer color palette shared across the all-optimizer η-sweep and the
+# cross-investigation sections.
+OPTIM_COLORS = {
+    "adamw":                       "black",
+    "scaled-lora":                 "#ff7f0e",
+    "lin-lora":                    "#2ca02c",
+    "adam-scaled-lora":            "#d62728",
+    "adam-lin-lora":               "#9467bd",
+    "muon-lora":                   "#e377c2",
+    "diag-scaled-lora":            "#17becf",
+    "kron-grad-lora":              "#bcbd22",
+    "psi-lora":                    "#8c564b",
+    "galore-adamw":                "#7f7f7f",
+    "adam-lin-lora-post":          "#2ca02c",
+    "adam-scaled-lora-post":       "#ff7f0e",
+    "adam-lin-lora-matrix":        "#17becf",
+    "adam-scaled-lora-matrix":     "#bcbd22",
+    "adam-polar-product-lora":     "#8c564b",
+    "polar-product-lora":          "#e377c2",
+}
+
+
 # Legend placement: outside the right edge of the panel. fontsize tuned so
 # 8-12 entries fit a (~6-inch-tall) panel without overflowing.
 LEGEND_KW = dict(loc="center left", bbox_to_anchor=(1.02, 0.5),
@@ -152,63 +176,104 @@ def report_diverged(drop, label_fn: Callable[[dict], str]) -> None:
               f"max={max_loss(evs):.3f} final={evs[-1]['eval_loss']:.3f}")
 
 
+# ─── baseline / reference helpers ────────────────────────────────────────────
+
+def best_run(runs, filter_fn: Callable[[dict], bool]):
+    """Return (cfg, evs) with lowest final eval_loss matching filter_fn,
+    or None if no run matches.
+    """
+    matches = [(c, e) for c, e in runs if filter_fn(c)]
+    if not matches:
+        return None
+    return min(matches, key=lambda x: x[1][-1]["eval_loss"])
+
+
+def baseline_overlay(reference_runs, optimizer: str, *,
+                      label: str | None = None,
+                      color: str = "black",
+                      linestyle: str = ":") -> tuple[list, list]:
+    """Build (hlines, ref_curves) entries for overlaying the best run of
+    `optimizer` from `reference_runs` onto another section's figure.
+
+    Use case: SVD oracle and Muon sections want to show AdamW (and
+    sometimes adam-lin-lora) as a baseline on their own figures, but
+    those runs come from a different sweep group (`all_runs`). This
+    helper extracts the best run and packages it as the (hlines,
+    ref_curves) pair that two_panel_sweep_figure consumes.
+    """
+    ref = best_run(reference_runs, lambda c: c["optimizer"] == optimizer)
+    if ref is None:
+        return [], []
+    cfg, evs = ref
+    fl = evs[-1]["eval_loss"]
+    label = label or optimizer
+    hlines = [(f"{label} ({fl:.4f})", fl, color)]
+    ref_curves = [(label, evs, color, linestyle)]
+    return hlines, ref_curves
+
+
 # ─── per-rank leaderboard bar chart ──────────────────────────────────────────
 
 def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
                               color_map: dict | None = None,
                               strict_win_offset: float = 0.01,
-                              suptitle: str = "Per-rank leaderboard"):
-    """Visual leaderboard: horizontal bar chart per rank, sorted ascending by
-    final eval. Baseline (default `adamw`) bars in black; strict-win bar
-    (1% below baseline floor) overlaid.
+                              suptitle: str = "Best eval vs rank"):
+    """Single-panel leaderboard: best-η eval loss vs rank, one line per optimizer.
 
-    `best` is the dict returned by per-rank best-η aggregation:
-        best[(optimizer, r)] = (cfg, evs, final_eval).
+    `best[(optimizer, r)] = (cfg, evs, final_eval)` from per-rank best-η
+    aggregation. Baseline optimizer drawn as thick black, others colored.
+    Per-rank strict-win bars (1% below baseline) shown as grey horizontal
+    segments at each rank position. Y-axis auto-clipped to (min − 0.005,
+    min + 0.05) so the competitive zone fills the panel.
     """
     import matplotlib.pyplot as plt
     color_map = color_map or {}
     baseline_floor = {r: best[(baseline_optimizer, r)][2]
                       for (opt, r) in best if opt == baseline_optimizer}
     ranks = sorted(baseline_floor)
-    fig, axes = plt.subplots(1, len(ranks), figsize=(9 * len(ranks), 5),
-                              sharex=False)
-    if len(ranks) == 1:
-        axes = [axes]
-    for ax, r_target in zip(axes, ranks):
-        floor = baseline_floor[r_target]
-        rows = sorted(
-            ((opt, fl) for ((opt, r), (cfg, evs, fl)) in best.items()
-             if r == r_target),
-            key=lambda x: x[1], reverse=True,
-        )
-        opts = [r[0] for r in rows]
-        losses = [r[1] for r in rows]
-        colors = ["black" if o == baseline_optimizer else color_map.get(o, "grey")
-                  for o in opts]
-        ax.barh(range(len(opts)), losses, color=colors,
-                edgecolor="black", linewidth=0.5)
-        for i, (opt, fl) in enumerate(rows):
-            delta = fl - floor
-            flag = "✓" if delta < -0.005 else ("≈" if abs(delta) < 0.005 else "✗")
-            ax.text(fl + 0.001, i, f"{fl:.4f} (Δ={delta:+.4f}) {flag}",
-                    va="center", fontsize=10)
-        ax.axvline(floor, color="black", lw=2, ls=":",
-                   label=f"{baseline_optimizer} r={r_target} floor = {floor:.4f}")
-        ax.axvline(floor - strict_win_offset, color="grey", lw=1.5, ls="--",
-                   label=f"strict-win bar = {floor - strict_win_offset:.4f}  "
-                         f"({strict_win_offset*100:.0f}% below floor)")
-        ax.set_yticks(range(len(opts)))
-        ax.set_yticklabels(opts, fontsize=10)
-        ax.set_xlabel("Final eval loss")
-        ax.set_title(f"r = {r_target}  —  best-η per optimizer")
-        ax.legend(loc="lower right", fontsize=9)
-        ax.grid(True, axis="x", alpha=0.3)
-        xmin = min(losses + [floor - 0.012])
-        xmax = max(losses) + 0.025
-        ax.set_xlim(xmin, xmax)
-    fig.suptitle(suptitle)
+
+    # One line per optimizer connecting its (rank, best-eval) points.
+    series = {}  # opt -> [(r, eval), ...]
+    for (opt, r), (cfg, evs, fl) in best.items():
+        series.setdefault(opt, []).append((r, fl))
+    for opt in series:
+        series[opt].sort()
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    all_losses = []
+    for opt, points in sorted(series.items()):
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        is_baseline = opt == baseline_optimizer
+        ax.plot(xs, ys,
+                color="black" if is_baseline else color_map.get(opt, "grey"),
+                lw=3.0 if is_baseline else LINE_WIDTH,
+                marker="o", markersize=MARKER_SIZE + 2 if is_baseline else MARKER_SIZE,
+                label=opt, zorder=10 if is_baseline else 5)
+        all_losses.extend(ys)
+
+    # Strict-win bar markers at each rank — short grey horizontal segments
+    # at (rank, baseline_floor − offset).
+    for r_target, floor in baseline_floor.items():
+        ax.plot([r_target * 0.85, r_target * 1.15],
+                [floor - strict_win_offset] * 2,
+                color="grey", ls="--", lw=1.2,
+                label=("strict-win bar (1% below baseline)"
+                        if r_target == ranks[0] else None))
+
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(ranks)
+    ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter())
+    ax.set_xlabel("LoRA rank r"); ax.set_ylabel("Best-η final eval loss")
+    ax.set_title(suptitle)
+    if all_losses:
+        lo = min(all_losses) - 0.005
+        hi = min(all_losses) + 0.05
+        ax.set_ylim(lo, hi)
+    ax.grid(True, alpha=0.3)
+    ax.legend(**LEGEND_KW)
     fig.tight_layout()
-    return fig, axes
+    return fig, ax
 
 
 # ─── standardized 2-panel figure ──────────────────────────────────────────────
@@ -336,3 +401,4 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
         fig.suptitle(full_title)
     fig.tight_layout()
     return fig, axes, len(keep), len(drop)
+
