@@ -81,6 +81,7 @@ OPTIMIZER_CHOICES = {
     "product-muon-lora",
     "adam-muon-lora",
     "adam-product-muon-lora",
+    "muon-adam-lora",
     "diag-scaled-lora",
     "kron-grad-lora",
     "psi-lora",
@@ -700,9 +701,17 @@ class AdamScaledLoRAMatrix(Optimizer):
     gradient v = S⁻¹∇. The √v̂ rescaling acts coordinate-by-coordinate,
     re-shredding the cross-coordinate scale structure that the Gram solve
     just installed. This variant keeps per-element first-moment m, but
-    replaces v̂ with a single EMA scalar per (A,B) pair tracking
-    ‖precond_A‖²_F + ‖precond_B‖²_F. The pair gets an adaptive learning rate
-    (Adam's stability) without per-coord directional shredding.
+    replaces v̂ with a single scalar EMA per (A,B) pair tracking the
+    mean-square ‖precond‖² / N_total over the joint pair. The pair gets an
+    adaptive learning rate (Adam's stability) without per-coord directional
+    shredding.
+
+    NOTE on normalization: v_pair is the *mean* of squared elements across
+    the pair, not the sum. With sum-of-squares, √v̂ ≈ √N · RMS(g) and the
+    effective per-coord lr is lr/√N — for typical LoRA shapes that scales
+    the η range by ~1/700 and the optimizer fails to learn at the η values
+    that work for AdamLinLoRA / AdamScaledLoRA. With mean-of-squares, √v̂
+    has units of |g| (same as per-coord Adam), so the same η transfers.
     """
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
@@ -723,6 +732,7 @@ class AdamScaledLoRAMatrix(Optimizer):
                 'm_A': torch.zeros_like(A, dtype=torch.float32),
                 'm_B': torch.zeros_like(B, dtype=torch.float32),
                 'v_pair': 0.0,
+                'n_total': float(A.numel() + B.numel()),
                 'step': 0,
             }
 
@@ -746,8 +756,9 @@ class AdamScaledLoRAMatrix(Optimizer):
 
             state['m_A'].mul_(self.beta1).add_(precond_A, alpha=1.0 - self.beta1)
             state['m_B'].mul_(self.beta1).add_(precond_B, alpha=1.0 - self.beta1)
-            sqsum = float((precond_A.float() ** 2).sum() + (precond_B.float() ** 2).sum())
-            state['v_pair'] = self.beta2 * state['v_pair'] + (1.0 - self.beta2) * sqsum
+            # Mean-square (not sum-of-squares) so √v̂ has units of |g|.
+            sqmean = float((precond_A.float() ** 2).sum() + (precond_B.float() ** 2).sum()) / state['n_total']
+            state['v_pair'] = self.beta2 * state['v_pair'] + (1.0 - self.beta2) * sqmean
 
             bc1 = 1.0 - self.beta1 ** state['step']
             bc2 = 1.0 - self.beta2 ** state['step']
@@ -766,9 +777,12 @@ class AdamLinLoRAMatrix(Optimizer):
     """AdamLinLoRA with per-pair scalar second moment (H5).
 
     Same as AdamLinLoRA but Adam's per-coordinate v̂ is replaced by a scalar
-    EMA per (A,B) pair tracking ‖precond_A‖²_F + ‖precond_B‖²_F (where
-    precond is the Sylvester-corrected step). Direction comes from m̂
-    per-element; only magnitude is adaptively rescaled per pair.
+    EMA per (A,B) pair tracking the *mean square* ‖precond‖² / N_total over
+    the joint pair (where precond is the Sylvester-corrected step). Direction
+    comes from m̂ per-element; only magnitude is adaptively rescaled per pair.
+
+    See AdamScaledLoRAMatrix docstring for the mean-vs-sum normalization
+    rationale — without it the optimizer fails to learn at the standard η.
     """
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
@@ -792,6 +806,7 @@ class AdamLinLoRAMatrix(Optimizer):
                 'm_A': torch.zeros_like(A, dtype=torch.float32),
                 'm_B': torch.zeros_like(B, dtype=torch.float32),
                 'v_pair': 0.0,
+                'n_total': float(A.numel() + B.numel()),
                 'step': 0,
             }
             r, d_in = A.shape
@@ -821,8 +836,9 @@ class AdamLinLoRAMatrix(Optimizer):
 
             state['m_A'].mul_(self.beta1).add_(precond_A, alpha=1.0 - self.beta1)
             state['m_B'].mul_(self.beta1).add_(precond_B, alpha=1.0 - self.beta1)
-            sqsum = float((precond_A.float() ** 2).sum() + (precond_B.float() ** 2).sum())
-            state['v_pair'] = self.beta2 * state['v_pair'] + (1.0 - self.beta2) * sqsum
+            # Mean-square (not sum-of-squares) so √v̂ has units of |g|.
+            sqmean = float((precond_A.float() ** 2).sum() + (precond_B.float() ** 2).sum()) / state['n_total']
+            state['v_pair'] = self.beta2 * state['v_pair'] + (1.0 - self.beta2) * sqmean
 
             bc1 = 1.0 - self.beta1 ** state['step']
             bc2 = 1.0 - self.beta2 ** state['step']
@@ -1333,6 +1349,88 @@ class AdamProductMuonLoRA(Optimizer):
             state["m_B"].mul_(self.beta1).add_(precond_B, alpha=1 - self.beta1)
             state["v_A"].mul_(self.beta2).addcmul_(precond_A, precond_A, value=1 - self.beta2)
             state["v_B"].mul_(self.beta2).addcmul_(precond_B, precond_B, value=1 - self.beta2)
+            bc1 = 1 - self.beta1 ** t
+            bc2 = 1 - self.beta2 ** t
+            m_hat_A = state["m_A"] / bc1
+            m_hat_B = state["m_B"] / bc1
+            v_hat_A = state["v_A"] / bc2
+            v_hat_B = state["v_B"] / bc2
+            dA = -lr * m_hat_A / (v_hat_A.sqrt() + self.eps)
+            dB = -self.lr_b_multiplier * lr * m_hat_B / (v_hat_B.sqrt() + self.eps)
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class MuonAdamLoRA(Optimizer):
+    """
+    Reverse of AdamMuonLoRA: NS first, then Adam (instead of Adam then NS).
+
+    Per LoRA factor independently:
+      ns_g = NS(g_raw)                       # orthogonalized gradient direction
+      m  ← β₁ m  + (1−β₁) ns_g                # EMA on the NS direction
+      v  ← β₂ v  + (1−β₂) ns_g²               # second-moment of NS direction
+      Δθ = -lr · m̂/(√v̂ + ε)                  # Adam step on top of NS
+
+    Mechanism contrast with AdamMuonLoRA:
+      • AdamMuonLoRA: Adam tames raw-gradient magnitude variation, NS then
+        spectrally caps the result. NS sees a per-element-normalized direction.
+      • MuonAdamLoRA: NS first orthogonalizes the raw gradient (so all rows
+        have unit-spec-norm magnitude), then Adam EMAs and per-element
+        rescales that normalized direction over time. Adam's v on NS output
+        is informative because NS rows have non-uniform per-element entries
+        even though spectral norm = 1.
+
+    LoRA+ via lr_b_multiplier (m on B's lr) preserved.
+    """
+    def __init__(self, model, lr=3e-4, betas=(0.9, 0.999), eps=1e-8, ns_steps=5,
+                 adapter_name=None, lr_b_multiplier=1.0):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.ns_steps = ns_steps
+        self.lr_b_multiplier = lr_b_multiplier
+        self.pair_state = {
+            i: {
+                "m_A": torch.zeros_like(A, dtype=torch.float32),
+                "v_A": torch.zeros_like(A, dtype=torch.float32),
+                "m_B": torch.zeros_like(B, dtype=torch.float32),
+                "v_B": torch.zeros_like(B, dtype=torch.float32),
+                "step": 0,
+            }
+            for i, (A, B) in enumerate(pairs)
+        }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("MuonAdamLoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            state["step"] += 1
+            t = state["step"]
+            gA = A.grad.float()
+            gB = B.grad.float()
+            if self.ns_steps > 0:
+                ns_A = _newton_schulz(gA, self.ns_steps)
+                ns_B = _newton_schulz(gB, self.ns_steps)
+            else:
+                ns_A = gA
+                ns_B = gB
+            state["m_A"].mul_(self.beta1).add_(ns_A, alpha=1 - self.beta1)
+            state["m_B"].mul_(self.beta1).add_(ns_B, alpha=1 - self.beta1)
+            state["v_A"].mul_(self.beta2).addcmul_(ns_A, ns_A, value=1 - self.beta2)
+            state["v_B"].mul_(self.beta2).addcmul_(ns_B, ns_B, value=1 - self.beta2)
             bc1 = 1 - self.beta1 ** t
             bc2 = 1 - self.beta2 ** t
             m_hat_A = state["m_A"] / bc1
@@ -2003,6 +2101,11 @@ def build_optimizer(
         return AdamProductMuonLoRA(
             model, lr=lr, ns_steps=muon_ns_steps,
             alpha=muon_alpha, rank=muon_rank,
+            lr_b_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "muon-adam-lora":
+        return MuonAdamLoRA(
+            model, lr=lr, ns_steps=muon_ns_steps,
             lr_b_multiplier=lora_plus_multiplier,
         )
     if optimizer_type == "diag-scaled-lora":
