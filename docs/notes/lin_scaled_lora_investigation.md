@@ -32,10 +32,23 @@ its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
   across 112 LoRA pairs of OLMo-2-1B, **cos_B_median = 0.98** (geometric B-step
   ≈ AdamW B-step), **cos_A_median = 0.46** (A diverges meaningfully).
   ‖dA_raw‖ / ‖dA_lin‖ ≈ 2× (Sylvester step is half the magnitude of AdamW on A).
-  Strong directional preview: Adam's v̂ is essentially erasing the Sylvester
-  rotation on B; A retains some geometric signal but the net step is smaller.
-- **Result:** _pending full 2k trajectory (cos rising? ‖B‖ stabilizing?)_
-- **Decision:** _tbd_
+- **Status: CONFIRMED (job 6312334 completed in 37 min).** Final values @ step 2000:
+
+  | optimizer        | cos_A | cos_B | ‖dA_lin‖/‖dA_raw‖ | σ_min(S_B) | ‖B‖_F | final eval |
+  |------------------|-------|-------|--------------------|------------|--------|------------|
+  | adam-lin-lora    | 0.84  | 0.94  | 0.25               | 1.08       | 7.68   | 0.7581     |
+  | adam-scaled-lora | 0.88  | 0.97  | 0.27               | 1.14       | 6.52   | 0.7592     |
+
+  Trajectory (adam-lin-lora): cos_A rises 0.46 → 0.84 in first ~500 steps
+  then plateaus; cos_B stays in [0.94, 0.99] throughout. σ_min(S_B) climbs
+  0.011 → 1.08 driven by ‖B‖² growth — Gram conditioning *improves* over
+  training, exactly when most of the loss reduction happens.
+- **Decision: H1 confirmed.** Adam's per-coord √v̂ erases the geometric
+  correction throughout training (cos_B ≥ 0.94 from step 20). The only
+  meaningful direction divergence is on A in the first ~500 steps, before B
+  leaves zero. Even there the geometric step is consistently ¼ the magnitude
+  of plain AdamW. Net: pre-precondition compositions are ε-perturbed AdamW
+  by construction. Productive change must reorder Adam ↔ geometry → H4.
 
 ## H2 — Geometric correction matters only early (init scale imbalance)
 
@@ -57,8 +70,21 @@ its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
 - **Command:** `./slurm_scripts/submit.sh params/h3_rsweep_2k.json h3_rsweep_2k 6 scripts/sweep_2k_r.sh slurm_scripts/sbatch_4h.sh`
 - **Artifacts:** `logs/h3_rsweep_2k/run_info/logs/log_{00..17}.out`
 - **Smoke (r=64 on A6000):** peak 7.83 GB → fits A100 80 GB easily.
-- **Result:** _tbd_
-- **Decision:** _tbd_
+- **In-flight result (step 2000, η=3e-4):**
+
+  | r  | adamw  | adam-lin-lora | gap (lin − adamw) |
+  |----|--------|---------------|--------------------|
+  | 2  | 0.7920 | 0.8150        | **+0.023** (worse) |
+  | 4  | 0.7807 | 0.8024        | **+0.022** (worse) |
+  | 64 | 0.7550 | 0.7527        | −0.002 (≈ tie)     |
+
+- **Decision: H3 falsified.** At small r, lin-lora is *worse* than AdamW
+  by ~0.02 nat. The premise (small r → worse conditioning → more headroom
+  for geometric correction) is wrong: H1 already showed S_B conditioning
+  is dominated by ‖B‖², an init-scale issue, not by r. **Side benefit:**
+  clean adamw r-scan (0.792 → 0.781 → 0.755) — confirms "more rank = better"
+  scaling, and **adamw r=64 (0.7550) actually beats adam-muon-lora r=16
+  (0.7557)** — opens a "budget-matched r=16 vs r=64" follow-up question.
 
 ## H4 — Productive: Adam on raw grads, geometric solve on Adam step
 
@@ -78,8 +104,15 @@ its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
 - **Artifacts:** `logs/h4_post_2k/run_info/logs/log_{00..09}.out`
 - **Smoke (5-step on A6000):** adam-lin-lora-post η=3e-3 → eval 1.121;
   adam-scaled-lora-post η=3e-3 → eval 1.197. No NaN/Inf, peak 7.25 GB.
-- **Result:** _tbd_
-- **Decision:** _tbd_
+- **In-flight result (step 1400, η=1e-3):** adam-lin-lora-post → **0.7923**;
+  adam-scaled-lora-post → **0.8421**. Trending to ~0.78–0.79 / ~0.84 final.
+- **Decision: H4 falsifying.** Applying S_B⁻¹ to a sign-like Adam step does
+  not produce a useful direction. Compare to `adam-muon-lora` which uses the
+  same composition order (Adam → geometric correction) but with NS instead
+  of S⁻¹, and *does* beat AdamW (0.7557). Provisional rule: post-Adam
+  corrections work iff they're structurally meaningful on a sign-magnitude
+  input — NS (spectral cap) qualifies, S⁻¹ (Gram-inverse rescaling) does not.
+  Final verdict pending the η=3e-3 runs.
 
 ## H5 — Productive: per-pair scalar second moment (matrix-Adam)
 
@@ -96,6 +129,13 @@ its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
 - **Artifacts:** `logs/h5_matrix_2k/run_info/logs/log_{00..09}.out`
 - **Smoke (5-step on A6000):** adam-lin-lora-matrix η=1e-3 → eval 1.186;
   adam-scaled-lora-matrix η=1e-3 → eval 1.186. No NaN/Inf, peak 7.21 GB.
+- **First attempt (job 6312354) BROKEN:** at η ∈ {3e-5, 1e-4} step 1000+,
+  eval stayed at 1.187 (random init). Bug: per-pair v_pair tracked Σg² (sum)
+  instead of mean, giving √v̂ ≈ √N · RMS(g) and effective lr = lr/√N ≈
+  lr/700 for typical LoRA shapes — no learning at the standard η range.
+- **Fix (commit ac81bba):** divide by N_total = numel(A)+numel(B) so v̂
+  tracks mean square. Verified: η=1e-3 step 50 → eval 0.886 (was 1.187 at
+  step 1000 broken). Resubmitted as **job 6312759**, currently PENDING.
 - **Result:** _tbd_
 - **Decision:** _tbd_
 
@@ -103,12 +143,17 @@ its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
 
 ## Leaderboard (best η per optimizer, r=16, 2k steps)
 
-| rank | optimizer            | best η  | eval loss | source |
-|------|----------------------|---------|-----------|--------|
-| 1    | adam-lin-lora        | 1e-3    | 0.7564    | `optim_compare_high_eta_2k` |
-| 2    | adam-scaled-lora     | 1e-3    | 0.7572    | `optim_compare_high_eta_2k` |
-| 3    | adamw                | 3e-4    | 0.7579    | `lr_sweep_2k` |
-| ?    | adam-lin-lora-post   | tbd     | tbd       | H4 sweep |
-| ?    | adam-scaled-lora-post| tbd     | tbd       | H4 sweep |
+For the full cross-investigation leaderboard see `docs/notes/optimizer_synthesis.md`.
+
+| rank | optimizer            | best η  | eval loss | source                      | beats AdamW?    |
+|------|----------------------|---------|-----------|-----------------------------|-----------------|
+| 1    | adam-muon-lora       | 3e-3    | 0.7557    | `adam_muon_2k`              | ✅ Δ=−0.0022    |
+| 2    | adam-lin-lora        | 1e-3    | 0.7564    | `optim_compare_high_eta_2k` | ≈ tied          |
+| 3    | adam-scaled-lora     | 1e-3    | 0.7572    | `optim_compare_high_eta_2k` | ≈ tied          |
+| 4    | adamw                | 3e-4    | 0.7579    | `lr_sweep_2k`               | baseline        |
+| ?    | adam-lin-lora-post   | trending 0.79 | tbd | H4 sweep (in flight)        | ❌ falsifying   |
+| ?    | adam-scaled-lora-post| trending 0.84 | tbd | H4 sweep (in flight)        | ❌ falsifying   |
+| ?    | adam-lin-lora-matrix | tbd     | tbd       | H5 sweep (resubmitted)      | tbd             |
+| ?    | adam-scaled-lora-matrix | tbd  | tbd       | H5 sweep (resubmitted)      | tbd             |
 
 Target: any new entry ≤ 0.7479.

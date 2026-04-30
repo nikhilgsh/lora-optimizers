@@ -1,0 +1,291 @@
+# Optimizer investigation — synthesis
+
+**Goal:** find a LoRA-aware optimizer that strictly beats AdamW (0.7579 final
+eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
+
+**One-line mechanistic story:** Adam's per-coordinate v̂⁻¹ᐟ² normalization, when
+applied *to the preconditioned gradient*, erases whatever cross-coordinate
+scale structure the preconditioner installed. The optimizers that beat AdamW
+are the ones that apply their geometric correction **after** Adam (so v̂ can't
+normalize it away) AND choose a correction that survives a sign-like input —
+**spectral capping (NS)** survives, **Gram-inverse rescaling (S⁻¹)** does not.
+
+---
+
+## Standing leaderboard (r=16, 2k steps, best η, seed=0)
+
+| rank | optimizer                | best η | eval loss | source                         | beats AdamW? |
+|------|--------------------------|--------|-----------|--------------------------------|--------------|
+| 1    | **adam-muon-lora**       | 3e-3   | **0.7557**| `adam_muon_2k`                 | ✅ Δ=−0.0022 |
+| 2    | adam-lin-lora            | 1e-3   | 0.7564    | `optim_compare_high_eta_2k`    | ≈ tied       |
+| 3    | adam-scaled-lora         | 1e-3   | 0.7572    | `optim_compare_high_eta_2k`    | ≈ tied       |
+| 4    | adamw                    | 3e-4   | 0.7579    | `lr_sweep_2k`                  | baseline     |
+| 5    | muon-lora (LoRA+ m=4)    | 1e-3   | 0.7674    | `muon_loraplus_2k`             | ❌           |
+| 5    | muon-lora                | 3e-3   | 0.7675    | `new_optimizers_high_eta_2k`   | ❌           |
+| 7    | diag-scaled-lora         | 3e-2   | 0.8153    | `new_optimizers_high_eta_2k`   | ❌           |
+| 8    | kron-grad-lora           | 3e-3   | 0.8263    | `new_optimizers_high_eta_2k`   | ❌           |
+| —    | lin-lora (SGD)           | 1e-2   | 0.8457    | `lr_sweep_2k`                  | ❌           |
+| —    | scaled-lora (SGD)        | 1e-2   | 0.8744    | `lr_sweep_2k`                  | ❌           |
+
+**The only strict win to date is adam-muon-lora (Δ=−0.0022).** All other
+LoRA-aware variants tie AdamW or lose.
+
+The H3 r-sweep produced a non-LoRA-aware datapoint that's interesting:
+**adamw at r=64, η=3e-4 → 0.7550** — beats the r=16 adam-muon-lora number.
+Suggests the cleanest path to lower loss may be more rank rather than fancier
+optimizers. (Caveat: r=64 has 4× more LoRA parameters; not a fair
+optimizer-vs-optimizer comparison.)
+
+---
+
+## What was tried, organized by mechanism
+
+| family                    | optimizer                | preconditioning              | composition order      | result    |
+|---------------------------|--------------------------|------------------------------|------------------------|-----------|
+| **AdamW family**          | adamw                    | per-coord v̂                  | Adam only              | 0.7579    |
+| **Pre-precondition**      | adam-lin-lora            | Sylvester / S_B⁻¹ then v̂     | geometry → Adam        | 0.7564    |
+| (geometry feeds Adam)     | adam-scaled-lora         | Gram solve then v̂            | geometry → Adam        | 0.7572    |
+| **Post-precondition**     | adam-muon-lora           | NS on Adam direction         | Adam → spectral cap    | **0.7557** |
+| (Adam feeds geometry)     | adam-lin-lora-post       | Sylvester on Adam direction  | Adam → Sylvester       | 0.79+ (in flight, falsifying) |
+|                           | adam-scaled-lora-post    | Gram solve on Adam direction | Adam → Gram solve      | 0.84+ (in flight, falsifying) |
+| **Per-pair scalar v̂**    | adam-lin-lora-matrix     | per-pair scalar Adam on precond | geometry → "matrix-Adam" | (resubmitted, pending) |
+|                           | adam-scaled-lora-matrix  | per-pair scalar Adam on precond | geometry → "matrix-Adam" | (resubmitted, pending) |
+| **Spectral baseline**     | muon-lora (NS only)      | NS on raw momentum           | NS only                | 0.7675    |
+|                           | muon-lora ns_steps=0     | momentum SGD                 | none                   | 0.95+ (NS contributes ≥ 0.18 nats) |
+| **Hybrid spectral+geom**  | product-muon-lora        | NS on gauge-invariant proxy  | spectral pipeline       | ~0.81 (500-step extrapolation, not run to 2k) |
+|                           | adam-product-muon-lora   | both                         | both                    | tbd (queued) |
+| **K-FAC / diag**          | diag-scaled-lora         | per-coord D_V/D_U            | diag preconditioning    | 0.8153    |
+|                           | kron-grad-lora           | r×r grad outer-product       | + diag                  | 0.8263    |
+|                           | psi-lora (Algorithm 3)   | F-LoRSUM proximal ALS        | + low-rank momentum     | (in `psi_lora_2k`) |
+| **Full-weight projected** | galore-adamw             | rank-r SVD projection        | Adam in subspace        | (in `galore_fixed_2k`, ~3× slower) |
+
+---
+
+## H1 — diagnostic: why pre-precondition compositions tie AdamW
+
+**Setup.** `adam-lin-lora` and `adam-scaled-lora` at η=1e-3, 2k steps, with
+`--log_optim_diagnostics --optim_diagnostics_every 20`. Each step computes
+both the geometric-Adam step Δ_lin and a side-channel plain-AdamW step
+Δ_raw on the same gradient (independent m,v state), then logs cosines and
+norm ratios across all 112 LoRA pairs (r=16, all-linear).
+
+**Final-step values (step 2000, median across 112 pairs):**
+
+| optimizer        | cos_A | cos_B | ‖dA_lin‖/‖dA_raw‖ | σ_min(S_B) | ‖B‖_F |
+|------------------|-------|-------|--------------------|------------|--------|
+| adam-lin-lora    | 0.84  | 0.94  | 0.25               | 1.08       | 7.68   |
+| adam-scaled-lora | 0.88  | 0.97  | 0.27               | 1.14       | 6.52   |
+
+**Trajectory (adam-lin-lora):** cos_A rises 0.46 → 0.84 in first 500 steps
+then plateaus; cos_B starts at 0.98 and stays ≥ 0.94 throughout.
+σ_min(S_B) climbs 0.011 → 1.08 driven by ‖B‖² growth.
+
+**Three structural conclusions:**
+1. **cos_B ≥ 0.94 from step 20.** The geometric correction on B is
+   indistinguishable from a plain-AdamW step direction throughout training.
+   There is no early window where the B-side geometry does something special.
+2. **cos_A converges to 0.84-0.88, asymptotically tracking AdamW.** The only
+   meaningful direction divergence is on A in the first ~500 steps, before B
+   leaves zero and S_B becomes well-conditioned.
+3. **Geometric step has ¼ the magnitude of AdamW step.** Even where directions
+   differ, ‖dA_lin‖/‖dA_raw‖ ≈ 0.25 — the geometric correction is consistently
+   damped vs plain AdamW.
+
+**Why:** Adam's per-coord √v̂ in the denominator divides g by its own EMA
+RMS coordinate-wise, producing a sign-like update regardless of upstream
+scaling. Whatever S_B⁻¹ did to ∇A is a per-coordinate rescaling that v̂
+proceeds to *undo* by normalizing each coordinate to ~unit magnitude. The
+result is that pre-precondition compositions are ε-perturbed AdamW by
+construction.
+
+---
+
+## H4 — productive change attempt: reorder to Adam → S⁻¹
+
+**Motivation.** If the issue is that v̂ erases geometry installed *upstream*,
+the obvious fix is to install geometry *downstream*: run Adam on raw ∇,
+then apply Sylvester / Gram solve to the Adam step. v̂ adapts to the natural
+gradient distribution; geometry installs the (A,B) coupling on top of it.
+
+**Implementation.** `AdamLinLoRAPost`, `AdamScaledLoRAPost`. Reuse
+`solve_sylvester` / `solve_spd` / `spdify` from `lora_playground/utils.py`.
+13 unit tests pass (shapes, dtype, zero-grad no-update, determinism, post
+≠ pre).
+
+**In-flight result (step 1400, η=1e-3, the headline cell):**
+- adam-lin-lora-post: **0.7923** (vs AdamW 0.7579 at step 1400 → loss is
+  trending to ~0.78–0.79 final, ~0.03 worse than AdamW).
+- adam-scaled-lora-post: **0.8421** (decisively worse).
+
+**H4 looks falsified.** Mechanism: applying S_B⁻¹ to a sign-like Adam step
+does not produce a useful direction. The Gram inverse only carries useful
+information when applied to a vector that lives in the gradient's spectrum
+(i.e. has the same per-coord scale structure); on a sign vector,
+S_B⁻¹ is a mostly-isotropic rotation that hurts more than it helps.
+
+**Compare to adam-muon-lora.** Same composition order (Adam → spectral
+correction), same expected mechanism, but **Newton-Schulz wins where
+S_B⁻¹ loses**. The difference: NS is a *spectral cap* — it equalizes
+singular values across the rank-r factor matrix, which is meaningful even
+on a sign vector. S_B⁻¹ is a *curvature-aware rescaling*, which requires
+the input to *have* curvature to rescale.
+
+→ **Provisional rule:** post-Adam corrections work iff they're
+*structurally meaningful on a sign-magnitude input*. NS qualifies.
+S⁻¹ does not.
+
+---
+
+## H3 — small-r hypothesis falsified
+
+**Premise:** at small r, S_A and S_B are smaller and likelier ill-conditioned,
+so the geometric correction should matter more and the gap vs AdamW should
+widen.
+
+**In-flight data (step 2000 at η=3e-4):**
+
+| r  | adamw  | adam-lin-lora | gap (lin − adamw) |
+|----|--------|---------------|--------------------|
+| 2  | 0.7920 | 0.8150        | **+0.023** (worse) |
+| 4  | 0.7807 | 0.8024        | **+0.022** (worse) |
+| 16 | 0.7795 | 0.7723*       | −0.007 (better)    |
+| 64 | 0.7550 | 0.7527        | −0.002 (slightly better) |
+
+*r=16 numbers from `lr_sweep_2k`, η=1e-4 best for adamw, η=1e-3 best for lin.
+
+**Premise falsified.** At small r, lin-lora is *worse* than AdamW by ~0.02 nat.
+At large r, the gap narrows (lin slightly better). H1 already explained why:
+the conditioning of S_B is dominated by ‖B‖² (init-scale issue), not by r.
+Small r doesn't make S_B more ill-conditioned in a way that the geometric
+correction can exploit.
+
+**Side benefit:** clean adamw r-scan (0.792 → 0.781 → 0.755) — confirms
+"more rank = better" with the standard scaling shape.
+
+---
+
+## H5 — per-pair scalar v̂ (matrix-Adam)
+
+**Motivation.** Replace per-coord v̂ with one scalar EMA per LoRA pair, so
+v̂ rescales the Adam step by *magnitude only*, leaving direction untouched.
+If H1 is right that per-coord normalization is the eraser, this should
+preserve the geometric direction.
+
+**First attempt (job 6312354): broken.** Tracked Σ g² (sum) instead of
+mean — √v̂_pair ≈ √N · RMS(g) → effective lr = lr/√N ≈ lr/700 → no learning
+at the standard η range. eval stayed at 1.187 (random init) for 1k+ steps.
+
+**Fix (commit ac81bba):** divide by N_total = numel(A) + numel(B) before
+EMA so v̂ tracks the mean square. √v̂_pair has units of |g|, matching
+per-coord Adam. Verified: η=1e-3 step 50 → eval 0.886 (vs broken: 1.187 at
+1000 steps).
+
+**Resubmitted as job 6312759** (4 GPUs, 4h). Result pending.
+
+---
+
+## Mechanistic summary diagram
+
+```
+gradient ∇  ──┬──> Adam(m,v) ──> sign-like Δᴬ ──┬──> spectral cap (NS)  ──> 0.7557 ✅
+              │                                  │
+              │                                  ├──> Sylvester / S⁻¹     ──> 0.79+ ❌
+              │                                  │   (Adam → S⁻¹: H4 falsifying)
+              │                                  │
+              │                                  └──> per-pair scalar v̂   ──> tbd
+              │                                      (H5, resubmitted)
+              │
+              ├──> S⁻¹ ──> precond ──> Adam(m,v) ──> 0.7564–0.7572 ≈ tied ⚠
+              │           (geometry → Adam: H1 explains why ≈)
+              │
+              ├──> NS only ──> 0.7675 ❌ (NS without diagonal preconditioning)
+              │
+              └──> diag K-FAC + various ──> 0.81–0.83 ❌
+```
+
+**Win condition (empirical so far):** Adam-step → spectral correction.
+**Loss conditions:** geometry-then-Adam (cos converges to AdamW),
+spectral-only (loses Adam's diagonal preconditioning),
+Adam-step → Gram-inverse (the inverse rescaling of a sign vector is
+structurally meaningless).
+
+---
+
+## Open questions
+
+1. **Does H5 (matrix-Adam) save the geometry → Adam family?** With per-pair
+   scalar v̂, direction is preserved by Adam — so the cos_A divergence H1
+   measured should be more meaningful. But matrix-Adam discards the
+   per-coord stability adjustments that make Adam robust; might be
+   numerically fragile. Pending.
+
+2. **AdamProductMuonLoRA** (queued, 6312406): combines product-Muon
+   geometry (gauge-invariant Sylvester) with Adam preconditioning. If
+   product-Muon has the right *direction* and Adam supplies *magnitude*,
+   this could compound. Pending.
+
+3. **Higher rank** (r=64) gives 0.7527 / 0.7550 with simple optimizers. Is
+   the optimizer-design effort worth it vs just paying for more LoRA
+   capacity? 4× more LoRA parameters at r=64; comparable to a rank-16
+   train at 2× lr+steps. Worth a budget-matched comparison.
+
+4. **Longer training.** adam-muon-lora at step 2000 was still descending
+   (step 1800→2000 dropped 0.002). Is 0.7557 a transient lead or a final
+   one? 4k or 8k step rerun would say.
+
+5. **Why is adam-scaled-lora-post much worse than adam-lin-lora-post**
+   (0.84 vs 0.79)? Both apply the same composition order swap. The Sylvester
+   correction (lin) preserves more information about the (A,B) coupling than
+   the simpler S_B⁻¹ Gram solve (scaled). The "post" composition seems to
+   *amplify* the lin-vs-scaled gap that was nearly invisible in the
+   pre-Adam form.
+
+---
+
+## Cross-references
+
+- **Lin/scaled-lora investigation** (H1–H5, this work): `docs/notes/lin_scaled_lora_investigation.md`
+- **Muon-LoRA "beat AdamW" campaign** (H1–H4, completed): `docs/notes/muon_beat_adamw_investigation.md`
+- **Theory** (Sylvester preconditioner, spectral product norm): `docs/theory/main.tex`
+- **Synthetic motivation** (low-rank matrix recovery): `notebooks/low_rank.ipynb`
+- **Sweep analysis notebook** (all baselines): `notebooks/sweep_analysis.ipynb`
+- **Lin/scaled investigation notebook** (H1 cosine plots, H4/H5 leaderboard): `notebooks/lin_scaled_investigation.ipynb`
+- **Memory:**
+  - `~/.claude/projects/-mnt-home-nghosh-lora/memory/project_optimizer_sweep.md`
+  - `~/.claude/projects/-mnt-home-nghosh-lora/memory/project_muon_campaign.md`
+  - `~/.claude/projects/-mnt-home-nghosh-lora/memory/feedback_beat_dont_match.md`
+- **Optimizer code:** `lora_playground/optim.py` (all 17 registered optimizers)
+
+---
+
+## Running experiments (as of 2026-04-30 ~12:00 local)
+
+| job     | group           | runs | GPUs | state    | hypothesis | expected verdict |
+|---------|-----------------|------|------|----------|------------|------------------|
+| 6312334 | h1_diag_2k      | 2/2  | 2    | DONE     | H1 v̂ erases geometry | confirmed: cos_B ≈ 0.97 throughout |
+| 6312277 | h4_post_2k      | 6/10 | 4    | RUNNING  | H4 *-Post wins | falsifying: η=1e-3 trending to 0.79 |
+| 6312335 | h3_rsweep_2k    | 12/18| 6    | RUNNING  | H3 small-r benefit | falsified: lin loses by +0.02 at r=2,4 |
+| 6312759 | h5_matrix_2k    | 0/10 | 4    | PENDING  | H5 scalar v̂ preserves geometry | tbd (resubmitted with fix) |
+| 6312406 | adam_product_muon_500 | _ | _ | (Muon campaign) | H2⊗H4 hybrid | tbd |
+| 6312401 | psi_lora_2k     | _    | _    | (Original sweep) | PSI Algorithm 3 | tbd |
+| —       | galore_fixed_2k | done | _    | DONE     | full-weight projected | (read from logs) |
+
+---
+
+## What I'd do next, ranked
+
+1. **Wait for H4 to finish.** If best `*-post` final ≥ 0.78 across all η, H4
+   is decisively falsified — close the file with one sentence updating the
+   doc. If unexpectedly some η hits 0.756 territory, redo with a finer η grid.
+2. **Wait for H5 (resubmitted).** If matrix-Adam beats AdamW: that's a real
+   second productive variant alongside adam-muon-lora. If not: matrix-Adam
+   joins H4 in the "ideas that sounded right but didn't help" pile.
+3. **Budget-matched r=16 vs r=64 study.** adamw r=64 → 0.7550 with 1× compute
+   beats adam-muon-lora r=16 with custom optimizer. Are we optimizing the
+   wrong axis?
+4. **adam-muon-lora longer training / lr decay.** The 0.7557 was still
+   descending at step 2000. A 4k-step run with cosine decay could push to
+   0.74-ish — a real headline.
+5. **Closed-form polar update** (theory line 656): the unique closed-form
+   spectral-product update. Cheaper than ProductMuon (one extra polar
+   per pair per step) and theoretically motivated. Not yet implemented.
