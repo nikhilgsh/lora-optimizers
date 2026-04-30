@@ -1,0 +1,1 @@
+{"lr": ["3e-4", "1e-3", "3e-3", "1e-2"], "optimizer": ["product-muon-lora"], "lora_plus_multiplier": ["1", "4"], "muon_ns_steps": ["5"], "seed": ["0"]}

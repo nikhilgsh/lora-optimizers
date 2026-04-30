@@ -1,0 +1,1 @@
+{"lr": ["10.0", "30.0"], "optimizer": ["lin-lora", "scaled-lora"], "lora_plus_multiplier": ["1.0"], "seed": ["0"]}
