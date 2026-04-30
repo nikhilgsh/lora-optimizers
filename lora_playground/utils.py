@@ -76,12 +76,25 @@ def _solve_ridge(A, B, eps=1e-6):
     """Solve (A + eps·I) X = B via Cholesky with fallback to dense solve.
 
     A is (r, r), assumed approximately SPD. Returns X with same shape as B.
+    On singular fallback, escalate eps until cholesky succeeds (matches the
+    reference's robustness — small numerical noise can knock the matrix
+    just below the SPD boundary, but a slightly larger ridge always works).
     """
     n = A.shape[-1]
     Ar = A + torch.eye(n, dtype=A.dtype, device=A.device).mul(eps)
     L, info = torch.linalg.cholesky_ex(Ar)
     if int(info) == 0:
         return torch.cholesky_solve(B, L)
+    # Cholesky said not-SPD. Bump eps and retry — float32 noise from large
+    # contractions (e.g. gram of (16, d_in) with d_in ≫ 1) can produce
+    # negative eigenvalues O(d_in · float32_eps · ||A||²) that exceed the
+    # original ridge.
+    for bump in (1e-4, 1e-2, 1.0):
+        Ar = A + torch.eye(n, dtype=A.dtype, device=A.device).mul(eps + bump)
+        L, info = torch.linalg.cholesky_ex(Ar)
+        if int(info) == 0:
+            return torch.cholesky_solve(B, L)
+    # Last resort: dense solve with the heavily-bumped matrix.
     return torch.linalg.solve(Ar, B)
 
 
