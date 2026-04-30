@@ -219,10 +219,18 @@ def make_parser():
                         help="ρ proximal regularizer for PSI-LoRA F-LoRSUM.")
     parser.add_argument("--psi_momentum_rank", type=int, default=None,
                         help="Rank r_m for PSI-LoRA low-rank momentum (default: lora_r).")
+    parser.add_argument("--muon_ns_steps", type=int, default=5,
+                        help="Newton-Schulz iterations for Muon-family optimizers; 0 disables NS (Tier-2 sanity).")
     parser.add_argument("--galore_update_proj_gap", type=int, default=200,
                         help="Steps between GaLore projection updates.")
     parser.add_argument("--galore_scale", type=float, default=0.25,
                         help="GaLore update scale factor.")
+    parser.add_argument("--log_optim_diagnostics", action="store_true",
+                        help="For adam-lin-lora and adam-scaled-lora: emit per-step "
+                             "JSONL `optim_step` events with cosine(precond step, raw-Adam step), "
+                             "update norms, and S_A/S_B eigenvalue extremes. H1 probe.")
+    parser.add_argument("--optim_diagnostics_every", type=int, default=20,
+                        help="Cadence (in optimizer steps) for --log_optim_diagnostics.")
     parser.add_argument("--wandb_project", default=None, help="W&B project name. Omit to disable W&B.")
     parser.add_argument("--wandb_run_name", default=None, help="W&B run name. Auto-generated from key params if omitted.")
     return parser
@@ -348,6 +356,11 @@ def main():
         psi_momentum_rank=args.psi_momentum_rank,
         galore_update_proj_gap=args.galore_update_proj_gap,
         galore_scale=args.galore_scale,
+        muon_ns_steps=args.muon_ns_steps,
+        muon_alpha=args.lora_alpha,
+        muon_rank=args.lora_r,
+        log_optim_diagnostics=args.log_optim_diagnostics,
+        optim_diagnostics_every=args.optim_diagnostics_every,
     )
     scheduler = get_scheduler(
         name=args.lr_scheduler_type,

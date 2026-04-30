@@ -1,11 +1,12 @@
 #!/bin/bash
-# 2000-step variant of sweep.sh — for testing whether longer training changes optimizer rankings.
-# Arg order must match the JSON param key order in params/*.json.
-# cwd is set to repo root by slurm_scripts/sbatch.sh before disBatch runs.
+# 2000-step sweep with configurable LoRA rank (H3 probe).
+# 5 positional args: lr, optimizer, lora_plus_multiplier, seed, lora_r.
+# lora_alpha is set to lora_r so alpha/r = 1 (matches the r=16 baseline default).
 lr=${1:-3e-4}
 optimizer=${2:-adamw}
 lora_plus_multiplier=${3:-1.0}
 seed=${4:-0}
+lora_r=${5:-16}
 
 wandb_args=()
 if [ -n "${WANDB_PROJECT:-}" ]; then
@@ -22,4 +23,6 @@ python train_lora.py \
     --optimizer "$optimizer" \
     --lora_plus_multiplier "$lora_plus_multiplier" \
     --seed "$seed" \
+    --lora_r "$lora_r" \
+    --lora_alpha "$lora_r" \
     "${wandb_args[@]}"

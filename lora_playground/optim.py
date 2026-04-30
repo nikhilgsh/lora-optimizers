@@ -75,6 +75,8 @@ OPTIMIZER_CHOICES = {
     "adam-lin-lora",
     "adam-scaled-lora-post",
     "adam-lin-lora-post",
+    "adam-scaled-lora-matrix",
+    "adam-lin-lora-matrix",
     "muon-lora",
     "product-muon-lora",
     "adam-muon-lora",
@@ -684,6 +686,150 @@ class AdamLinLoRAPost(Optimizer):
             if self.lora_plus_multiplier != 1.0:
                 dB = self.lora_plus_multiplier * dB
 
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class AdamScaledLoRAMatrix(Optimizer):
+    """AdamScaledLoRA with a per-pair *scalar* second moment (H5).
+
+    Original AdamScaledLoRA uses per-coordinate v̂ on the preconditioned
+    gradient v = S⁻¹∇. The √v̂ rescaling acts coordinate-by-coordinate,
+    re-shredding the cross-coordinate scale structure that the Gram solve
+    just installed. This variant keeps per-element first-moment m, but
+    replaces v̂ with a single EMA scalar per (A,B) pair tracking
+    ‖precond_A‖²_F + ‖precond_B‖²_F. The pair gets an adaptive learning rate
+    (Adam's stability) without per-coord directional shredding.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, adapter_name=None):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_pair': 0.0,
+                'step': 0,
+            }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamScaledLoRAMatrix update.")
+            state = self.pair_state[i]
+            state['step'] += 1
+            gA = A.grad
+            gB = B.grad
+            SB = spdify(B.T @ B, self.delta)
+            SA = spdify(A @ A.T, self.delta)
+            precond_A = solve_spd(SB, gA)
+            precond_B = solve_spd(SA, gB.T).T
+
+            state['m_A'].mul_(self.beta1).add_(precond_A, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(precond_B, alpha=1.0 - self.beta1)
+            sqsum = float((precond_A.float() ** 2).sum() + (precond_B.float() ** 2).sum())
+            state['v_pair'] = self.beta2 * state['v_pair'] + (1.0 - self.beta2) * sqsum
+
+            bc1 = 1.0 - self.beta1 ** state['step']
+            bc2 = 1.0 - self.beta2 ** state['step']
+            denom = (state['v_pair'] / bc2) ** 0.5 + self.eps
+            scale = -lr / denom
+
+            dA = scale * (state['m_A'] / bc1)
+            dB = scale * (state['m_B'] / bc1)
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class AdamLinLoRAMatrix(Optimizer):
+    """AdamLinLoRA with per-pair scalar second moment (H5).
+
+    Same as AdamLinLoRA but Adam's per-coordinate v̂ is replaced by a scalar
+    EMA per (A,B) pair tracking ‖precond_A‖²_F + ‖precond_B‖²_F (where
+    precond is the Sylvester-corrected step). Direction comes from m̂
+    per-element; only magnitude is adaptively rescaled per pair.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, adapter_name=None, scaled_metric=False,
+                 lora_plus_multiplier=1.0):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.lora_plus_multiplier = lora_plus_multiplier
+
+        self.pair_state = {}
+        self.gammas = []
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_pair': 0.0,
+                'step': 0,
+            }
+            r, d_in = A.shape
+            self.gammas.append((d_in / r) ** 0.5 if scaled_metric else 1.0)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamLinLoRAMatrix update.")
+            state = self.pair_state[i]
+            state['step'] += 1
+            gA = A.grad
+            gB = B.grad
+            SB = spdify(B.T @ B, self.delta)
+            SA = spdify(A @ A.T, self.delta)
+            RHS = -gamma * (gA @ A.T).float()
+            K = solve_sylvester(SB, (gamma ** 2) * SA, RHS)
+            termB = (gB + (1.0 / gamma) * B @ K.to(dtype=B.dtype)).float()
+            precond_B = solve_spd(SA, termB.T).T
+            termA = (gA + gamma * K.to(dtype=A.dtype) @ A).float()
+            precond_A = solve_spd(SB, termA)
+
+            state['m_A'].mul_(self.beta1).add_(precond_A, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(precond_B, alpha=1.0 - self.beta1)
+            sqsum = float((precond_A.float() ** 2).sum() + (precond_B.float() ** 2).sum())
+            state['v_pair'] = self.beta2 * state['v_pair'] + (1.0 - self.beta2) * sqsum
+
+            bc1 = 1.0 - self.beta1 ** state['step']
+            bc2 = 1.0 - self.beta2 ** state['step']
+            denom = (state['v_pair'] / bc2) ** 0.5 + self.eps
+            scale = -lr / denom
+
+            dA = scale * (state['m_A'] / bc1)
+            dB = self.lora_plus_multiplier * scale * (state['m_B'] / bc1)
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
@@ -1387,7 +1533,8 @@ class PSILoRA(_HookLoRAOptimizer):
         # `lr * self.defaults["lmbd"]`). Without this, at small lr the prox term
         # dominates the gradient term and updates collapse — produces the
         # lr-insensitive pathology where all small η give identical loss.
-        rho = lr * self.proximal_rho
+        # Also clamp from below at 1e-5 (ref line 973: `lmbd = max(lmbd, 1e-5)`).
+        rho = max(lr * self.proximal_rho, 1e-5)
         K = self.inner_iters
         alpha1 = self.momentum
 
@@ -1691,6 +1838,24 @@ def build_optimizer(
         )
     if optimizer_type == "adam-lin-lora-post":
         return AdamLinLoRAPost(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            scaled_metric=scaled_metric,
+            lora_plus_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "adam-scaled-lora-matrix":
+        return AdamScaledLoRAMatrix(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+        )
+    if optimizer_type == "adam-lin-lora-matrix":
+        return AdamLinLoRAMatrix(
             model,
             lr=lr,
             betas=(0.9, 0.999),
