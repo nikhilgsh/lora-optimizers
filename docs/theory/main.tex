@@ -1,0 +1,837 @@
+\documentclass[11pt]{article}
+
+\usepackage{amsfonts}    
+\usepackage{color}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{amssymb,amsmath} % NOT COMATIBLE WITH svjour3
+\usepackage{amsthm}
+\usepackage{amsbsy}
+\usepackage{mathtools}
+\usepackage{enumitem}
+\usepackage{fullpage}
+\usepackage{algorithmicx}
+\usepackage[ruled, lined, linesnumbered, commentsnumbered, longend, vlined]{algorithm2e}
+
+
+\graphicspath{{figs/}}
+\newcommand{\bq}{\mathbf{q}}
+\newcommand{\bt}{\mathbf{\theta}}
+\newcommand{\bw}{\mathbf{w}}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\by}{\mathbf{y}}
+\newcommand{\bz}{\mathbf{z}}
+
+\newcommand{\red}[1]{\textcolor[rgb]{0.635,0.0780,0.1840}{#1}}
+\parindent 0ex
+\parskip 2ex
+
+\date{}
+
+%% Lawrence commands
+\newcommand{\blue}[1]{\textcolor[rgb]{0,0.33,0.56}{#1}}
+\newcommand{\green}[1]{\textcolor[rgb]{0,0.65,0.33}{#1}}
+\definecolor{shade}{rgb}{0.9,0.9,0.9}
+\usepackage{bm}
+\renewcommand{\vec}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\bm{#1}}
+
+\newcommand{\R}{\mathbb{R}}
+
+\newcommand{\cC}{\mathcal{C}}
+\newcommand{\cD}{\mathcal{D}}
+\newcommand{\cN}{\mathcal{N}}
+
+\newcommand{\mA}{\mat{A}}
+\newcommand{\mB}{\mat{B}}
+\newcommand{\mC}{\mat{C}}
+\newcommand{\mD}{\mat{D}}
+\newcommand{\mE}{\mat{E}}
+\newcommand{\mG}{\mat{G}}
+\newcommand{\mH}{\mat{H}}
+\newcommand{\mI}{\mat{I}}
+\newcommand{\mK}{\mat{K}}
+\newcommand{\mL}{\mat{L}}
+\newcommand{\mM}{\mat{M}}
+\newcommand{\mO}{\mat{O}}
+\newcommand{\mP}{\mat{P}}
+\newcommand{\mQ}{\mat{Q}}
+\newcommand{\mR}{\mat{R}}
+\newcommand{\mS}{\mat{\Sigma}}
+\newcommand{\mT}{\mat{T}}
+\newcommand{\mV}{\mat{V}}
+\newcommand{\mU}{\mat{U}}
+\newcommand{\mW}{\mat{W}}
+\newcommand{\mX}{\mat{X}}
+\newcommand{\mY}{\mat{Y}}
+\newcommand{\mZ}{\mat{Z}}
+\newcommand{\DW}{\mat{\Delta W}}
+
+%% Operators
+\newcommand{\dotprod}[1]{\left< #1\right>} 
+\DeclareMathOperator{\diag}{diag} 
+\DeclareMathOperator{\argmininn}{argmin} 
+\DeclareMathOperator{\argmaxinn}{argmax}
+\newcommand{\argmin}[1]{ \underset{#1}{\argmininn} \;}
+\newcommand{\argmax}[1]{ \underset{#1}{\argmaxinn}\;}
+\DeclareMathOperator{\traceOp}{tr}  
+\providecommand{\trace}[1]{\traceOp\left(#1\right)}
+\newcommand{\E}[1]{\mathbb{E}\left[#1\right] } 
+\newcommand{\EE}[2]{\mathbb{E}_{#1}\left[#2\right] } 
+\newcommand{\ones}{\mat{ 1}}
+\DeclareMathOperator{\rank}{rank} 
+\DeclareMathOperator{\orth}{orth} 
+
+
+
+\usepackage{mdframed} 
+\usepackage{thmtools}
+
+\definecolor{shadecolor}{gray}{0.90}
+\declaretheoremstyle[
+headfont=\normalfont\bfseries,
+notefont=\mdseries, notebraces={(}{)},
+bodyfont=\normalfont,
+postheadspace=0.5em,
+spaceabove=6pt,
+mdframed={
+  skipabove=8pt,
+  skipbelow=8pt,
+  hidealllines=true,
+  backgroundcolor={shadecolor},
+  innerleftmargin=4pt,
+  innerrightmargin=4pt}
+]{shaded}
+
+
+\declaretheorem[style=shaded,within=section]{definition}
+\declaretheorem[style=shaded,sibling=definition]{theorem}
+\declaretheorem[style=shaded,sibling=definition]{proposition}
+\declaretheorem[style=shaded,sibling=definition]{assumption}
+\declaretheorem[style=shaded,sibling=definition]{corollary}
+\declaretheorem[style=shaded,sibling=definition]{conjecture}
+\declaretheorem[style=shaded,sibling=definition]{lemma}
+\declaretheorem[style=shaded,sibling=definition]{remark}
+\declaretheorem[style=shaded,sibling=definition]{example}
+
+
+
+% Commenting
+\usepackage[colorinlistoftodos,bordercolor=orange,backgroundcolor=orange!20,linecolor=orange]{todonotes}
+\newcommand{\rob}[1]{\todo[inline]{\textbf{Robert: }#1}}
+\newcommand{\lawrence}[1]{\todo[inline]{\textbf{Lawrence: }#1}}
+\newcommand{\noah}[1]{\todo[inline]{\textbf{Noah: }#1}}
+
+\newcommand{\David}[1]{\textcolor{blue}{\textbf{David:} #1}}
+
+\newcommand\numberthis{\addtocounter{equation}{1}\tag{\theequation}}
+
+\usepackage[hidelinks]{hyperref}
+\usepackage[nameinlink]{cleveref}
+\usepackage[firstinits=true,backend=bibtex,style=alphabetic,citestyle=alphabetic, url =false, arxiv =false, isbn = false, doi = false]{biblatex}
+\bibliography{references}
+
+\hypersetup{colorlinks, citecolor=blue, filecolor=black, urlcolor=blue}
+%%%%%%%%%%%
+
+\title{LORAP: Lora using a Product Penalization}
+\author{} %
+
+
+
+
+\begin{document}
+
+
+
+\maketitle
+
+
+\tableofcontents
+
+Lora training using Product Penalization
+Read first~\cite{zhang2024riemannianpreconditionedlorafinetuning} which proposes the same method. Then consider extensions with momentum+truncation for a more practical method. I also think they have incorporate Adam incorrectly. This would all be a practical extension.
+
+Alternatively. applying this to the product of the query and key matrix in an attention layer would be something completely new. 
+\section{Introduction}
+
+
+Suppose we are given a pre-trained model given by
+\begin{table}[h!]
+\centering
+\begin{tabular}{ll}
+    A data set: & $\bx \sim \cD$ \\
+    A model: & $f(\mW, \bx) \in \R$ \\
+    A loss function: & $f(\mW) := \EE{\bx \sim \cD}{f(\mW, \bx)}$. \\
+   Pre-trained weights: & $\mW^*$ \mbox{ such that } $\nabla f(\mW^*) =0$
+\end{tabular} 
+\caption{Pre-trained model}
+\end{table}
+
+Now we would like to make a small change to our weights such that the resulting weights have a good error on a new data set. For this we will introduce a perturbation $\DW = \mL \mR \in \R^{m \times n}$ where $\mL\in \R^{m \times r}$ and $\mR \in \R^{r \times n}$, with $r \ll \min\{n,m\}$. In words, $\DW =\mL \mR$ is low rank. We then introduce a new loss given by
+\begin{equation}
+    F( \DW) = \EE{\bx \sim \cD'}{h(\mW^* + \DW, \bx)},
+\end{equation}
+where $\cD'$ is a new data set. 
+
+
+If we apply  gradient to the two components $\mL$ and $\mR$ of the perturbation separately,  we get
+\begin{align}
+ \mL_{t+1}=   \argmin{\mL\in\R^{m \times r}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mL} F(\mL_t\mR_t),\mL-\mL_t } + \frac{1}{2\lambda} \|\mL-\mL_t\|^2 , \label{eq:Luppartial}\\
+  \mR_{t+1}=   \argmin{\mR \in \R^{r \times n}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mR} F(\mL_t\mR_t), \mR-\mR_t } + \frac{1}{2\lambda} \|\mR-\mR_t\|^2.\label{eq:Ruppartial}
+\end{align}
+where  $\|\cdot\| $ is a given matrix norm. 
+
+   
+One way to interpret~\eqref{eq:Luppartial} and~\eqref{eq:Ruppartial}, is that we are approximating our loss by its local linearization around $\mL_t\mR_t$, and then penalizing solutions in $\mL$ and $\mR$ that are far from $\mL_t$ and $\mR_t$, respectively. Here we argue that this is not the best form of penalization.  Instead, we should penalize $\mL\mR$ when it is far from $\mL_t\mR_t$.  
+% What  norm should we use here? Here we will argue that the norm should depend on the product $\mL \mR$, and note solely on $\mL$ or $\mR$. 
+
+\section{Using a product norm for Lora}
+Consider gradient descent over the perturbation 
+\begin{align*}
+ \DW^{t+1}=   \argmin{\DW} F(\mW^t) + \dotprod{\nabla_{\DW} F(\DW^t), \DW-\DW^t } + \frac{1}{2\lambda} \|\DW-\DW^t\|^2.
+\end{align*}
+
+Substituting in $\DW = \mL \mR$ and $\DW^t= \mL_t \mR_t$ gives
+\begin{align}
+ \DW^{t+1}=   \argmin{\mL\in \R^{m \times r},\mR \in \R^{r \times n}} F(\mL_t\mR_t) + \dotprod{\nabla_{\DW} F(\mL_t\mR_t), \mL\mR-\mL_t\mR_t } + \frac{1}{2\lambda} \|\mL\mR-\mL_t\mR_t\|^2. \label{eq:fullprodGD}
+\end{align}
+
+
+\section{Full best $r$ approach}
+Assuming $\|\cdot\| = \|\cdot\|_F$, by completing the squares, the above is equivalent, up to additive constants, to solving
+\begin{align}
+ \DW^{t+1}=   \argmin{\mL\in \R^{m \times r},\mR \in \R^{r \times n}} \| \mL\mR - (  \mL_t\mR_t -\lambda \nabla_{\DW} F(\mL_t\mR_t)) \|_F^2. \label{eq:fullprodGD-square}
+\end{align}
+The solution to the above is given by the best rank $r$ approximation of $\mL_t\mR_t - \lambda \nabla F(\mL_t \mR_t)$. That is, we obtain the new low-rank matrix by taking a gradient descent update and then truncate. This yields the following ideal stepping scheme: let $\DW^0$ be a the initial rank $r$ matrix and let $\mathcal{T}_r$ denote the operation that computes the best rank $r$ approximation, then
+\begin{equation}\label{eq:update_scheme}
+    \DW^t = \mL_t \mR_t, \quad \mG^t := \nabla_{\DW} F(\DW^t), \quad \mD^{t+1} = \DW^t - \lambda \mG^t, \quad \DW^{t+1} = \mathcal{T}_r\left(\mD^{t+1}\right). 
+\end{equation}
+Computing the optimal rank $r$ approximation to $\mD^{t+1}$ requires $O(mn\min\{m,n\})$ operations, which becomes prohibitively expensive for large $m$ and $n$. Instead, we can resort to randomized techniques, such as the randomized SVD, subspace iteration, Krylov subspace method, and the generalized Nyström method \cite{rsvd, MM15, tropp2023randomized, nakatsukasa2020fast}. These methods can be proven to return rank $r$ approximations $\widehat{\bm{D}}^{t+1}$ satisfying
+\begin{equation*}
+    \|\bm{D}^{t+1}-\widehat{\bm{D}}^{t+1}\|_F \leq (1+\varepsilon) \|\bm{D}^{t+1}-\mathcal{T}_r(\bm{D}^{t+1})\|_F,
+\end{equation*}
+with high probability, for some $\varepsilon$ depending on the method. In other words, these methods compute cheap and \emph{near-optimal} low-rank approximations, sacrificing  some accuracy for speed. 
+\subsection{Subspace iteration and the randomized SVD}\label{section:subspaceiteration}
+Given a random matrix $\bm{\Omega} \in \mathbb{R}^{n \times r}$, the basic form of subspace iteration proceeds by computing an orthonormal basis $\bm{Q}$ for the range of $(\bm{D}\bm{D}^T)^q \bm{D} \bm{\Omega}$, where $q > 0$, and returns the approximation $\bm{Q} \bm{Q}^T \bm{D} \approx \bm{D}$; we obtain the randomized SVD as a special case by setting $q = 0$. Some remarks:
+\begin{enumerate}
+    \item[i)] The product $(\bm{D}\bm{D}^T)^q \bm{D} \bm{\Omega}$ is never formed explicitly. To ensure stability in finite precision arithmetic, $\bm{Q}$ is obtained by alternating the products with $\bm{D}$ and its transpose with orthogonalization at each iteration (see \Cref{alg:subspaceiteration}). In exact arithmetic, this does not alter the low-rank approximation.
+    \item[ii)] In exact arithmetic, the approximation $\bm{Q} \bm{Q}^T \bm{D}$ depends only on the range of $\bm{\Omega}$. Hence, replacing $\bm{\Omega}$ with $\bm{\Omega} \bm{X}$ for a non-singular square matrix $\bm{X}$ has no effect on the approximation. 
+    \item[iii)] To improve the performance of the algorithm, one can allow for $\bm{\Omega}$ to have slightly more than $r$ columns, say $r+5$ or even $2r$ columns. This improves the approximation quality at the cost of more matrix-vector products with $\bm{D}$. To obtain an approximation of rank $r$, we can compute the best rank $r$ approximation of $\bm{Q} \bm{Q}^T \bm{D}$, which by the orthonormality of $\bm{Q}$ is $\bm{Q} \mathcal{T}_r(\bm{Q}^T \bm{D})$, requiring only the SVD of the short-and-fat matrix $\bm{Q}^T \bm{D}$. 
+    \item[iv)] To simplify the analysis, one often assumes that the random matrix $\bm{\Omega}$ is Gaussian. However, other random matrix formats are also allowed, such as SHRT and subspace injections \cite{camano2025faster}. Generally, these formats have weaker guarantees, but perform nearly as good as Gaussians in practice. An explanation for this phenomenon is given in \cite{camano2025faster}.
+\end{enumerate}
+Below is a pseudo-code for a stable implementation of subspace iteration. This can be used in place of $\mathcal{T}_r$ in \eqref{eq:update_scheme}.
+
+\begin{algorithm}[H]%[tb]
+    \caption{Subspace iteration}
+    \label{alg:subspaceiteration}
+    \KwIn{Matrix $\bm{D} \in \mathbb{R}^{m \times n}$, target rank $r$, number of subspace iterations $2q+1$.}
+    \KwOut{Rank $r$ approximation $\bm{Q} \bm{Q}^T \bm{D} \approx \bm{D}$.}
+    \begin{algorithmic}[1]
+    \State Sample a random matrix $\bm{\Omega} \in \mathbb{R}^{n \times r}$.
+    \State $\bm{Q} = \orth(\bm{D}\bm{\Omega})$.\\
+    \For{$k=1 \to q$}
+    {
+     $\bm{Q} = \orth(\bm{D}^T \bm{Q})$\;
+     $\bm{Q} = \orth(\bm{D} \bm{Q})$
+    }
+    \State \textbf{return} $\bm{Q} (\bm{Q}^T \bm{D})$ in factored form.
+    \end{algorithmic}
+\end{algorithm}
+\David{Note for self: Note that if $\bm{P} = \orth(\bm{D}^T\bm{\Omega})$ and $\bm{Q} = \orth(\bm{D} \bm{P})$ we have $\bm{Q}\bm{Q}^T \bm{A}\bm{V} \bm{V}^T = \bm{A} \bm{V} \bm{V}^T$.}
+
+In the subsequent discussion, we will assume that $q = 0$ so that \Cref{alg:subspaceiteration} simplifies to the randomized SVD.
+
+Using the randomized SVD in place of \eqref{eq:update_scheme} yields the following scheme. 
+
+\begin{algorithm}[H]%[tb]
+    \caption{\eqref{eq:update_scheme} with the randomized SVD}
+    \label{alg:updatersvd}
+    \KwIn{Entry access to $\nabla_{\DW}F(\DW)$, target rank $r$, number of iterations $T$, learning rate $\lambda$, a low-rank initialization $\DW^0 \in \mathbb{R}^{m \times n}$.}
+    \KwOut{Low-rank matrices $\DW^t = \bm{Q}_t \bm{R}_t$.}
+    \begin{algorithmic}[1]
+    \State Sample a random $\bm{\Omega} \in \mathbb{R}^{n \times r}$.
+    \State Initialize $\bm{Y}_0 = \DW^0 \bm{\Omega}$\\
+    \For{$t=0 \to T-1$}
+    {Let $\bm{G}^t = \nabla_{\DW}F(\DW^t)$ \Comment{We only need to compute matvecs with $\bm{G}^t$.}\;
+    $\bm{Y}_{t+1} = \bm{Y}_t - \lambda \bm{G}^t \bm{\Omega}$ \Comment{If $\bm{D}^{t+1} := \DW^{t} - \lambda \bm{G}^t$ then  $\bm{Y}_{t+1} = \bm{D}^{t+1} \bm{\Omega}$}\;
+    $\bm{Q}_{t+1} = \orth(\bm{Y}_{t+1})$\;
+    $\bm{R}_{t+1} = \bm{Q}_{t+1}^T\left(\DW^t - \lambda \bm{G}^t\right) = \bm{Q}_{t+1}^T \bm{Q}_t \bm{R}_t - \lambda \bm{Q}^T \bm{G}^t$ \Comment{$\bm{R}_{t+1} = \bm{Q}_{t+1}^T \bm{D}^{t+1}$}\;
+    Let $\DW^{t+1} = \bm{Q}_{t+1} \bm{R}_{t+1}$.
+    }
+    \end{algorithmic}
+\end{algorithm}
+\David{We can replace $\bm{Y}_{t+1} = \bm{Y}_t - \lambda \bm{G}^t \bm{\Omega}$ with $\bm{Y}_{t+1} = \bm{Q}_t \bm{R}_t \bm{\Omega} - \lambda \bm{G}^t \bm{\Omega}$. The former is a bit cheaper, since we do not need to compute $\bm{Q}_t (\bm{R}_t \bm{\Omega})$, but it requires storing $\bm{Y}_t$. The latter requires a bit more operations, but once $\bm{Q}_{t+1}$ is computed we can discard $\bm{Y}_{t+1}$. These are all tall-and-skinny matrices, so maybe it does not matter at all. In this case, we can ignore the following discussion.}
+From this formulation of the algorithm it is not immediate that it is equivalent to the update scheme \eqref{eq:update_scheme}, except $\mathcal{T}_r$ is replaced with the randomized SVD. To see this, note that by induction we have
+\begin{equation*}
+    \bm{Y}_{t+1} = \DW^0 \bm{\Omega}- \ \lambda\sum\limits_{i=0}^{t} \bm{G}^i \bm{\Omega}.
+\end{equation*}
+However, because of the rank $r$ truncations
+\begin{equation*}
+    \mD^{t+1} \neq \DW^0 - \lambda\ \sum\limits_{i=0}^{t} \bm{G}^i.
+\end{equation*}
+It is therefore not clear why \Cref{alg:updatersvd} applies the randomized SVD to $\bm{D}^{t+1}$ at every iteration. However, the following result guarantees that $\bm{D}^{t+1} \bm{\Omega} = \bm{Y}_{t+1}$ and, consequently, \Cref{alg:updatersvd} does indeed apply the randomized SVD to $\bm{D}^{t+1}$. 
+\begin{lemma}
+    Using the notation of \Cref{alg:updatersvd}, then for each $t$ we have
+    \begin{equation*}
+        \bm{D}^{t+1}\bm{\Omega} = \bm{Y}_{t+1}.
+    \end{equation*}
+    Hence, \Cref{alg:updatersvd} applies the randomized SVD to $\bm{D}^{t+1}$ at each iteration. 
+\end{lemma}
+\begin{proof}
+    The proof is by induction. When $t = 0$, the result is immediate. For the inductive step, we have
+    \begin{align*}
+        \bm{Y}_{t+1} & = \bm{Y}_t - \lambda \bm{G}^t \bm{\Omega}\\
+        \tag{Inductive hypothesis} &= \bm{D}^t \bm{\Omega} - \lambda \bm{G}^{t}\bm{\Omega}\\
+        \tag{$\bm{Q}_t$ is an o.n.b. for $\bm{D}^t \bm{\Omega}$} &= \bm{Q}_t \bm{Q}_t^T \bm{D}^t \bm{\Omega} - \lambda \bm{G}^t \bm{\Omega}\\
+        \tag{$\bm{Q}_t \bm{Q}_t^T \bm{D}^t = \DW^t$} & = \DW^t \bm{\Omega} - \lambda \bm{G}^t \bm{\Omega}\\
+        \tag{$\DW^t  - \lambda \bm{G}^t =\bm{D}^{t+1}$} &= \bm{D}^{t+1} \bm{\Omega},
+    \end{align*}
+    as required.
+\end{proof}
+
+% A drawback of \Cref{alg:updatersvd} is that we need to look at each entry of $\bm{G}^t$ two times: we first need to compute compute $\bm{G}^t \bm{\Omega}$ to compute $\bm{Q}_{t+1}^T \bm{G}^t$. This makes the randomized SVD less suitable in parallel computing environments. In \Cref{section:gennystrom} we will present a method that only needs to look at each entry of $\bm{G}^t$ once and we do not need to store the full matrix $\bm{G}^t$ at the same time; we only need to look at each entry on at a time. 
+
+\subsection{Generalized Nyström method}\label{section:gennystrom}
+A drawback with subspace iteration and the randomized SVD is that subsequent computations depend on earlier ones: you need to compute $\bm{Q}$ before you compute $\bm{Q}^T \bm{D}$. This makes the algorithm less suitable in parallel computing environments. Instead, one can resort to the \emph{generalized Nyström approximation} \cite{nakatsukasa2020fast}. It first samples two random matrices $\bm{\Omega} \in \mathbb{R}^{n \times r}$ and $\bm{\Psi} \in \mathbb{R}^{m \times r+s}$, where $s$ is a small oversampling parameter; a sensible default value is $s = 5$.\footnote{As highlighted in \Cref{section:subspaceiteration}, to improve the accuracy of the approximation one can allow $\bm{\Omega}$ to have slightly more than $r$ columns, say $r + p$. In this case, $\bm{\Psi}$ should have $r+p+s$ columns. The rule of thumb is $\bm{\Psi}$ should always have a few more columns than $\bm{\Omega}$.} It then proceeds by returning the approximation
+\begin{equation}\label{eq:generalizednystrom}
+    \bm{D} \bm{\Omega} \left(\bm{\Psi}^T \bm{D} \bm{\Omega}\right)^{\dagger} \bm{\Psi}^T \bm{D} \approx \bm{D},
+\end{equation}
+where $\dagger$ denotes the Moore-Penrose pseudoinverse.\footnote{If $\bm{Q}$ is an orthonormal basis for the range of $\bm{D} \bm{\Omega}$, one can verify that the generalized Nyström approximation in \eqref{eq:generalizednystrom} is equivalent to $\bm{Q}(\bm{\Psi}^T \bm{Q})^{\dagger} \bm{\Psi}^T \bm{D}$.} The generalized Nyström approximation is (provably) less accurate than subspace iteration for \emph{any} $q$ \cite[Remark 1]{funnystrom2}, but is easier to parallelize: the triple $(\bm{D}\bm{\Omega}, \bm{\Psi}^T \bm{D} \bm{\Omega}, \bm{\Psi}^T \bm{D})$ can be computed in parallel. Hence, we can use \eqref{eq:generalizednystrom} in place of $\mathcal{T}_r$ in \eqref{eq:update_scheme}. Applying the generalized Nyström approximation in place of $\mathcal{T}_r$ yields \Cref{alg:gennystromupdatescheme}.
+
+% \David{I am not sure how useful this is, but I'll put it here so we can discuss.} \David{Spotted a mistake} Another benefit of generalized Nyström is that a linear update $\bm{D} \leftarrow \bm{D} + \bm{E}$ results in a linear update of the factors in \eqref{eq:generalizednystrom}:
+% \begin{equation*}
+%     \bm{D}\bm{\Omega} \leftarrow \bm{D} \bm{\Omega} + \bm{E} \bm{\Omega}, \quad \bm{\Psi}^T\bm{D}\bm{\Omega} \leftarrow \bm{\Psi}^T\bm{D} \bm{\Omega} + \bm{\Psi}^T\bm{E} \bm{\Omega}, \quad \bm{\Psi}^T\bm{D} \leftarrow \bm{\Psi}^T\bm{D} + \bm{\Psi}^T\bm{E}.
+% \end{equation*}
+% Hence, we only need to store the factors $\bm{D}\bm{\Omega}, \bm{\Psi}^T\bm{D}\bm{\Omega}, \bm{\Psi}^T\bm{D}$ and update them when we perform an update of $\bm{D}$. Hence, we can adjust the scheme in \eqref{eq:update_scheme} to obtain \Cref{alg:gennystromupdatescheme}.
+
+\begin{algorithm}[H]%[tb]
+    \caption{\eqref{eq:update_scheme} with generalized Nyström}
+    \label{alg:gennystromupdatescheme}
+    \KwIn{Entry access to $\nabla_{\DW}F(\DW)$, target rank $r$, oversampling parameter $s$, number of iterations $T$, learning rate $\lambda$, a low-rank initialization $\DW^0 \in \mathbb{R}^{m \times n}$.}
+    \KwOut{Low-rank matrices $\DW^{t} = \bm{Y}_t \bm{M}_t^{\dagger} \bm{Z}_t^T$.}
+    \begin{algorithmic}[1]
+    \State Sample two random matrices $\bm{\Omega} \in \mathbb{R}^{n \times r}$ and $\bm{\Psi} \in \mathbb{R}^{m \times r + s}$.
+    \State Initialize $\bm{Y}_0 = \DW^0 \bm{\Omega}, \bm{M}_0 = \bm{\Psi}^T \DW^0 \bm{\Omega}, \bm{Z}_0^T = \bm{\Psi}^T \DW^0$. \\
+    \For{$t=0 \to T-1$}
+    {
+    $\bm{G}_t = \nabla_{\DW}F(\DW^t)$ \Comment{We only need matvecs with $\bm{G}^t$}\;
+     $\bm{Y}_{t+1} = \bm{Y}_t - \lambda \bm{G}^t\bm{\Omega}$ \Comment{If $\bm{D}^{t+1} = \DW^{t} - \lambda \bm{G}^t$ then $\bm{Y}_{t+1} = \bm{D}^{t+1} \bm{\Omega}$}\;
+     $\bm{Z}_{t+1}^T = \bm{M}_t \bm{M}_t^{\dagger} \bm{Z}_t^T - \lambda \bm{\Psi}^T \bm{G}^t$ \Comment{$\bm{Z}_{t+1}^T = \bm{\Psi}^T \bm{D}^{t+1}$}\;
+     $\bm{M}_{t+1} = \bm{\Psi}^T \bm{Y}_{t+1}= \bm{M}_t - \lambda \bm{\Psi}^T\bm{G}^t\bm{\Omega}$ \Comment{$\bm{M}_{t+1} = \bm{\Psi}^T \bm{D}^{t+1}\bm{\Omega}$}\;
+     Let $\DW^{t+1} = \bm{Y}_{t+1} \bm{M}_{t+1}^{\dagger} \bm{Z}_{t+1}^T$. 
+    }
+    \end{algorithmic}
+\end{algorithm}
+Note that the triple $(\bm{G}^t \bm{\Omega}, \bm{\Psi}^T \bm{G}^t \bm{\Omega}, \bm{\Psi}^T \bm{G}^t)$ can be computed by only looking at each entry of $\bm{G}^{t}$ once, and then discard it.\footnote{We can write $\bm{G}_t = \sum\limits_{i,j} (\bm{G}_t)_{ij} \bm{E}_{ij}$, where $\bm{E}_{ij}$ is the matrix that is zero everywhere except at the $(i,j)$ entry, where it is $1$.} 
+
+As with \Cref{alg:updatersvd}, it is not immediate why $\bm{Y}_{t+1} \bm{M}_{t+1}^{\dagger} \bm{Z}_{t+1}^T$ is the generalized Nyström approximation of $\DW^t - \lambda \bm{G}^t$. Once again, this can be proven by induction. 
+\begin{lemma}
+    Using the notation of \Cref{alg:gennystromupdatescheme}, define $\bm{D}^{t+1} = \DW^t - \lambda \bm{G}^t$. Assume that $\bm{M}_t$ is full-rank for each $t$. Then, for each $t$ we have
+    \begin{equation*}
+        \bm{D}^{t+1}\bm{\Omega} (\bm{\Psi}^T \bm{D}^{t+1} \bm{\Omega})^{\dagger} \bm{\Psi}^T \bm{D}^{t+1} = \bm{Y}_{t+1} \bm{M}_{t+1}^{\dagger} \bm{Z}^{T}_{t+1}. 
+    \end{equation*}
+    Hence, \Cref{alg:gennystromupdatescheme} applies the generalized Nyström approximation to $\bm{D}^{t+1}$ at each iteration. 
+\end{lemma}
+\begin{proof}
+   It is sufficient to prove
+    \begin{equation}\label{eq:triple}
+            (\bm{Y}_t, \bm{M}_t, \bm{Z}_t^T) = (\bm{D}^t \bm{\Omega}, \bm{\Psi}^T \bm{D}^{t} \bm{\Omega}, \bm{\Psi}^t \bm{D}^t)
+    \end{equation}
+    for each $t$. This will be proven by induction. For $t = 0$ the result is immediate. For the inductive step, we have
+    \begin{align*}
+    \bm{Y}_{t+1} &= \bm{Y}_t - \lambda \bm{G}^t \bm{\Omega}\\
+    &= \bm{Y}_t\bm{M}_t^{\dagger}\bm{M}_t - \lambda \bm{G}^t \bm{\Omega} \tag{$\bm{M}_{t}$ has full rank} \\
+    &=\bm{Y}_t \bm{M}_{t}^{\dagger} \bm{\Psi}^T \bm{D}^t \bm{\Omega} - \lambda \bm{G}^t \bm{\Omega} \tag{Inductive hypothesis}\\
+    &=\bm{Y}_t \bm{M}_{t}^{\dagger} \bm{Z}_t^T \bm{\Omega} - \lambda \bm{G}^t \bm{\Omega} \tag{Inductive hypothesis}\\
+    &= \DW^t \bm{\Omega} - \lambda \bm{G}^t \bm{\Omega} \tag{Definition of $\DW^t$}\\
+    & = \bm{D}^{t+1}\bm{\Omega} \tag{Definition of $\bm{D}^{t+1}$}
+\end{align*}
+Hence, $\bm{Y}_{t+1} = \bm{D}^{t+1} \bm{\Omega}$. We immediately get $\bm{M}_{t+1} = \bm{\Psi}^T \bm{Y}_{t+1} = \bm{\Psi}^T \bm{D}^{t+1} \bm{\Omega}$. We will now proceed with proving $\bm{Z}_{t+1} = \bm{\Psi}^T \bm{D}^{t+1}$. We have
+\begin{align*}
+    \bm{Z}_{t+1}^T &= \bm{M}_t\bm{M}_t^{\dagger} \bm{Z}_t^T - \lambda \bm{\Psi}^T \bm{G}^t\\
+    &=\bm{\Psi}^T\bm{Y}_t \bm{M}_{t}^{\dagger} \bm{Z}_{t}^T - \lambda \bm{\Psi}^T\bm{G}^t \tag{Inductive hypothesis}\\
+    &=\bm{\Psi}^T \DW^t - \lambda \bm{\Psi}^T \bm{G}^t \tag{Definition of $\DW^t$}\\
+    & = \bm{\Psi}^T\bm{D}^{t+1} \tag{Definition of $\bm{D}^{t+1}$},
+\end{align*}
+as required. Hence, by induction, \eqref{eq:triple} holds for all $t$
+\end{proof}
+
+\subsection{Reusing sketches}
+In this section, we discuss how randomized low-rank approximation techniques can be used to compute low-rank approximations to $\DW^t - \lambda \bm{G}^t$, where $\DW^t = \bm{U}_t \bm{S}_t \bm{V}_t^T$ and we only have access to $\bm{G}^t \bm{V}_t$ and $\bm{U}_t^T\bm{G}^t$.
+
+\begin{remark}
+    \David{In our discussions, we noted that given a low-rank factorizization $\DW^t = \bm{L}_t \bm{R}_t$ we immediately have access to $\bm{G}^t \bm{R}_t^T$ and $\bm{L}_t^T \bm{G}^t$. By orthogonalizing $\bm{U}_t = \orth(\bm{L}_t)$ and $\bm{V}_t = \orth(\bm{R}_t^T)$ we have $\bm{G}^t \bm{V}_t = \bm{G}^t \bm{R}_t^T(\bm{V}_t^T \bm{R}_t^T)^{-1}$ and $\bm{U}_t^T \bm{G}^t = (\bm{L}_t^T \bm{U}_t^T)^{-1}\bm{L}_t^T\bm{G}^t$. We would need to perform some form of orthogonalization, otherwise repeatedly applying multiplications $\bm{G}^t \bm{R}_t^T$ and $\bm{L}_t^T \bm{G}^t$ would lead to a loss of precision in floating-point arithmetic as $t$ increases. We therefore assume that $\bm{G}^t$ is multiplied by matrices with orthonormal columns.}
+\end{remark}
+
+Consider the update $\bm{D}^{t+1} = \DW^t - \lambda \bm{G}^t$, where $\DW^t = \bm{L}_t \bm{R}_t = \bm{U}_t \bm{S}_t \bm{V}_t^T$. Here, $\bm{U}_t$ and $\bm{V}_t$ have $r$ orthonormal columns and $\bm{S}_t \in \mathbb{R}^{r \times r}$ is full-rank (not necessarily diagonal). The factors $\bm{L}_t$ and $\bm{R}_t$ can be written as
+\begin{equation*}
+    \bm{L}_t = \bm{U}_t \bm{X}_t, \quad \bm{R}_t = \bm{K}_t^T \bm{V}_t^T,
+\end{equation*}
+for some full rank $\bm{X}_t$ and $\bm{K}_t$. We can compute the generalized Nyström approximation of $\bm{D}^{t+1}$ using $\bm{L}_t$ and $\bm{R}_t$
+\begin{align*}
+    \DW^{t+1} &= \bm{D}^{t+1} \bm{R}_t^T (\bm{L}_t^T \bm{D}^{t+1} \bm{R}_t^T)^{\dagger} \bm{L}_t^T \bm{D}^{t+1}\\
+    &= \bm{D}^{t+1} \bm{V}_t \bm{K}_t (\bm{X}_t^T \bm{U}_t^T \bm{D}^{t+1} \bm{V}_t \bm{K}_t)^{\dagger} \bm{X}_t^T \bm{U}_t^T \bm{D}^{t+1}.
+\end{align*}
+Assume that $\rank(\bm{U}_t^T \bm{D}^{t+1} \bm{V}_t) = r$; otherwise the rank will decrease. Then, 
+\begin{equation*}
+    \bm{D}^{t+1} \bm{V}_t \bm{K}_t (\bm{X}_t^T \bm{U}_t^T \bm{D}^{t+1} \bm{V}_t \bm{K}_t)^{\dagger} \bm{X}_t^T \bm{U}_t^T \bm{D}^{t+1} = \bm{D}^{t+1} \bm{V}_t (\bm{U}_t^T \bm{D}^{t+1} \bm{V}_t)^{\dagger} \bm{U}_t^T \bm{D}^{t+1}.
+\end{equation*}
+Hence, provided $\rank(\bm{U}_t^T \bm{D}^{t+1} \bm{V}_t) = r$, the generalized Nyström approximation using $\bm{R}_t^T$ and $\bm{L}_t$ as sketches is equivalent to using orthonormal bases for their ranges. We can compute
+\begin{equation*}
+    \bm{Y}_{t+1} = \bm{D}^{t+1} \bm{V}_{t}, \quad \bm{Z}_{t+1}^T = \bm{U}_{t}^T \bm{D}^{t+1}, \quad \bm{M}_{t+1} = \bm{U}_{t}^T \bm{D}^{t+1}\bm{V}_{t},
+\end{equation*}
+Next, compute orthonormal bases $\bm{U}_{t+1}$ for $\bm{Y}_{t+1}$ and $\bm{V}_{t+1}$ for $\bm{Z}_{t+1}$ (using e.g. Polar Express). Then,
+\begin{align*}
+    \DW^{t+1} &= \bm{Y}_{t+1} \bm{M}_{t+1}^{\dagger} \bm{Z}_{t+1}^T\\
+    &= \bm{U}_{t+1} (\bm{U}_{t+1}^T \bm{Y}_{t+1})\bm{M}_{t+1}^{\dagger} (\bm{Z}_{t+1}^T\bm{V}_{t+1}) \bm{V}_{t+1}^T\\
+    &= \bm{U}_{t+1} \bm{S}_{t+1} \bm{V}_{t+1}^T. \tag{$\bm{S}_{t+1}=(\bm{U}_{t+1}^T \bm{Y}_{t+1})\bm{M}_{t+1}^{\dagger} (\bm{Z}_{t+1}^T\bm{V}_{t+1})$}
+\end{align*}
+This yields the following algorithm. 
+
+\begin{algorithm}[H]%[tb]
+    \caption{\eqref{eq:update_scheme} with generalized Nyström and reused sketches}
+    \label{alg:gennystromupdatescheme2}
+    \KwIn{Target rank $r$, number of iterations $T$, learning rate $\lambda$, a low-rank initialization $\DW^0 = \bm{U}_0 \bm{S}_0 \bm{V}_0^T$.}
+    \KwOut{Approximations $\bm{U}_{t} \bm{S}_t \bm{V}_t^T$ to $\DW^t$ in \eqref{eq:update_scheme}.}
+    \begin{algorithmic}[1]
+    \State Initialize a low-rank factorization $\DW^0 = \bm{U}_0 \bm{S}_0 \bm{V}_0^T$\\
+    \For{$t=0 \to T-1$}
+    {
+    $\bm{G}_t = \nabla_{\DW}F(\DW^t)$ \Comment{Do not form explicitly}\;
+     $\bm{Y}_{t+1} = \DW^t\bm{V}_t - \lambda \bm{G}^t\bm{V}_t = \bm{U}_t \bm{S}_t - \lambda \bm{G}^t \bm{V}_t$\;
+     $\bm{M}_{t+1} = \bm{U}_t^T\DW^t\bm{V}_t - \lambda \bm{U}_t^T\bm{G}^t\bm{V}_t = \bm{S}_t - \lambda \bm{U}_t^T \bm{G}^t \bm{V}_t$\;
+     $\bm{Z}_{t+1}^T = \bm{U}_t^T\DW^t - \lambda \bm{U}_t^T\bm{G}^t = \bm{S}_t \bm{V}_t^T - \lambda \bm{U}_t^T \bm{G}^t$\;
+     $\bm{U}_{t+1} = \orth(\bm{Y}_{t+1})$\;
+     $\bm{V}_{t+1} = \orth(\bm{Z}_{t+1})$\;
+     $\bm{S}_{t+1} = \bm{U}_{t+1}^T \bm{Y}_{t+1} \bm{M}_{t+1}^{\dagger} \bm{Z}_{t+1}^T \bm{V}_{t+1}$. 
+    }
+    \end{algorithmic}
+\end{algorithm}
+
+
+\David{Some junk notes. Tried to prove some error bound}
+
+\begin{theorem}
+    Let $\bm{B} = \bm{A} + \bm{E} \in \mathbb{R}^{m \times n}$, where $\rank(\bm{A}) \leq r$ and $\bm{A} = \bm{U} \bm{\Sigma} \bm{V}^T$ is the rank-reduced SVD of $\bm{A}$. Consider the randomized SVD applied to $\bm{B}$ with $\bm{V} \in \mathbb{R}^{n \times r}$ as a sketch matrix:\David{this is not a great term in this setting, since there will be nothing random here, but I am not sure what else to call it. One step of subspace iteration?}
+    \begin{equation*}
+        \bm{Q} = \orth(\bm{B} \bm{V}), \quad \bm{Q}\bm{Q}^T \bm{B} \approx \bm{B}.
+    \end{equation*}
+    Then,
+    \begin{equation*}
+        \|\bm{B} - \bm{Q} \bm{Q}^T \bm{B}\| \leq 2\|\bm{E}\|,
+    \end{equation*}
+    for any norm $\|\cdot\|$ satisfying $\|\bm{C} \bm{D}\| \leq \max\{\|\bm{C}\|_2 \|\bm{D}\|, \|\bm{C}\| \|\bm{D}\|_2\}$. 
+\end{theorem}
+\begin{proof}
+    By the triangle inequality, the characterization of the norm $\|\cdot\|$, and $\|\bm{I} - \bm{Q} \bm{Q}^T\|_2 = 1$ we have
+    \begin{equation*}
+        \|\bm{B} - \bm{Q} \bm{Q}^T \bm{B}\| \leq \|\bm{A} - \bm{Q} \bm{Q}^T \bm{A}\| +  \|\bm{E}\|.
+    \end{equation*}
+    Using that $\rank(\bm{A}) \leq r$ and applying the argument of \cite[Theorem 3.1]{hodlr} gives $\|\bm{A} - \bm{Q} \bm{Q}^T \bm{A}\| \leq \|\bm{E}\bm{V}\| \leq \|\bm{E}\|$, where we once again used the characterization of $\|\cdot\|$. Combining the two inequalities yields the desired result. 
+\end{proof}
+% We can now solve~\eqref{eq:fullprodGD-square} using the block power method, which only requires storing  matrices of dimension  $\mU \in {m \times r}$ and $\mV \in \R^{r \times n}$. The only issue is that this would require computing $\mU^\top\nabla_{\DW} F(\mL_t\mR_t)$ and $\nabla_{\DW} F(\mL_t\mR_t) \mV^\top$. 
+
+\section{Linearizing and Least-Squares approach}
+We will approximately solve~\eqref{eq:fullprodGD} by linearizing the quadratic term $\mL\mR$, that is
+\begin{equation}
+ \mL\mR-\mL_t\mR_t  \approx   \mL_t(\mR-\mR_t)+(\mL-\mL_t)\mR_t.
+\end{equation}
+Using this approximation in~\eqref{eq:fullprodGD} gives 
+
+\begin{align}
+ \DW^{t+1} =   \argmin{\mL\in \R^{m \times r},\mR \in \R^{r \times n}}  & \dotprod{\nabla_{\DW} F(\mL_t\mR_t), \mL_t(\mR-\mR_t)+(\mL-\mL_t)\mR_t } \nonumber \\
+ &  + \frac{1}{2\lambda} \| \mL_t(\mR-\mR_t)+(\mL-\mL_t)\mR_t\|_F^2. \label{eq:linprodGD}
+\end{align}
+This problem always admits a least-norm solution because it is lower bounded. Indeed by completing the squares it can be re-written as follows, where we use $\mG =\nabla_{\DW} F(\mL_t\mR_t) $ as a short-hand.
+
+
+\begin{lemma}[Least-norm matrix solution via projector decomposition and a core Sylvester solve]
+Given $\mL_t\in\R^{m\times r}$, $\mR_t\in\R^{r\times n}$, and $\mG\in\R^{m\times n}$, consider
+\begin{equation} \label{eq:least-square-lin}
+\min_{\mL,\mR}\ \bigl\|\,\mL_t(\mR-\mR_t)+(\mL-\mL_t)\mR_t+\lambda \mG\,\bigr\|_F^2.
+\end{equation}
+Assume $\mS_{\!\mL}:=\mL_t^\top\mL_t\succ0$ and $\mS_{\!\mR}:=\mR_t\mR_t^\top\succ0$.
+Then the least-norm minimizer $(\mL_{t+1}, \mR_{t+1})$ is given by 
+\begin{align}
+   \mL_{t+1} &=  \mL_t-(\lambda \mG_t \mR_t^\top + \mL_t \mK^\star) \mS_{R}^{-1}\\
+ \mR_{t+1} &= \mR_t -\mS_{L}^{-1}(\lambda \mL_t^\top \mG_t + \mK^\star \mR_t) \label{eq:LRsollinearize}
+\end{align}
+where $\mK^\star$ is the solution to the Sylvester equation
+\begin{equation} \label{eq:Sylvester}
+\mK \mS_{R} + \mS_{L} \mK = -\lambda \mL_t^\top \mG_t \mR_t^\top
+\end{equation}
+See~\Cref{rem:Sylvester} on how to solve the Sylvester equation in $\mathcal{O}(r^3)$ operations.
+\end{lemma}
+
+% \[
+%     \mW_t = \mW_0 + \mL_t \mR_t
+% \]
+% and define $\mG_t = \nabla_{\mW} F(\mW)\big|_{\mW = \mW_t}$. By the chain rule
+% \[
+%     \nabla_{\mL} F(\mL_t \mR_t) = \mG_t \mR_t^\top,~~\nabla_{\mR} F(\mL_t \mR_t) = \mL_t^\top \mG_t.
+% \]
+% The gradient step is given by
+% \[
+%     \argmin{\mL, \mR} \dotprod{\mG_t \mR_t^\top, \mL - \mL_t} + \dotprod{\mL_t^\top \mG_t, \mR - \mR_t} + \frac{1}{2 \lambda} \|\mL \mR - \mW_t \|_F^2.
+% \]
+\begin{proof}
+\textcolor{blue}{David: By vectorizing and taking normal equations, a similar problem has been pointed out in \emph{The ubiquitous Kronecker product} equation (6)} Define the linear of the map $(\mL, \mR) \mapsto \mL \mR$ at $(\mL_t, \mR_t)$ to be $\mathcal{J}_t[\Delta \mL, \Delta \mR] = \Delta \mL \mR_t + \mL_t \Delta \mR$.
+With this notation~\eqref{eq:least-square-lin} is given by
+% Note that by properties of trace
+% \[
+%     \dotprod{\mG_t \mR_t^\top, \Delta \mL} + \dotprod{\mL_t^\top \mG_t, \Delta \mR} = \dotprod{\mG_t, \Delta \mL \mR_t} + \dotprod{\mG_t, \mL_t \Delta \mR} = \dotprod{\mG_t, J_t[\Delta \mL, \Delta \mR]}.
+% \]
+% Therefore by linearizing the quadratic term we can consider the following ``Gauss-Newton'' step.
+% \[
+%     \argmin{\mL, \mR} \dotprod{\mG_t, \mathcal{J}_t[\Delta \mL, \Delta \mR]} + \frac{1}{2 \lambda} \|\mathcal{J}_t[\Delta \mL, \Delta \mR] \|_F^2.
+% \]
+% This is now a least squares problem
+\[
+    \argmin{\mZ}  \|\mZ + \lambda \mG_t\|_F^2 \;\text{ s.t. } \;\mZ = J_t[\Delta \mL, \Delta \mR].
+\]
+All solutions satisfy the normal equations
+\[
+    \mathcal{J}_t^\star \mathcal{J}_t[\Delta \mL, \Delta \mR] = -\lambda J_t^\star[\mG_t]. 
+\]
+The adjoint $\mathcal{J}_t^\star(\mM) = (\mM \mR_t^\top, \mL_t^\top \mM)$. Plugging this in to the normal equations gives us
+\begin{align*}
+    \Delta \mL \mR_t \mR_t^\top + \mL_t \Delta \mR \mR_t^\top &= -\lambda \mG_t \mR_t^\top\\
+    \mL_t^\top \Delta \mL \mR_t + \mL_t^\top \mL_t \Delta \mR &= -\lambda \mL_t^\top \mG_t
+\end{align*}
+which we abbreviate as
+\begin{align}
+    \Delta \mL \mS_{R} + \mL_t \mX &= -\lambda \mG_t \mR_t^\top \nonumber \\
+    \mY \mR_t + \mS_{L} \Delta \mR &= -\lambda \mL_t^\top \mG_t, \label{eq:aeadadada3a3d}
+\end{align}
+where we define
+\[
+    \mS_{R} = \mR_t \mR_t^\top,~\mS_{L} = \mL_t^\top \mL_t,~\mX = \Delta \mR \mR_t^\top,~\mY = \mL_t^\top \Delta \mL.
+\]
+We will first solve for $\mX$ and $\mY,$ and then using $\mX$ and $\mY$, we will then solve for $\Delta \mL$ and $\Delta \mR$ in~\eqref{eq:aeadadada3a3d}. 
+
+To solve for $\mX$ and $\mY,$ multiplying the top equation by $\mL_t^\top$ on the left (or the bottom by $\mR_t^\top$ on the right), gives an equation in only $\mX$ and $\mY:$ 
+\[
+    \mY \mS_{R} + \mS_{L} \mX = -\lambda \mL_t^\top \mG_t \mR_t^\top.
+\]
+Note that $\mathcal{J}_t$ has a nullspace spanned by $(\mL_t S, -S \mR_t)$ (assuming $\mL_t$ and $\mR_t$ are full-rank). Therefore to choose a minimum norm solution (standard inner product) we require
+\[
+    \dotprod{(\Delta \mL, \Delta \mR), (\mL_t S, -S \mR_t)} \; =\; \dotprod{\Delta \mL, \mL_t S} + \dotprod{\Delta \mR, -S \mR_t}  \; =\; \dotprod{\mL_t^\top \Delta \mL - \Delta \mR \mR_t^\top, S } \;= \; 0.
+\]
+Since this holds for every $S$, we have that 
+\[ \mL_t^\top \Delta \mL - \Delta \mR \mR_t^\top \quad \Leftrightarrow \quad  \mX = \mY\]
+Therefore we need to solve the Sylvester equation
+\[
+\mK \mS_{R} + \mS_{L} \mK = -\lambda \mL_t^\top \mG_t \mR_t^\top
+\]
+for $\mK$. This an $r \times r$ matrix equation so $O(r^3)$ to solve. If the solution is $\mK^\star$ then
+\begin{align*}
+    \Delta \mL^\star &= -(\lambda \mG_t \mR_t^\top + \mL_t \mK^\star) \mS_{R}^{-1}\\
+    \Delta \mR^\star &= -\mS_{L}^{-1}(\lambda \mL_t^\top \mG_t + \mK^\star \mR_t)
+\end{align*}
+This requires computing $\mS_{R}^{-1}$ and $\mS_{L}^{-1}$ which are $r \times r$ so this is also $O(r^3)$.
+\end{proof}
+
+
+\begin{remark}[Solving the Sylvester Equation] ~\label{rem:Sylvester}
+    We can solve the Sylvester equation~\eqref{eq:Sylvester}, that is
+        \begin{equation}\label{eq:Sylvester-rem}
+        \mK \mS_{R} + \mS_{L} \mK = -\mS    \end{equation} 
+    in $\mathcal{O}(r^3)$ by computing the SVD of $\mS_{\!\mL}$ and $\mS_{\!\mR}$ denoted by
+    \[
+\mS_{\!\mL}=\mQ_{\mL}\diag(\alpha)\mQ_{\mL}^\top,\qquad \mbox{and} \qquad 
+\mS_{\!\mR}=\mQ_{\mR}\diag(\beta)\mQ_{\mR}^\top.
+\]
+Left and right multiplying the  Sylvester equation~\eqref{eq:Sylvester-rem} by $\mQ_{\mL}^\top$ and $\mQ_{\mR},$ respectively gives
+\begin{equation}\label{eq:aedzdzdzec}
+    \mQ_{\mL}^\top\mK  \mQ_{\mR} \diag(\beta) + \diag(\alpha)\mQ_{\mL}^\top\mK  \mQ_{\mR}  = -  \mQ_{\mL}^\top\mS  \mQ_{\mR}\end{equation} 
+Now let
+\[
+\mX := \mQ_{\mL}^\top\mK  \mQ_{\mR}, \qquad \mbox{and} \qquad
+\widetilde{\mS}:=\mQ_{\mL}^\top\mS\,\mQ_{\mR}
+\]
+and note that~\eqref{eq:aedzdzdzec} can be re-written as
+\[ (\alpha_i + \beta_j)\mX_{ij} =-\widetilde{\mS}_{ij} \quad \Leftrightarrow \quad 
+\mX_{ij} = -\frac{\widetilde{\mS}_{ij}}{\alpha_i + \beta_j}.\]
+In matrix notation, and returning to $\mK = \mQ_L \mX \mQ_R$ we have the solution
+\begin{equation}
+    \mK^\star \; = \; -\mQ_L \left( (\mQ_{\mL}^\top\mS  \mQ_{\mR})\oslash \big(\alpha\mathbf{1}^\top+\mathbf{1}\beta^\top\big)\ \Big) \right)\mQ_R
+\end{equation}
+\end{remark}
+\rob{Everything below here is possibly obsolete, and not worth reading.}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Alternating and splitting}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+We will approximately solve~\eqref{eq:fullprodGD} by alternating between solving in $\mL$ and $\mR$ as follows
+\begin{align}
+ \mL_{t+1} &=   \argmin{\mL \in \R^{m \times r}} F(\mL_t\mR_t) + \dotprod{\nabla_{\DW} F(\mL_t\mR_t), (\mL-\mL_t)\mR_t } + \frac{1}{2\lambda} \|(\mL-\mL_t)\mR_t\|^2, \label{eq:Lfullup} \\
+  \mR_{t+1}&=   \argmin{\mR \in \R^{r \times n}} F(\mL_t\mR_t) + \dotprod{\nabla_{\DW} F(\mL_t\mR_t), \mL_t(\mR-\mR_t) } + \frac{1}{2\lambda} \|\mL_t(\mR-\mR_t)\|^2.\label{eq:Rfullup}
+\end{align}
+
+Now note that the linear terms can be re-written as
+\begin{align} \label{eq:linL-grad}
+   \dotprod{\nabla_{\DW} F(\mL_t\mR_t), (\mL-\mL_t)\mR_t } & = \dotprod{\nabla_{\DW} F(\mL_t\mR_t)\mR_t^\top, \mL-\mL_t }  \nonumber \\
+   &=\dotprod{\nabla_{\mL} F(\mL_t\mR_t), \mL-\mL_t }
+\end{align}
+where we used that
+\[  \nabla_{\mL} F(\mL \mR) \Big|_{\mL \mR= \mL_t \mR_t} = \nabla_{\DW} F(\mL_t\mR_t)\mR_t^\top. \]
+Analogously we have that
+\begin{align}\label{eq:linR-grad}
+   \dotprod{\nabla_{\DW} F(\mL_t\mR_t),\mL_t(\mR-\mR_t)} 
+   &=\dotprod{\nabla_{\mR} F(\mL_t\mR_t), \mR-\mR_t }
+\end{align}
+
+Using the two identities~\eqref{eq:linL-grad} and~\eqref{eq:linR-grad} in~\eqref{eq:Lfullup} and~\eqref{eq:Rfullup} gives
+\begin{align}
+ \mL_{t+1} &=   \argmin{\mL \in \R^{m \times r}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mL} F(\mL_t\mR_t), \mL-\mL_t) } + \frac{1}{2\lambda} \|(\mL-\mL_t)\mR_t\|^2, \label{eq:Lfullupsub} \\
+  \mR_{t+1}&=   \argmin{\mR \in \R^{r \times n}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mR} F(\mL_t\mR_t), \mR-\mR_t } + \frac{1}{2\lambda} \|\mL_t(\mR-\mR_t)\|^2.\label{eq:Rfullupsub}
+\end{align}
+Compare the above with~\eqref{eq:Luppartial}--\eqref{eq:Ruppartial}. The regularizor now takes into account the product $\mL\mR$. 
+
+If we use a Frobenius norm in~\eqref{eq:Lfullupsub}--\eqref{eq:Rfullupsub} then we have a closed form solution.
+\begin{lemma}
+    The solution to 
+    \begin{align}
+ \mL_{t+1} &=   \argmin{\mL \in \R^{m \times r}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mL} F(\mL_t\mR_t), \mL-\mL_t} + \frac{1}{2\lambda} \|(\mL-\mL_t)\mR_t\|_F^2, \label{eq:LfullupsubF} \\
+  \mR_{t+1}&=   \argmin{\mR \in \R^{r \times n}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mR} F(\mL_t\mR_t), \mR-\mR_t } + \frac{1}{2\lambda} \|\mL_t(\mR-\mR_t)\|_F^2.\label{eq:RfullupsubF}
+\end{align}
+is given by
+    \begin{align} \label{eq:Lupleastnorm}
+        \mL &= \mL_t- \lambda \nabla_{\mL} F(\mL_t\mR_t)  (\mR_t\mR_t^\top)^{\dagger}\\
+        \mR &= \mR_t- \lambda (\mL_t^\top\mL_t)^{\dagger}\nabla_{\mR} F(\mL_t\mR_t),\label{eq:Rupleastnorm}
+    \end{align}
+    where we use $\mL_t^\dagger$ to denote the pseudo-inverse of a matrix $\mL_t$.
+    \rob{Question: When we look at what happens to the product $\mL\mR$ what does this method look like? }
+\end{lemma}
+\begin{proof}
+    Both updates are given by a convex and smooth program, for which the stationarity conditions 
+    \begin{align*}
+       \lambda \nabla_{\mL} F(\mL_t\mR_t) + (\mL-\mL_t) \mR_t\mR_t^\top =0, \\
+       \lambda \nabla_{\mR} F(\mL_t\mR_t) + (\mL_t)^{\top} \mL_t(\mR-\mR_t) =0.
+    \end{align*}
+    Isolating $\mL$ and $\mR$ in the top and bottom equations,  and computing the least norm solution, gives~\eqref{eq:Lupleastnorm} and~\eqref{eq:Rupleastnorm}, respectively.
+\end{proof}
+
+Computing~\eqref{eq:Lupleastnorm}--\eqref{eq:Rupleastnorm} costs $\mathcal{O}(nr^2+mr^2 + r^3)$. The $nr^2$ and $mr^2$ costs comes from multiplying the matrix multiplication in $(\mL_t^\top\mL_t)^{\dagger}\nabla_{\mR} F(\mL_t\mR_t)$  and $\lambda \nabla_{\mL} F(\mL_t\mR_t)  (\mR_t\mR_t^\top)^{\dagger}$, respectively. The $r^3$ cost comes from computing the pseudo-inverses.
+
+If the above is too costly, or we wish to use a norm other than the Frobenius norm (e.g. the operator norm), then we can instead use the ``$\eta$--trick'' in the next section.
+
+\begin{lemma}
+The solution to 
+    \begin{align}
+ \mL_{t+1} &=   \argmin{\mL \in \R^{m \times r}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mL} F(\mL_t\mR_t), \mL-\mL_t) } + \frac{1}{2\lambda} \|(\mL-\mL_t)\mR_t\|_2^2, \label{eq:spectral_L}\\
+  \mR_{t+1}&=   \argmin{\mR \in \R^{r \times n}} F(\mL_t\mR_t) + \dotprod{\nabla_{\mR} F(\mL_t\mR_t), \mR-\mR_t } + \frac{1}{2\lambda} \|\mL_t(\mR-\mR_t)\|_2^2.
+\end{align}
+is given by
+    \begin{align} \label{eq:Lupleastnorm}
+v
+    \end{align}
+
+\end{lemma}
+\begin{proof}
+Let $\Delta \mL := \mL - \mL_\top$, $\mG = \nabla_{\mL} F(\mL_t\mR_t)$, and let $\mR_t = \mU_R\mS_R\mV_R^\top$ Now, reparameterize $\Delta \mL = \mX \mS_R^{-1} \mU_R^\top$. Rewriting \eqref{eq:spectral_L},
+\begin{align*}
+\min_{\mL \in \R^{m \times r}} \dotprod{\mG, \Delta\mL} + \frac{1}{2\lambda} \|\Delta\mL\mR_t\|_2^2
+&= \min_{\mX \in \R^{m \times r}} \dotprod{\mG, \mX \mS_R^{-1} \mU_R^\top} + \frac{1}{2\lambda} \|\mX \mS_R^{-1} \mU_R^\top\mR_t\|_2^2\\
+&= \min_{\mX \in \R^{m \times r}} \dotprod{\mG \mU_R \mS_R^{-1}, \mX} + \frac{1}{2\lambda} \|\mX \mV_R^\top\|_2^2\\
+&= \min_{\mX \in \R^{m \times r}} \dotprod{\mG \mU_R \mS_R^{-1}, \mX} + \frac{1}{2\lambda} \|\mX\|_2^2
+\end{align*}
+The minimizer is simply $\mX = \mathrm{polar}(\mG \mU_R \mS_R^{-1})$, from which
+\begin{align*}
+\Delta \mL
+= \mathrm{polar}\left(\mG \mU_R \mS_R^{-1}\right) \mS_R^{-1} \mU_R^\top
+&= \mathrm{polar}\left(\mG \mU_R \mS_R^{-1}\right) \mV_R^\top \mV_R \mS_R^{-1} \mU_R^\top \\
+&= \mathrm{polar}\left(\mG \mU_R \mS_R^{-1}\mV_R^\top \right) \mV_R \mS_R^{-1} \mU_R^\top \\
+&= \mathrm{polar}\left(\mG {{\mR_t}^+}^\top \right) {\mR_t}^+ \\
+\end{align*}
+Now recall that $\mG = \widehat\mG \mR_\top$, where $\widehat\mG = \nabla_{\mL_t} F(\mL_t)$ evaluated at $\mL_t = \mL_t \mR_t$. This gives
+\[ \mG {{\mR_t}^+}^\top = \widehat \mG \mV_R \mV_R^\top = \widehat \mG \mV_R \mU_R^\top \mU_R\mV_R^\top = \widehat \mG \, \mathrm{polar}\mR_t^\top \mathrm{polar}(\mR_t)\]
+Substituting back,
+\begin{align*} \Delta \mL
+&= \mathrm{polar}\left(\widehat \mG \, \mathrm{polar}\mR_t^\top \mathrm{polar}(\mR_t) \right) {\mR_t}^+ \\
+&= \mathrm{polar}\left(\widehat \mG \, \mathrm{polar}\mR_t^\top \right) \mathrm{polar}(\mR_t) {\mR_t}^+\\
+&= \mathrm{polar}\left(\widehat \mG \, \mathrm{polar}\mR_t^\top \right)\left(\mathrm{polar}(\mR_t) \cdot {\mR_t}^\top\right)^{-1}
+\end{align*}
+We can use PolarExpress to compute $\mathrm{polar}(\mR_t)$, then use Newton-Schulz to compute the inverse of the the $r \times r$ psd matrix $\left(\mathrm{polar}(\mR_t) \cdot {\mR_t}^\top\right)$.
+
+Notice also that $\Delta \mL \cdot \mR_t = \mathrm{polar}\left(\widehat \mG \, \mathrm{polar}\mR_t^\top \right) \mathrm{polar}(\mR_t) = \mathrm{polar}(\widehat \mG) \mV_R\mV_R^\top$, I think?
+By the same argument, we can solve for $\Delta \mR = \left( \mathrm{polar}\mL_t^\top \cdot \mL_t\right)^{-1}\mathrm{polar}\left(\mathrm{polar}\mL_t^\top \, \widehat \mG\right)$ (I think?) and $\mL \cdot \Delta \mR = \mathrm{polar}(\mL_t)\mathrm{polar}\left(\mathrm{polar}\mL_t^\top \widehat{\mG}\right)$.
+For simplicity, let's now impose that $\mR_t$ and $\mR$ are always semi-orthogonal, so that $\mS_R = \mI$.
+
+But Is there an iterative method that gives it to us all at once? Is there a simple polynomial in $\widehat{\mG}$ and $\mR_t$ to which this is the fixed point? 
+
+Maybe we should think of the end goal. We previously had $\mL \mR$. We want to move that to $\mL \mR + \lambda \mathrm{polar}(\widehat \mG)$. And then, we want a low rank approximation to that. All this without actually computing $\mathrm{polar}(\widehat \mG)$, which would be too expensive probably.
+Maybe better to keep it factored in SVD form. $\mL \mD \mR$. Then assuming $\mL \mD \mR + \lambda \mathrm{polar}(\widehat \mG) \approx \mL \mD \mR$, we right multiply by $\mR_\top \mD^{-1}$ and then do a few PolarExpress iterations to get that back to orthogonal. Then maybe use that to hit the thing again. Now we have an estimate for a new $\mL$.
+Still, you have to compute $\mathrm{polar}(\widehat \mG)$. Perhaps we could switch the order, using $\mathrm{polar}(\widehat \mG)\mR_\top \approx \mathrm{polar}(\widehat \mG \mR_\top)$. Can we prove that this converges to the same thing?
+
+
+\end{proof}
+
+\section{Momentum and Adam with product norm}
+
+Consider the following preconditioner momentum method
+\begin{align}
+    \mM^{t+1} &= \beta \mM^{t} + (1-\beta)  \mG_t  \label{eq:Dmom1} \\
+    \mW^{t+1} & = \mW^t - \gamma_t\mD^{\odot-1}_t \odot \mM^{t+1} \label{eq:Dmom2}
+\end{align}
+where $\gamma_t>0$ is the learning rate, $\mD$ a preconditioner and $\mM_t$ a momentum estimate of the gradient. Here we use $\mD^{\odot-1}$ to denote the entry-wise inverse of $\mD$, and $\odot$ to be the entry-wise (Hadamard) product.
+
+We can adapt this method 
+to make use of this product norm by using the following variational viewpoint~\eqref{eq:Dmom1}--\eqref{eq:Dmom2}
+\begin{equation}
+    \mW^{t+1} \; = \; \argmin{\mW}  \dotprod{\mM^{t+1}, \mW-\mW^t} + \frac{1}{2\gamma_t} \|\mD_t^{1/2}\odot (\mW-\mW^t) \|_{F}^2, 
+\end{equation}
+where %   $\|\mW \|_{\mD}^2 : =\sum_{ij} \mD_{ij} \mW_{ij}^2$ and 
+$\dotprod{\mM, \mW} = \trace{\mM^\top \mW}.$ Using a coordinate change $\hat{\mW} := \mD_t^{1/2} \odot \mW$, the above is equivalent to 
+\begin{align}
+    \hat{\mW}^{t+1} & = \; \argmin{\mW}  \dotprod{\mM^{t+1},\mD_t^{-1/2}\odot( \hat{\mW}-\hat{\mW}^t)} + \frac{1}{2\gamma_t} \| \hat{\mW}-\hat{\mW}^t\|_{F}^2 \\
+    \mW^{t+1} & = \;  \mD_t^{-1/2} \odot \hat{\mW}^{t+1}
+\end{align}
+
+Now suppose the parameters can be grouped such that $\mW = (\mL, \mR)$, and that we know only the product $\mL\mR$ appears in the loss. Let $\mD_{\mL}$  and $\mM_{\mL}$ be the entries that correspond to $\mL$, and analogously for $\mD_{\mR}$  and $\mM_{\mR}.$ Following the reasoning of the previous section, we should change the regularizor to take account of the product. For instance, the update for $\mL$ in~\eqref{eq:LfullupsubF} with momentum and preconditioning would be given by
+    \begin{align}
+          \mM^{t+1}_{\mL} &= \beta \mM^{t}_{\mL} + (1-\beta)   \nabla_{\mL} F(\DW^t)  \nonumber \\
+ \mL_{t+1} &=  \mD_{\mL}^{-1/2} \odot \argmin{\mL \in \R^{m \times r}}   \dotprod{\mM_{\mL}^{t+1}, \mD_{\mL}^{-1/2}\odot(\mL-\mL_t)} + \frac{1}{2\lambda} \|(\mL-\mL_t)\mR_t\|_F^2.\label{eq:Lprecond}  \\
+     \mM^{t+1}_{\mR} &= \beta \mM^{t}_{\mR} + (1-\beta)   \nabla_{\mR} F(\DW^t)  \nonumber   \\
+     \mR_{t+1} &=  \mD_{\mR}^{-1/2} \odot \argmin{\mR \in \R^{r \times n}}   \dotprod{\mM_{\mR}^{t+1}, \mD_{\mR}^{-1/2}\odot(\mR-\mR_t)} + \frac{1}{2\lambda} \|\mL_t(\mR-\mR_t)\|_F^2.\label{eq:Rprecond} 
+\end{align}
+
+\begin{lemma} \label{lem:LR-precond}
+    The solution to~~\eqref{eq:Lprecond}--\eqref{eq:Rprecond} is given by
+    \begin{align}
+        \mL &= \mL_t -\lambda(\mD_{\mL}^{-1}\odot\mM_{\mL}^{t+1})(\mR_t\mR_t^\top )^{\dagger}.  \label{eq:Lprecond-sol}  \\
+        \mR &= \mR_t- \lambda (\mL_t^\top\mL_t)^{\dagger}(\mD_{\mR}^{-1}\odot \mM_{\mR}^{t+1}). \label{eq:Rprecond-sol} 
+    \end{align}
+\end{lemma}
+In words, the resulting updates~\eqref{eq:Lprecond-sol} and~\eqref{eq:Rprecond-sol} are equivalent to applying~\eqref{eq:Lupleastnorm} and~\eqref{eq:Rupleastnorm}, but with the gradients replaced by the preconditioned momentum estimates.
+\begin{proof}
+    Using that
+    \[ \nabla_{\mC} \dotprod{\mL_t, \mR_t \odot \mC} = \mR_t  \odot \mL_t, \]
+    setting the gradient of~\eqref{eq:Lprecond} and~\eqref{eq:Rprecond}  to zero gives
+      \begin{align*}
+          \lambda \mD_{\mL}^{-1/2}\mM_{\mL}^{t+1}  + (\mL-\mL_t) \mR_t\mR_t^\top &=0. \\
+          \lambda \mD_{\mR}^{-1/2}\mM_{\mR}^{t+1}  + (\mL_t)^{\top} \mL_t(\mR-\mR_t)  &=0.
+      \end{align*} 
+      Solving for $\mL$ and $\mR$ gives
+      \begin{align*}
+      \mL &= \mL_t -\gamma\mD_{\mL}^{-1/2}\mM_{\mL}^{t+1}(\mR_t\mR_t^\top )^{\dagger}\\
+       \mR &= \mR_t -\gamma(\mL_t^\top \mL_t)^{\dagger} \mD_{\mL}^{-1/2}\mM_{\mL}^{t+1}.
+      \end{align*}
+\end{proof}
+Left multiplying and right multiplying by $\mD_{\mL}^{-1/2} $  $\mD_{\mR}^{-1/2} $ the first and second equation, respectively gives~\eqref{eq:Lprecond-sol}.
+
+Contrast this to the Adam variant given in~\cite{zhang2024riemannianpreconditionedlorafinetuning}, which instead applies the standard Adam update using the preconditioned gradients  $\mD_{\mL}^{-1/2}  \odot \nabla_{\mL} F(\DW^t) $ and  $\mD_{\mR}^{-1/2} \odot  \nabla_{\mR} F(\DW^t).$ For instance, for the $\mL$ component they use the method
+    \begin{align}
+          \mM^{t+1}_{\mL} &= \beta \mM^{t}_{\mL} + (1-\beta)   \nabla_{\mL} F(\DW^t) (\mR_t\mR_t^\top )^{\dagger} \nonumber \\
+   \mL_{t+1} &= \mL_t -\gamma\mD_{\mL}^{-1}\mM_{\mL}^{t+1},\label{eq:Lprecond-alt}
+ \end{align}
+where the preconditioner $\mD_{\mL}^{-1}$ would also be computed using  $\nabla_{\mL} F(\DW^t) (\mR_t\mR_t^\top )^{\dagger}$ as opposed to the gradient.
+\rob{It's not clear to me which approach makes more sense or would be better. In our approach in~\Cref{lem:LR-precond}, we apply the product preconditioning to the Adam direction. In~\eqref{eq:Lprecond-alt} from~\cite{zhang2024riemannianpreconditionedlorafinetuning}, they apply the Adam method to the product preconditioned gradient. Both are reasonable.
+But given the wide spread use of Lora, it would be worth comparing them, in case our new approach works better.}
+
+\section{A toy problem}
+Consider the least squares problem
+\begin{equation*}
+    \min\limits_{\bm{W}}\| \bm{X}_{\text{init}}\bm{W} - \bm{Y}_{\text{init}}\|_F^2. 
+\end{equation*}
+This is a least squares problem, with optimal solution $\bm{W}^{\star} = \bm{X}_{\text{init}}^{\dagger}\bm{Y}_{\text{init}}$. Let $\bm{X} = \bm{X}_{\text{init}} + \bm{E}_{\bm{X}}$ and $\bm{Y} = \bm{Y}_{\text{init}} + \bm{E}_{\bm{Y}}$. Now consider the fine-tuning problem
+\begin{equation*}
+    \min\limits_{\bm{L}, \bm{R}} \|\bm{X}(\bm{W}^{\star} + \bm{L} \bm{R}) - \bm{Y}\|_F^2 = \|\bm{X}\bm{L} \bm{R} - (\bm{Y} - \bm{X}\bm{W}^{\star})\|_F^2 = \|\bm{X} \bm{L} \bm{R}- \bm{Z}\|_F^2,
+\end{equation*}
+where $\bm{Z} = \bm{Y} - \bm{X}\bm{W}^{\star}$. This is a constrained low-rank approximation problem, whose optimal objective value is given by
+\begin{equation*}
+    \|(\bm{I} - \bm{P}_{\bm{X}}) \bm{Z}\|_F^2 + \sum\limits_{i > r} \sigma_i(\bm{P}_{\bm{X}} \bm{Z})^2 =\|(\bm{I} - \bm{P}_{\bm{X}}) \bm{Y}\|_F^2 + \sum\limits_{i > r} \sigma_i(\bm{P}_{\bm{X}} \bm{Y} - \bm{X} \bm{W}^{\star})^2,
+\end{equation*}
+where $\bm{P}_{\bm{X}}$ denotes the orthogonal projection onto $\text{range}(\bm{X})$. 
+
+\subsection{The gradient of the loss}
+Consider the function
+\begin{equation*}
+    F(\Delta \bm{W}) = \|\bm{X}(\bm{W}^{\star} + \DW) - \bm{Y}\|_F^2 = \|\bm{X}\DW - \bm{Z}\|_F^2.
+\end{equation*}
+The gradient is given by
+\begin{align*}
+    \nabla F(\DW) &= 2 \bm{X}^T \bm{X} \DW - 2\bm{X}^T \bm{Z} = 2\bm{X}^T(\bm{X} \DW - \bm{Z})\\
+    & = 2\bm{X}^T(\bm{X}(\bm{W}^{\star} + \DW) - \bm{Y}).
+\end{align*}
+Hence, PGD takes the form
+\begin{equation*}
+    \DW_{t+1} = \mathcal{T}_r(\DW_t - 2\lambda \bm{X}^T(\bm{X} \DW_t - \bm{Z}))
+\end{equation*}
+\subsection{Gradients of low-rank factors}
+Consider the function
+\begin{equation*}
+    G(\bm{L},\bm{R}) = \|\bm{X} \bm{L} \bm{R} - \bm{Z}\|_F^2
+\end{equation*}
+Then,
+\begin{align*}
+    \nabla_{\bm{L}} G(\bm{L},\bm{R}) &= 2 \bm{X}^T \bm{X} \bm{L} \bm{R} \bm{R}^T - 2 \bm{X}^T \bm{Z} \bm{R}^T,\\
+    \nabla_{\bm{R}} G(\bm{L},\bm{R}) &= 2 \bm{L}^T \bm{X}^T \bm{X} \bm{L} \bm{R} - 2 \bm{L}^T \bm{X}^T \bm{Z}.
+\end{align*}
+Hence, the update rule is
+\begin{equation*}
+    \begin{bmatrix} \bm{L}_{t+1} \\ \bm{R}_{t+1} \end{bmatrix} = \begin{bmatrix}\bm{L}_{t} - 2\lambda \bm{X}^T (\bm{X} \bm{L} \bm{R} - \bm{Z})\bm{R}^T \\ 
+    \bm{R}_{t} - 2 \lambda \bm{L}^T \bm{X}^T (\bm{X} \bm{L} \bm{R} - \bm{Z})\end{bmatrix}
+\end{equation*}
+
+
+
+\section{Templates}
+
+\begin{theorem}
+    I like my theorems like this, with boldface vectors $\bx$ and matrices $\mL_t$
+\end{theorem}
+
+\begin{algorithm}[H]%[tb]
+    \caption{\texttt{BEST}: Better Estimator of Subtantial Truth. }
+    \label{alg:momo}
+    \begin{algorithmic}[1]
+    \State {\bfseries Default settings:} \hspace{-0.5mm} $\alpha_k =1$
+    \State {\bfseries Input:} $\bx_0 \in \R^d$
+   \State {\bf Init:} $\bar{f}_0 = f(\bx_0)$
+    \For{$k=1$ {\bfseries to} $K-1$}{
+     Improve something \;
+     Store something \;
+     report something \;
+    }
+    \Return  The best $\bx$
+    \end{algorithmic}
+\end{algorithm}
+
+
+Or 
+
+
+
+
+
+\begin{algorithm}[H]%[tb]
+    \caption{\texttt{BEST}: Better Estimator of Substantial Truth. }
+    \label{alg:best}
+       
+     {\bfseries Default settings:}  $\bx_0  =0 \in \R^d, h_0=0$
+       
+     \KwIn{ $\bx_0 \in \R^d$, $h_0 >0$}
+       
+    \For{$k=1$ {\bfseries to} $K-1$}{
+      
+     $\bx_{n+1} = \bx_n- h_n \nabla f(\bx_n)$
+        
+     $\bx_{n+1}^H = \bx_n- \frac{1}{2}h_n (\nabla f(\bx_n) + \nabla f(\bx_{n+1})) $
+    }
+    \KwOut{The best $\bx$}
+\end{algorithm}
+
+
+It's also nice to use clever referencing like~\cref{alg:best} or~\Cref{alg:momo}.
+
+\renewcommand*{\bibfont}{}
+{ %\footnotesize 
+\printbibliography
+}
+\appendix
+
+\end{document}
