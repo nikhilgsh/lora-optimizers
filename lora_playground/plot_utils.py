@@ -286,31 +286,50 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
 
     `hlines`: optional list of (label, y, color) reference horizontal lines.
     """
+    # Two-stage ylim: zoom to the competitive band (min .. min+0.15) so that
+    # 0.005-scale differences are readable. Data points above the cap are
+    # MASKED (replaced with NaN) before plotting so no lines visibly shoot
+    # off the top — only the in-range portion of each curve is drawn.
+    # Reference hlines are always rendered (they're typically the AdamW
+    # floor, below the zoom band — included in ylim min computation).
+    all_losses = []  # used only for ylim min computation; we crop the high end
     if hlines:
         for label, y, color in hlines:
             ax.axhline(y, color=color, ls=":", lw=REF_LINE_WIDTH, label=label)
+            all_losses.append(y)
 
-    all_losses = []
+    in_range_losses = []
     groups = sorted({group_key_fn(c) for c, _ in runs})
+    # Determine the y-range cap from the run data (BEFORE plotting), so we
+    # can mask above-cap points consistently across all groups.
+    raw_losses = [e[-1]["eval_loss"] for c, e in runs]
+    if raw_losses:
+        y_cap = min(raw_losses) + 0.15
+    else:
+        y_cap = float("inf")
+
     for g in groups:
         rows = sorted([(c["lr"], e[-1]["eval_loss"]) for c, e in runs
                        if group_key_fn(c) == g])
-        if rows:
-            ax.plot([r[0] for r in rows], [r[1] for r in rows],
-                    color=color_map.get(g, "grey"),
-                    marker="o", markersize=MARKER_SIZE,
-                    lw=LINE_WIDTH, label=g)
-            all_losses.extend(r[1] for r in rows)
+        if not rows:
+            continue
+        xs = [r[0] for r in rows]
+        ys = [r[1] if r[1] <= y_cap else float("nan") for r in rows]
+        ax.plot(xs, ys, color=color_map.get(g, "grey"),
+                marker="o", markersize=MARKER_SIZE,
+                lw=LINE_WIDTH, label=g)
+        in_range_losses.extend(y for y in ys if y == y)  # drop NaN
+
     ax.set_xscale("log")
     ax.set_xlabel("η (log)"); ax.set_ylabel("Final eval loss")
     ax.grid(True, alpha=0.3, which="both")
     ax.set_title(title)
-    # Auto-clip ylim to focus on the competitive region. Without this, runs
-    # at extreme η whose final loss is e.g. 1.4 stretch the y-axis and squish
-    # the 0.74-0.79 zone where actual differentiation lives.
-    if all_losses:
-        lo = min(all_losses) - 0.005
-        hi = min(all_losses) + 0.10
+    if in_range_losses or all_losses:
+        lo = min(in_range_losses + all_losses) - 0.005
+        hi = (max(in_range_losses) if in_range_losses
+               else max(all_losses)) + 0.01
+        # Pad upper bound slightly so masked-out runs are visually obvious.
+        hi = min(hi + 0.005, lo + 0.16)
         ax.set_ylim(lo, hi)
     if legend:
         ax.legend(**LEGEND_KW)
