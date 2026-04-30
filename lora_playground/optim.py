@@ -77,6 +77,8 @@ OPTIMIZER_CHOICES = {
     "adam-lin-lora-post",
     "adam-scaled-lora-matrix",
     "adam-lin-lora-matrix",
+    "polar-product-lora",
+    "adam-polar-product-lora",
     "muon-lora",
     "product-muon-lora",
     "adam-muon-lora",
@@ -1471,6 +1473,195 @@ class AdamProductMuonLoRA(Optimizer):
             B.grad.zero_()
 
 
+class PolarProductLoRA(Optimizer):
+    """Closed-form polar update under spectral-product norm (theory line 622-660).
+
+    Solves   min_{ΔA, ΔB}  ⟨∇_A F, ΔA⟩ + ⟨∇_B F, ΔB⟩ + (1/2λ)·(‖ΔB·A‖²₂ + ‖B·ΔA‖²₂)
+
+    Closed-form per the theory's lemma:
+        ΔB = -lr · polar(∇B · S_A⁻¹ᐟ²) · S_A⁻¹ᐟ²        where S_A = AAᵀ + δI
+        ΔA = -lr · S_B⁻¹ᐟ² · polar(S_B⁻¹ᐟ² · ∇A)        where S_B = BᵀB + δI
+
+    "polar" here is approximated by Newton-Schulz orthogonalization (canonical
+    Muon, Frobenius-norm-preserving variant). This sandwiches the spectral cap
+    between two factors of a *spectral square root* preconditioner — gentler
+    than the full S⁻¹ used in scaled-lora (which is what blew up in the
+    unfixed *-Post variants). The composition uses BOTH the LoRA product
+    structure (∇A's update depends on B; ∇B's update depends on A) AND a
+    spectral correction (polar). Plain SGD-style (no Adam).
+
+    Cost per pair per step: 2× r×r eigendecomposition (for S^{-1/2}, cheap at
+    r=16/64), 2× Newton-Schulz polar on (m×r) and (d_out×r) matrices.
+    """
+
+    def __init__(self, model, lr=2e-4, delta=1e-6, ns_steps=5, adapter_name=None):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.ns_steps = ns_steps
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+
+        for A, B in self.pairs:
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for PolarProductLoRA update.")
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            # r × r SPD square-root inverses
+            SA_half_inv = spd_frac_power_inv(A.float() @ A.float().T, gamma=0.5, eps=self.delta)
+            SB_half_inv = spd_frac_power_inv(B.float().T @ B.float(), gamma=0.5, eps=self.delta)
+
+            # ΔB = -lr · polar(∇B · S_A^{-1/2}) · S_A^{-1/2}
+            X_B = gB @ SA_half_inv                        # (d_out, r)
+            P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
+            dB = -lr * (P_B @ SA_half_inv)                # (d_out, r)
+
+            # ΔA = -lr · S_B^{-1/2} · polar(S_B^{-1/2} · ∇A)
+            X_A = SB_half_inv @ gA                        # (r, d_in)
+            P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
+            dA = -lr * (SB_half_inv @ P_A)                # (r, d_in)
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class AdamPolarProductLoRA(Optimizer):
+    """Polar-product update applied to Adam's denoised direction.
+
+    Composition: Adam runs on raw (∇A, ∇B); the resulting Adam direction
+    u_A = m̂_A/(√v̂_A+ε), u_B analogous, is then fed through the same
+    polar-product update as PolarProductLoRA (substituting u for ∇).
+
+    By H1 measurements, plain pre-Adam preconditioning is erased by Adam's
+    per-coord √v̂ on a sign-like input. Here the geometric correction is
+    polar (matrix-structural — invariant to per-coord rescaling), so it
+    survives Adam by construction. RMS-aligned step magnitude (cribbed from
+    AdaMuon arxiv 2507.11005 and our H4 fix) prevents the σ_min(S)-driven
+    magnitude drift that plagued unfixed *-Post variants.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, ns_steps=5, adapter_name=None,
+                 lora_plus_multiplier=1.0,
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.ns_steps = ns_steps
+        self.lora_plus_multiplier = lora_plus_multiplier
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'v_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                'step': 0,
+            }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamPolarProductLoRA update.")
+            state = self.pair_state[i]
+            state['step'] += 1
+
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            # Adam state on the RAW gradient.
+            state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+            state['v_A'].mul_(self.beta2).addcmul_(gA, gA, value=1.0 - self.beta2)
+            state['v_B'].mul_(self.beta2).addcmul_(gB, gB, value=1.0 - self.beta2)
+
+            bc1 = 1.0 - self.beta1 ** state['step']
+            bc2 = 1.0 - self.beta2 ** state['step']
+            u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
+            u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+
+            # Spectral square-root preconditioners
+            SA_half_inv = spd_frac_power_inv(A.float() @ A.float().T, gamma=0.5, eps=self.delta)
+            SB_half_inv = spd_frac_power_inv(B.float().T @ B.float(), gamma=0.5, eps=self.delta)
+
+            # Polar-product on Adam direction (substitute u for ∇).
+            X_B = u_B @ SA_half_inv
+            P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
+            geo_B = P_B @ SA_half_inv
+
+            X_A = SB_half_inv @ u_A
+            P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
+            geo_A = SB_half_inv @ P_A
+
+            # RMS-align: target ‖step‖_F = lr·‖u‖_F. Decouples step magnitude
+            # from the spectral preconditioner's scale (which depends on σ(S)
+            # and drifts over training).
+            uA_norm = u_A.norm()
+            uB_norm = u_B.norm()
+            gA_norm = geo_A.norm() + 1e-30
+            gB_norm = geo_B.norm() + 1e-30
+            dA = -lr * (uA_norm / gA_norm) * geo_A
+            dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
+
+            if self.log_diagnostics:
+                # cos(geo, u) probes whether the polar-product step direction
+                # differs from plain-AdamW's direction (= u).
+                sa_min, sa_max = _spd_eig_extremes(A.float() @ A.float().T)
+                sb_min, sb_max = _spd_eig_extremes(B.float().T @ B.float())
+                diag_records.append({
+                    "cos_A": _frob_cos(geo_A, u_A),
+                    "cos_B": _frob_cos(geo_B, u_B),
+                    "norm_dA": float(dA.detach().norm()),
+                    "norm_dA_adamw_eq": float(lr * uA_norm),
+                    "norm_dB": float(dB.detach().norm()),
+                    "norm_dB_adamw_eq": float(lr * uB_norm),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                    "SA_min": sa_min, "SA_max": sa_max,
+                    "SB_min": sb_min, "SB_max": sb_max,
+                    "rms_scale_A": float(uA_norm / gA_norm),
+                    "rms_scale_B": float(uB_norm / gB_norm),
+                })
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
 class MuonAdamLoRA(Optimizer):
     """
     Reverse of AdamMuonLoRA: NS first, then Adam (instead of Adam then NS).
@@ -2192,6 +2383,21 @@ def build_optimizer(
             eps=1e-8,
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "polar-product-lora":
+        return PolarProductLoRA(
+            model, lr=lr, delta=1e-6, ns_steps=muon_ns_steps,
+        )
+    if optimizer_type == "adam-polar-product-lora":
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-lora":
         return MuonLoRA(

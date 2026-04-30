@@ -3,6 +3,169 @@
 **Goal:** find a LoRA-aware optimizer that strictly beats AdamW (0.7579 final
 eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
 
+## Code review pass (2026-04-30)
+
+Spot-checked the math in each optimizer class. Findings:
+
+- **`ScaledLoRA`** (line 97): `ΔA = -lr · S_B⁻¹ ∇A` and `ΔB = -lr · ∇B S_A⁻¹`
+  match the docstring. `solve_spd(SA, gB.T).T` correctly computes `∇B · S_A⁻¹`.
+  No bugs.
+- **`LinLoRA`** (line 158): Sylvester K with `S_B K + K S_A = -lr (∇A · Aᵀ)`,
+  ΔA and ΔB applied with negative signs as descent directions. Matches the
+  paper formulation. No bugs.
+- **`AdamLinLoRA`** (line 226): Adam state on the *Sylvester-corrected*
+  direction (precond_A, precond_B). Bias correction applied. m̂/(√v̂+ε)
+  step with negative sign. lora_plus_multiplier on B. No bugs.
+- **`AdamScaledLoRA`** (line 400): Adam state on (S_B⁻¹∇A, ∇B·S_A⁻¹). Same
+  pattern as AdamLinLoRA. No bugs.
+- **`AdamScaledLoRAPost`** (line 548) + **`AdamLinLoRAPost`** (line 668):
+  RMS-align math is correct; geo_X computed lr-free, then rescaled by
+  ‖u‖/‖geo‖. **Minor diagnostic-only inconsistency**: AdamLinLoRAPost
+  bakes a negative sign into `geo_A = -solve_spd(SB, termA)` so the *logged*
+  `cos(geo_A, u_A)` is the negative of `cos(applied_step, plain_adamw_step)`.
+  AdamScaledLoRAPost does NOT bake the negative in, so its logged cos
+  matches `cos(applied_step, plain_adamw_step)` directly. This is a
+  presentation issue, not a behavioral bug — the actual updates are
+  correct. Earlier interpretation of `cos_A = -0.83` for *-lin-post in
+  the smoke output was correct (sign convention noted in transcript)
+  but the diagnostic should be standardized in a future cleanup.
+- **`AdamMuonLoRA`** (line 1304): Adam(m,v) on raw grads, then NS on
+  m̂/(√v̂+ε) per factor. lr_b_multiplier on B. ns_steps=0 path falls
+  through cleanly. No bugs.
+- **`MuonLoRA`** (line 1118): NS on momentum buffer per factor. Standard
+  Muon. No bugs.
+- **`PolarProductLoRA` / `AdamPolarProductLoRA`** (just added): math
+  matches theory line 622-660. Behavioral equivalence test passes
+  (orthogonal init reduces to per-factor polar). Smoke passed.
+  No bugs.
+- **Matrix-Adam variants** (line 805 / 884): n_total cached in pair_state,
+  mean-square v_pair correctly normalized. No bugs (the original sum-of-
+  squares bug was fixed in commit ac81bba).
+
+**Summary:** no behavioral bugs found in the optimizer math. The
+diagnostic-cos sign inconsistency in `AdamLinLoRAPost` is minor and
+doesn't affect any in-flight runs' optimizer behavior — only the
+*reported* cos values for that one optimizer should be sign-flipped
+when comparing against `*-scaled-post`. Worth standardizing in a
+future commit; not urgent.
+
+## Methods tried — three-bucket organization
+
+### Bucket 1: clear results, served as intel + launch points (closed)
+
+These are confirmed findings that informed subsequent design but don't
+themselves point at a next experiment.
+
+- **H1 cos diagnostics at r=16** (job 6312334, done): cos_post_B ≈ 0.97
+  throughout, cos_post_A 0.46→0.84. Established that pre-Adam compositions
+  are ε-perturbed AdamW.
+- **H1 cos_pre 500-step probe** (job 6313190, done): cos_pre_B ≈ 0.98 (S_A⁻¹
+  near-identity on ∇B early); cos_pre_A 0.65→0.85. Established H_weak on
+  B early-phase — the geometric correction has nothing to install on B in
+  the first 500 steps because A is approximately a random projection.
+  *Caveat:* unverified past step 500 (2k probe in flight).
+- **H3 r-sweep** (job 6312335, done): final-eval gap (lin/scaled − adamw)
+  monotonic in r: +0.023 at r=2, +0.022 at r=4, ≈0 at r=16, −0.005 at r=64.
+  Crossover near r=16.
+- **H3 robustness side-finding**: at r=64 η=1e-3, plain AdamW *diverges* to
+  0.89 while adam-{lin,scaled}-lora hold at 0.77. Geometric preconditioning
+  gives lr-headroom at high rank.
+- **H4 unfixed *-Post** (job 6312277, done): best 0.7875 at η=1e-3.
+  Established the magnitude-drift bug (σ_min(S_B) climbs 0.011→1.08 → step
+  magnitude varies 100× over training at fixed lr).
+- **H4 RMS-aligned *-Post** (job 6313020, done): adam-scaled-lora-post
+  η=3e-4 → 0.7570. After magnitude fix, ties AdamW (within noise floor).
+  Confirmed magnitude was the dominant H4 bug.
+- **muon-lora baseline** (`new_optimizers_high_eta_2k`): 0.7675 (NS without
+  Adam). Establishes how much NS alone gets you.
+- **muon ns_steps=0** (`muon_nsoff_2k`): 0.95+ at every η. NS contributes
+  ≥ 0.18 nat — geometric orthogonalization is essential, not decorative.
+- **diag-scaled-lora, kron-grad-lora**: 0.815, 0.826. Diagonal K-FAC family
+  underperforms. Closed branch unless we revisit the K-FAC formulation
+  more carefully.
+
+### Bucket 2: promising, worth trying to improve
+
+These have a measured win or measurable trajectory, with concrete next
+moves to push further.
+
+- **adam-muon-lora** (0.7557 at r=16, the only confirmed strict Δ=−0.0022).
+  Next moves: r=64 sweep (untested combination of two known win-effects);
+  AdaMuon-faithful port (sign-stabilization + per-element v̂ on NS-output +
+  RMS-align — published precedent at pretraining scale claims +40% efficiency
+  but caveats apply for fine-tune regime).
+- **adam-scaled-lora at r=64** (0.7506, leaderboard #1, within noise floor).
+  Next moves: cos diagnostics at r=64 to confirm mechanism (job 6313087 in
+  flight); full η-sweep at r=64 to confirm peak isn't at η=3e-4.
+- **AdamPolarProductLoRA** (just implemented; theory's closed-form polar
+  update under spectral-product norm). Smoke at r=16 η=3e-4 → eval 1.03 at
+  step 5; at r=64 η=1e-3 → eval 0.93 at step 5. Behavioral equivalence
+  test passes (reduces to Muon NS at orthogonal init). Sweep pending.
+  Mechanistically the cleanest variant we have — uses both the LoRA
+  product structure AND a spectrally-meaningful correction (polar) AND
+  composes correctly with Adam (matrix-structural so v̂ doesn't erase).
+- **H5 matrix-Adam fixed** (job 6312759 in flight). η=1e-3 trending to 0.78
+  at step 1200; final pending. If it ties or marginally improves over the
+  *-Pre baseline at r=16, the r=64 variant (job 6313316 in flight) might
+  win since it preserves direction × extra rank dimensions. Caveat: by
+  the user's reframing, this trades Adam's per-coord stability — net is
+  uncertain.
+
+### Bucket 3: theoretically promising but empirically weak — open mechanism
+
+Things that *should* have helped per theory or analogous literature but
+came in at parity or worse. Each warrants a focused investigation rather
+than abandonment.
+
+- **adam-{lin,scaled}-lora pre-Adam** (0.7564 / 0.7572 at r=16, ties
+  AdamW). Theory: Sylvester / Frobenius product norm gives optimal
+  product-aware update. Empirical: H1 explains the tie (Adam's per-coord
+  v̂ erases the rotation). **Open question:** does the same Sylvester
+  give a real win under matrix-Adam (H5) with the direction preserved? In
+  flight.
+- **muon-adam-lora** (NS first, then Adam). Best η=1e-3 step 600: 0.80,
+  decisively losing. *Theoretically* a reasonable composition (orthogonalize
+  then adapt). Empirical guess for failure: per-coord √v̂ on NS-output is
+  unstable because NS already evened out magnitudes. AdaMuon (paper) handles
+  this with (1) sign(M) before NS, (2) only v̂ no m̂ on NS-output, (3) RMS-
+  align. **Open question:** does our muon-adam-lora's failure trace to
+  one of these three missing ingredients, or is it more fundamental?
+  Untested.
+- **product-muon-lora** (gauge-invariant Sylvester-recovered NS). Pilot
+  showed ~0.81 at step 500; 2k extrapolation didn't suggest a clear win.
+  Theory says correct product-norm + spectral. Empirical: middling.
+  **Open question:** is the failure in the implementation (e.g.,
+  Sylvester recovery numerical issues), in the lora_plus_multiplier
+  interaction, or in the underlying premise that this gauge-invariant
+  form should outperform per-factor independent NS? AdamPolarProductLoRA
+  (just implemented) is a cleaner test of "spectral × product" — its
+  result will speak to ProductMuon's framing too.
+- **PSI-LoRA Algorithm 3** (job 6312780 running): F-LoRSUM proximal ALS +
+  low-rank momentum. Paper-faithful port of the published algorithm.
+  *Empirical:* pending. *Open question:* whether the paper's claimed wins
+  on smaller models transfer to OLMo-2-1B + Magicoder.
+- **GaLore** (`galore_fixed_2k`, done — need to load result). ~3× slower
+  per step than LoRA-mode (full dense backward). *Open question:* does
+  the rank-r projected gradient subspace approach beat plain LoRA at
+  matched compute?
+
+### What gets re-examined as in-flight sweeps land
+
+The boundary between Bucket 2 and Bucket 3 will shift over the next ~1
+hour as 6 jobs finish:
+
+- 6312759 (H5 r=16): if ties AdamW → confirms matrix-Adam alone isn't
+  enough; if marginal win → moves to Bucket 2 with "improve via r=64".
+- 6313316 (H5 r=64): the matrix-Adam-direction-preservation × rank
+  combination. If wins → Bucket 2 promising path.
+- 6313087 (cos at r=4, r=64): mechanism for *why* rank-dependence flips
+  sign. Will inform whether AdamPolarProductLoRA is expected to do well.
+- 6313261 (2k cos_pre): does S_A stay isotropic? Conditions whether
+  H_weak generalizes to full-trajectory training.
+- 6313020 (H4 RMS-aligned): already done; *-Post ≈ ties AdamW at r=16.
+- AdamPolarProductLoRA sweep (about to submit): the theory-prescribed
+  spectral-product test.
+
 ## What we currently believe (2026-04-30 ~13:00)
 
 **Confirmed:**
