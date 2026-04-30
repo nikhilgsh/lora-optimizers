@@ -13,7 +13,7 @@ if [ -n "${WANDB_PROJECT:-}" ]; then
 fi
 
 python train_lora.py \
-    --data_dir data/magicoder_seq512 \
+    --data_dir data/magicoder_seq512_32k \
     --device cuda \
     --bf16 \
     --max_steps 2000 \

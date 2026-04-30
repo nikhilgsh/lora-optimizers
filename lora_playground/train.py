@@ -170,7 +170,7 @@ def make_parser():
     parser.add_argument("--eval_file", default=None)
     parser.add_argument("--train_split", default="train")
     parser.add_argument("--eval_split", default="test")
-    parser.add_argument("--max_train_samples", type=int, default=4096)
+    parser.add_argument("--max_train_samples", type=int, default=8000)
     parser.add_argument("--max_eval_samples", type=int, default=512)
     parser.add_argument("--eval_fraction", type=float, default=0.05)
     parser.add_argument("--data_dir", default=None, help="Pre-tokenized dataset dir (Arrow). Skips download + tokenization.")
