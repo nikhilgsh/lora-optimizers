@@ -15,6 +15,28 @@ See `docs/model_dataset_selection.md` for the model and dataset rationale.
 
 Use a general base model, not a code-specialized base. `OLMo-2-0425-1B` is a modern Apache-2.0 general LM with open training details, large enough to produce meaningful LoRA behavior but still small enough for rapid single-GPU iteration. The Magicoder instruction-response dataset provides code-adaptation examples with clean `instruction` and `response` fields. It has only a train split, so the training loop creates a deterministic held-out split when no explicit eval split is present.
 
+## Standard Course Settings
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| `max_steps` | 2000 | 1 epoch on 32k samples (effective batch 16); enough for Adam+X variants to show characteristic behavior |
+| `eval_every` | 200 | 10 eval points per run |
+| `max_train_samples` | 32000 | 1-epoch invariant: 2000 × 16 = 32k |
+| `max_eval_samples` | 512 | SE ≈ 0.003 nats; detection threshold ~0.01 nats |
+| `max_seq_length` | 512 | Magicoder pairs are 300–1500 tokens |
+| `batch_size` | 2 | per-device |
+| `grad_accum_steps` | 8 | effective batch 16 |
+| `lora_r / lora_alpha` | 16 / 16 | |
+| `target_modules` | `all-linear` | excludes `lm_head` |
+| `lr_scheduler_type` | `constant` | clean, no scheduler interactions |
+| `data_dir` | `data/magicoder_seq512_32k` | pre-tokenized Arrow dataset |
+
+Pre-tokenized cache: run `python scripts/prepare_data.py --out_dir data/magicoder_seq512_32k --max_train_samples 32000 --max_eval_samples 512` once before sweeping.
+
+**1-epoch invariant:** `max_train_samples` must equal `max_steps × effective_batch_size`. Violating this causes multi-epoch training under constant LR, which diverges. Check before submitting any new sweep.
+
+**Hardware:** H100 PCIe (`--gpus-per-task=h100_pcie:1`) is the standard sweep hardware. A100 is acceptable and produces equivalent eval_loss values. Do not compare timing metrics across GPU types.
+
 ## Fixed Comparison Rules
 
 Hold these fixed across optimizer comparisons unless the experiment explicitly studies one of them:
@@ -27,6 +49,8 @@ Hold these fixed across optimizer comparisons unless the experiment explicitly s
 - learning-rate schedule and evaluation cadence
 
 Select hyperparameters using held-out eval loss, never training loss. Report the exact command line for every run.
+
+**LR selection:** Always find each optimizer's best LR via a held-out sweep before comparing optimizers head-to-head. Using AdamW's optimal LR for all methods is not a valid comparison — effective step sizes differ across optimizers.
 
 ## Metrics
 

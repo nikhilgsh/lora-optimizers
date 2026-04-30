@@ -43,6 +43,7 @@ def test_truncated_svd_reconstructs_low_rank_matrix():
     left = torch.randn(5, 2)
     right = torch.randn(2, 4)
     matrix = left @ right
+    # Exact rank-2 matrix: both exact and randomized SVD should reconstruct it perfectly.
     projected = truncated_svd(matrix, rank=2)
     assert torch.allclose(projected, matrix, atol=1e-5, rtol=1e-5)
 
@@ -51,11 +52,12 @@ def test_svd_to_lora_factors_reconstruct_projected_delta_with_scale():
     torch.manual_seed(1)
     delta = torch.randn(4, 5)
     scale = 2.5
-    A, B = svd_to_lora_factors(delta, rank=2, scale=scale)
+    # Use niter=None (exact SVD) so both calls are deterministic and agree.
+    A, B = svd_to_lora_factors(delta, rank=2, scale=scale, niter=None)
     reconstructed = effective_lora_delta(A, B, scale)
     assert A.shape == (2, 5)
     assert B.shape == (4, 2)
-    assert torch.allclose(reconstructed, truncated_svd(delta, 2), atol=1e-5, rtol=1e-5)
+    assert torch.allclose(reconstructed, truncated_svd(delta, 2, niter=None), atol=1e-5, rtol=1e-5)
 
 
 def test_collect_dense_target_weights_matches_explicit_suffix_and_freezes_others():

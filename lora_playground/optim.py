@@ -405,7 +405,8 @@ class SVDStepAdamW(AdamW):
     update is Pi_r(Delta W_t). The cumulative displacement from initialization
     is not constrained to rank r.
     """
-    def __init__(self, targets, rank, lr=2e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
+    def __init__(self, targets, rank, lr=2e-4, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0.0, svd_niter=4):
         if not targets:
             raise ValueError("SVDStepAdamW requires at least one dense target weight.")
         if weight_decay != 0.0:
@@ -414,6 +415,7 @@ class SVDStepAdamW(AdamW):
             raise ValueError(f"rank must be positive, got {rank}.")
         self.targets = list(targets)
         self.rank = rank
+        self.svd_niter = svd_niter
         super().__init__(
             [target.weight for target in self.targets],
             lr=lr,
@@ -431,7 +433,7 @@ class SVDStepAdamW(AdamW):
         loss = super().step(closure)
         for target in self.targets:
             raw_delta = target.weight.detach().float() - before[target.name]
-            step_delta = truncated_svd(raw_delta, self.rank)
+            step_delta = truncated_svd(raw_delta, self.rank, niter=self.svd_niter)
             target.weight.copy_(
                 (before[target.name] + step_delta).to(
                     dtype=target.weight.dtype,
@@ -449,7 +451,8 @@ class SVDCumulativeAdamW(AdamW):
     are accumulated in full-rank float32 buffers C_t, but the live model weight
     is W0 + Pi_r(C_t), so each target displacement from W0 remains rank r.
     """
-    def __init__(self, targets, rank, lr=2e-4, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
+    def __init__(self, targets, rank, lr=2e-4, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0.0, svd_niter=4):
         if not targets:
             raise ValueError("SVDCumulativeAdamW requires at least one dense target weight.")
         if weight_decay != 0.0:
@@ -458,6 +461,7 @@ class SVDCumulativeAdamW(AdamW):
             raise ValueError(f"rank must be positive, got {rank}.")
         self.targets = list(targets)
         self.rank = rank
+        self.svd_niter = svd_niter
         self.accumulators = {
             target.name: torch.zeros_like(target.base_weight, dtype=torch.float32)
             for target in self.targets
@@ -480,7 +484,8 @@ class SVDCumulativeAdamW(AdamW):
         for target in self.targets:
             raw_delta = target.weight.detach().float() - before[target.name]
             self.accumulators[target.name].add_(raw_delta)
-            projected = truncated_svd(self.accumulators[target.name], self.rank)
+            projected = truncated_svd(self.accumulators[target.name], self.rank,
+                                      niter=self.svd_niter)
             target.weight.copy_(
                 (target.base_weight + projected).to(
                     dtype=target.weight.dtype,
@@ -499,6 +504,7 @@ def build_optimizer(
     lora_plus_multiplier: float = 1.0,
     targets=None,
     svd_rank: int | None = None,
+    svd_niter: int = 4,
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -519,6 +525,7 @@ def build_optimizer(
             betas=(0.9, 0.999),
             eps=1e-8,
             weight_decay=weight_decay,
+            svd_niter=svd_niter,
         )
 
     if optimizer_type == "adamw":

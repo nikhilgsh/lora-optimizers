@@ -1,7 +1,7 @@
 #!/bin/bash
-# Usage: ./slurm_scripts/submit.sh <params_json> <group_name> <n_gpus> [sweep_script]
+# Usage: ./slurm_scripts/submit.sh <params_json> <group_name> <n_gpus> [sweep_script] [sbatch_script]
 # Example: ./slurm_scripts/submit.sh params/lr_sweep.json sweep_lr 4
-# Example: ./slurm_scripts/submit.sh params/foo.json my_group 6 scripts/sweep_2k.sh
+# Example: ./slurm_scripts/submit.sh params/foo.json my_group 6 scripts/sweep_2k.sh slurm_scripts/sbatch_h100.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,6 +9,7 @@ PARAM_FILE="$1"
 GROUP="$2"
 N_GPUS="$3"
 SWEEP_SCRIPT="${4:-scripts/sweep.sh}"
+SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
 
 RUN_DIR="${REPO_DIR}/logs/${GROUP}/run_info"
 mkdir -p "${RUN_DIR}/logs" "${REPO_DIR}/slurm_logs" "${REPO_DIR}/disbatch_logs"
@@ -30,4 +31,4 @@ echo ""
 echo "Submitting ${N_GPUS} tasks for group '${GROUP}' ..."
 
 export TASK_FILE="${RUN_DIR}/tasks"
-sbatch --ntasks="$N_GPUS" --job-name="$GROUP" "${REPO_DIR}/slurm_scripts/sbatch.sh"
+sbatch --ntasks="$N_GPUS" --job-name="$GROUP" "${REPO_DIR}/${SBATCH_SCRIPT}"

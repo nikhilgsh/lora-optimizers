@@ -185,6 +185,9 @@ def make_parser():
     parser.add_argument("--lr_scheduler_type", default="constant")
     parser.add_argument("--lora_r", type=int, default=16)
     parser.add_argument("--svd_rank", type=int, default=None)
+    parser.add_argument("--svd_niter", type=int, default=4,
+                        help="Power iterations for randomized SVD (svd oracle modes). "
+                             "Use -1 for exact economy SVD (slow).")
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--lora_dropout", type=float, default=0.0)
     parser.add_argument("--target_modules", default="all-linear")
@@ -302,6 +305,7 @@ def main():
         effective_optimizer = "svd-cumulative-adamw"
         rank_constraint = "cumulative_displacement"
 
+    svd_niter = None if args.svd_niter < 0 else args.svd_niter
     optimizer = build_optimizer(
         model,
         optimizer_type=effective_optimizer,
@@ -311,6 +315,7 @@ def main():
         lora_plus_multiplier=args.lora_plus_multiplier,
         targets=dense_targets if dense_targets else None,
         svd_rank=svd_rank if dense_targets else None,
+        svd_niter=svd_niter if dense_targets else 4,
     )
     scheduler = get_scheduler(
         name=args.lr_scheduler_type,
@@ -354,8 +359,12 @@ def main():
             "rank_constraint": rank_constraint,
             "target_module_count": len(dense_targets),
             "target_module_names": [target.name for target in dense_targets],
-            "svd_projection": "exact" if dense_targets else None,
+            "svd_projection": ("exact" if svd_niter is None else f"randomized_niter{svd_niter}") if dense_targets else None,
             "exclude_lm_head_from_all_linear": bool(dense_targets and parsed_target_modules == "all-linear"),
+            "lr": args.lr,
+            "lora_plus_multiplier": args.lora_plus_multiplier,
+            "max_steps": args.max_steps,
+            "eval_every": args.eval_every,
             "seed": args.seed,
             "bf16": use_bf16,
             "tf32": device.type == "cuda" and not args.no_tf32,

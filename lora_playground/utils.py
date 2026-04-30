@@ -62,17 +62,25 @@ def solve_sylvester(SB, SA, RHS):
     return QB @ X @ QA.T                              # (r, r)
 
 
-def truncated_svd(matrix, rank):
+def truncated_svd(matrix, rank, niter=4):
     """
-    Return the exact Frobenius-optimal rank-r approximation of a matrix.
+    Return the Frobenius-optimal rank-r approximation of a matrix.
+
+    niter: number of power iterations for the randomized algorithm (default 4).
+           Use niter=None for exact economy SVD (slow on large matrices).
     """
     if matrix.ndim != 2:
         raise ValueError(f"truncated_svd expects a matrix, got shape {tuple(matrix.shape)}.")
     if rank <= 0:
         raise ValueError(f"rank must be positive, got {rank}.")
-    U, S, Vh = torch.linalg.svd(matrix.float(), full_matrices=False)
-    rank = min(rank, S.numel())
-    return (U[:, :rank] * S[:rank]) @ Vh[:rank]
+    m = matrix.float()
+    if niter is None:
+        U, S, Vh = torch.linalg.svd(m, full_matrices=False)
+        rank = min(rank, S.numel())
+        return (U[:, :rank] * S[:rank]) @ Vh[:rank]
+    rank = min(rank, min(m.shape))
+    U, S, V = torch.svd_lowrank(m, q=rank, niter=niter)
+    return (U * S) @ V.T
 
 
 def effective_lora_delta(A, B, scale):
@@ -86,17 +94,18 @@ def effective_lora_delta(A, B, scale):
     return scale * (B @ A)
 
 
-def svd_to_lora_factors(delta, rank, scale=1.0):
+def svd_to_lora_factors(delta, rank, scale=1.0, niter=4):
     """
     Convert a rank-r SVD projection into PEFT-convention LoRA factors.
 
-    Returns A, B where scale * B @ A equals truncated_svd(delta, rank), up to
-    numerical precision.
+    Returns A, B where scale * B @ A equals truncated_svd(delta, rank, niter),
+    up to numerical precision.
     """
     if scale == 0:
         raise ValueError("scale must be nonzero.")
-    U, S, Vh = torch.linalg.svd(delta.float(), full_matrices=False)
-    rank = min(rank, S.numel())
+    proj = truncated_svd(delta, rank, niter=niter)
+    U, S, Vh = torch.linalg.svd(proj.float(), full_matrices=False)
+    rank = min(rank, int((S > 1e-10).sum().item()))
     A = Vh[:rank]
     B = U[:, :rank] * (S[:rank] / scale)
     return A, B
