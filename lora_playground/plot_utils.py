@@ -166,6 +166,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         for label, y, color in hlines:
             ax.axhline(y, color=color, ls=":", lw=REF_LINE_WIDTH, label=label)
 
+    all_losses = []
     groups = sorted({group_key_fn(c) for c, _ in runs})
     for g in groups:
         rows = sorted([(c["lr"], e[-1]["eval_loss"]) for c, e in runs
@@ -175,10 +176,18 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                     color=color_map.get(g, "grey"),
                     marker="o", markersize=MARKER_SIZE,
                     lw=LINE_WIDTH, label=g)
+            all_losses.extend(r[1] for r in rows)
     ax.set_xscale("log")
     ax.set_xlabel("η (log)"); ax.set_ylabel("Final eval loss")
     ax.grid(True, alpha=0.3, which="both")
     ax.set_title(title)
+    # Auto-clip ylim to focus on the competitive region. Without this, runs
+    # at extreme η whose final loss is e.g. 1.4 stretch the y-axis and squish
+    # the 0.74-0.79 zone where actual differentiation lives.
+    if all_losses:
+        lo = min(all_losses) - 0.005
+        hi = min(all_losses) + 0.10
+        ax.set_ylim(lo, hi)
     if legend:
         ax.legend(**LEGEND_KW)
 
