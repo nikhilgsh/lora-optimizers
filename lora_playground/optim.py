@@ -361,13 +361,24 @@ class AdamLinLoRA(Optimizer):
                 )
                 sa_min, sa_max = _spd_eig_extremes(SA)
                 sb_min, sb_max = _spd_eig_extremes(SB)
+                # cos_pre_*: cos(geometric direction, raw gradient) — measures
+                # how much the geometric solve rotates the gradient BEFORE
+                # Adam touches it. Distinguishes "weak geometry" (cos_pre ≈ 1
+                # → S^{-1} near-identity on this gradient) from "geometry
+                # erased by Adam's √v̂" (cos_pre < 1, cos_post ≈ 1).
                 diag_records.append({
                     "cos_A": _frob_cos(dA, dA_raw),
                     "cos_B": _frob_cos(dB, dB_raw),
+                    "cos_pre_A": _frob_cos(precond_A, gA),
+                    "cos_pre_B": _frob_cos(precond_B, gB),
                     "norm_dA_lin": float(dA.detach().to(torch.float32).norm()),
                     "norm_dA_raw": float(dA_raw.detach().norm()),
                     "norm_dB_lin": float(dB.detach().to(torch.float32).norm()),
                     "norm_dB_raw": float(dB_raw.detach().norm()),
+                    "norm_gA": float(gA.detach().to(torch.float32).norm()),
+                    "norm_gB": float(gB.detach().to(torch.float32).norm()),
+                    "norm_precond_A": float(precond_A.detach().to(torch.float32).norm()),
+                    "norm_precond_B": float(precond_B.detach().to(torch.float32).norm()),
                     "norm_A": float(A.detach().to(torch.float32).norm()),
                     "norm_B": float(B.detach().to(torch.float32).norm()),
                     "SA_min": sa_min, "SA_max": sa_max,
@@ -498,13 +509,24 @@ class AdamScaledLoRA(Optimizer):
                 )
                 sa_min, sa_max = _spd_eig_extremes(SA)
                 sb_min, sb_max = _spd_eig_extremes(SB)
+                # cos_pre_*: cos(geometric direction, raw gradient) — measures
+                # how much the geometric solve rotates the gradient BEFORE
+                # Adam touches it. Distinguishes "weak geometry" (cos_pre ≈ 1
+                # → S^{-1} near-identity on this gradient) from "geometry
+                # erased by Adam's √v̂" (cos_pre < 1, cos_post ≈ 1).
                 diag_records.append({
                     "cos_A": _frob_cos(dA, dA_raw),
                     "cos_B": _frob_cos(dB, dB_raw),
+                    "cos_pre_A": _frob_cos(precond_A, gA),
+                    "cos_pre_B": _frob_cos(precond_B, gB),
                     "norm_dA_lin": float(dA.detach().to(torch.float32).norm()),
                     "norm_dA_raw": float(dA_raw.detach().norm()),
                     "norm_dB_lin": float(dB.detach().to(torch.float32).norm()),
                     "norm_dB_raw": float(dB_raw.detach().norm()),
+                    "norm_gA": float(gA.detach().to(torch.float32).norm()),
+                    "norm_gB": float(gB.detach().to(torch.float32).norm()),
+                    "norm_precond_A": float(precond_A.detach().to(torch.float32).norm()),
+                    "norm_precond_B": float(precond_B.detach().to(torch.float32).norm()),
                     "norm_A": float(A.detach().to(torch.float32).norm()),
                     "norm_B": float(B.detach().to(torch.float32).norm()),
                     "SA_min": sa_min, "SA_max": sa_max,
