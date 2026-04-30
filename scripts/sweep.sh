@@ -7,6 +7,11 @@ optimizer=${2:-adamw}
 lora_plus_multiplier=${3:-1.0}
 seed=${4:-0}
 
+wandb_args=()
+if [ -n "${WANDB_PROJECT:-}" ]; then
+    wandb_args=(--wandb_project "$WANDB_PROJECT")
+fi
+
 python train_lora.py \
     --data_dir data/magicoder_seq512 \
     --device cuda \
@@ -16,4 +21,5 @@ python train_lora.py \
     --lr "$lr" \
     --optimizer "$optimizer" \
     --lora_plus_multiplier "$lora_plus_multiplier" \
-    --seed "$seed"
+    --seed "$seed" \
+    "${wandb_args[@]}"

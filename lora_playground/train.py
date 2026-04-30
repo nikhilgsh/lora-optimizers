@@ -202,6 +202,8 @@ def make_parser():
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--target_eval_loss", type=float, default=None)
+    parser.add_argument("--wandb_project", default=None, help="W&B project name. Omit to disable W&B.")
+    parser.add_argument("--wandb_run_name", default=None, help="W&B run name. Auto-generated from key params if omitted.")
     return parser
 
 
@@ -317,6 +319,20 @@ def main():
         num_training_steps=args.max_steps,
     )
 
+    wandb_run = None
+    if args.wandb_project:
+        import wandb
+
+        run_name = args.wandb_run_name or (
+            f"{args.optimizer}_lr{args.lr}_lp{args.lora_plus_multiplier}_s{args.seed}"
+        )
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            name=run_name,
+            config=vars(args),
+            resume="never",
+        )
+
     log_event(
         {
             "event": "config",
@@ -415,25 +431,31 @@ def main():
             peak_memory_mb = None
             if device.type == "cuda":
                 peak_memory_mb = torch.cuda.max_memory_allocated() / 1024**2
-            log_event(
-                {
-                    "event": "eval",
-                    "step": step,
-                    "train_loss": step_loss / max(step_tokens, 1),
-                    "eval_loss": eval_loss,
-                    "tokens": total_tokens,
-                    "train_elapsed_sec": train_elapsed,
-                    "eval_sec": eval_sec,
-                    "tokens_per_sec": total_tokens / max(train_elapsed, 1e-9),
-                    "peak_memory_mb": peak_memory_mb,
-                    "lr": scheduler.get_last_lr()[0],
-                }
-            )
+            eval_payload = {
+                "event": "eval",
+                "step": step,
+                "train_loss": step_loss / max(step_tokens, 1),
+                "eval_loss": eval_loss,
+                "tokens": total_tokens,
+                "train_elapsed_sec": train_elapsed,
+                "eval_sec": eval_sec,
+                "tokens_per_sec": total_tokens / max(train_elapsed, 1e-9),
+                "peak_memory_mb": peak_memory_mb,
+                "lr": scheduler.get_last_lr()[0],
+            }
+            log_event(eval_payload)
+            if wandb_run is not None:
+                wandb_run.log(
+                    {k: v for k, v in eval_payload.items() if k not in ("event",)},
+                    step=step,
+                )
             if args.target_eval_loss is not None and eval_loss <= args.target_eval_loss:
                 break
 
     if profiler is not None:
         profiler.stop()
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
