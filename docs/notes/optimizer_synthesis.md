@@ -12,29 +12,40 @@ normalize it away) AND choose a correction that survives a sign-like input —
 
 ---
 
-## Standing leaderboard (r=16, 2k steps, best η, seed=0)
+## Standing leaderboard (best η, seed=0, 2k steps)
 
-| rank | optimizer                | best η | eval loss | source                         | beats AdamW? |
-|------|--------------------------|--------|-----------|--------------------------------|--------------|
-| 1    | **adam-muon-lora**       | 3e-3   | **0.7557**| `adam_muon_2k`                 | ✅ Δ=−0.0022 |
-| 2    | adam-lin-lora            | 1e-3   | 0.7564    | `optim_compare_high_eta_2k`    | ≈ tied       |
-| 3    | adam-scaled-lora         | 1e-3   | 0.7572    | `optim_compare_high_eta_2k`    | ≈ tied       |
-| 4    | adamw                    | 3e-4   | 0.7579    | `lr_sweep_2k`                  | baseline     |
-| 5    | muon-lora (LoRA+ m=4)    | 1e-3   | 0.7674    | `muon_loraplus_2k`             | ❌           |
-| 5    | muon-lora                | 3e-3   | 0.7675    | `new_optimizers_high_eta_2k`   | ❌           |
-| 7    | diag-scaled-lora         | 3e-2   | 0.8153    | `new_optimizers_high_eta_2k`   | ❌           |
-| 8    | kron-grad-lora           | 3e-3   | 0.8263    | `new_optimizers_high_eta_2k`   | ❌           |
-| —    | lin-lora (SGD)           | 1e-2   | 0.8457    | `lr_sweep_2k`                  | ❌           |
-| —    | scaled-lora (SGD)        | 1e-2   | 0.8744    | `lr_sweep_2k`                  | ❌           |
+**Cross-rank board:**
 
-**The only strict win to date is adam-muon-lora (Δ=−0.0022).** All other
-LoRA-aware variants tie AdamW or lose.
+| rank | optimizer                | r  | best η | eval loss  | source                         | beats AdamW r=16? |
+|------|--------------------------|----|--------|------------|--------------------------------|-------------------|
+| 1    | **adam-scaled-lora**     | 64 | 3e-4   | **0.7506** | `h3_rsweep_2k`                 | ✅ Δ=−0.0073      |
+| 2    | adam-lin-lora            | 64 | 3e-4   | 0.7527     | `h3_rsweep_2k`                 | ✅ Δ=−0.0052      |
+| 3    | adamw                    | 64 | 3e-4   | 0.7550     | `h3_rsweep_2k`                 | ✅ Δ=−0.0029      |
+| 4    | adam-muon-lora           | 16 | 3e-3   | 0.7557     | `adam_muon_2k`                 | ✅ Δ=−0.0022      |
+| 5    | adam-lin-lora            | 16 | 1e-3   | 0.7564     | `optim_compare_high_eta_2k`    | ≈ tied            |
+| 6    | adam-scaled-lora         | 16 | 1e-3   | 0.7572     | `optim_compare_high_eta_2k`    | ≈ tied            |
+| 7    | adamw                    | 16 | 3e-4   | 0.7579     | `lr_sweep_2k`                  | baseline          |
+| 8    | muon-lora (LoRA+ m=4)    | 16 | 1e-3   | 0.7674     | `muon_loraplus_2k`             | ❌                |
+| 9    | adam-lin-lora-post (unfixed) | 16 | 1e-3 | 0.7875   | `h4_post_2k`                   | ❌                |
+| —    | adam-scaled-lora-post    | 64 | tbd    | tbd        | (not yet run)                  | tbd               |
 
-The H3 r-sweep produced a non-LoRA-aware datapoint that's interesting:
-**adamw at r=64, η=3e-4 → 0.7550** — beats the r=16 adam-muon-lora number.
-Suggests the cleanest path to lower loss may be more rank rather than fancier
-optimizers. (Caveat: r=64 has 4× more LoRA parameters; not a fair
-optimizer-vs-optimizer comparison.)
+**r=16-only ranking:** adam-muon-lora wins (0.7557).
+**r=64 ranking:** adam-scaled-lora wins (0.7506).
+**Overall:** adam-scaled-lora at r=64 is the new headline number.
+
+Two findings tension each other:
+- **At r=16, geometry-then-Adam compositions tie AdamW** (H1 confirmed: cos
+  ≈ 0.97 throughout, Adam erases geometric correction).
+- **At r=64, geometry-then-Adam compositions beat AdamW** (Δ ~ −0.005). H1
+  cos diagnostics weren't run at r=64, so the *mechanism* isn't pinned down,
+  but the empirical result is clear.
+
+**Hypothesis for the rank dependence:** at higher r, the LoRA factor
+matrices are larger, so Adam's per-coord v̂ has more cross-coordinate
+structure to erase. Either v̂ can't fully flatten the higher-dimensional
+geometric correction, or σ_min(S_B) reaches a regime where the geometric
+correction matters more (S_B = BᵀB + δI is r×r — bigger r, more
+information). Need to run H1 diagnostics at r=64 to confirm.
 
 ---
 

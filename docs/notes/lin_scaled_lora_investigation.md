@@ -78,13 +78,22 @@ its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
   | 4  | 0.7807 | 0.8024        | **+0.022** (worse) |
   | 64 | 0.7550 | 0.7527        | −0.002 (≈ tie)     |
 
-- **Decision: H3 falsified.** At small r, lin-lora is *worse* than AdamW
-  by ~0.02 nat. The premise (small r → worse conditioning → more headroom
-  for geometric correction) is wrong: H1 already showed S_B conditioning
-  is dominated by ‖B‖², an init-scale issue, not by r. **Side benefit:**
-  clean adamw r-scan (0.792 → 0.781 → 0.755) — confirms "more rank = better"
-  scaling, and **adamw r=64 (0.7550) actually beats adam-muon-lora r=16
-  (0.7557)** — opens a "budget-matched r=16 vs r=64" follow-up question.
+- **Decision: H3's premise about small r is falsified, but H3 surfaced a
+  bigger result.** Final eval table at η=3e-4, step 2000:
+
+  | r  | adamw  | adam-lin-lora | adam-scaled-lora |
+  |----|--------|---------------|-------------------|
+  | 2  | 0.7920 | 0.8150        | 0.8134            |
+  | 4  | 0.7807 | 0.8024        | 0.8001            |
+  | 64 | 0.7550 | **0.7527**    | **0.7506** ← new leaderboard #1 |
+
+  At r=2,4 lin/scaled lose to AdamW by ~0.02 (premise wrong as H1 explains).
+  But at **r=64 both lin/scaled beat AdamW**, with adam-scaled-lora at 0.7506
+  taking the leaderboard from adam-muon-lora (0.7557 at r=16).
+  **Hypothesis why H1 doesn't fully apply at r=64:** at higher r the LoRA
+  factor matrices are larger, so per-coord v̂ can't fully wash out the
+  cross-coordinate scale structure that S_B⁻¹ installs. We did not run the
+  cosine diagnostics at r=64 — a clean follow-up.
 
 ## H4 — Productive: Adam on raw grads, geometric solve on Adam step
 
