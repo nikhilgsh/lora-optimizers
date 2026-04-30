@@ -1,17 +1,19 @@
 #!/bin/bash
-# Usage: ./slurm_scripts/submit.sh <params_json> <group_name> <n_gpus>
+# Usage: ./slurm_scripts/submit.sh <params_json> <group_name> <n_gpus> [sweep_script]
 # Example: ./slurm_scripts/submit.sh params/lr_sweep.json sweep_lr 4
+# Example: ./slurm_scripts/submit.sh params/foo.json my_group 6 scripts/sweep_2k.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PARAM_FILE="$1"
 GROUP="$2"
 N_GPUS="$3"
+SWEEP_SCRIPT="${4:-scripts/sweep.sh}"
 
 RUN_DIR="${REPO_DIR}/logs/${GROUP}/run_info"
 mkdir -p "${RUN_DIR}/logs" "${REPO_DIR}/slurm_logs" "${REPO_DIR}/disbatch_logs"
 
-cp "${REPO_DIR}/scripts/sweep.sh" "${RUN_DIR}/sweep.sh"
+cp "${REPO_DIR}/${SWEEP_SCRIPT}" "${RUN_DIR}/sweep.sh"
 cp "${PARAM_FILE}" "${RUN_DIR}/$(basename "$PARAM_FILE")"
 
 python ~/hp_scaling/generate_task_file.py \

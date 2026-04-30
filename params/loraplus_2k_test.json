@@ -1,0 +1,1 @@
+{"lr": ["1e-4", "3e-4"], "optimizer": ["adamw"], "lora_plus_multiplier": ["1", "4", "16"], "seed": ["0"]}
