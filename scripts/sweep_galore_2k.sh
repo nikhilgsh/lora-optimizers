@@ -20,6 +20,6 @@ python train_lora.py \
     --optimizer galore-adamw \
     --lora_r 16 \
     --galore_update_proj_gap 200 \
-    --galore_scale 0.25 \
+    --galore_scale 1.0 \
     --seed "$seed" \
     "${wandb_args[@]}"
