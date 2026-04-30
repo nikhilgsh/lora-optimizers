@@ -5,6 +5,56 @@ Each entry: motivation → action → result → next step. Newest entries on to
 
 ---
 
+## 2026-04-30 — η-bracketing for scaled-lora, lin-lora, diag-scaled-lora
+
+**Motivation.** Original `lr_sweep_2k` topped out at η=1e-3 with these three optimizers
+all at the boundary. Wanted to characterize the actual scale of η they need.
+
+**Sweeps.** boundary_extend_2k (η ∈ {3e-2, 1e-1, 3e-1}), boundary_extend2_2k (η ∈ {1, 3}),
+boundary_extend3_2k (η ∈ {10, 30} for lin/scaled only since diag diverged at η=1).
+
+**Final η-vs-loss (step 2000):**
+
+| optimizer        | 3e-3 | 1e-2 | 3e-2 | 1e-1 | 3e-1 | 1.0 | 3.0 | 10  | 30  |
+|------------------|------|------|------|------|------|-----|-----|-----|-----|
+| diag-scaled-lora |0.880*|0.870*|0.815 |0.791 |**0.790**|6.14|8.03 | -   | -   |
+| lin-lora         |0.886*|0.846*|0.846 |0.836 |0.822 |0.803|**0.778**|0.793|0.824|
+| scaled-lora      |0.897*|0.874*|0.856 |0.837 |0.819 |0.795|**0.771**|0.790|1.179|
+
+(* from earlier sweeps with the same optimizer at lower η)
+
+**Findings.**
+- All three need η orders of magnitude higher than the AdamW LoRA optimum (3e-4)
+- diag-scaled-lora peaks at η=3e-1 → 0.790, diverges at η=1
+- lin-lora peaks at η=3.0 → **0.778**, mild interior optimum
+- scaled-lora peaks at η=3.0 → **0.771**, interior optimum, only 1.7% behind AdamW
+
+**Headline.** The simple Sylvester-coupled preconditioned methods (`scaled-lora`,
+`lin-lora`) — no momentum, no Adam-style √v adaptation, just per-factor (BᵀB + δI)⁻¹
+or its linearized variant — get within 1.7% of AdamW LoRA on this task. The (A,B)
+coupling does most of the work that Adam's momentum/√v normally does, but the η
+needs to be 4 orders of magnitude larger than the Adam regime. This is a strong
+"interpretability" point: the optimizer doesn't need to be fancy if the geometric
+preconditioning matches the LoRA parametrization.
+
+---
+
+## 2026-04-30 — PSI-LoRA crashes on small η: cholesky escalation insufficient
+
+**Motivation.** Resubmitted PSI-LoRA sweep (job 6312780) with the cholesky escalation
+fallback added to `_solve_ridge`. 4 of 6 runs still crashed with the same singular-matrix
+error in the lorsum momentum update at `B_t = _solve_ridge(A_t @ A_t.T, ...)`. CPU
+repro of the same shapes shows the gram min eigenvalue is ~1500 (well-conditioned), so
+something GPU/bf16-specific produces an indefinite gram that doesn't recover even with
+ε bumped to 1.0.
+
+**Status.** Open. Need to instrument the failing call to dump the offending matrix and
+inspect on GPU. Tabled while we extend lin/scaled-lora — those have higher expected
+payoff (now at 0.771-0.778, competitive with AdamW; PSI-LoRA was at 0.892 even when
+running, well behind).
+
+---
+
 ## 2026-04-30 — PSI-LoRA momentum: code matches paper Algorithm 3 (with the right reading)
 
 **Motivation.** With α₁=0 case behaviorally verified, extended the test to α₁=0.9
@@ -88,18 +138,18 @@ These produce a small per-step shrinkage of weights when the gram is rank-defici
 
 ## Standings (final eval loss at step 2000, all `r=16`)
 
-| optimizer        | best η | eval loss | status |
-|------------------|--------|-----------|--------|
-| adam-lin-lora    | 1e-3   | 0.7564    | interior peak |
-| adam-scaled-lora | 1e-3   | 0.7572    | interior peak |
-| adamw            | 3e-4   | 0.7579    | baseline |
-| muon-lora        | 3e-3   | 0.7675    | interior peak (post-NS-fix) |
-| kron-grad-lora   | 1e-3   | 0.7850    | interior peak |
-| galore-adamw     | 3e-4   | 0.8112    | interior peak (post-fix); 7% gap |
-| diag-scaled-lora | 3e-2   | 0.8153    | boundary-pinned, ablation only |
-| lin-lora         | 1e-2   | 0.8457    | boundary-pinned |
-| scaled-lora      | 1e-2   | 0.8744    | boundary-pinned |
-| psi-lora         | 1e-2   | 1.0446    | boundary-pinned, lr-scaled-ρ fix in flight |
+| optimizer        | best η | eval loss | gap-to-AdamW | status |
+|------------------|--------|-----------|--------------|--------|
+| adam-lin-lora    | 1e-3   | **0.7564**| -0.2%        | interior peak |
+| adam-scaled-lora | 1e-3   | 0.7572    | -0.1%        | interior peak |
+| adamw            | 3e-4   | 0.7579    | (baseline)   | baseline |
+| muon-lora        | 3e-3   | 0.7675    | +1.3%        | interior peak (post-NS-fix) |
+| scaled-lora      | 3.0    | 0.7706    | +1.7%        | interior peak (η 4 orders above Adam regime) |
+| lin-lora         | 3.0    | 0.7776    | +2.6%        | interior peak |
+| kron-grad-lora   | 1e-3   | 0.7850    | +3.6%        | interior peak |
+| diag-scaled-lora | 3e-1   | 0.7901    | +4.2%        | interior peak |
+| galore-adamw     | 3e-4   | 0.8112    | +7.0%        | interior peak (post off-by-one fix) |
+| psi-lora         | 3e-3   | 0.8923    | +17.7%       | only 1/6 runs converge; small-η crashes |
 
 Reference: PEFT default initialization (B=0, A=Kaiming). All step-2000 numbers; eval set = 512 samples.
 
