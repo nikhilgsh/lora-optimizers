@@ -5,6 +5,41 @@ Each entry: motivation → action → result → next step. Newest entries on to
 
 ---
 
+## 2026-04-30 — PSI-LoRA momentum: code matches paper Algorithm 3 (with the right reading)
+
+**Motivation.** With α₁=0 case behaviorally verified, extended the test to α₁=0.9
+(paper's RoBERTa GLUE setting) to upgrade reproduction confidence to "matches reference
+in the canonical config used to produce the published numbers."
+
+**Discrepancy investigated.** Paper Algorithm 3 line 5 reads
+`Ŵ = U V^T − η Sᵀ X − η α₁ M(G)`  (gradient coeff −η, momentum coeff −η·α₁ — sum form).
+Reference code (`~/PSI-LoRA/src/oplora/optimizer.py:1053`) uses
+`coefficients=[1.0, -lr*(1.0 - beta1), -lr*beta1]`  (gradient coeff −η·(1-α₁),
+momentum coeff −η·α₁ — convex-combination form). These are not the same formula.
+
+**Resolution: follow the code, not the paper box.** The convex-combination form is the
+standard "SGD with EMA momentum" identity (`step = η · m_{t+1}` where
+`m_{t+1} = α₁·m_t + (1-α₁)·g`). It's also what produces the paper's numbers. The
+algorithm box is most plausibly a notational slip. Updated PSILoRA's coefficients
+to match the code: `[1.0, -lr·(1-α₁), -lr·α₁]`.
+
+**Other diffs found while extending the test.**
+- Reference inits the momentum buffer's "in" side via `torch.randn` (not scaled), zeros
+  on "out". Mine had `randn * 0.01`. Now matches the reference (unscaled randn).
+- Reference guards the momentum-buffer LoRSUM update with `if beta1 > 0.0` (skip update
+  when α₁=0). Mine ran the update unconditionally. Now matches the guard.
+
+**Verification.** Both α₁=0 and α₁=0.9 (paper GLUE default) configs pass:
+- α₁=0: step 1 max |Δw| = 3.7e-9; step 5 max = 2.0e-5
+- α₁=0.9: step 1 max |Δw| = 3.7e-9; step 5 max = 3.1e-5
+
+Both well under 1e-4 tolerance. Test committed at `scripts/verify_psilora_against_official.py`.
+
+**Resubmitted.** Job 6312401 (`psi_lora_2k`) with all PSI-LoRA fixes: lr-scaled ρ +
+proximal stability eps + lmbd clamp + momentum init + convex-combination coefficients.
+
+---
+
 ## 2026-04-30 — PSI-LoRA behavioral equivalence test, found two more bugs
 
 **Motivation.** After the GaLore behavioral test caught a real bug, ran the same exercise on PSI-LoRA against `~/PSI-LoRA/src/oplora/optimizer.py:ScaledOPLoraOptimizer` (diagonal K-FAC mode, the canonical Algorithm 3 config per `conf/optimizer/scaled_oplora.yaml`).
@@ -160,6 +195,6 @@ Original sweeps: `lr_sweep_2k` (5 LoRA-mode optimizers × 4 lrs), `optim_compare
 |--------------|-------------------|------------------------------|-----------|
 | Muon NS      | ✓ canonical Muon  | tests verify scale-invariance| modded-nanogpt |
 | GaLore       | ✓ vs `~/GaLore`   | ✓ behavioral match to 1.86e-9 over 12 steps + 2 refreshes (`scripts/verify_galore_against_official.py`) | jiaweizzhao/GaLore |
-| PSI-LoRA     | ✓ vs `~/PSI-LoRA` | ✓ behavioral match for α₁=0 (`scripts/verify_psilora_against_official.py`) — bit-exact single step, ~2e-5 cumulative drift over 5 steps. Momentum-on case still has a paper-vs-ref discrepancy on gradient/momentum coefficients. | zeligism/PSI-LoRA |
+| PSI-LoRA     | ✓ vs `~/PSI-LoRA` | ✓ behavioral match for α₁=0 AND α₁=0.9 (paper GLUE default) — bit-exact single step, ~3e-5 cumulative drift over 5 steps (`scripts/verify_psilora_against_official.py`). | zeligism/PSI-LoRA |
 
 If we want strong claims about reproduction, we need to run the reference codebase on equivalent settings and compare outputs.

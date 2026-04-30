@@ -80,6 +80,7 @@ OPTIMIZER_CHOICES = {
     "muon-lora",
     "product-muon-lora",
     "adam-muon-lora",
+    "adam-product-muon-lora",
     "diag-scaled-lora",
     "kron-grad-lora",
     "psi-lora",
@@ -1238,6 +1239,114 @@ class AdamMuonLoRA(Optimizer):
             B.grad.zero_()
 
 
+class AdamProductMuonLoRA(Optimizer):
+    """
+    H2 ⊗ H4 hybrid: ProductMuonLoRA's gauge-invariant geometry + Adam EMA on
+    the recovered factor updates.
+
+    Pipeline per pair, per step:
+      1. Z = (A Aᵀ + δI)⁻¹ A                       (rank-r right factor, gauge-inv)
+      2. left = (1/scale) · gB                     (no momentum yet — Adam acts later)
+      3. Build rank-r merged-direction proxy D = left @ Z, NS via factored form
+         (QR on left and Z.T, NS the small r×r core).
+      4. Sylvester-recover (precond_A, precond_B) such that B precond_A + precond_B A
+         ≈ NS-direction. Mirrors AdamLinLoRA.
+      5. Adam on (precond_A, precond_B): EMA m, v with bias correction; final
+         update is -lr · m̂/(√v̂ + ε).
+
+    Combines H2 (correct geometry) with H4 (Adam preconditioning, AFTER the
+    geometric solve a la AdamLinLoRA — not before).
+
+    Note: at B=0 init, Sylvester min-Frobenius sets precond_A = 0, so A doesn't
+    update until B grows. The lr_b_multiplier knob handles this.
+    """
+    def __init__(self, model, lr=3e-4, betas=(0.9, 0.999), eps=1e-8, ns_steps=5,
+                 alpha=16, rank=16, delta=1e-6, adapter_name=None, lr_b_multiplier=1.0):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.ns_steps = ns_steps
+        self.scale = alpha / rank
+        self.delta = delta
+        self.lr_b_multiplier = lr_b_multiplier
+        self.pair_state = {
+            i: {
+                "m_A": torch.zeros_like(A, dtype=torch.float32),
+                "v_A": torch.zeros_like(A, dtype=torch.float32),
+                "m_B": torch.zeros_like(B, dtype=torch.float32),
+                "v_B": torch.zeros_like(B, dtype=torch.float32),
+                "step": 0,
+            }
+            for i, (A, B) in enumerate(pairs)
+        }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("AdamProductMuonLoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            state["step"] += 1
+            t = state["step"]
+
+            gB = B.grad.float()
+            A_f = A.detach().float()
+            B_f = B.detach().float()
+            inv_scale = 1.0 / self.scale
+
+            SA = spdify(A_f @ A_f.T, self.delta)
+            Z = solve_spd(SA, A_f)
+            left = inv_scale * gB
+            right = Z
+
+            Q_L, R_L = torch.linalg.qr(left, mode="reduced")
+            Q_R, R_R = torch.linalg.qr(right.T, mode="reduced")
+            C = R_L @ R_R.T
+            if self.ns_steps > 0:
+                C_ns = _newton_schulz(C, self.ns_steps)
+            else:
+                C_ns = C
+
+            BtQ_L = B_f.T @ Q_L
+            QR_tAt = Q_R.T @ A_f.T
+            grad_A_eq = (BtQ_L @ C_ns) @ Q_R.T
+            grad_B_eq = Q_L @ (C_ns @ QR_tAt)
+
+            SB = spdify(B_f.T @ B_f, self.delta)
+            RHS = -(grad_A_eq @ A_f.T)
+            K = solve_sylvester(SB, SA, RHS)
+            termB = grad_B_eq + B_f @ K
+            precond_B = solve_spd(SA, termB.T).T
+            termA = grad_A_eq + K @ A_f
+            precond_A = solve_spd(SB, termA)
+
+            state["m_A"].mul_(self.beta1).add_(precond_A, alpha=1 - self.beta1)
+            state["m_B"].mul_(self.beta1).add_(precond_B, alpha=1 - self.beta1)
+            state["v_A"].mul_(self.beta2).addcmul_(precond_A, precond_A, value=1 - self.beta2)
+            state["v_B"].mul_(self.beta2).addcmul_(precond_B, precond_B, value=1 - self.beta2)
+            bc1 = 1 - self.beta1 ** t
+            bc2 = 1 - self.beta2 ** t
+            m_hat_A = state["m_A"] / bc1
+            m_hat_B = state["m_B"] / bc1
+            v_hat_A = state["v_A"] / bc2
+            v_hat_B = state["v_B"] / bc2
+            dA = -lr * m_hat_A / (v_hat_A.sqrt() + self.eps)
+            dB = -self.lr_b_multiplier * lr * m_hat_B / (v_hat_B.sqrt() + self.eps)
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
 class _HookLoRAOptimizer(Optimizer):
     """
     Base class for DiagScaledLoRA and KronGradLoRA.
@@ -1506,7 +1615,7 @@ class PSILoRA(_HookLoRAOptimizer):
                 # M_A: (r_m, d_in), M_B: (d_out, r_m). Init to small noise on M_A, zero on M_B
                 # (so their product is zero; matches paper's "M_t initialized to zero"
                 # while keeping M_A non-degenerate so the LoRSUM ALS doesn't collapse).
-                "M_A": torch.randn(r_m, A.shape[1], dtype=torch.float32, device=A.device).mul(0.01),
+                "M_A": torch.randn(r_m, A.shape[1], dtype=torch.float32, device=A.device),
                 "M_B": torch.zeros(B.shape[0], r_m, dtype=torch.float32, device=B.device),
             }
         super().__init__(
@@ -1567,7 +1676,14 @@ class PSILoRA(_HookLoRAOptimizer):
                 (X, S.T),
                 (M_A, M_B),
             ]
-            coeffs = [1.0, -lr, -lr * alpha1]
+            # Convex combination form (matches reference, NOT paper Algorithm 3):
+            # The reference uses [1.0, -lr·(1-α₁), -lr·α₁] for [weight, gradient,
+            # momentum]. Paper Algorithm 3 box says [1.0, -lr, -lr·α₁] (sum form),
+            # but the reference's ScaledOPLoraOptimizer.step() at
+            # ~/PSI-LoRA/src/oplora/optimizer.py:1053 uses convex combination —
+            # this is what produces the published numbers. With α₁=0 both forms
+            # collapse to [1.0, -lr, 0] and agree.
+            coeffs = [1.0, -lr * (1.0 - alpha1), -lr * alpha1]
 
             A_new, B_new = f_lorsum(
                 factors=factors,
@@ -1577,14 +1693,17 @@ class PSILoRA(_HookLoRAOptimizer):
                 gamma=self.gamma, delta=self.delta,
             )
 
-            # Update low-rank momentum: M ← LoRSUM([(M, M), (X, Sᵀ)], (α₁, 1-α₁); K, ρ)
-            M_A_new, M_B_new = lorsum(
-                factors=[(M_A, M_B), (X, S.T)],
-                coefficients=[alpha1, 1.0 - alpha1],
-                num_iters=K, lmbd=rho,
-            )
-            state["M_A"].copy_(M_A_new)
-            state["M_B"].copy_(M_B_new)
+            # Update low-rank momentum only when α₁ > 0 (matches reference
+            # ~/PSI-LoRA/src/oplora/optimizer.py:1069 guard "if beta1 > 0.0"):
+            # M ← LoRSUM([(M, M), (X, Sᵀ)], (α₁, 1-α₁); K, ρ).
+            if alpha1 > 0.0:
+                M_A_new, M_B_new = lorsum(
+                    factors=[(M_A, M_B), (X, S.T)],
+                    coefficients=[alpha1, 1.0 - alpha1],
+                    num_iters=K, lmbd=rho,
+                )
+                state["M_A"].copy_(M_A_new)
+                state["M_B"].copy_(M_B_new)
 
             # Write new factors back to the LoRA params.
             A.copy_(A_new.to(dtype=A.dtype, device=A.device))
@@ -1878,6 +1997,12 @@ def build_optimizer(
     if optimizer_type == "adam-muon-lora":
         return AdamMuonLoRA(
             model, lr=lr, ns_steps=muon_ns_steps,
+            lr_b_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "adam-product-muon-lora":
+        return AdamProductMuonLoRA(
+            model, lr=lr, ns_steps=muon_ns_steps,
+            alpha=muon_alpha, rank=muon_rank,
             lr_b_multiplier=lora_plus_multiplier,
         )
     if optimizer_type == "diag-scaled-lora":
