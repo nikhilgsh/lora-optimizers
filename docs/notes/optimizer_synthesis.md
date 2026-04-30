@@ -3,52 +3,6 @@
 **Goal:** find a LoRA-aware optimizer that strictly beats AdamW (0.7579 final
 eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
 
-## Code review pass (2026-04-30)
-
-Spot-checked the math in each optimizer class. Findings:
-
-- **`ScaledLoRA`** (line 97): `ΔA = -lr · S_B⁻¹ ∇A` and `ΔB = -lr · ∇B S_A⁻¹`
-  match the docstring. `solve_spd(SA, gB.T).T` correctly computes `∇B · S_A⁻¹`.
-  No bugs.
-- **`LinLoRA`** (line 158): Sylvester K with `S_B K + K S_A = -lr (∇A · Aᵀ)`,
-  ΔA and ΔB applied with negative signs as descent directions. Matches the
-  paper formulation. No bugs.
-- **`AdamLinLoRA`** (line 226): Adam state on the *Sylvester-corrected*
-  direction (precond_A, precond_B). Bias correction applied. m̂/(√v̂+ε)
-  step with negative sign. lora_plus_multiplier on B. No bugs.
-- **`AdamScaledLoRA`** (line 400): Adam state on (S_B⁻¹∇A, ∇B·S_A⁻¹). Same
-  pattern as AdamLinLoRA. No bugs.
-- **`AdamScaledLoRAPost`** (line 548) + **`AdamLinLoRAPost`** (line 668):
-  RMS-align math is correct; geo_X computed lr-free, then rescaled by
-  ‖u‖/‖geo‖. **Minor diagnostic-only inconsistency**: AdamLinLoRAPost
-  bakes a negative sign into `geo_A = -solve_spd(SB, termA)` so the *logged*
-  `cos(geo_A, u_A)` is the negative of `cos(applied_step, plain_adamw_step)`.
-  AdamScaledLoRAPost does NOT bake the negative in, so its logged cos
-  matches `cos(applied_step, plain_adamw_step)` directly. This is a
-  presentation issue, not a behavioral bug — the actual updates are
-  correct. Earlier interpretation of `cos_A = -0.83` for *-lin-post in
-  the smoke output was correct (sign convention noted in transcript)
-  but the diagnostic should be standardized in a future cleanup.
-- **`AdamMuonLoRA`** (line 1304): Adam(m,v) on raw grads, then NS on
-  m̂/(√v̂+ε) per factor. lr_b_multiplier on B. ns_steps=0 path falls
-  through cleanly. No bugs.
-- **`MuonLoRA`** (line 1118): NS on momentum buffer per factor. Standard
-  Muon. No bugs.
-- **`PolarProductLoRA` / `AdamPolarProductLoRA`** (just added): math
-  matches theory line 622-660. Behavioral equivalence test passes
-  (orthogonal init reduces to per-factor polar). Smoke passed.
-  No bugs.
-- **Matrix-Adam variants** (line 805 / 884): n_total cached in pair_state,
-  mean-square v_pair correctly normalized. No bugs (the original sum-of-
-  squares bug was fixed in commit ac81bba).
-
-**Summary:** no behavioral bugs found in the optimizer math. The
-diagnostic-cos sign inconsistency in `AdamLinLoRAPost` is minor and
-doesn't affect any in-flight runs' optimizer behavior — only the
-*reported* cos values for that one optimizer should be sign-flipped
-when comparing against `*-scaled-post`. Worth standardizing in a
-future commit; not urgent.
-
 ## Methods tried — three-bucket organization
 
 ### Bucket 1: clear results, served as intel + launch points (closed)

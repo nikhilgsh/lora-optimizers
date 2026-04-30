@@ -636,14 +636,15 @@ class AdamScaledLoRAPost(Optimizer):
             dB = -lr * (uB_norm / gB_norm) * geo_B
 
             if self.log_diagnostics:
-                # For *-Post, plain-AdamW direction is u_A itself (Adam runs
-                # on raw ∇). cos(geo_A, u_A) directly answers "does the
-                # geometric solve install a direction different from AdamW?"
+                # cos(applied_step, plain-AdamW-direction). Plain AdamW would
+                # apply -lr·u_A; we compute cos(dA, -u_A) so the sign is
+                # consistent across Pre and Post variants regardless of
+                # whether the negative is baked into geo_X or the lr factor.
                 sa_min, sa_max = _spd_eig_extremes(SA)
                 sb_min, sb_max = _spd_eig_extremes(SB)
                 diag_records.append({
-                    "cos_A": _frob_cos(geo_A, u_A),
-                    "cos_B": _frob_cos(geo_B, u_B),
+                    "cos_A": _frob_cos(dA, -u_A),
+                    "cos_B": _frob_cos(dB, -u_B),
                     "norm_dA_post": float(dA.detach().to(torch.float32).norm()),
                     "norm_dA_adamw_eq": float(lr * uA_norm),
                     "norm_dB_post": float(dB.detach().to(torch.float32).norm()),
@@ -773,14 +774,13 @@ class AdamLinLoRAPost(Optimizer):
                 dB = self.lora_plus_multiplier * dB
 
             if self.log_diagnostics:
-                # Plain-AdamW direction is u_A itself (Adam runs on raw ∇).
-                # cos(geo_A, u_A) measures whether the Sylvester correction
-                # produces a direction different from AdamW's.
+                # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
+                # for sign-convention rationale.
                 sa_min, sa_max = _spd_eig_extremes(SA)
                 sb_min, sb_max = _spd_eig_extremes(SB)
                 diag_records.append({
-                    "cos_A": _frob_cos(geo_A, u_A),
-                    "cos_B": _frob_cos(geo_B, u_B),
+                    "cos_A": _frob_cos(dA, -u_A),
+                    "cos_B": _frob_cos(dB, -u_B),
                     "norm_dA_post": float(dA.detach().to(torch.float32).norm()),
                     "norm_dA_adamw_eq": float(lr * uA_norm),
                     "norm_dB_post": float(dB.detach().to(torch.float32).norm()),
@@ -1632,13 +1632,13 @@ class AdamPolarProductLoRA(Optimizer):
             dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
 
             if self.log_diagnostics:
-                # cos(geo, u) probes whether the polar-product step direction
-                # differs from plain-AdamW's direction (= u).
+                # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
+                # for sign-convention rationale.
                 sa_min, sa_max = _spd_eig_extremes(A.float() @ A.float().T)
                 sb_min, sb_max = _spd_eig_extremes(B.float().T @ B.float())
                 diag_records.append({
-                    "cos_A": _frob_cos(geo_A, u_A),
-                    "cos_B": _frob_cos(geo_B, u_B),
+                    "cos_A": _frob_cos(dA, -u_A),
+                    "cos_B": _frob_cos(dB, -u_B),
                     "norm_dA": float(dA.detach().norm()),
                     "norm_dA_adamw_eq": float(lr * uA_norm),
                     "norm_dB": float(dB.detach().norm()),
