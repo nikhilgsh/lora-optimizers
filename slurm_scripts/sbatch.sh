@@ -15,7 +15,7 @@ mkdir -p slurm_logs disbatch_logs
 source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl
 set -euo pipefail
 export PYTHONUNBUFFERED=1
-export WANDB_MODE=offline
+export WANDB_PROJECT=lora-sweeps
 export TOKENIZERS_PARALLELISM=false
 
 module load disBatch
