@@ -7,7 +7,7 @@ import sys
 import time
 
 import torch
-from datasets import DatasetDict, load_dataset
+from datasets import DatasetDict, load_dataset, load_from_disk
 from peft import LoraConfig, get_peft_model
 from torch.utils.data import DataLoader
 from transformers import (
@@ -173,8 +173,9 @@ def make_parser():
     parser.add_argument("--max_train_samples", type=int, default=4096)
     parser.add_argument("--max_eval_samples", type=int, default=512)
     parser.add_argument("--eval_fraction", type=float, default=0.05)
-    parser.add_argument("--max_steps", type=int, default=100)
-    parser.add_argument("--eval_every", type=int, default=25)
+    parser.add_argument("--data_dir", default=None, help="Pre-tokenized dataset dir (Arrow). Skips download + tokenization.")
+    parser.add_argument("--max_steps", type=int, default=500)
+    parser.add_argument("--eval_every", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--max_seq_length", type=int, default=512)
@@ -226,8 +227,12 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    train_raw, eval_raw = load_splits(args)
-    train_dataset, eval_dataset = tokenize_splits(train_raw, eval_raw, tokenizer, args)
+    if args.data_dir:
+        train_dataset = load_from_disk(os.path.join(args.data_dir, "train"))
+        eval_dataset = load_from_disk(os.path.join(args.data_dir, "eval"))
+    else:
+        train_raw, eval_raw = load_splits(args)
+        train_dataset, eval_dataset = tokenize_splits(train_raw, eval_raw, tokenizer, args)
     collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     train_loader = DataLoader(
         train_dataset,

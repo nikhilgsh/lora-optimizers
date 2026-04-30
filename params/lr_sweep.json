@@ -1,0 +1,6 @@
+{
+    "lr": ["3e-5", "1e-4", "3e-4", "1e-3"],
+    "optimizer": ["adamw"],
+    "lora_plus_multiplier": ["1.0"],
+    "seed": ["0"]
+}
