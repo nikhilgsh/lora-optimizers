@@ -58,12 +58,12 @@ moves to push further.
   Mechanistically the cleanest variant we have — uses both the LoRA
   product structure AND a spectrally-meaningful correction (polar) AND
   composes correctly with Adam (matrix-structural so v̂ doesn't erase).
-- **H5 matrix-Adam fixed** (job 6312759 in flight). η=1e-3 trending to 0.78
-  at step 1200; final pending. If it ties or marginally improves over the
-  *-Pre baseline at r=16, the r=64 variant (job 6313316 in flight) might
-  win since it preserves direction × extra rank dimensions. Caveat: by
-  the user's reframing, this trades Adam's per-coord stability — net is
-  uncertain.
+- ~~**H5 matrix-Adam fixed**~~: **moved to Bucket 1 — confirmed not
+  productive.** Final results: r=16 best 0.7744 (η=1e-3, 0.018 worse than
+  regular adam-lin-lora 0.7564); r=64 best 0.7723 (η=1e-3, 0.022 worse than
+  regular adam-scaled-lora at r=64 0.7506). Trading per-coord Adam for
+  direction-preservation costs more than it buys, in every regime tested.
+  User's reframing was correct.
 
 ### Bucket 3: theoretically promising but empirically weak — open mechanism
 
