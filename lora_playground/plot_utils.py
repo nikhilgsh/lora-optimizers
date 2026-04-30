@@ -21,8 +21,20 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 DIVERGE_THRESHOLD = 1.5
+
+# Legend placement: outside the right edge of the panel. fontsize tuned so
+# 8-12 entries fit a (~6-inch-tall) panel without overflowing.
 LEGEND_KW = dict(loc="center left", bbox_to_anchor=(1.02, 0.5),
-                 fontsize=8, frameon=True)
+                 fontsize=10, frameon=True)
+
+# Shared marker/line sizes so all sections look uniform.
+MARKER_SIZE = 4
+LINE_WIDTH = 2.0
+REF_LINE_WIDTH = 1.5
+
+# Default figure size for the standardized 2-panel sweep figure. (18, 6) gives
+# enough horizontal room for legends placed outside the right panel.
+DEFAULT_FIGSIZE = (18, 6)
 
 
 # ─── data loading ─────────────────────────────────────────────────────────────
@@ -152,7 +164,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
     """
     if hlines:
         for label, y, color in hlines:
-            ax.axhline(y, color=color, ls=":", lw=1.5, label=label)
+            ax.axhline(y, color=color, ls=":", lw=REF_LINE_WIDTH, label=label)
 
     groups = sorted({group_key_fn(c) for c, _ in runs})
     for g in groups:
@@ -161,7 +173,8 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         if rows:
             ax.plot([r[0] for r in rows], [r[1] for r in rows],
                     color=color_map.get(g, "grey"),
-                    marker="o", lw=1.5, label=g)
+                    marker="o", markersize=MARKER_SIZE,
+                    lw=LINE_WIDTH, label=g)
     ax.set_xscale("log")
     ax.set_xlabel("η (log)"); ax.set_ylabel("Final eval loss")
     ax.grid(True, alpha=0.3, which="both")
@@ -183,7 +196,7 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
     if ref_curves:
         for label, evs, color, ls in ref_curves:
             ax.plot([e["step"] for e in evs], [e["eval_loss"] for e in evs],
-                    color=color, lw=1.5, ls=ls,
+                    color=color, lw=REF_LINE_WIDTH, ls=ls,
                     label=f"{label} (final={evs[-1]['eval_loss']:.4f})")
 
     best = {}
@@ -195,7 +208,7 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
     for g, (cfg, evs, fl) in sorted(best.items(), key=lambda kv: kv[1][2]):
         ax.plot([e["step"] for e in evs], [e["eval_loss"] for e in evs],
                 color=color_map.get(g, "grey"),
-                marker="o", markersize=3, lw=1.5,
+                marker="o", markersize=MARKER_SIZE, lw=LINE_WIDTH,
                 label=f"{g} (η={cfg['lr']:.0e}, final={fl:.4f})")
     ax.set_xlabel("Step"); ax.set_ylabel("Eval loss")
     ax.grid(True, alpha=0.3)
@@ -210,13 +223,18 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
                            hlines: list[tuple] | None = None,
                            ref_curves: list[tuple] | None = None,
                            threshold: float = DIVERGE_THRESHOLD,
-                           figsize: tuple = (16, 5),
+                           figsize: tuple = DEFAULT_FIGSIZE,
                            x_tick_step: int = 200,
                            left_title: str = "Final eval loss vs η, per group",
                            right_title: str = "Best η per group — training curves",
                            label_fn: Callable[[dict], str] | None = None):
     """Build the standardized 2-panel sweep figure with diverged-run filtering.
     Reports diverged runs on stdout, returns (fig, axes, n_kept, n_dropped).
+
+    Layout: left panel has η-vs-final-loss (legend suppressed — same colors
+    as the right panel which carries the descriptive labels). Right panel
+    has best-η training curves with descriptive legend (group, η, final
+    loss) placed outside on the right.
     """
     keep, drop = split_diverged(runs, threshold)
     if drop:
@@ -226,7 +244,7 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
 
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     plot_eta_vs_final(axes[0], keep, group_key_fn, color_map,
-                      hlines=hlines, title=left_title)
+                      hlines=hlines, title=left_title, legend=False)
     plot_best_eta_curves(axes[1], keep, group_key_fn, color_map,
                          ref_curves=ref_curves, title=right_title,
                          x_tick_step=x_tick_step)
