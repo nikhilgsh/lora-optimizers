@@ -1,3 +1,6 @@
+import json
+import statistics
+
 import torch
 from torch.optim import AdamW, Optimizer, SGD
 
@@ -11,6 +14,58 @@ from .utils import (
     spdify,
     truncated_svd,
 )
+
+
+def _adamw_side_step(grad, m_raw, v_raw, beta1, beta2, eps, step, lr):
+    """Side-channel AdamW step on raw `grad`. Mutates `m_raw`, `v_raw` in place
+    and returns -lr * m̂/(√v̂+ε) — i.e. what plain AdamW would apply at this
+    step given the same lr. Used by H1 diagnostics to compare against the
+    geometrically-preconditioned step that the host optimizer applies.
+    """
+    g32 = grad.detach().to(dtype=torch.float32)
+    m_raw.mul_(beta1).add_(g32, alpha=1.0 - beta1)
+    v_raw.mul_(beta2).addcmul_(g32, g32, value=1.0 - beta2)
+    bc1 = 1.0 - beta1 ** step
+    bc2 = 1.0 - beta2 ** step
+    m_hat = m_raw / bc1
+    v_hat = v_raw / bc2
+    return -lr * m_hat / (v_hat.sqrt() + eps)
+
+
+def _frob_cos(a, b):
+    af = a.detach().to(torch.float32).flatten()
+    bf = b.detach().to(torch.float32).flatten()
+    na = float(af.norm())
+    nb = float(bf.norm())
+    if na < 1e-30 or nb < 1e-30:
+        return float("nan")
+    return float((af @ bf) / (na * nb))
+
+
+def _spd_eig_extremes(M):
+    ev = torch.linalg.eigvalsh(M.to(torch.float32))
+    return float(ev[0]), float(ev[-1])
+
+
+def _emit_optim_diagnostics(step_count, per_pair_records):
+    """Aggregate per-pair diagnostic records and emit one JSONL `optim_step` event.
+
+    Each record is a flat dict of float-valued stats; we report median/min/max
+    across pairs to keep log size bounded.
+    """
+    if not per_pair_records:
+        return
+    keys = list(per_pair_records[0].keys())
+    payload = {"event": "optim_step", "step": int(step_count), "n_pairs": len(per_pair_records)}
+    for k in keys:
+        vals = [r[k] for r in per_pair_records if r[k] == r[k]]  # drop NaN
+        if not vals:
+            payload[k + "_median"] = float("nan")
+            continue
+        payload[k + "_median"] = statistics.median(vals)
+        payload[k + "_min"] = min(vals)
+        payload[k + "_max"] = max(vals)
+    print(json.dumps(payload, sort_keys=True), flush=True)
 
 OPTIMIZER_CHOICES = {
     "adamw",
@@ -178,7 +233,7 @@ class AdamLinLoRA(Optimizer):
             Δθ = -lr * m̂_t / (√v̂_t + ε)
     where S_A = A A^T + δ I and S_B = B^T B + δ I.
     """
-    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0):
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0, log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -189,19 +244,30 @@ class AdamLinLoRA(Optimizer):
         self.eps = eps
         self.beta1, self.beta2 = betas
         self.lora_plus_multiplier = lora_plus_multiplier
-        
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+
         # Initialize state: first and second moments for each (A, B) pair
         # Use pair_state to avoid conflicts with PyTorch's Optimizer.state
         self.pair_state = {}
         self.gammas = []
         for i, (A, B) in enumerate(pairs):
-            self.pair_state[i] = {
+            entry = {
                 'm_A': torch.zeros_like(A, dtype=torch.float32),
                 'v_A': torch.zeros_like(A, dtype=torch.float32),
                 'm_B': torch.zeros_like(B, dtype=torch.float32),
                 'v_B': torch.zeros_like(B, dtype=torch.float32),
                 'step': 0,
             }
+            if log_diagnostics:
+                # Side-channel raw-grad Adam state for cosine comparison vs the
+                # geometrically-preconditioned step actually applied. Only
+                # allocated when diagnostics are enabled.
+                entry['m_A_raw'] = torch.zeros_like(A, dtype=torch.float32)
+                entry['v_A_raw'] = torch.zeros_like(A, dtype=torch.float32)
+                entry['m_B_raw'] = torch.zeros_like(B, dtype=torch.float32)
+                entry['v_B_raw'] = torch.zeros_like(B, dtype=torch.float32)
+            self.pair_state[i] = entry
 
             r, d_in = A.shape
             if scaled_metric:
@@ -226,6 +292,7 @@ class AdamLinLoRA(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
 
         for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
             if A.grad is None or B.grad is None:
@@ -275,11 +342,42 @@ class AdamLinLoRA(Optimizer):
             dA = -lr * m_hat_A / (v_hat_A.sqrt() + self.eps)
             dB = -self.lora_plus_multiplier * lr * m_hat_B / (v_hat_B.sqrt() + self.eps)
 
+            if self.log_diagnostics:
+                # H1 probe: side-compute the plain-AdamW step on the same raw
+                # gradient (independent m,v state), then compare directions.
+                dA_raw = _adamw_side_step(
+                    gA, state['m_A_raw'], state['v_A_raw'],
+                    self.beta1, self.beta2, self.eps, state['step'], lr,
+                )
+                dB_raw = _adamw_side_step(
+                    gB, state['m_B_raw'], state['v_B_raw'],
+                    self.beta1, self.beta2, self.eps, state['step'], lr,
+                )
+                sa_min, sa_max = _spd_eig_extremes(SA)
+                sb_min, sb_max = _spd_eig_extremes(SB)
+                diag_records.append({
+                    "cos_A": _frob_cos(dA, dA_raw),
+                    "cos_B": _frob_cos(dB, dB_raw),
+                    "norm_dA_lin": float(dA.detach().to(torch.float32).norm()),
+                    "norm_dA_raw": float(dA_raw.detach().norm()),
+                    "norm_dB_lin": float(dB.detach().to(torch.float32).norm()),
+                    "norm_dB_raw": float(dB_raw.detach().norm()),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                    "SA_min": sa_min, "SA_max": sa_max,
+                    "SB_min": sb_min, "SB_max": sb_max,
+                })
+
             # Apply the update, cast back to parameter dtype/device
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
             B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
 
 
 class AdamScaledLoRA(Optimizer):
@@ -295,7 +393,7 @@ class AdamScaledLoRA(Optimizer):
         v_t = β₂ v_{t-1} + (1-β₂) v_t²
         Δθ = -lr * m_t / (√v_t + ε)
     """
-    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None):
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -305,18 +403,26 @@ class AdamScaledLoRA(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
-        
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+
         # Initialize state: first and second moments for each (A, B) pair
         # Use pair_state instead of state to avoid conflicts with PyTorch's Optimizer.state
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
-            self.pair_state[i] = {
+            entry = {
                 'm_A': torch.zeros_like(A, dtype=torch.float32),
                 'v_A': torch.zeros_like(A, dtype=torch.float32),
                 'm_B': torch.zeros_like(B, dtype=torch.float32),
                 'v_B': torch.zeros_like(B, dtype=torch.float32),
                 'step': 0,
             }
+            if log_diagnostics:
+                entry['m_A_raw'] = torch.zeros_like(A, dtype=torch.float32)
+                entry['v_A_raw'] = torch.zeros_like(A, dtype=torch.float32)
+                entry['m_B_raw'] = torch.zeros_like(B, dtype=torch.float32)
+                entry['v_B_raw'] = torch.zeros_like(B, dtype=torch.float32)
+            self.pair_state[i] = entry
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -334,6 +440,7 @@ class AdamScaledLoRA(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -374,11 +481,40 @@ class AdamScaledLoRA(Optimizer):
             dA = -lr * m_hat_A / (v_hat_A.sqrt() + self.eps)
             dB = -lr * m_hat_B / (v_hat_B.sqrt() + self.eps)
 
+            if self.log_diagnostics:
+                dA_raw = _adamw_side_step(
+                    gA, state['m_A_raw'], state['v_A_raw'],
+                    self.beta1, self.beta2, self.eps, state['step'], lr,
+                )
+                dB_raw = _adamw_side_step(
+                    gB, state['m_B_raw'], state['v_B_raw'],
+                    self.beta1, self.beta2, self.eps, state['step'], lr,
+                )
+                sa_min, sa_max = _spd_eig_extremes(SA)
+                sb_min, sb_max = _spd_eig_extremes(SB)
+                diag_records.append({
+                    "cos_A": _frob_cos(dA, dA_raw),
+                    "cos_B": _frob_cos(dB, dB_raw),
+                    "norm_dA_lin": float(dA.detach().to(torch.float32).norm()),
+                    "norm_dA_raw": float(dA_raw.detach().norm()),
+                    "norm_dB_lin": float(dB.detach().to(torch.float32).norm()),
+                    "norm_dB_raw": float(dB_raw.detach().norm()),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                    "SA_min": sa_min, "SA_max": sa_max,
+                    "SB_min": sb_min, "SB_max": sb_max,
+                })
+
             # Apply the update, cast back to parameter dtype/device
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
             B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
 
 class LoRAPlusAdamW(AdamW):
     """
@@ -541,13 +677,19 @@ class MuonLoRA(Optimizer):
     Update rule per LoRA pair A ∈ ℝ^{r×d_in}, B ∈ ℝ^{d_out×r}:
         m_A ← β m_A + (1−β) G_A
         m_B ← β m_B + (1−β) G_B
-        A   ← A − lr · NS(m_A)
-        B   ← B − lr · NS(m_B)
+        A   ← A − lr · D(m_A)
+        B   ← B − m·lr · D(m_B)
+    where D = NS when ns_steps > 0 (orthogonalizing direction; canonical Muon),
+    and D = identity when ns_steps == 0 (raw momentum SGD; Tier-2 sanity check
+    isolating the contribution of the orthogonalization itself).
 
-    NS(X) gives orthonormal rows (or cols for tall X), preventing rank collapse
-    where a few singular values dominate and effective rank drops below r.
+    The lr_b_multiplier (m above) plays the LoRA+ role for Muon: PEFT inits
+    B=0, so B's update needs to grow faster than A's to make the linearized
+    weight update ΔW ≈ (α/r)(B·δA + δB·A) effective early in training. m=1
+    recovers vanilla Muon.
     """
-    def __init__(self, model, lr=3e-4, beta=0.95, ns_steps=5, adapter_name=None):
+    def __init__(self, model, lr=3e-4, beta=0.95, ns_steps=5, adapter_name=None,
+                 lr_b_multiplier=1.0):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -556,6 +698,7 @@ class MuonLoRA(Optimizer):
         self.pairs = pairs
         self.beta = beta
         self.ns_steps = ns_steps
+        self.lr_b_multiplier = lr_b_multiplier
         self.pair_state = {
             i: {
                 "m_A": torch.zeros_like(A, dtype=torch.float32),
@@ -578,10 +721,199 @@ class MuonLoRA(Optimizer):
             gB = B.grad.float()
             state["m_A"].mul_(self.beta).add_(gA, alpha=1 - self.beta)
             state["m_B"].mul_(self.beta).add_(gB, alpha=1 - self.beta)
-            dA = _newton_schulz(state["m_A"], self.ns_steps)
-            dB = _newton_schulz(state["m_B"], self.ns_steps)
+            if self.ns_steps > 0:
+                dA = _newton_schulz(state["m_A"], self.ns_steps)
+                dB = _newton_schulz(state["m_B"], self.ns_steps)
+            else:
+                dA = state["m_A"]
+                dB = state["m_B"]
             A.add_((-lr * dA).to(dtype=A.dtype, device=A.device))
-            B.add_((-lr * dB).to(dtype=B.dtype, device=B.device))
+            B.add_((-self.lr_b_multiplier * lr * dB).to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class ProductMuonLoRA(Optimizer):
+    """
+    ProductMuonLoRA: Muon on the merged-weight gradient projected onto the LoRA
+    subspace, then Sylvester-recovered into factor updates.
+
+    Mathematically (theory doc lemma at line 622, identity at line 660):
+        ΔW = polar(Ĝ) · V_A V_A^T
+    where Ĝ ∈ ℝ^{d_out × d_in} is the merged-weight gradient and V_A V_A^T is
+    the orthogonal projector onto the row-space of A. Equivalent rank-r
+    representation in terms of available factor gradients:
+        Ĝ V_A V_A^T = (r/α) · ∇_B · (A A^T + δI)^{-1} · A
+    (gauge-invariant under A → R A, B → B R^{-1} for any invertible R, since
+    A A^T transforms as R A A^T R^T and the R cancels).
+
+    Per pair, per step:
+      1. EMA-momentum the *merged-direction* proxy
+             D_t = (1/scale) · m_B · (A A^T + δI)^{-1} · A      (rank ≤ r, gauge-invariant)
+      2. Apply NS to D_t in factored form (the rank-r thin SVD: QR(m_B) and
+         QR((solve_spd(SA, A))^T), then NS the small r × r core).
+      3. Sylvester-recover (δA, δB) such that B δA + δB A = -lr · NS(D_t).
+         Reuses the exact path from AdamLinLoRA.
+
+    The ∇_A-channel is *not* used to construct D — it would re-introduce
+    gauge-dependence (B^T G doesn't have a clean gauge transform when
+    composed with B m_A). At B=0 init, ∇_A is also zero on the relevant
+    component, so dropping it costs nothing early; later, ∇_B carries the
+    full merged-gradient signal.
+
+    The lr_b_multiplier provides LoRA+ asymmetry — orthogonal to the
+    geometric correctness above, addresses the H1 (B=0 init) hypothesis.
+    """
+    def __init__(self, model, lr=3e-4, beta=0.95, ns_steps=5, alpha=16, rank=16,
+                 delta=1e-6, adapter_name=None, lr_b_multiplier=1.0):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.beta = beta
+        self.ns_steps = ns_steps
+        self.scale = alpha / rank
+        self.delta = delta
+        self.lr_b_multiplier = lr_b_multiplier
+        self.pair_state = {
+            i: {
+                # Momentum tracks the gauge-invariant merged-direction proxy D
+                # rather than raw factor gradients — this keeps the EMA itself
+                # gauge-invariant under A → R A.
+                "m_D": None,  # lazy-init at first step (need d_out, d_in)
+            }
+            for i, _ in enumerate(pairs)
+        }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("ProductMuonLoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            gB = B.grad.float()                                # (d_out, r)
+            A_f = A.detach().float()                           # (r, d_in)
+            B_f = B.detach().float()                           # (d_out, r)
+
+            # Build the gauge-invariant rank-r merged direction in factored form:
+            #     D = m_B_left · Z   where Z = (A A^T + δI)^{-1} A ∈ (r, d_in).
+            # Stash m_B_left = gB; momentum is on (m_B_left, Z) jointly via
+            # tracking the rank-r D itself in factored form. For simplicity and
+            # correctness, we EMA-update the d_out × r left factor (gB) while
+            # recomputing Z each step (it depends on current A, which moves).
+            SA = spdify(A_f @ A_f.T, self.delta)               # (r, r)
+            Z = solve_spd(SA, A_f)                             # (r, d_in)
+
+            # Track the merged-direction proxy D = (1/scale) gB Z. Momentum on
+            # gB (a gauge-invariant quantity in the column-space-of-B sense).
+            # NB: at B=0 init, gB is the only signal — exactly right.
+            inv_scale = 1.0 / self.scale
+            m_left = state.get("m_left")
+            if m_left is None:
+                m_left = torch.zeros_like(gB, dtype=torch.float32)
+                state["m_left"] = m_left
+            m_left.mul_(self.beta).add_(gB, alpha=1 - self.beta)
+            left = inv_scale * m_left                          # (d_out, r)
+            right = Z                                          # (r, d_in)
+
+            # NS on the rank-r product `left @ right` via thin QR + small NS.
+            Q_L, R_L = torch.linalg.qr(left, mode="reduced")          # (d_out, r), (r, r)
+            Q_R, R_R = torch.linalg.qr(right.T, mode="reduced")       # (d_in, r),  (r, r)
+            C = R_L @ R_R.T                                            # (r, r)
+            if self.ns_steps > 0:
+                C_ns = _newton_schulz(C, self.ns_steps)
+            else:
+                C_ns = C
+            # Target merged direction U = Q_L · C_ns · Q_R^T (rank ≤ r).
+
+            # Recover (δA, δB) by AdamLinLoRA's Sylvester least-squares:
+            #   want B δA + δB A = -lr · U  (linearized merged-weight prox).
+            # Compute grad-equivalents without forming U as a (d_out × d_in) matrix:
+            BtQ_L = B_f.T @ Q_L                                # (r, r)
+            QR_tAt = Q_R.T @ A_f.T                             # (r, r)
+            grad_A_eq = (BtQ_L @ C_ns) @ Q_R.T                 # (r, d_in)
+            grad_B_eq = Q_L @ (C_ns @ QR_tAt)                  # (d_out, r)
+
+            SB = spdify(B_f.T @ B_f, self.delta)               # (r, r)
+            RHS = -(grad_A_eq @ A_f.T)                         # (r, r)
+            K = solve_sylvester(SB, SA, RHS)                   # (r, r)
+            termB = grad_B_eq + B_f @ K                        # (d_out, r)
+            precond_B = solve_spd(SA, termB.T).T               # (d_out, r)
+            termA = grad_A_eq + K @ A_f                        # (r, d_in)
+            precond_A = solve_spd(SB, termA)                   # (r, d_in)
+
+            A.add_((-lr * precond_A).to(dtype=A.dtype, device=A.device))
+            B.add_((-self.lr_b_multiplier * lr * precond_B).to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class AdamMuonLoRA(Optimizer):
+    """
+    AdamMuonLoRA (Tier 4): Newton-Schulz applied to Adam's preconditioned
+    direction m̂/(√v̂+ε) instead of raw momentum. Decouples diagonal
+    preconditioning (Adam) from spectral capping (Muon). Per LoRA factor
+    independently — this is the cheap analog of AdamLinLoRA in Muon space.
+    """
+    def __init__(self, model, lr=3e-4, betas=(0.9, 0.999), eps=1e-8, ns_steps=5,
+                 adapter_name=None, lr_b_multiplier=1.0):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.ns_steps = ns_steps
+        self.lr_b_multiplier = lr_b_multiplier
+        self.pair_state = {
+            i: {
+                "m_A": torch.zeros_like(A, dtype=torch.float32),
+                "v_A": torch.zeros_like(A, dtype=torch.float32),
+                "m_B": torch.zeros_like(B, dtype=torch.float32),
+                "v_B": torch.zeros_like(B, dtype=torch.float32),
+                "step": 0,
+            }
+            for i, (A, B) in enumerate(pairs)
+        }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("AdamMuonLoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            state["step"] += 1
+            t = state["step"]
+            gA = A.grad.float()
+            gB = B.grad.float()
+            state["m_A"].mul_(self.beta1).add_(gA, alpha=1 - self.beta1)
+            state["m_B"].mul_(self.beta1).add_(gB, alpha=1 - self.beta1)
+            state["v_A"].mul_(self.beta2).addcmul_(gA, gA, value=1 - self.beta2)
+            state["v_B"].mul_(self.beta2).addcmul_(gB, gB, value=1 - self.beta2)
+            bc1 = 1 - self.beta1 ** t
+            bc2 = 1 - self.beta2 ** t
+            adam_A = (state["m_A"] / bc1) / ((state["v_A"] / bc2).sqrt() + self.eps)
+            adam_B = (state["m_B"] / bc1) / ((state["v_B"] / bc2).sqrt() + self.eps)
+            if self.ns_steps > 0:
+                dA = _newton_schulz(adam_A, self.ns_steps)
+                dB = _newton_schulz(adam_B, self.ns_steps)
+            else:
+                dA = adam_A
+                dB = adam_B
+            A.add_((-lr * dA).to(dtype=A.dtype, device=A.device))
+            B.add_((-self.lr_b_multiplier * lr * dB).to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
             B.grad.zero_()
 
@@ -875,7 +1207,13 @@ class PSILoRA(_HookLoRAOptimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        rho = self.proximal_rho
+        # CRITICAL: the proximal regularizer must be lr-scaled to match the
+        # reference (~/PSI-LoRA/src/oplora/optimizer.py LR_LMBD=True at line 27;
+        # every call to low_rank_sum/scaled_low_rank_sum passes
+        # `lr * self.defaults["lmbd"]`). Without this, at small lr the prox term
+        # dominates the gradient term and updates collapse — produces the
+        # lr-insensitive pathology where all small η give identical loss.
+        rho = lr * self.proximal_rho
         K = self.inner_iters
         alpha1 = self.momentum
 
@@ -1084,6 +1422,11 @@ def build_optimizer(
     psi_momentum_rank: int | None = None,
     galore_update_proj_gap: int = 200,
     galore_scale: float = 0.25,
+    muon_ns_steps: int = 5,
+    muon_alpha: int = 16,
+    muon_rank: int = 16,
+    log_optim_diagnostics: bool = False,
+    optim_diagnostics_every: int = 20,
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -1143,6 +1486,8 @@ def build_optimizer(
             betas=(0.9, 0.999),
             delta=1e-6,
             eps=1e-8,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-lin-lora":
         return AdamLinLoRA(
@@ -1153,9 +1498,25 @@ def build_optimizer(
             eps=1e-8,
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-lora":
-        return MuonLoRA(model, lr=lr)
+        return MuonLoRA(
+            model, lr=lr, ns_steps=muon_ns_steps,
+            lr_b_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "product-muon-lora":
+        return ProductMuonLoRA(
+            model, lr=lr, ns_steps=muon_ns_steps,
+            alpha=muon_alpha, rank=muon_rank,
+            lr_b_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "adam-muon-lora":
+        return AdamMuonLoRA(
+            model, lr=lr, ns_steps=muon_ns_steps,
+            lr_b_multiplier=lora_plus_multiplier,
+        )
     if optimizer_type == "diag-scaled-lora":
         return DiagScaledLoRA(
             model, lr=lr,

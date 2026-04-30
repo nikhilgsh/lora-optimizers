@@ -1,0 +1,1 @@
+{"lr": ["3e-2", "1e-1", "3e-1"], "optimizer": ["diag-scaled-lora", "lin-lora", "scaled-lora"], "lora_plus_multiplier": ["1.0"], "seed": ["0"]}
