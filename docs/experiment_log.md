@@ -5,6 +5,26 @@ Each entry: motivation → action → result → next step. Newest entries on to
 
 ---
 
+## 2026-04-30 — PSI-LoRA behavioral equivalence test, found two more bugs
+
+**Motivation.** After the GaLore behavioral test caught a real bug, ran the same exercise on PSI-LoRA against `~/PSI-LoRA/src/oplora/optimizer.py:ScaledOPLoraOptimizer` (diagonal K-FAC mode, the canonical Algorithm 3 config per `conf/optimizer/scaled_oplora.yaml`).
+
+**Found two more bugs.** With α₁=0 (momentum off, isolating the F-LoRSUM math), my port produced A_new = A_t exactly (no shrinkage with zero gradient + B=0 init). Reference produced A_new = 0.909·A_t. Tracing the discrepancy:
+1. **`_solve` adds an extra cholesky stability eps** (1e-6) on top of the proximal lmbd. So the effective LHS in the proximal solve is `gram + (lmbd + 1e-6)·I`, not just `gram + lmbd·I`. My port used `eps=lmbd` for both purposes, making them cancel in the rank-deficient case.
+2. **`lmbd = max(lmbd, 1e-5)` clamp** in the optimizer step (line 973). This makes the proximal regularizer floor at 1e-5 even at small lr where the lr-scaling would have made it tiny.
+
+These produce a small per-step shrinkage of weights when the gram is rank-deficient (early in training while B is small). With B=0 init, the shrinkage is ~9% on A per step — material, not numerical noise.
+
+**Fix.** `_solve_ridge` now takes `eps=lmbd + 1e-6` to match the ref's stability behavior. PSILoRA.step clamps `rho = max(lr * proximal_rho, 1e-5)`.
+
+**Verification.** With α₁=0, single-step weight diff is bit-exact (max |Δw| = 0.0). 5-step run drifts to ~2e-5 max (float32 numerical sensitivity in nested ALS solves). Both well under tolerance.
+
+**Caveat.** Test only validates α₁=0 case. With momentum on, there's a paper-vs-ref-impl discrepancy in the gradient-vs-momentum coefficient weighting (paper: `-η·g, -η·α₁·m`; ref: `-η·(1-α₁)·g, -η·α₁·m` — convex combination instead of sum). My code follows the paper. Resolving this requires reading the paper's appendix carefully or asking the authors. For now, test scope is the F-LoRSUM math + diagonal K-FAC stats, not the momentum convention.
+
+**Resubmitted.** Job 6312353. Test committed as `scripts/verify_psilora_against_official.py`.
+
+---
+
 ## 2026-04-30 — GaLore behavioral equivalence verified, found off-by-one bug
 
 **Motivation.** User flagged that the 7% gap between our GaLore (0.811) and AdamW LoRA (0.758) was concerning, and asked whether I'd actually run the official codebase to verify behavioral equivalence (I had only code-reviewed it).
@@ -140,6 +160,6 @@ Original sweeps: `lr_sweep_2k` (5 LoRA-mode optimizers × 4 lrs), `optim_compare
 |--------------|-------------------|------------------------------|-----------|
 | Muon NS      | ✓ canonical Muon  | tests verify scale-invariance| modded-nanogpt |
 | GaLore       | ✓ vs `~/GaLore`   | ✓ behavioral match to 1.86e-9 over 12 steps + 2 refreshes (`scripts/verify_galore_against_official.py`) | jiaweizzhao/GaLore |
-| PSI-LoRA     | ✓ vs `~/PSI-LoRA` | **NOT verified** — paper's claims hold on GLUE/SQUAD/WikiText, not OLMo+Magicoder | zeligism/PSI-LoRA |
+| PSI-LoRA     | ✓ vs `~/PSI-LoRA` | ✓ behavioral match for α₁=0 (`scripts/verify_psilora_against_official.py`) — bit-exact single step, ~2e-5 cumulative drift over 5 steps. Momentum-on case still has a paper-vs-ref discrepancy on gradient/momentum coefficients. | zeligism/PSI-LoRA |
 
 If we want strong claims about reproduction, we need to run the reference codebase on equivalent settings and compare outputs.

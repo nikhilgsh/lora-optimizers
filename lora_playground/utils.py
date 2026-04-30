@@ -128,14 +128,14 @@ def lorsum(factors, coefficients, num_iters=1, lmbd=1e-2, start_turn="A"):
             sum_A = A0f.mul(lmbd)
             for c, (factor_in, factor_out) in zip(coefficients, factors_f):
                 sum_A = sum_A + ((B_t.T @ factor_out) @ factor_in).mul(c)
-            A_t = _solve_ridge(B_t.T @ B_t, sum_A, eps=lmbd)  # (r, d_in)
+            A_t = _solve_ridge(B_t.T @ B_t, sum_A, eps=lmbd + 1e-6)  # (r, d_in)
         else:
             # B_new = (Ŵ A_tᵀ + ρ B₀) (A_t A_tᵀ + ρI)⁻¹
             # = ((A_t A_tᵀ + ρI)⁻¹ (A_t Ŵᵀ + ρ B₀ᵀ))ᵀ
             sum_B = B0f.mul(lmbd)
             for c, (factor_in, factor_out) in zip(coefficients, factors_f):
                 sum_B = sum_B + (factor_out @ (factor_in @ A_t.T)).mul(c)
-            B_t = _solve_ridge(A_t @ A_t.T, sum_B.T, eps=lmbd).T  # (d_out, r)
+            B_t = _solve_ridge(A_t @ A_t.T, sum_B.T, eps=lmbd + 1e-6).T  # (d_out, r)
 
     return A_t.to(dtype=out_dtype), B_t.to(dtype=out_dtype)
 
@@ -196,7 +196,7 @@ def f_lorsum(factors, coefficients, D_U, D_V, num_iters=1, lmbd=1e-2,
                 _, factor_out_j = factors_f[j]
                 sum_A = sum_A + ((B_t.T @ factor_out_j) @ p_in_j).mul(coefficients[j])
             gram = sB_t.T @ B_t                            # (r, r) ≈ Bᵀ M_U B
-            A_t = _solve_ridge(gram, sum_A, eps=lmbd)      # (r, d_in)
+            A_t = _solve_ridge(gram, sum_A, eps=lmbd + 1e-6)  # (r, d_in)
         else:
             # B_new computed via (gram⁻¹ rhsᵀ)ᵀ as in lorsum.
             sA_t = A_t * m_V.view(1, -1)                  # (r, d_in)
@@ -207,7 +207,7 @@ def f_lorsum(factors, coefficients, D_U, D_V, num_iters=1, lmbd=1e-2,
                 factor_in_j, _ = factors_f[j]
                 sum_B = sum_B + (p_out_j @ (factor_in_j @ A_t.T)).mul(coefficients[j])
             gram = A_t @ sA_t.T                            # (r, r) ≈ A M_V Aᵀ
-            B_t = _solve_ridge(gram, sum_B.T, eps=lmbd).T  # (d_out, r)
+            B_t = _solve_ridge(gram, sum_B.T, eps=lmbd + 1e-6).T  # (d_out, r)
 
     return A_t.to(dtype=out_dtype), B_t.to(dtype=out_dtype)
 
