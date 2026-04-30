@@ -152,6 +152,65 @@ def report_diverged(drop, label_fn: Callable[[dict], str]) -> None:
               f"max={max_loss(evs):.3f} final={evs[-1]['eval_loss']:.3f}")
 
 
+# ─── per-rank leaderboard bar chart ──────────────────────────────────────────
+
+def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
+                              color_map: dict | None = None,
+                              strict_win_offset: float = 0.01,
+                              suptitle: str = "Per-rank leaderboard"):
+    """Visual leaderboard: horizontal bar chart per rank, sorted ascending by
+    final eval. Baseline (default `adamw`) bars in black; strict-win bar
+    (1% below baseline floor) overlaid.
+
+    `best` is the dict returned by per-rank best-η aggregation:
+        best[(optimizer, r)] = (cfg, evs, final_eval).
+    """
+    import matplotlib.pyplot as plt
+    color_map = color_map or {}
+    baseline_floor = {r: best[(baseline_optimizer, r)][2]
+                      for (opt, r) in best if opt == baseline_optimizer}
+    ranks = sorted(baseline_floor)
+    fig, axes = plt.subplots(1, len(ranks), figsize=(9 * len(ranks), 5),
+                              sharex=False)
+    if len(ranks) == 1:
+        axes = [axes]
+    for ax, r_target in zip(axes, ranks):
+        floor = baseline_floor[r_target]
+        rows = sorted(
+            ((opt, fl) for ((opt, r), (cfg, evs, fl)) in best.items()
+             if r == r_target),
+            key=lambda x: x[1], reverse=True,
+        )
+        opts = [r[0] for r in rows]
+        losses = [r[1] for r in rows]
+        colors = ["black" if o == baseline_optimizer else color_map.get(o, "grey")
+                  for o in opts]
+        ax.barh(range(len(opts)), losses, color=colors,
+                edgecolor="black", linewidth=0.5)
+        for i, (opt, fl) in enumerate(rows):
+            delta = fl - floor
+            flag = "✓" if delta < -0.005 else ("≈" if abs(delta) < 0.005 else "✗")
+            ax.text(fl + 0.001, i, f"{fl:.4f} (Δ={delta:+.4f}) {flag}",
+                    va="center", fontsize=10)
+        ax.axvline(floor, color="black", lw=2, ls=":",
+                   label=f"{baseline_optimizer} r={r_target} floor = {floor:.4f}")
+        ax.axvline(floor - strict_win_offset, color="grey", lw=1.5, ls="--",
+                   label=f"strict-win bar = {floor - strict_win_offset:.4f}  "
+                         f"({strict_win_offset*100:.0f}% below floor)")
+        ax.set_yticks(range(len(opts)))
+        ax.set_yticklabels(opts, fontsize=10)
+        ax.set_xlabel("Final eval loss")
+        ax.set_title(f"r = {r_target}  —  best-η per optimizer")
+        ax.legend(loc="lower right", fontsize=9)
+        ax.grid(True, axis="x", alpha=0.3)
+        xmin = min(losses + [floor - 0.012])
+        xmax = max(losses) + 0.025
+        ax.set_xlim(xmin, xmax)
+    fig.suptitle(suptitle)
+    fig.tight_layout()
+    return fig, axes
+
+
 # ─── standardized 2-panel figure ──────────────────────────────────────────────
 
 def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
@@ -257,6 +316,17 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
     plot_best_eta_curves(axes[1], keep, group_key_fn, color_map,
                          ref_curves=ref_curves, title=right_title,
                          x_tick_step=x_tick_step)
+    # Distinguished AdamW baseline: any line whose group label starts with
+    # "adamw" gets bumped to thick black so the preferred baseline pops
+    # visually in every section that uses this helper. Applied after both
+    # subplots are drawn so it overrides their per-line color/lw choices.
+    for ax in axes:
+        for line in ax.get_lines():
+            label = (line.get_label() or "").lower()
+            if label.startswith("adamw"):
+                line.set_linewidth(3.0)
+                line.set_color("black")
+                line.set_zorder(10)
     if suptitle:
         # Note total run count + filtered count in the suptitle.
         full_title = f"{suptitle} ({len(keep)}/{len(runs)} converged"

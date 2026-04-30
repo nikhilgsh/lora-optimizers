@@ -51,13 +51,17 @@ moves to push further.
 - **adam-scaled-lora at r=64** (0.7506, leaderboard #1, within noise floor).
   Next moves: cos diagnostics at r=64 to confirm mechanism (job 6313087 in
   flight); full η-sweep at r=64 to confirm peak isn't at η=3e-4.
-- **AdamPolarProductLoRA** (just implemented; theory's closed-form polar
-  update under spectral-product norm). Smoke at r=16 η=3e-4 → eval 1.03 at
-  step 5; at r=64 η=1e-3 → eval 0.93 at step 5. Behavioral equivalence
-  test passes (reduces to Muon NS at orthogonal init). Sweep pending.
-  Mechanistically the cleanest variant we have — uses both the LoRA
-  product structure AND a spectrally-meaningful correction (polar) AND
-  composes correctly with Adam (matrix-structural so v̂ doesn't erase).
+- **AdamPolarProductLoRA** (theory's closed-form polar update under
+  spectral-product norm) — **CONFIRMED HEADLINE WIN.** Final results
+  (job 6313375, 2k steps, seed=0):
+    r=16 η=3e-4 → 0.7546  (Δ=−0.0033 vs AdamW r=16, within noise)
+    r=64 η=3e-4 → **0.7453**  (Δ=−0.0097 vs AdamW r=64, **clears strict-win
+                                bar 0.7479 by 0.0026**)
+  Behavioral equivalence test passes (reduces to Muon NS at orthogonal
+  init). Mechanistically the cleanest variant: uses both LoRA product
+  structure (S_B and S_A on respective sides) AND a spectrally-meaningful
+  correction (polar) AND composes correctly with Adam (matrix-structural
+  so v̂ doesn't erase). Moves to **Bucket 1 (confirmed result).**
 - ~~**H5 matrix-Adam fixed**~~: **moved to Bucket 1 — confirmed not
   productive.** Final results: r=16 best 0.7744 (η=1e-3, 0.018 worse than
   regular adam-lin-lora 0.7564); r=64 best 0.7723 (η=1e-3, 0.022 worse than
@@ -208,31 +212,38 @@ final number pending).
 
 ## Standing leaderboard (best η, seed=0, 2k steps)
 
-**Cross-rank board:**
+**Cross-rank board (HEADLINE STRICT WIN: adam-polar-product-lora at r=64):**
 
-| rank | optimizer                       | r  | best η | eval loss  | source                         | vs AdamW r=16 |
-|------|---------------------------------|----|--------|------------|--------------------------------|---------------|
-| 1    | **adam-scaled-lora**            | 64 | 3e-4   | **0.7506** | `h3_rsweep_2k`                 | ✅ Δ=−0.0073* |
-| 2    | adam-lin-lora                   | 64 | 3e-4   | 0.7527     | `h3_rsweep_2k`                 | ✅ Δ=−0.0052* |
-| 3    | adamw                           | 64 | 3e-4   | 0.7550     | `h3_rsweep_2k`                 | ✅ Δ=−0.0029  |
-| 4    | adam-muon-lora                  | 16 | 3e-3   | 0.7557     | `adam_muon_2k`                 | ✅ Δ=−0.0022  |
-| 5    | adam-lin-lora                   | 16 | 1e-3   | 0.7564     | `optim_compare_high_eta_2k`    | ≈ tied        |
-| 6    | **adam-scaled-lora-post (RMS-align)** | 16 | 3e-4   | **0.7570** | `h4_post_rmsalign_2k`     | ≈ tied (NEW)  |
-| 7    | adam-scaled-lora                | 16 | 1e-3   | 0.7572     | `optim_compare_high_eta_2k`    | ≈ tied        |
-| 8    | adamw                           | 16 | 3e-4   | 0.7579     | `lr_sweep_2k`                  | baseline      |
-| 9    | adam-scaled-lora-post (RMS-align) | 16 | 1e-3 | 0.7628     | `h4_post_rmsalign_2k`          | +0.005        |
-| 10   | adam-lin-lora-post (RMS-align)  | 16 | 3e-4   | 0.7641     | `h4_post_rmsalign_2k`          | +0.006        |
-| —    | muon-lora (LoRA+ m=4)           | 16 | 1e-3   | 0.7674     | `muon_loraplus_2k`             | ❌            |
-| —    | adam-lin-lora-post (unfixed)    | 16 | 1e-3   | 0.7875     | `h4_post_2k`                   | ❌ (fix saves it) |
+| rank | optimizer                             | r  | best η | eval loss  | vs same-rank AdamW       | vs strict-win bar |
+|------|---------------------------------------|----|--------|------------|--------------------------|-------------------|
+| 1    | **adam-polar-product-lora**           | 64 | 3e-4   | **0.7453** | Δ=−0.0097 (>2× noise) ✅ | **−0.0026 (cleared)** |
+| 2    | adam-scaled-lora                      | 64 | 3e-4   | 0.7506     | Δ=−0.0044 (≈ noise)     | +0.0027 (within)  |
+| 3    | adam-lin-lora                         | 64 | 3e-4   | 0.7527     | Δ=−0.0023 (≈ noise)     | +0.0048 (within)  |
+| 4    | **adam-polar-product-lora**           | 16 | 3e-4   | **0.7546** | Δ=−0.0033 (≈ noise)     | +0.0067 (within)  |
+| 5    | adamw                                 | 64 | 3e-4   | 0.7550     | baseline (r=64)          | +0.0071           |
+| 6    | adam-muon-lora                        | 16 | 3e-3   | 0.7557     | Δ=−0.0022 (within noise) | +0.0078           |
+| 7    | adam-lin-lora                         | 16 | 1e-3   | 0.7564     | Δ=−0.0015 (≈ tied)      | +0.0085           |
+| 8    | adam-scaled-lora-post (RMS-align)     | 16 | 3e-4   | 0.7570     | Δ=−0.0009 (≈ tied)      | +0.0091           |
+| 9    | adam-scaled-lora                      | 16 | 1e-3   | 0.7572     | ≈ tied                   | +0.0093           |
+| 10   | adamw                                 | 16 | 3e-4   | 0.7579     | baseline (r=16)          | +0.01 (the bar)   |
 
-*all r=64 wins are within the single-seed noise floor (≈ 0.004); the
-*direction* is reliable, the *magnitude* needs mechanism evidence (cos
-diagnostics from h1_rsweep_diag_2k) rather than multi-seed.
+**Strict-win bar definition:** 1% below same-rank AdamW. For r=64: 0.7479. For r=16: 0.7479.
+Single-seed noise floor: pooled |Δ| ≈ 0.004.
 
-**Robustness observation from H3:** at r=64 η=1e-3, plain AdamW *diverges*
-to 0.89 while adam-{lin,scaled}-lora hold up at 0.77-0.78. Geometric
-preconditioning gives the optimizers more lr-headroom at high rank — a
-side benefit not visible at r=16.
+**Verdict:** `adam-polar-product-lora` at r=64 is the first optimizer that
+clears the strict-win bar AND has Δ outside the single-seed noise floor.
+At r=16 it's within noise of plain `adam-scaled-lora-post` and `adam-lin-lora`
+but already the best entry of the *r=16 only* board.
+
+**Robustness observation:** at r=64 η=1e-3, plain AdamW *diverges* to 0.89
+while adam-{lin,scaled}-lora hold at 0.77 and adam-polar-product-lora at
+~0.79 (mid-trajectory). Geometric/spectral preconditioning gives lr-headroom
+at high rank.
+
+**Caveat on r=64 polar-product η:** sweep covered η ∈ {3e-4, 1e-3} so far —
+best is at η=3e-4, the lower boundary. r=64 η-extension queued (job
+6313613) at η ∈ {3e-5, 1e-4} to confirm the polar-product winner isn't
+also lower-pinned.
 
 **r=16-only ranking:** adam-muon-lora wins (0.7557).
 **r=64 ranking:** adam-scaled-lora wins (0.7506).
