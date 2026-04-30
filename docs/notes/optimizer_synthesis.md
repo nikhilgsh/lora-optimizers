@@ -211,6 +211,69 @@ structurally meaningless).
 
 ---
 
+## Parallel work — relevant arxiv papers (downloaded to docs/papers/)
+
+### AdaMuon (arxiv 2507.11005v3, SJTU + Xiaohongshu, Dec 2025)
+
+The closest existing variant to our `muon-adam-lora` (currently failing on
+our LoRA setup) — but with three details we got wrong, any one of which
+could explain the gap. Algorithm 1 from the paper:
+
+```
+M_t = β·M_{t-1} + G_t                        # plain SGD momentum
+O_t = NewtonSchulz(sign(M_t), T)             # NS on SIGN of momentum
+V_t = β·V_{t-1} + (1−β)·O_t ⊙ O_t            # element-wise v on NS output
+Õ_t = O_t ⊘ (√V_t + ε)                       # variance-adapt
+γ_t = 0.2·√(mn) / ‖Õ_t‖_F                    # RMS-align to Adam magnitude
+W_{t+1} = W_t − η·(γ_t·Õ_t + λ·W_t)
+```
+
+Three differences vs our `muon-adam-lora` (NS → Adam):
+1. **sign(M) before NS** — stabilizes NS input so post-NS magnitudes are
+   bounded. We feed raw ∇ (or raw M) into NS.
+2. **v on O_t only (not full Adam)** — they don't run Adam's m on the NS
+   output, just second-moment normalization. We do full Adam(m,v).
+3. **RMS-aligned step** with γ_t — sets ‖step‖_F to a target so Adam's lr
+   transfers. We don't.
+
+Claim: 40%+ training-efficiency gain over Adam at pretraining scale.
+
+**Implication for us:** "NS → Adam" can work, our implementation is
+underpowered. A faithful AdaMuon port is a clear next experiment.
+
+### NorMuon (arxiv 2510.05491v1, Georgia Tech + Microsoft, Oct 2025)
+
+Different diagnosis, same broad mechanism. Observation: after NS,
+*singular values* of the update matrix are equalized (low matrix condition
+number) but *per-row L² norms* still have high variance — some neurons
+dominate. Fix: per-neuron (row-wise) second-order adaptive learning rates
+on top of Muon orthogonalization.
+
+This is the third granularity point on the variance-tracking axis we
+haven't tried:
+
+| granularity        | example optimizer      | adapts                    |
+|--------------------|------------------------|---------------------------|
+| per-element        | adam-muon-lora, AdaMuon| each parameter coord      |
+| **per-row/neuron** | **NorMuon**            | each output unit          |
+| per-pair (matrix)  | adam-lin-lora-matrix   | (A, B) pair (one scalar)  |
+
+For LoRA factors A: (r, d_in), B: (d_out, r) the row dimensions are r and
+d_out — so per-row Adam on A is per-LoRA-direction, per-row Adam on B is
+per-output-neuron. Cheap to add to our framework.
+
+Claims: 21.74% over Adam, 11.31% over Muon at 1.1B pretraining.
+
+### Caveat on transfer
+
+Both papers measure pretraining efficiency on 1.1B-class models with
+hundreds of billions of tokens. We measure final eval-loss after a 2k-step
+LoRA fine-tune (effectively ~1M tokens). The *direction* of the gain
+(Muon-family ≥ Adam) should transfer; the *magnitude* of the gain almost
+certainly does not — fine-tuning regimes are dominated by Adam's variance
+adaptation in ways pretraining is not. Useful for design-space mapping,
+not for predicting headline numbers.
+
 ## Open questions
 
 1. **Does H5 (matrix-Adam) save the geometry → Adam family?** With per-pair

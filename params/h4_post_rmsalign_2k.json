@@ -1,0 +1,1 @@
+{"lr": ["3e-4", "1e-3"], "optimizer": ["adam-lin-lora-post", "adam-scaled-lora-post"], "lora_plus_multiplier": ["1.0"], "seed": ["0"]}

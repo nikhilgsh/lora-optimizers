@@ -539,7 +539,7 @@ class AdamScaledLoRAPost(Optimizer):
     """
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
-                 eps=1e-8, adapter_name=None):
+                 eps=1e-8, adapter_name=None, log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -549,6 +549,8 @@ class AdamScaledLoRAPost(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
 
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
@@ -567,6 +569,7 @@ class AdamScaledLoRAPost(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -592,13 +595,52 @@ class AdamScaledLoRAPost(Optimizer):
             # Gram solve applied to the Adam direction, NOT the raw gradient.
             SB = spdify(B.T @ B, self.delta)
             SA = spdify(A @ A.T, self.delta)
-            dA = -lr * solve_spd(SB, u_A)
-            dB = -lr * solve_spd(SA, u_B.T).T
+            geo_A = solve_spd(SB, u_A)
+            geo_B = solve_spd(SA, u_B.T).T
+
+            # RMS-align: rescale geometric step so its Frobenius norm matches
+            # the bare Adam step's. Without this, ‖S^{-1} u‖_F varies as
+            # 1/σ_min(S) which moves by ~100× over training (σ_min ~0.01 → 1
+            # as ‖B‖ grows). Effective lr drifts; learning rate sweeps
+            # become uninterpretable. Cribbed from AdaMuon (arxiv 2507.11005)
+            # γ_t = ‖target‖_F / ‖raw‖_F rescaling.
+            uA_norm = u_A.float().norm()
+            uB_norm = u_B.float().norm()
+            gA_norm = geo_A.float().norm() + 1e-30
+            gB_norm = geo_B.float().norm() + 1e-30
+            dA = -lr * (uA_norm / gA_norm) * geo_A
+            dB = -lr * (uB_norm / gB_norm) * geo_B
+
+            if self.log_diagnostics:
+                # For *-Post, plain-AdamW direction is u_A itself (Adam runs
+                # on raw ∇). cos(geo_A, u_A) directly answers "does the
+                # geometric solve install a direction different from AdamW?"
+                sa_min, sa_max = _spd_eig_extremes(SA)
+                sb_min, sb_max = _spd_eig_extremes(SB)
+                diag_records.append({
+                    "cos_A": _frob_cos(geo_A, u_A),
+                    "cos_B": _frob_cos(geo_B, u_B),
+                    "norm_dA_post": float(dA.detach().to(torch.float32).norm()),
+                    "norm_dA_adamw_eq": float(lr * uA_norm),
+                    "norm_dB_post": float(dB.detach().to(torch.float32).norm()),
+                    "norm_dB_adamw_eq": float(lr * uB_norm),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                    "SA_min": sa_min, "SA_max": sa_max,
+                    "SB_min": sb_min, "SB_max": sb_max,
+                    "rms_scale_A": float(uA_norm / gA_norm),
+                    "rms_scale_B": float(uB_norm / gB_norm),
+                })
 
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
             B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
 
 
 class AdamLinLoRAPost(Optimizer):
@@ -620,7 +662,7 @@ class AdamLinLoRAPost(Optimizer):
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
                  eps=1e-8, adapter_name=None, scaled_metric=False,
-                 lora_plus_multiplier=1.0):
+                 lora_plus_multiplier=1.0, log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -631,6 +673,8 @@ class AdamLinLoRAPost(Optimizer):
         self.eps = eps
         self.beta1, self.beta2 = betas
         self.lora_plus_multiplier = lora_plus_multiplier
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
 
         self.pair_state = {}
         self.gammas = []
@@ -652,6 +696,7 @@ class AdamLinLoRAPost(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
 
         for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
             if A.grad is None or B.grad is None:
@@ -674,24 +719,65 @@ class AdamLinLoRAPost(Optimizer):
             u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
 
             # Substitute u_A, u_B for ∇_A, ∇_B in the LinLoRA derivation.
+            # Factor lr out of the linear system so we can RMS-align the
+            # resulting direction afterwards (the original formulation bakes
+            # lr into K and termA, making ‖ΔA‖_F vary as lr/σ_min(S_B), which
+            # in our setup drifts by ~100× over training as ‖B‖ grows).
             SB = spdify(B.T @ B, self.delta)
             SA = spdify(A @ A.T, self.delta)
-            RHS = -gamma * lr * (u_A @ A.T.float())
+            RHS = -gamma * (u_A @ A.T.float())
             K = solve_sylvester(SB, (gamma ** 2) * SA, RHS)
 
-            termA = (lr * u_A + gamma * K.to(u_A.dtype) @ A.float())
-            dA = -solve_spd(SB, termA)
-            termB = (lr * u_B + (1.0 / gamma) * B.float() @ K.to(u_B.dtype))
-            dB = -solve_spd(SA, termB.T).T
+            termA = (u_A + gamma * K.to(u_A.dtype) @ A.float())
+            geo_A = -solve_spd(SB, termA)               # lr-free direction
+            termB = (u_B + (1.0 / gamma) * B.float() @ K.to(u_B.dtype))
+            geo_B = -solve_spd(SA, termB.T).T
+
+            # RMS-align (cribbed from AdaMuon, arxiv 2507.11005): rescale so
+            # ‖ΔA‖_F = lr·‖u_A‖_F, decoupling step magnitude from S_B
+            # conditioning. lr now controls magnitude only; geometry controls
+            # direction.
+            uA_norm = u_A.float().norm()
+            uB_norm = u_B.float().norm()
+            gA_norm = geo_A.float().norm() + 1e-30
+            gB_norm = geo_B.float().norm() + 1e-30
+            dA = lr * (uA_norm / gA_norm) * geo_A
+            dB = lr * (uB_norm / gB_norm) * geo_B
 
             # lora+ multiplier scales the B-side step (matching AdamLinLoRA semantics).
             if self.lora_plus_multiplier != 1.0:
                 dB = self.lora_plus_multiplier * dB
 
+            if self.log_diagnostics:
+                # Plain-AdamW direction is u_A itself (Adam runs on raw ∇).
+                # cos(geo_A, u_A) measures whether the Sylvester correction
+                # produces a direction different from AdamW's.
+                sa_min, sa_max = _spd_eig_extremes(SA)
+                sb_min, sb_max = _spd_eig_extremes(SB)
+                diag_records.append({
+                    "cos_A": _frob_cos(geo_A, u_A),
+                    "cos_B": _frob_cos(geo_B, u_B),
+                    "norm_dA_post": float(dA.detach().to(torch.float32).norm()),
+                    "norm_dA_adamw_eq": float(lr * uA_norm),
+                    "norm_dB_post": float(dB.detach().to(torch.float32).norm()),
+                    "norm_dB_adamw_eq": float(lr * uB_norm),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                    "SA_min": sa_min, "SA_max": sa_max,
+                    "SB_min": sb_min, "SB_max": sb_max,
+                    "rms_scale_A": float(uA_norm / gA_norm),
+                    "rms_scale_B": float(uB_norm / gB_norm),
+                })
+
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
             B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
 
 
 class AdamScaledLoRAMatrix(Optimizer):
@@ -2052,6 +2138,8 @@ def build_optimizer(
             betas=(0.9, 0.999),
             delta=1e-6,
             eps=1e-8,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-lin-lora-post":
         return AdamLinLoRAPost(
@@ -2062,6 +2150,8 @@ def build_optimizer(
             eps=1e-8,
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-scaled-lora-matrix":
         return AdamScaledLoRAMatrix(
