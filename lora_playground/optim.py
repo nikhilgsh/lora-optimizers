@@ -17,8 +17,8 @@ OPTIMIZER_CHOICES = {
     "adam-scaled-lora",
     "adam-lin-lora",
     "muon-lora",
-    "psi-lora",
-    "kfac-lora",
+    "diag-scaled-lora",
+    "kron-grad-lora",
     "galore-adamw",
     "sgd",
     "sgd-m",
@@ -506,27 +506,26 @@ class SVDCumulativeAdamW(AdamW):
         return loss
 
 
-def _newton_schulz(X, nsteps=5):
+def _newton_schulz(X, nsteps=5, eps=1e-7):
     """
-    Newton-Schulz orthogonalization of X (float32).
+    Newton-Schulz orthogonalization of X (float32). Canonical Muon: returns a
+    matrix with approximately orthonormal rows (or cols, for tall X), Frobenius
+    norm ≈ √min(r, d), INDEPENDENT of the input magnitude. This is the whole
+    point of Muon — the optimizer's step size is set by lr alone, not by the
+    (highly variable, especially early-training) gradient magnitude.
 
-    For a "short fat" matrix (r ≤ d, orthonormal rows):
-        X ← 1.5 X − 0.5 X Xᵀ X  repeated nsteps times.
-    For "tall skinny" (d_out > r), applies NS to Xᵀ and returns the transpose.
-    Pre-normalizes by Frobenius norm so singular values start near 1.
+    Pre-normalize by spectral-norm proxy ||X||_F (only to bring singular values
+    into NS's basin of attraction near 1). Do NOT multiply back by the norm.
     """
     X = X.float()
     tall = X.shape[0] > X.shape[1]
     if tall:
         X = X.T
     # X is now (r, d) with r ≤ d
-    norm = X.norm()
-    if norm < 1e-8:
-        return (X.T if tall else X)
+    norm = X.norm() + eps
     X = X / norm
     for _ in range(nsteps):
         X = 1.5 * X - 0.5 * X @ X.T @ X
-    X = X * norm
     return X.T if tall else X
 
 
@@ -584,7 +583,7 @@ class MuonLoRA(Optimizer):
 
 class _HookLoRAOptimizer(Optimizer):
     """
-    Base class for PSILoRA and KFACLoRA.
+    Base class for DiagScaledLoRA and KronGradLoRA.
 
     Registers forward and full-backward hooks on each LoRA module to capture:
       - cached_X[i]: layer inputs  → used to maintain D_V ∈ ℝ^{d_in} (EMA of diag(XᵀX/n))
@@ -660,13 +659,14 @@ def _collect_lora_modules(model, adapter_name=None):
     return result
 
 
-class PSILoRA(_HookLoRAOptimizer):
+class DiagScaledLoRA(_HookLoRAOptimizer):
     """
-    PSILoRA: diagonal K-FAC preconditioning for LoRA factors.
+    DiagScaledLoRA: diagonal K-FAC scaling on independent (A, B) gradients.
 
-    Implements the diagonal variant of Algorithm 3 (PSI-LoRA 2602.16456) with K=1
-    and without the Gram-matrix inversion step, isolating the effect of the
-    layer-level D_V/D_U statistics.
+    NOT the PSI-LoRA paper. The paper's Algorithm 3 has F-LoRSUM proximal subspace
+    iteration, full-weight low-rank momentum, and U/V coupling — none of which are
+    present here. This is a deliberate ablation isolating the effect of the
+    layer-level D_V/D_U diagonal statistics alone.
 
     Update per pair (A ∈ ℝ^{r×d_in}, B ∈ ℝ^{d_out×r}):
         D_V ← ema_beta · D_V + (1−ema_beta) · diag(XᵀX/n)    [d_in]
@@ -710,7 +710,7 @@ class PSILoRA(_HookLoRAOptimizer):
         lr = self.param_groups[0]["lr"]
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
-                raise ValueError("PSILoRA requires gradients on both A and B.")
+                raise ValueError("DiagScaledLoRA requires gradients on both A and B.")
             state = self.pair_state[i]
             self._update_diag_stats(state, i)
             gA = A.grad.float()
@@ -725,12 +725,12 @@ class PSILoRA(_HookLoRAOptimizer):
             B.grad.zero_()
 
 
-class KFACLoRA(_HookLoRAOptimizer):
+class KronGradLoRA(_HookLoRAOptimizer):
     """
-    KFACLoRA: PSILoRA + r×r Kronecker factors from gradient outer products.
+    KronGradLoRA: DiagScaledLoRA + r×r Kronecker factors from gradient outer products.
 
-    Extends PSILoRA with H_A ∈ ℝ^{r×r} and H_B ∈ ℝ^{r×r} capturing curvature
-    within the LoRA subspace (custom extension; H_A/H_B are NOT from PSI-LoRA paper).
+    Custom variant — NOT from any paper. Extends DiagScaledLoRA with H_A ∈ ℝ^{r×r} and
+    H_B ∈ ℝ^{r×r} from gradient outer products, capturing within-LoRA-subspace curvature.
 
     Update per pair:
         H_A ← ema_beta · H_A + (1−ema_beta) · G_A G_Aᵀ    [r×r]
@@ -775,7 +775,7 @@ class KFACLoRA(_HookLoRAOptimizer):
         lr = self.param_groups[0]["lr"]
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
-                raise ValueError("KFACLoRA requires gradients on both A and B.")
+                raise ValueError("KronGradLoRA requires gradients on both A and B.")
             state = self.pair_state[i]
             self._update_diag_stats(state, i)
             gA = A.grad.float()
@@ -800,36 +800,63 @@ class KFACLoRA(_HookLoRAOptimizer):
 class GaLoreAdamW(Optimizer):
     """
     GaLore: Gradient Low-Rank Projection AdamW for dense target weights.
+    Faithful port of the official implementation
+    (https://github.com/jiaweizzhao/GaLore, galore_torch/{adamw,galore_projector}.py).
 
-    For each weight W ∈ ℝ^{d_out×d_in} with gradient G:
-      - Every update_proj_gap steps: update left projection P ∈ ℝ^{d_out×r}
-        via top-r left singular vectors of G (using torch.svd_lowrank).
-      - Project: R = Pᵀ G ∈ ℝ^{r×d_in}
-      - Apply Adam to R in the projected space (first/second moments are r×d_in).
-      - Reconstruct: ΔW = scale · P R_hat
-      - W ← W − lr · ΔW
+    For each weight W ∈ ℝ^{d_out×d_in} with gradient G, proj_type="std":
+      - If d_out ≥ d_in (tall):  pick top-r right singular vectors V_r ∈ ℝ^{r×d_in}
+            R = G @ V_rᵀ ∈ ℝ^{d_out×r}     (project on input side)
+            Adam state shape: (d_out, r)
+            ΔW = scale · R_hat @ V_r ∈ ℝ^{d_out×d_in}
+      - If d_out < d_in (wide):   pick top-r left singular vectors U_r ∈ ℝ^{d_out×r}
+            R = U_rᵀ @ G ∈ ℝ^{r×d_in}      (project on output side)
+            Adam state shape: (r, d_in)
+            ΔW = scale · U_r @ R_hat ∈ ℝ^{d_out×d_in}
+
+    Important fidelity points (vs prior buggy version):
+      • Adam moments PERSIST across projection updates. Official does NOT reset
+        them when V_r/U_r refresh. Our prior version reset every 200 steps,
+        destroying β₂=0.999 statistics that need ~1k steps to converge.
+      • Projection axis chosen by shape (proj_type="std"), not always left.
+      • Exact torch.linalg.svd for the projection, not randomized.
 
     Ref: GaLore (Zhao et al., 2024), arXiv 2403.03507.
     """
-    def __init__(self, targets, rank, lr=3e-4, betas=(0.9, 0.999), eps=1e-8,
-                 weight_decay=0.0, update_proj_gap=200, scale=0.25, svd_niter=4):
+    def __init__(self, targets, rank, lr=3e-4, betas=(0.9, 0.999), eps=1e-6,
+                 weight_decay=0.0, update_proj_gap=200, scale=1.0, proj_type="std"):
         if not targets:
             raise ValueError("GaLoreAdamW requires at least one dense target weight.")
         if rank <= 0:
             raise ValueError(f"rank must be positive, got {rank}.")
+        if proj_type != "std":
+            raise NotImplementedError(f"Only proj_type='std' is implemented (got '{proj_type}').")
         self.targets = list(targets)
         self.rank = rank
         self.update_proj_gap = update_proj_gap
         self.scale = scale
-        self.svd_niter = svd_niter
+        self.proj_type = proj_type
         super().__init__(
             [{"params": [t.weight for t in self.targets], "lr": lr,
               "betas": betas, "eps": eps, "weight_decay": weight_decay}],
             {"lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay},
         )
-        # Per-weight GaLore state (separate from Adam state in self.state)
-        self.galore_state = {t.name: {"P": None, "m": None, "v": None, "step": 0}
-                             for t in self.targets}
+        # Per-weight GaLore state (separate from Adam state in self.state).
+        # ortho_matrix is V_r (tall: r×d_in) or U_r (wide: d_out×r).
+        # side ∈ {"right","left"} indicates how we project.
+        # m, v are persistent and never reset — match official.
+        self.galore_state = {
+            t.name: {"ortho": None, "side": None, "m": None, "v": None, "step": 0}
+            for t in self.targets
+        }
+
+    def _update_projection(self, G_f, r):
+        """Compute fresh ortho matrix; returns (ortho_matrix, side)."""
+        U, _, Vh = torch.linalg.svd(G_f, full_matrices=False)
+        d_out, d_in = G_f.shape
+        if d_out >= d_in:
+            return Vh[:r, :], "right"  # (r, d_in)
+        else:
+            return U[:, :r], "left"    # (d_out, r)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -858,29 +885,42 @@ class GaLoreAdamW(Optimizer):
             d_out, d_in = G_f.shape
             r = min(self.rank, d_out, d_in)
 
-            # Update projection every update_proj_gap steps (or on first step)
-            if gs["P"] is None or (t % self.update_proj_gap == 0):
-                U, _, _ = torch.svd_lowrank(G_f, q=r, niter=self.svd_niter)
-                gs["P"] = U  # (d_out, r)
-                # Reset moments when subspace changes
-                gs["m"] = torch.zeros(r, d_in, dtype=torch.float32, device=W.device)
-                gs["v"] = torch.zeros(r, d_in, dtype=torch.float32, device=W.device)
+            if gs["ortho"] is None or (t % self.update_proj_gap == 0):
+                gs["ortho"], gs["side"] = self._update_projection(G_f, r)
+                # NOTE: do NOT reset m/v here (faithful to official GaLore).
 
-            P = gs["P"]         # (d_out, r)
-            R = P.T @ G_f       # (r, d_in) — projected gradient
+            ortho = gs["ortho"]
+            if gs["side"] == "right":
+                # ortho: (r, d_in); R = G @ orthoᵀ ∈ (d_out, r)
+                R = G_f @ ortho.T
+            else:
+                # ortho: (d_out, r); R = orthoᵀ @ G ∈ (r, d_in)
+                R = ortho.T @ G_f
 
-            # Adam in projected space
+            # Lazy moment init now that we know R's shape.
+            if gs["m"] is None:
+                gs["m"] = torch.zeros_like(R)
+                gs["v"] = torch.zeros_like(R)
+
+            # Adam in projected space; moments persist across projection updates.
             gs["m"].mul_(beta1).add_(R, alpha=1 - beta1)
             gs["v"].mul_(beta2).addcmul_(R, R, value=1 - beta2)
+            denom = gs["v"].sqrt().add_(eps)
             bc1 = 1 - beta1 ** t
             bc2 = 1 - beta2 ** t
-            R_hat = (gs["m"] / bc1) / ((gs["v"] / bc2).sqrt() + eps)
+            step_size = lr * (bc2 ** 0.5) / bc1
+            R_hat = gs["m"] / denom  # element-wise; matches official norm_grad
 
-            # Reconstruct and apply update
-            dW = self.scale * (P @ R_hat)   # (d_out, d_in)
-            if weight_decay != 0.0:
-                dW.add_(W.float(), alpha=weight_decay)
-            W.add_((-lr * dW).to(dtype=W.dtype, device=W.device))
+            # Project back and apply with GaLore scale.
+            if gs["side"] == "right":
+                norm_grad = R_hat @ ortho                # (d_out, d_in)
+            else:
+                norm_grad = ortho @ R_hat                # (d_out, d_in)
+            norm_grad = norm_grad * self.scale
+
+            W.add_((-step_size * norm_grad).to(dtype=W.dtype, device=W.device))
+            if weight_decay > 0.0:
+                W.add_(W, alpha=-lr * weight_decay)
             W.grad = None
 
         return loss
@@ -918,11 +958,10 @@ def build_optimizer(
             rank=svd_rank,
             lr=lr,
             betas=(0.9, 0.999),
-            eps=1e-8,
+            eps=1e-6,
             weight_decay=weight_decay,
             update_proj_gap=galore_update_proj_gap,
             scale=galore_scale,
-            svd_niter=svd_niter,
         )
 
     if optimizer_type in {"svd-step-adamw", "svd-cumulative-adamw"}:
@@ -974,15 +1013,15 @@ def build_optimizer(
         )
     if optimizer_type == "muon-lora":
         return MuonLoRA(model, lr=lr)
-    if optimizer_type == "psi-lora":
-        return PSILoRA(
+    if optimizer_type == "diag-scaled-lora":
+        return DiagScaledLoRA(
             model, lr=lr,
             gamma=precond_gamma,
             ema_beta=precond_ema_beta,
             delta=precond_delta,
         )
-    if optimizer_type == "kfac-lora":
-        return KFACLoRA(
+    if optimizer_type == "kron-grad-lora":
+        return KronGradLoRA(
             model, lr=lr,
             gamma=precond_gamma,
             ema_beta=precond_ema_beta,

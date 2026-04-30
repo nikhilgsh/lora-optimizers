@@ -1,5 +1,5 @@
 """
-CPU-only unit tests for MuonLoRA, PSILoRA, KFACLoRA, and GaLoreAdamW.
+CPU-only unit tests for MuonLoRA, DiagScaledLoRA, KronGradLoRA, and GaLoreAdamW.
 Tests follow the patterns in test_svd_oracle.py:
   - build a tiny model, set manual gradients, call step(), check invariants.
 """
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from lora_playground.optim import GaLoreAdamW, KFACLoRA, MuonLoRA, PSILoRA
+from lora_playground.optim import DiagScaledLoRA, GaLoreAdamW, KronGradLoRA, MuonLoRA
 from lora_playground.utils import collect_dense_target_weights, freeze_all_except_targets, spd_frac_power_inv
 
 
@@ -103,19 +103,41 @@ def test_muon_lora_params_update():
     assert not torch.allclose(A_before, A_after), "MuonLoRA did not update A"
 
 
-def test_muon_lora_ns_approximately_orthonormal():
-    """After a step, m_A should be NS-orthogonalized: rows nearly orthonormal."""
+def test_newton_schulz_short_fat():
+    """NS on (r, d) with r ≤ d should produce ≈ orthonormal rows: Y Yᵀ ≈ I_r."""
+    from lora_playground.optim import _newton_schulz
     torch.manual_seed(7)
-    model = TinyLoRAModel(r=2)
-    opt = MuonLoRA(model, lr=1e-2, beta=0.0)  # beta=0 → m_A = G_A exactly
-    _set_grads(model)
-    opt.step()
-    # opt.pair_state[0]["m_A"] holds the last momentum; check update was NS-like
-    # Verify A changed and shapes are correct
-    A = model.layer0.lora_A["default"].weight  # (r, d_in)
-    B = model.layer0.lora_B["default"].weight  # (d_out, r)
-    assert A.shape == (model.r, model.d_in)
-    assert B.shape == (model.d_out, model.r)
+    for (r, d) in [(4, 32), (16, 256), (2, 8)]:
+        for scale in [1e-6, 1.0, 1e3]:
+            X = torch.randn(r, d) * scale
+            Y = _newton_schulz(X, nsteps=5)
+            err = (Y @ Y.T - torch.eye(r)).abs().max().item()
+            assert err < 0.1, f"NS not orthonormal for ({r},{d}) scale={scale}: err={err}"
+            # Frobenius norm independent of input magnitude (canonical Muon)
+            assert abs(Y.norm().item() - r ** 0.5) < 0.2
+
+
+def test_newton_schulz_tall_skinny():
+    """NS on (d, r) with d > r should produce ≈ orthonormal cols: Yᵀ Y ≈ I_r."""
+    from lora_playground.optim import _newton_schulz
+    torch.manual_seed(8)
+    for (d, r) in [(32, 4), (256, 16)]:
+        X = torch.randn(d, r)
+        Y = _newton_schulz(X, nsteps=5)
+        err = (Y.T @ Y - torch.eye(r)).abs().max().item()
+        assert err < 0.1, f"NS tall not orthonormal for ({d},{r}): err={err}"
+
+
+def test_newton_schulz_scale_invariant_update():
+    """Canonical Muon: NS output magnitude is independent of input magnitude.
+    This is the property that makes lr the sole step-size knob."""
+    from lora_playground.optim import _newton_schulz
+    torch.manual_seed(9)
+    X = torch.randn(8, 64)
+    Y_small = _newton_schulz(X * 1e-5, nsteps=5)
+    Y_large = _newton_schulz(X * 1e3, nsteps=5)
+    # Same direction, same norm — regardless of scaling
+    assert torch.allclose(Y_small, Y_large, atol=1e-3)
 
 
 def test_muon_lora_zero_grad_after_step():
@@ -129,7 +151,7 @@ def test_muon_lora_zero_grad_after_step():
             assert p.grad.abs().max() == 0.0, f"Gradient not zeroed for {name}"
 
 
-# ─── PSILoRA ──────────────────────────────────────────────────────────────────
+# ─── DiagScaledLoRA ───────────────────────────────────────────────────────────
 
 def _trigger_hooks(opt, seed=1):
     """Simulate one forward+backward by populating cached_X/S per pair's shape."""
@@ -141,20 +163,20 @@ def _trigger_hooks(opt, seed=1):
         opt.cached_S[i] = torch.randn(4, d_out)
 
 
-def test_psi_lora_state_shapes():
+def test_diag_scaled_lora_state_shapes():
     torch.manual_seed(0)
     model = TinyLoRAModel(d_in=8, d_out=6, r=2)
-    opt = PSILoRA(model, lr=1e-3)
+    opt = DiagScaledLoRA(model, lr=1e-3)
     assert len(opt.pair_state) == 2  # two LoRA layers
     for i, (A, B) in enumerate(opt.pairs):
         assert opt.pair_state[i]["D_V"].shape == (A.shape[1],)  # (d_in,)
         assert opt.pair_state[i]["D_U"].shape == (B.shape[0],)  # (d_out,)
 
 
-def test_psi_lora_dv_du_update():
+def test_diag_scaled_lora_dv_du_update():
     torch.manual_seed(0)
     model = TinyLoRAModel(d_in=8, d_out=6, r=2)
-    opt = PSILoRA(model, lr=1e-3, ema_beta=0.9)
+    opt = DiagScaledLoRA(model, lr=1e-3, ema_beta=0.9)
     # D_V starts at ones; after update with non-zero X it should change
     dv_before = opt.pair_state[0]["D_V"].clone()
     _trigger_hooks(opt)
@@ -164,10 +186,10 @@ def test_psi_lora_dv_du_update():
     assert not torch.allclose(dv_before, dv_after), "D_V did not update"
 
 
-def test_psi_lora_params_update():
+def test_diag_scaled_lora_params_update():
     torch.manual_seed(0)
     model = TinyLoRAModel(d_in=8, d_out=6, r=2)
-    opt = PSILoRA(model, lr=1e-2)
+    opt = DiagScaledLoRA(model, lr=1e-2)
     d_in, d_out = model.d_in, model.d_out
     _trigger_hooks(opt)
     _set_grads(model)
@@ -177,10 +199,10 @@ def test_psi_lora_params_update():
     assert not torch.allclose(A_before, A_after)
 
 
-def test_psi_lora_zero_grad_after_step():
+def test_diag_scaled_lora_zero_grad_after_step():
     torch.manual_seed(0)
     model = TinyLoRAModel()
-    opt = PSILoRA(model, lr=1e-3)
+    opt = DiagScaledLoRA(model, lr=1e-3)
     _trigger_hooks(opt)
     _set_grads(model)
     opt.step()
@@ -189,12 +211,12 @@ def test_psi_lora_zero_grad_after_step():
             assert p.grad.abs().max() == 0.0, f"Gradient not zeroed for {name}"
 
 
-# ─── KFACLoRA ─────────────────────────────────────────────────────────────────
+# ─── KronGradLoRA ─────────────────────────────────────────────────────────────
 
-def test_kfac_lora_state_shapes():
+def test_kron_grad_lora_state_shapes():
     torch.manual_seed(0)
     model = TinyLoRAModel(d_in=8, d_out=6, r=2)
-    opt = KFACLoRA(model, lr=1e-3)
+    opt = KronGradLoRA(model, lr=1e-3)
     for i, (A, B) in enumerate(opt.pairs):
         r = A.shape[0]
         assert opt.pair_state[i]["H_A"].shape == (r, r)
@@ -203,10 +225,10 @@ def test_kfac_lora_state_shapes():
         assert opt.pair_state[i]["D_U"].shape == (B.shape[0],)
 
 
-def test_kfac_lora_ha_hb_update():
+def test_kron_grad_lora_ha_hb_update():
     torch.manual_seed(0)
     model = TinyLoRAModel(d_in=8, d_out=6, r=2)
-    opt = KFACLoRA(model, lr=1e-3, ema_beta=0.9)
+    opt = KronGradLoRA(model, lr=1e-3, ema_beta=0.9)
     ha_before = opt.pair_state[0]["H_A"].clone()
     _trigger_hooks(opt)
     _set_grads(model)
@@ -215,10 +237,10 @@ def test_kfac_lora_ha_hb_update():
     assert not torch.allclose(ha_before, ha_after), "H_A did not update"
 
 
-def test_kfac_lora_params_update():
+def test_kron_grad_lora_params_update():
     torch.manual_seed(0)
     model = TinyLoRAModel(d_in=8, d_out=6, r=2)
-    opt = KFACLoRA(model, lr=1e-2)
+    opt = KronGradLoRA(model, lr=1e-2)
     _trigger_hooks(opt)
     _set_grads(model)
     A_before = model.layer0.lora_A["default"].weight.detach().clone()
@@ -236,16 +258,20 @@ def test_galore_adamw_projection_shape():
     freeze_all_except_targets(model, targets)
     rank = 2
     opt = GaLoreAdamW(targets, rank=rank, lr=1e-3, update_proj_gap=1)
-    # Set gradients manually
     for t in targets:
         t.weight.grad = torch.randn_like(t.weight)
     opt.step()
-    # P should be (d_out, r)
+    # ortho shape depends on weight shape (proj_type="std" picks shorter dim).
     for t in targets:
         gs = opt.galore_state[t.name]
-        assert gs["P"] is not None
-        d_out = t.weight.shape[0]
-        assert gs["P"].shape == (d_out, rank)
+        assert gs["ortho"] is not None
+        d_out, d_in = t.weight.shape
+        if d_out >= d_in:
+            assert gs["side"] == "right"
+            assert gs["ortho"].shape == (rank, d_in)
+        else:
+            assert gs["side"] == "left"
+            assert gs["ortho"].shape == (d_out, rank)
 
 
 def test_galore_adamw_projection_orthonormal():
@@ -258,9 +284,14 @@ def test_galore_adamw_projection_orthonormal():
     for t in targets:
         t.weight.grad = torch.randn_like(t.weight)
     opt.step()
-    P = opt.galore_state[targets[0].name]["P"]  # (d_out, r)
-    # P should have orthonormal columns: PᵀP ≈ I_r
-    assert torch.allclose(P.T @ P, torch.eye(rank), atol=1e-5), "P columns not orthonormal"
+    gs = opt.galore_state[targets[0].name]
+    ortho = gs["ortho"]
+    if gs["side"] == "right":
+        # rows of ortho orthonormal: ortho @ orthoᵀ ≈ I_r
+        assert torch.allclose(ortho @ ortho.T, torch.eye(ortho.shape[0]), atol=1e-5)
+    else:
+        # cols of ortho orthonormal: orthoᵀ @ ortho ≈ I_r
+        assert torch.allclose(ortho.T @ ortho, torch.eye(ortho.shape[1]), atol=1e-5)
 
 
 def test_galore_adamw_params_update():
@@ -288,13 +319,15 @@ def test_galore_adamw_moments_shape():
         t.weight.grad = torch.randn_like(t.weight)
     opt.step()
     gs = opt.galore_state[targets[0].name]
-    d_in = targets[0].weight.shape[1]
-    assert gs["m"].shape == (rank, d_in), f"m shape wrong: {gs['m'].shape}"
-    assert gs["v"].shape == (rank, d_in), f"v shape wrong: {gs['v'].shape}"
+    d_out, d_in = targets[0].weight.shape
+    expected = (d_out, rank) if d_out >= d_in else (rank, d_in)
+    assert gs["m"].shape == expected, f"m shape wrong: {gs['m'].shape} vs {expected}"
+    assert gs["v"].shape == expected, f"v shape wrong: {gs['v'].shape} vs {expected}"
 
 
-def test_galore_adamw_projection_resets_on_gap():
-    """Moments should be reset when projection updates (step == update_proj_gap)."""
+def test_galore_adamw_moments_persist_across_proj_update():
+    """Faithful GaLore: moments must NOT reset when projection refreshes (matches
+    official galore_torch.adamw which only initializes m/v once)."""
     torch.manual_seed(4)
     model = TinyDenseModel()
     targets = collect_dense_target_weights(model, ["q_proj"])
@@ -302,11 +335,14 @@ def test_galore_adamw_projection_resets_on_gap():
     rank = 2
     opt = GaLoreAdamW(targets, rank=rank, lr=1e-3, update_proj_gap=2)
 
-    for step in range(3):
-        for t in targets:
-            t.weight.grad = torch.randn_like(t.weight)
-        opt.step()
+    for t in targets:
+        t.weight.grad = torch.randn_like(t.weight)
+    opt.step()
+    m_after_step1 = opt.galore_state[targets[0].name]["m"].clone()
+    assert m_after_step1.abs().max() > 0, "m should be non-zero after first step"
 
-    # At step 2, projection updates and moments reset to zero, then one step applied.
-    # Just verify the optimizer ran 3 steps without error and weight changed.
-    assert opt.galore_state[targets[0].name]["step"] == 3
+    for t in targets:
+        t.weight.grad = torch.randn_like(t.weight)
+    opt.step()  # step 2 triggers projection refresh (2 % 2 == 0)
+    m_after_step2 = opt.galore_state[targets[0].name]["m"]
+    assert m_after_step2.abs().max() > 0, "moments wrongly reset on projection update"
