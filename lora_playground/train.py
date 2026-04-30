@@ -22,7 +22,7 @@ from .optim import OPTIMIZER_CHOICES, build_optimizer
 from .utils import collect_dense_target_weights, freeze_all_except_targets
 
 
-TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle")
+TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore")
 
 
 def format_example(example):
@@ -205,6 +205,16 @@ def make_parser():
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--target_eval_loss", type=float, default=None)
+    parser.add_argument("--precond_gamma", type=float, default=0.5,
+                        help="Fractional power for PSI-LoRA/KFAC-LoRA K-FAC scaling.")
+    parser.add_argument("--precond_ema_beta", type=float, default=0.99,
+                        help="EMA smoothing for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
+    parser.add_argument("--precond_delta", type=float, default=1e-5,
+                        help="Damping floor for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
+    parser.add_argument("--galore_update_proj_gap", type=int, default=200,
+                        help="Steps between GaLore projection updates.")
+    parser.add_argument("--galore_scale", type=float, default=0.25,
+                        help="GaLore update scale factor.")
     parser.add_argument("--wandb_project", default=None, help="W&B project name. Omit to disable W&B.")
     parser.add_argument("--wandb_run_name", default=None, help="W&B run name. Auto-generated from key params if omitted.")
     return parser
@@ -290,8 +300,8 @@ def main():
         model = torch.compile(model, **compile_kwargs)
 
     if args.training_mode == "lora":
-        if args.optimizer in {"svd-step-adamw", "svd-cumulative-adamw"}:
-            raise ValueError("SVD optimizers require --training_mode svd_step_oracle or svd_cumulative_oracle.")
+        if args.optimizer in {"svd-step-adamw", "svd-cumulative-adamw", "galore-adamw"}:
+            raise ValueError(f"{args.optimizer} requires a non-lora training_mode.")
         effective_optimizer = args.optimizer
         rank_constraint = None
     elif args.training_mode == "svd_step_oracle":
@@ -299,11 +309,16 @@ def main():
             raise ValueError("svd_step_oracle currently supports AdamW only.")
         effective_optimizer = "svd-step-adamw"
         rank_constraint = "per_step_update"
-    else:
+    elif args.training_mode == "svd_cumulative_oracle":
         if args.optimizer not in {"adamw", "svd-cumulative-adamw"}:
             raise ValueError("svd_cumulative_oracle currently supports AdamW only.")
         effective_optimizer = "svd-cumulative-adamw"
         rank_constraint = "cumulative_displacement"
+    else:  # galore
+        if args.optimizer not in {"adamw", "galore-adamw"}:
+            raise ValueError("galore training_mode requires --optimizer galore-adamw.")
+        effective_optimizer = "galore-adamw"
+        rank_constraint = "galore_projection"
 
     svd_niter = None if args.svd_niter < 0 else args.svd_niter
     optimizer = build_optimizer(
@@ -316,6 +331,11 @@ def main():
         targets=dense_targets if dense_targets else None,
         svd_rank=svd_rank if dense_targets else None,
         svd_niter=svd_niter if dense_targets else 4,
+        precond_gamma=args.precond_gamma,
+        precond_ema_beta=args.precond_ema_beta,
+        precond_delta=args.precond_delta,
+        galore_update_proj_gap=args.galore_update_proj_gap,
+        galore_scale=args.galore_scale,
     )
     scheduler = get_scheduler(
         name=args.lr_scheduler_type,

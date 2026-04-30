@@ -1,7 +1,14 @@
 import torch
 from torch.optim import AdamW, Optimizer, SGD
 
-from .utils import collect_lora_pairs, solve_spd, solve_sylvester, spdify, truncated_svd
+from .utils import (
+    collect_lora_pairs,
+    solve_spd,
+    solve_sylvester,
+    spd_frac_power_inv,
+    spdify,
+    truncated_svd,
+)
 
 OPTIMIZER_CHOICES = {
     "adamw",
@@ -9,6 +16,10 @@ OPTIMIZER_CHOICES = {
     "scaled-lora",
     "adam-scaled-lora",
     "adam-lin-lora",
+    "muon-lora",
+    "psi-lora",
+    "kfac-lora",
+    "galore-adamw",
     "sgd",
     "sgd-m",
     "svd-step-adamw",
@@ -495,6 +506,386 @@ class SVDCumulativeAdamW(AdamW):
         return loss
 
 
+def _newton_schulz(X, nsteps=5):
+    """
+    Newton-Schulz orthogonalization of X (float32).
+
+    For a "short fat" matrix (r ≤ d, orthonormal rows):
+        X ← 1.5 X − 0.5 X Xᵀ X  repeated nsteps times.
+    For "tall skinny" (d_out > r), applies NS to Xᵀ and returns the transpose.
+    Pre-normalizes by Frobenius norm so singular values start near 1.
+    """
+    X = X.float()
+    tall = X.shape[0] > X.shape[1]
+    if tall:
+        X = X.T
+    # X is now (r, d) with r ≤ d
+    norm = X.norm()
+    if norm < 1e-8:
+        return (X.T if tall else X)
+    X = X / norm
+    for _ in range(nsteps):
+        X = 1.5 * X - 0.5 * X @ X.T @ X
+    X = X * norm
+    return X.T if tall else X
+
+
+class MuonLoRA(Optimizer):
+    """
+    MuonLoRA: momentum + Newton-Schulz orthogonalization for LoRA factors.
+
+    Update rule per LoRA pair A ∈ ℝ^{r×d_in}, B ∈ ℝ^{d_out×r}:
+        m_A ← β m_A + (1−β) G_A
+        m_B ← β m_B + (1−β) G_B
+        A   ← A − lr · NS(m_A)
+        B   ← B − lr · NS(m_B)
+
+    NS(X) gives orthonormal rows (or cols for tall X), preventing rank collapse
+    where a few singular values dominate and effective rank drops below r.
+    """
+    def __init__(self, model, lr=3e-4, beta=0.95, ns_steps=5, adapter_name=None):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.beta = beta
+        self.ns_steps = ns_steps
+        self.pair_state = {
+            i: {
+                "m_A": torch.zeros_like(A, dtype=torch.float32),
+                "m_B": torch.zeros_like(B, dtype=torch.float32),
+            }
+            for i, (A, B) in enumerate(pairs)
+        }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("MuonLoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            gA = A.grad.float()
+            gB = B.grad.float()
+            state["m_A"].mul_(self.beta).add_(gA, alpha=1 - self.beta)
+            state["m_B"].mul_(self.beta).add_(gB, alpha=1 - self.beta)
+            dA = _newton_schulz(state["m_A"], self.ns_steps)
+            dB = _newton_schulz(state["m_B"], self.ns_steps)
+            A.add_((-lr * dA).to(dtype=A.dtype, device=A.device))
+            B.add_((-lr * dB).to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class _HookLoRAOptimizer(Optimizer):
+    """
+    Base class for PSILoRA and KFACLoRA.
+
+    Registers forward and full-backward hooks on each LoRA module to capture:
+      - cached_X[i]: layer inputs  → used to maintain D_V ∈ ℝ^{d_in} (EMA of diag(XᵀX/n))
+      - cached_S[i]: output grads  → used to maintain D_U ∈ ℝ^{d_out} (EMA of diag(SᵀS/n))
+
+    Paper convention (PSI-LoRA 2602.16456):
+      D_V ← β₂ D_V + (1−β₂)(1/B) diag(XᵀX)   [Algorithm 3, line 4]
+      D_U ← β₂ D_U + (1−β₂)(1/B) diag(SᵀS)   [Algorithm 3, line 5]
+
+    Codebase PEFT convention: A ∈ ℝ^{r×d_in} (= paper Vᵀ), B ∈ ℝ^{d_out×r} (= paper U).
+    """
+    def __init__(self, model, params, param_groups, pairs, lora_modules,
+                 ema_beta, delta, gamma, adapter_name):
+        super().__init__(param_groups, {})
+        self.pairs = pairs
+        self.ema_beta = ema_beta
+        self.delta = delta
+        self.gamma = gamma
+        self.cached_X = {}
+        self.cached_S = {}
+        self._hook_handles = []
+
+        for i, (mod, (A, B)) in enumerate(zip(lora_modules, pairs)):
+            d_in = A.shape[1]
+            d_out = B.shape[0]
+
+            def make_fwd(idx):
+                def fwd_hook(module, inp, out):
+                    x = inp[0].detach().reshape(-1, inp[0].shape[-1])
+                    self.cached_X[idx] = x
+                return fwd_hook
+
+            def make_bwd(idx):
+                def bwd_hook(module, grad_in, grad_out):
+                    if grad_out[0] is not None:
+                        s = grad_out[0].detach().reshape(-1, grad_out[0].shape[-1])
+                        self.cached_S[idx] = s
+                return bwd_hook
+
+            self._hook_handles.append(mod.register_forward_hook(make_fwd(i)))
+            self._hook_handles.append(mod.register_full_backward_hook(make_bwd(i)))
+
+    def remove_hooks(self):
+        for h in self._hook_handles:
+            h.remove()
+        self._hook_handles.clear()
+
+    def _update_diag_stats(self, state, i):
+        if i in self.cached_X:
+            x = self.cached_X[i].float()
+            state["D_V"].mul_(self.ema_beta).add_(x.pow(2).mean(0), alpha=1 - self.ema_beta)
+        if i in self.cached_S:
+            s = self.cached_S[i].float()
+            state["D_U"].mul_(self.ema_beta).add_(s.pow(2).mean(0), alpha=1 - self.ema_beta)
+
+
+def _collect_lora_modules(model, adapter_name=None):
+    """Return (module, A_param, B_param) triples matching collect_lora_pairs order."""
+    result = []
+    for _, mod in model.named_modules():
+        if hasattr(mod, "lora_A") and hasattr(mod, "lora_B"):
+            try:
+                keys = [adapter_name] if adapter_name else list(mod.lora_A.keys())
+                for k in keys:
+                    if k in mod.lora_A and k in mod.lora_B:
+                        A = mod.lora_A[k].weight
+                        B = mod.lora_B[k].weight
+                        result.append((mod, A, B))
+                continue
+            except Exception:
+                if hasattr(mod.lora_A, "weight") and hasattr(mod.lora_B, "weight"):
+                    result.append((mod, mod.lora_A.weight, mod.lora_B.weight))
+    return result
+
+
+class PSILoRA(_HookLoRAOptimizer):
+    """
+    PSILoRA: diagonal K-FAC preconditioning for LoRA factors.
+
+    Implements the diagonal variant of Algorithm 3 (PSI-LoRA 2602.16456) with K=1
+    and without the Gram-matrix inversion step, isolating the effect of the
+    layer-level D_V/D_U statistics.
+
+    Update per pair (A ∈ ℝ^{r×d_in}, B ∈ ℝ^{d_out×r}):
+        D_V ← ema_beta · D_V + (1−ema_beta) · diag(XᵀX/n)    [d_in]
+        D_U ← ema_beta · D_U + (1−ema_beta) · diag(SᵀS/n)    [d_out]
+        ΔA  = G_A · (D_V + δ)^{−γ}
+        ΔB  = (D_U + δ)^{−γ} · G_B
+        A ← A − lr · ΔA,  B ← B − lr · ΔB
+    """
+    def __init__(self, model, lr=3e-4, gamma=0.5, ema_beta=0.99,
+                 delta=1e-5, adapter_name=None):
+        triples = _collect_lora_modules(model, adapter_name)
+        if not triples:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        lora_modules = [m for m, _, _ in triples]
+        pairs = [(A, B) for _, A, B in triples]
+        params = [p for A, B in pairs for p in (A, B)]
+        self.pair_state = {
+            i: {
+                "D_V": torch.ones(A.shape[1], dtype=torch.float32, device=A.device),
+                "D_U": torch.ones(B.shape[0], dtype=torch.float32, device=B.device),
+            }
+            for i, (A, B) in enumerate(pairs)
+        }
+        super().__init__(
+            model=model,
+            params=params,
+            param_groups=[{"params": params, "lr": lr}],
+            pairs=pairs,
+            lora_modules=lora_modules,
+            ema_beta=ema_beta,
+            delta=delta,
+            gamma=gamma,
+            adapter_name=adapter_name,
+        )
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("PSILoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            self._update_diag_stats(state, i)
+            gA = A.grad.float()
+            gB = B.grad.float()
+            sv = (state["D_V"] + self.delta).pow(-self.gamma)  # (d_in,)
+            su = (state["D_U"] + self.delta).pow(-self.gamma)  # (d_out,)
+            dA = gA * sv                        # (r, d_in) * (d_in,)
+            dB = su.unsqueeze(1) * gB           # (d_out, 1) * (d_out, r)
+            A.add_((-lr * dA).to(dtype=A.dtype, device=A.device))
+            B.add_((-lr * dB).to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class KFACLoRA(_HookLoRAOptimizer):
+    """
+    KFACLoRA: PSILoRA + r×r Kronecker factors from gradient outer products.
+
+    Extends PSILoRA with H_A ∈ ℝ^{r×r} and H_B ∈ ℝ^{r×r} capturing curvature
+    within the LoRA subspace (custom extension; H_A/H_B are NOT from PSI-LoRA paper).
+
+    Update per pair:
+        H_A ← ema_beta · H_A + (1−ema_beta) · G_A G_Aᵀ    [r×r]
+        H_B ← ema_beta · H_B + (1−ema_beta) · G_Bᵀ G_B    [r×r]
+        ΔA  = (H_A + δI)^{−γ} · G_A · (D_V + δ)^{−γ}
+        ΔB  = (D_U + δ)^{−γ} · G_B · (H_B + δI)^{−γ}
+    """
+    def __init__(self, model, lr=3e-4, gamma=0.5, ema_beta=0.99,
+                 delta=1e-5, adapter_name=None):
+        triples = _collect_lora_modules(model, adapter_name)
+        if not triples:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        lora_modules = [m for m, _, _ in triples]
+        pairs = [(A, B) for _, A, B in triples]
+        params = [p for A, B in pairs for p in (A, B)]
+        self.pair_state = {
+            i: {
+                "D_V": torch.ones(A.shape[1], dtype=torch.float32, device=A.device),
+                "D_U": torch.ones(B.shape[0], dtype=torch.float32, device=B.device),
+                "H_A": torch.zeros(A.shape[0], A.shape[0], dtype=torch.float32, device=A.device),
+                "H_B": torch.zeros(B.shape[1], B.shape[1], dtype=torch.float32, device=B.device),
+            }
+            for i, (A, B) in enumerate(pairs)
+        }
+        super().__init__(
+            model=model,
+            params=params,
+            param_groups=[{"params": params, "lr": lr}],
+            pairs=pairs,
+            lora_modules=lora_modules,
+            ema_beta=ema_beta,
+            delta=delta,
+            gamma=gamma,
+            adapter_name=adapter_name,
+        )
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("KFACLoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            self._update_diag_stats(state, i)
+            gA = A.grad.float()
+            gB = B.grad.float()
+            # Update r×r Kronecker factors from gradient outer products
+            state["H_A"].mul_(self.ema_beta).add_(gA @ gA.T, alpha=1 - self.ema_beta)
+            state["H_B"].mul_(self.ema_beta).add_(gB.T @ gB, alpha=1 - self.ema_beta)
+            # Diagonal K-FAC scaling
+            sv = (state["D_V"] + self.delta).pow(-self.gamma)   # (d_in,)
+            su = (state["D_U"] + self.delta).pow(-self.gamma)   # (d_out,)
+            # r×r inverse fractional powers
+            HA_inv = spd_frac_power_inv(state["H_A"], self.gamma, self.delta)  # (r, r)
+            HB_inv = spd_frac_power_inv(state["H_B"], self.gamma, self.delta)  # (r, r)
+            dA = HA_inv @ gA * sv                           # (r,r)@(r,d_in) * (d_in,)
+            dB = su.unsqueeze(1) * gB @ HB_inv              # (d_out,1)*(d_out,r)@(r,r)
+            A.add_((-lr * dA).to(dtype=A.dtype, device=A.device))
+            B.add_((-lr * dB).to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class GaLoreAdamW(Optimizer):
+    """
+    GaLore: Gradient Low-Rank Projection AdamW for dense target weights.
+
+    For each weight W ∈ ℝ^{d_out×d_in} with gradient G:
+      - Every update_proj_gap steps: update left projection P ∈ ℝ^{d_out×r}
+        via top-r left singular vectors of G (using torch.svd_lowrank).
+      - Project: R = Pᵀ G ∈ ℝ^{r×d_in}
+      - Apply Adam to R in the projected space (first/second moments are r×d_in).
+      - Reconstruct: ΔW = scale · P R_hat
+      - W ← W − lr · ΔW
+
+    Ref: GaLore (Zhao et al., 2024), arXiv 2403.03507.
+    """
+    def __init__(self, targets, rank, lr=3e-4, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0.0, update_proj_gap=200, scale=0.25, svd_niter=4):
+        if not targets:
+            raise ValueError("GaLoreAdamW requires at least one dense target weight.")
+        if rank <= 0:
+            raise ValueError(f"rank must be positive, got {rank}.")
+        self.targets = list(targets)
+        self.rank = rank
+        self.update_proj_gap = update_proj_gap
+        self.scale = scale
+        self.svd_niter = svd_niter
+        super().__init__(
+            [{"params": [t.weight for t in self.targets], "lr": lr,
+              "betas": betas, "eps": eps, "weight_decay": weight_decay}],
+            {"lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay},
+        )
+        # Per-weight GaLore state (separate from Adam state in self.state)
+        self.galore_state = {t.name: {"P": None, "m": None, "v": None, "step": 0}
+                             for t in self.targets}
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        group = self.param_groups[0]
+        lr = group["lr"]
+        beta1, beta2 = group["betas"]
+        eps = group["eps"]
+        weight_decay = group["weight_decay"]
+
+        for target in self.targets:
+            W = target.weight
+            G = W.grad
+            if G is None:
+                continue
+
+            gs = self.galore_state[target.name]
+            gs["step"] += 1
+            t = gs["step"]
+
+            G_f = G.float()
+            d_out, d_in = G_f.shape
+            r = min(self.rank, d_out, d_in)
+
+            # Update projection every update_proj_gap steps (or on first step)
+            if gs["P"] is None or (t % self.update_proj_gap == 0):
+                U, _, _ = torch.svd_lowrank(G_f, q=r, niter=self.svd_niter)
+                gs["P"] = U  # (d_out, r)
+                # Reset moments when subspace changes
+                gs["m"] = torch.zeros(r, d_in, dtype=torch.float32, device=W.device)
+                gs["v"] = torch.zeros(r, d_in, dtype=torch.float32, device=W.device)
+
+            P = gs["P"]         # (d_out, r)
+            R = P.T @ G_f       # (r, d_in) — projected gradient
+
+            # Adam in projected space
+            gs["m"].mul_(beta1).add_(R, alpha=1 - beta1)
+            gs["v"].mul_(beta2).addcmul_(R, R, value=1 - beta2)
+            bc1 = 1 - beta1 ** t
+            bc2 = 1 - beta2 ** t
+            R_hat = (gs["m"] / bc1) / ((gs["v"] / bc2).sqrt() + eps)
+
+            # Reconstruct and apply update
+            dW = self.scale * (P @ R_hat)   # (d_out, d_in)
+            if weight_decay != 0.0:
+                dW.add_(W.float(), alpha=weight_decay)
+            W.add_((-lr * dW).to(dtype=W.dtype, device=W.device))
+            W.grad = None
+
+        return loss
+
+
 def build_optimizer(
     model,
     optimizer_type: str,
@@ -505,11 +896,33 @@ def build_optimizer(
     targets=None,
     svd_rank: int | None = None,
     svd_niter: int = 4,
+    precond_gamma: float = 0.5,
+    precond_ema_beta: float = 0.99,
+    precond_delta: float = 1e-5,
+    galore_update_proj_gap: int = 200,
+    galore_scale: float = 0.25,
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
             f"Unsupported optimizer_type '{optimizer_type}'. "
             f"Expected one of: {', '.join(sorted(OPTIMIZER_CHOICES))}."
+        )
+
+    if optimizer_type == "galore-adamw":
+        if targets is None:
+            raise ValueError("galore-adamw requires dense target weights (use --training_mode galore).")
+        if svd_rank is None:
+            raise ValueError("galore-adamw requires svd_rank.")
+        return GaLoreAdamW(
+            targets,
+            rank=svd_rank,
+            lr=lr,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=weight_decay,
+            update_proj_gap=galore_update_proj_gap,
+            scale=galore_scale,
+            svd_niter=svd_niter,
         )
 
     if optimizer_type in {"svd-step-adamw", "svd-cumulative-adamw"}:
@@ -558,6 +971,22 @@ def build_optimizer(
             eps=1e-8,
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "muon-lora":
+        return MuonLoRA(model, lr=lr)
+    if optimizer_type == "psi-lora":
+        return PSILoRA(
+            model, lr=lr,
+            gamma=precond_gamma,
+            ema_beta=precond_ema_beta,
+            delta=precond_delta,
+        )
+    if optimizer_type == "kfac-lora":
+        return KFACLoRA(
+            model, lr=lr,
+            gamma=precond_gamma,
+            ema_beta=precond_ema_beta,
+            delta=precond_delta,
         )
     if optimizer_type == "sgd":
         params = [p for p in model.parameters() if p.requires_grad]

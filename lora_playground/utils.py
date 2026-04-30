@@ -62,6 +62,16 @@ def solve_sylvester(SB, SA, RHS):
     return QB @ X @ QA.T                              # (r, r)
 
 
+def spd_frac_power_inv(H, gamma, eps=1e-6):
+    """
+    Compute (H + eps*I)^{-gamma} for SPD H via eigendecomposition.
+    H: (n, n) float32. Returns (n, n) float32.
+    """
+    H = spdify(H, eps)
+    evals, Q = torch.linalg.eigh(H)
+    return Q @ torch.diag(evals.clamp(min=eps).pow(-gamma)) @ Q.T
+
+
 def truncated_svd(matrix, rank, niter=4):
     """
     Return the Frobenius-optimal rank-r approximation of a matrix.
