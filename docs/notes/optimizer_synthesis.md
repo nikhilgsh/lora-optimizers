@@ -7,8 +7,7 @@ eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
 
 **Confirmed:**
 - At r=16, the original `adam-{lin,scaled}-lora` are ε-perturbed AdamW.
-  Adam's per-coord √v̂ erases the geometric correction (H1, cos_B ≈ 0.97
-  throughout, cos_A → 0.84 over training).
+  H1: cos_B ≈ 0.97 throughout 2k steps, cos_A → 0.84 over training.
 - The *-Post variants without RMS-align (H4 unfixed) lose to AdamW by
   ~0.03 — step magnitude varied by 100× over training (σ_min(S_B) climbs
   from 0.011 → 1.08).
@@ -17,8 +16,15 @@ eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
 - The geometric correction's effect is **rank-dependent**: gap goes from
   +0.02 at r=2 (lin/scaled lose) to −0.005 at r=64 (lin/scaled win).
   Crossover near r=16.
-- B-side geometric correction is essentially inert at every r (cos_B
-  saturated near 1). All useful geometric work happens on A.
+- B-side cos_post ≈ 0.97 across r ∈ {4, 16, 64} throughout 2k (cos *after*
+  Adam, measured for *-Pre variants). Whatever happens upstream of Adam,
+  the applied B-direction matches plain AdamW's B-direction.
+
+**Verified through step 500 only (2k probe in flight as job 6313261):**
+- cos_pre_B ≈ 0.98: S_A⁻¹ does not rotate ∇B meaningfully in the first 500
+  steps. Whether this holds past step 500 is currently being tested. The
+  Kaiming-init "random projection" argument that motivated this prediction
+  applies at init; it does NOT prove S_A stays isotropic as A trains.
 
 **Likely but not yet verified:**
 - The r=64 win is real-direction but its *magnitude* (~0.005) is within
@@ -29,30 +35,46 @@ eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
 - "Geometry on A only" should perform identically to full geometry-then-
   Adam (since B-side is inert). Untested ablation.
 
-**H_weak vs H_erase RESOLVED (job 6313190):** both, depending on factor.
+**H_weak vs H_erase — early-phase verdict (job 6313190, 500 steps):**
 
-| factor | cos_pre        | cos_post       | mechanism                                  |
-|--------|----------------|----------------|--------------------------------------------|
-| B      | 0.97-0.99 flat | 0.97-0.99 flat | **H_weak**: S_A⁻¹ near-identity on ∇B      |
-| A early| 0.65 (step 20) | 0.46 (step 20) | **H_erase**: Adam erases meaningful rotation |
-| A late | 0.84-0.88      | 0.80-0.84      | Mild erasure; rotation mostly preserved    |
+| factor | cos_pre (step 20) | cos_pre (step 500) | cos_post (step 20) | cos_post (step 500) |
+|--------|-------------------|---------------------|---------------------|----------------------|
+| B      | 0.98              | 0.98                | 0.98                | 0.97                |
+| A      | 0.65              | 0.85                | 0.46                | 0.80                |
 
-Why: S_A = AAᵀ where A is Kaiming-initialized → A's rows are
-near-isotropic in d_in-space → AAᵀ ≈ scalar·I_r → S_A⁻¹ acts as uniform
-scaling on ∇B → no rotation. S_B = BᵀB where B starts at 0 and *grows
-directionally* toward loss-reducing structure → B's spectrum is non-isotropic
-→ S_B⁻¹ encodes real geometric structure → S_B⁻¹·∇A is a meaningful rotation.
+**What this verifies (verified):** through step 500 at r=16, S_A⁻¹ does not
+meaningfully rotate ∇B (cos_pre_B ≈ 0.98 throughout). On A, S_B⁻¹ does
+rotate ∇A meaningfully (cos_pre_A reaches 0.65 at step 20, settles at 0.85
+by step 500). Adam's per-coord √v̂ subtracts an additional ~0.2 from cos on
+A early, ~0.05 late (cos_post < cos_pre).
 
-**Implication:** the productive change is **geometry on A only** (B-side
-correction adds nothing for any plausible Adam pipeline). A "geometry-on-A,
-plain-Adam-on-B" ablation should match or beat the full geometry-then-Adam
-optimizers. Cheap to test.
+**What this does NOT verify (still open, 2k probe in flight as job 6313261):**
+whether S_A *stays* near-isotropic past step 500. Possible scenarios:
 
-**Still open:** Why does the geometric correction help more at r=64 than r=16?
-Hypothesis: at higher r, S_B has more dimensions for B to grow into (more
-non-isotropic structure available), so the A-side rotation is richer and
-adds more value. The cos diagnostics from h1_rsweep_diag_2k will speak to
-this when the sweep finishes.
+- (S_A stays I-like throughout 2k): consistent with current evidence;
+  would mean the B-side parameter Gram preconditioner has nothing to project
+  onto for the full LoRA-fine-tune trajectory. Plausible if A doesn't drift
+  far from init in this regime.
+- (S_A develops loss-aligned structure late): A receives gradient updates
+  ∇A = Bᵀ·∇W which carry loss-aligned structure in B's column space. If
+  these updates accumulate enough to dominate the original Kaiming init,
+  S_A becomes non-isotropic and S_A⁻¹·∇B becomes a meaningful rotation.
+  In this scenario, the B-side correction earns its keep late in training,
+  and "drop S_A⁻¹" would be the wrong reframing.
+
+**Reasoning we can do without the late-phase data:**
+- The intuition that A is a "random projection" comes from Kaiming init
+  variance scaling and concentration of measure for r ≪ d_in. Both apply
+  at init. Neither apply unconditionally to a trained A.
+- Adam's update on A drives A toward parameter regions where the loss
+  gradient (and hence B's gradient) flows. So *some* loss-alignment of A
+  is mechanistically expected; the open question is whether it's enough
+  to flip cos_pre_B away from 1.
+
+**Why the geometric correction helps more at r=64 than r=16 (open):**
+hypothesis is that at higher r, S_B has more dimensions for B to grow into,
+so the A-side rotation is richer. The cos diagnostics from h1_rsweep_diag_2k
+will speak to this when the sweep finishes.
 
 **One-line mechanistic story (provisional):** Adam's per-coordinate v̂⁻¹ᐟ²
 normalization, when applied *to the preconditioned gradient*, erases
