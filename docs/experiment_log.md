@@ -5,6 +5,24 @@ Each entry: motivation → action → result → next step. Newest entries on to
 
 ---
 
+## 2026-04-30 — GaLore behavioral equivalence verified, found off-by-one bug
+
+**Motivation.** User flagged that the 7% gap between our GaLore (0.811) and AdamW LoRA (0.758) was concerning, and asked whether I'd actually run the official codebase to verify behavioral equivalence (I had only code-reviewed it).
+
+**Action.** Wrote `scripts/verify_galore_against_official.py`: tiny model with both tall and wide linears, deterministic gradients, run N steps with our `GaLoreAdamW` and the official `~/GaLore/galore_torch.AdamW`, compare weight trajectories.
+
+**Found a behavioral divergence.** Steps 1–4 matched (max |Δw| < 1.9e-9, float32 noise). Step 5 diverged sharply (4e-4) and grew to 1.6e-3 by step 12.
+
+**Root cause.** Step counter offset. Official: `state["step"] = 0` initially → project uses `iter=0` (init refresh) → `step += 1` → bias correction uses post-increment step. So `iter` passed to projection is `0,1,2,...` and refresh fires at `iter ∈ {0, gap, 2·gap, ...}`. My port did `step += 1` first, then checked `step % gap == 0` for refresh — fires at `step ∈ {1, gap, 2·gap, ...}`, i.e. **off by one starting at iter=gap**.
+
+**Fix.** Project before incrementing step. After fix, behavioral equivalence to 1.86e-9 across 12 steps spanning 2 refreshes — passes 1e-5 tolerance.
+
+**Resubmitted.** `galore_fixed_2k` job 6312228 (the 0.811 result was from the off-by-one version). Also adds genuine "behavioral match" to the reproduction scorecard.
+
+**Lesson.** Code-review match ≠ behavioral match. The off-by-one was easy to miss visually because both versions look "correct" — it took a numerical comparison to surface it.
+
+---
+
 ## Open questions / ongoing
 
 - **PSI-LoRA reproduction performing poorly** (best 1.04 at η=1e-2, lr-pinned) — submitted job 6312167 with the lr-scaled ρ fix; results pending. If still poor, suspect deeper bug in F-LoRSUM port or hyperparameter mismatch (K, ρ, momentum_rank).
@@ -121,7 +139,7 @@ Original sweeps: `lr_sweep_2k` (5 LoRA-mode optimizers × 4 lrs), `optim_compare
 | reproduction | code-review match | end-to-end behavioral match | reference |
 |--------------|-------------------|------------------------------|-----------|
 | Muon NS      | ✓ canonical Muon  | tests verify scale-invariance| modded-nanogpt |
-| GaLore       | ✓ vs `~/GaLore`   | **NOT verified** — never ran their code | jiaweizzhao/GaLore |
+| GaLore       | ✓ vs `~/GaLore`   | ✓ behavioral match to 1.86e-9 over 12 steps + 2 refreshes (`scripts/verify_galore_against_official.py`) | jiaweizzhao/GaLore |
 | PSI-LoRA     | ✓ vs `~/PSI-LoRA` | **NOT verified** — paper's claims hold on GLUE/SQUAD/WikiText, not OLMo+Magicoder | zeligism/PSI-LoRA |
 
 If we want strong claims about reproduction, we need to run the reference codebase on equivalent settings and compare outputs.

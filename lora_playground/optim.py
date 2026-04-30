@@ -73,6 +73,8 @@ OPTIMIZER_CHOICES = {
     "scaled-lora",
     "adam-scaled-lora",
     "adam-lin-lora",
+    "adam-scaled-lora-post",
+    "adam-lin-lora-post",
     "muon-lora",
     "product-muon-lora",
     "adam-muon-lora",
@@ -515,6 +517,178 @@ class AdamScaledLoRA(Optimizer):
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
+
+
+class AdamScaledLoRAPost(Optimizer):
+    """AdamScaledLoRA with composition order swapped (H4).
+
+    The original AdamScaledLoRA applies Adam (m,v) to the *geometrically
+    preconditioned* gradient v = S⁻¹∇. Adam's per-coord √v̂ then re-normalizes
+    away the cross-coordinate scale structure that the Gram solve installed.
+
+    This variant maintains Adam state on the *raw* gradient (∇A, ∇B), produces
+    the unitless Adam direction u = m̂/(√v̂+ε), then applies the Gram solve
+    *after*: ΔA = −lr · S_B⁻¹ u_A, ΔB = −lr · u_B S_A⁻¹.
+
+    v̂ adapts to the natural gradient distribution (its strength); the geometry
+    installs the (A,B) coupling on the Adam *step*, not the gradient.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, adapter_name=None):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'v_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                'step': 0,
+            }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+
+        lr = self.param_groups[0]["lr"]
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamScaledLoRAPost update.")
+
+            state = self.pair_state[i]
+            state['step'] += 1
+
+            gA = A.grad.float()    # raw ∇_A
+            gB = B.grad.float()    # raw ∇_B
+
+            # Adam state on the RAW gradient (the key reordering vs AdamScaledLoRA).
+            state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+            state['v_A'].mul_(self.beta2).addcmul_(gA, gA, value=1.0 - self.beta2)
+            state['v_B'].mul_(self.beta2).addcmul_(gB, gB, value=1.0 - self.beta2)
+
+            bc1 = 1.0 - self.beta1 ** state['step']
+            bc2 = 1.0 - self.beta2 ** state['step']
+            u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
+            u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+
+            # Gram solve applied to the Adam direction, NOT the raw gradient.
+            SB = spdify(B.T @ B, self.delta)
+            SA = spdify(A @ A.T, self.delta)
+            dA = -lr * solve_spd(SB, u_A)
+            dB = -lr * solve_spd(SA, u_B.T).T
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+
+class AdamLinLoRAPost(Optimizer):
+    """AdamLinLoRA with composition order swapped (H4).
+
+    Adam state runs on raw (∇A, ∇B). The unitless Adam direction
+    u_A = m̂_A/(√v̂_A+ε), u_B analogous, is then fed through the LinLoRA
+    Sylvester step *as if it were the gradient*: solve
+
+        S_B K + γ² K S_A = -γ · lr · (u_A A^T)
+
+    and apply
+
+        ΔA = -S_B⁻¹ (lr · u_A + γ K A)
+        ΔB = -(lr · u_B + (1/γ) B K) S_A⁻¹.
+
+    Sylvester coupling is preserved on the Adam step rather than the gradient.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, adapter_name=None, scaled_metric=False,
+                 lora_plus_multiplier=1.0):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.lora_plus_multiplier = lora_plus_multiplier
+
+        self.pair_state = {}
+        self.gammas = []
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'v_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                'step': 0,
+            }
+            r, d_in = A.shape
+            self.gammas.append((d_in / r) ** 0.5 if scaled_metric else 1.0)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+
+        lr = self.param_groups[0]["lr"]
+
+        for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamLinLoRAPost update.")
+
+            state = self.pair_state[i]
+            state['step'] += 1
+
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+            state['v_A'].mul_(self.beta2).addcmul_(gA, gA, value=1.0 - self.beta2)
+            state['v_B'].mul_(self.beta2).addcmul_(gB, gB, value=1.0 - self.beta2)
+
+            bc1 = 1.0 - self.beta1 ** state['step']
+            bc2 = 1.0 - self.beta2 ** state['step']
+            u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
+            u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+
+            # Substitute u_A, u_B for ∇_A, ∇_B in the LinLoRA derivation.
+            SB = spdify(B.T @ B, self.delta)
+            SA = spdify(A @ A.T, self.delta)
+            RHS = -gamma * lr * (u_A @ A.T.float())
+            K = solve_sylvester(SB, (gamma ** 2) * SA, RHS)
+
+            termA = (lr * u_A + gamma * K.to(u_A.dtype) @ A.float())
+            dA = -solve_spd(SB, termA)
+            termB = (lr * u_B + (1.0 / gamma) * B.float() @ K.to(u_B.dtype))
+            dB = -solve_spd(SA, termB.T).T
+
+            # lora+ multiplier scales the B-side step (matching AdamLinLoRA semantics).
+            if self.lora_plus_multiplier != 1.0:
+                dB = self.lora_plus_multiplier * dB
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
 
 class LoRAPlusAdamW(AdamW):
     """
@@ -1355,16 +1529,22 @@ class GaLoreAdamW(Optimizer):
                 continue
 
             gs = self.galore_state[target.name]
-            gs["step"] += 1
-            t = gs["step"]
+            # Match official: project BEFORE incrementing step, so the iter
+            # passed to projection is 0,1,2,... and refresh fires at iter
+            # ∈ {0, gap, 2·gap, ...}. Bias correction below uses the
+            # post-increment step ∈ {1, 2, ...}.
+            iter_idx = gs["step"]
 
             G_f = G.float()
             d_out, d_in = G_f.shape
             r = min(self.rank, d_out, d_in)
 
-            if gs["ortho"] is None or (t % self.update_proj_gap == 0):
+            if gs["ortho"] is None or (iter_idx % self.update_proj_gap == 0):
                 gs["ortho"], gs["side"] = self._update_projection(G_f, r)
                 # NOTE: do NOT reset m/v here (matches official GaLore).
+
+            gs["step"] += 1
+            t = gs["step"]
 
             ortho = gs["ortho"]
             if gs["side"] == "right":
@@ -1500,6 +1680,24 @@ def build_optimizer(
             lora_plus_multiplier=lora_plus_multiplier,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "adam-scaled-lora-post":
+        return AdamScaledLoRAPost(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+        )
+    if optimizer_type == "adam-lin-lora-post":
+        return AdamLinLoRAPost(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            scaled_metric=scaled_metric,
+            lora_plus_multiplier=lora_plus_multiplier,
         )
     if optimizer_type == "muon-lora":
         return MuonLoRA(
