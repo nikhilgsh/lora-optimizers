@@ -3,6 +3,8 @@ from torch.optim import AdamW, Optimizer, SGD
 
 from .utils import (
     collect_lora_pairs,
+    f_lorsum,
+    lorsum,
     solve_spd,
     solve_sylvester,
     spd_frac_power_inv,
@@ -17,8 +19,11 @@ OPTIMIZER_CHOICES = {
     "adam-scaled-lora",
     "adam-lin-lora",
     "muon-lora",
+    "product-muon-lora",
+    "adam-muon-lora",
     "diag-scaled-lora",
     "kron-grad-lora",
+    "psi-lora",
     "galore-adamw",
     "sgd",
     "sgd-m",
@@ -797,6 +802,140 @@ class KronGradLoRA(_HookLoRAOptimizer):
             B.grad.zero_()
 
 
+class PSILoRA(_HookLoRAOptimizer):
+    """
+    PSI-LoRA: Proximal Subspace Iteration LoRA, ported from Algorithm 3 of
+    Almansoori et al. 2026 (arXiv 2602.16456). Reference impl:
+    ~/PSI-LoRA/src/oplora/{utils.py:scaled_low_rank_sum, optimizer.py:OPLoraOptimizer}.
+
+    Per LoRA pair (A ∈ ℝ^{r×d_in}, B ∈ ℝ^{d_out×r}; paper's V = Aᵀ, U = B):
+
+      1. Hook captures X ∈ ℝ^{B×d_in} (forward input) and S ∈ ℝ^{B×d_out} (output grad).
+      2. Update diagonal K-FAC stats (β₂=ema_beta):
+         D_V ← β₂ D_V + (1−β₂)·(1/B)·diag(XᵀX)         shape (d_in,)
+         D_U ← β₂ D_U + (1−β₂)·(1/B)·diag(SᵀS)         shape (d_out,)
+      3. Compose dense step proposal as a SUM OF LOW-RANK FACTORS (no dense expansion):
+         Ŵ = B@A − η·SᵀX − η·α₁·(M_B @ M_A)
+         (Aᵀ = paper V, M_A and M_B are paper's r×n / m×r momentum factors.)
+      4. F-LoRSUM (eq. 14): K alternating ALS iterations of the proximal projection
+         under K-FAC metrics M_U = (D_U+δ)^γ, M_V = (D_V+δ)^γ to obtain (A_new, B_new).
+      5. LoRSUM the momentum buffer in full weight space:
+         (M_A, M_B) ← LoRSUM([(M_A, M_B), (X, Sᵀ)], (α₁, 1−α₁), K, ρ)
+      6. Copy A_new, B_new back into the LoRA params.
+
+    Hyperparameters:
+      gamma=0.5, ema_beta=0.99, delta=1e-5  — diagonal K-FAC metric controls
+      momentum=0.9                          — α₁ in paper Algorithm 3
+      inner_iters=1                         — K, paper recommends K=1
+      proximal_rho=0.01                     — ρ in eq. 9 / 14
+    """
+    def __init__(self, model, lr=3e-4, gamma=0.5, ema_beta=0.99, delta=1e-5,
+                 momentum=0.9, inner_iters=1, proximal_rho=0.01,
+                 momentum_rank=None, adapter_name=None):
+        triples = _collect_lora_modules(model, adapter_name)
+        if not triples:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        lora_modules = [m for m, _, _ in triples]
+        pairs = [(A, B) for _, A, B in triples]
+        params = [p for A, B in pairs for p in (A, B)]
+
+        self.momentum = momentum
+        self.inner_iters = inner_iters
+        self.proximal_rho = proximal_rho
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            r = A.shape[0]
+            r_m = momentum_rank if momentum_rank is not None else r
+            self.pair_state[i] = {
+                "D_V": torch.ones(A.shape[1], dtype=torch.float32, device=A.device),
+                "D_U": torch.ones(B.shape[0], dtype=torch.float32, device=B.device),
+                # Low-rank momentum factors: M_B @ M_A ≈ EMA of full grad.
+                # M_A: (r_m, d_in), M_B: (d_out, r_m). Init to small noise on M_A, zero on M_B
+                # (so their product is zero; matches paper's "M_t initialized to zero"
+                # while keeping M_A non-degenerate so the LoRSUM ALS doesn't collapse).
+                "M_A": torch.randn(r_m, A.shape[1], dtype=torch.float32, device=A.device).mul(0.01),
+                "M_B": torch.zeros(B.shape[0], r_m, dtype=torch.float32, device=B.device),
+            }
+        super().__init__(
+            model=model,
+            params=params,
+            param_groups=[{"params": params, "lr": lr}],
+            pairs=pairs,
+            lora_modules=lora_modules,
+            ema_beta=ema_beta,
+            delta=delta,
+            gamma=gamma,
+            adapter_name=adapter_name,
+        )
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        rho = self.proximal_rho
+        K = self.inner_iters
+        alpha1 = self.momentum
+
+        for i, (A, B) in enumerate(self.pairs):
+            state = self.pair_state[i]
+            self._update_diag_stats(state, i)
+
+            X = self.cached_X.get(i)
+            S = self.cached_S.get(i)
+            if X is None or S is None:
+                # Hook didn't fire (e.g. eval-mode); skip without erroring.
+                continue
+            X = X.float()                           # (B, d_in)
+            S = S.float()                           # (B, d_out)
+
+            A_curr = A.float()                      # (r, d_in)
+            B_curr = B.float()                      # (d_out, r)
+            M_A = state["M_A"]                      # (r_m, d_in)
+            M_B = state["M_B"]                      # (d_out, r_m)
+
+            # F-LoRSUM eq. 14 over factors:
+            #   factors[0] = (A, B) prox center, coeff = 1
+            #   factors[1] = (X, Sᵀ), coeff = -η
+            #   factors[2] = (M_A, M_B), coeff = -η · α₁
+            # Note: factor_in shape (k, d_in), factor_out shape (d_out, k).
+            #   For (X, Sᵀ): X is (B_size, d_in)=factor_in shape (k=B_size, d_in) ✓;
+            #                Sᵀ is (d_out, B_size)=factor_out shape (d_out, k=B_size) ✓.
+            factors = [
+                (A_curr, B_curr),
+                (X, S.T),
+                (M_A, M_B),
+            ]
+            coeffs = [1.0, -lr, -lr * alpha1]
+
+            A_new, B_new = f_lorsum(
+                factors=factors,
+                coefficients=coeffs,
+                D_U=state["D_U"], D_V=state["D_V"],
+                num_iters=K, lmbd=rho,
+                gamma=self.gamma, delta=self.delta,
+            )
+
+            # Update low-rank momentum: M ← LoRSUM([(M, M), (X, Sᵀ)], (α₁, 1-α₁); K, ρ)
+            M_A_new, M_B_new = lorsum(
+                factors=[(M_A, M_B), (X, S.T)],
+                coefficients=[alpha1, 1.0 - alpha1],
+                num_iters=K, lmbd=rho,
+            )
+            state["M_A"].copy_(M_A_new)
+            state["M_B"].copy_(M_B_new)
+
+            # Write new factors back to the LoRA params.
+            A.copy_(A_new.to(dtype=A.dtype, device=A.device))
+            B.copy_(B_new.to(dtype=B.dtype, device=B.device))
+            if A.grad is not None:
+                A.grad.zero_()
+            if B.grad is not None:
+                B.grad.zero_()
+
+
 class GaLoreAdamW(Optimizer):
     """
     GaLore: Gradient Low-Rank Projection AdamW for dense target weights.
@@ -887,7 +1026,7 @@ class GaLoreAdamW(Optimizer):
 
             if gs["ortho"] is None or (t % self.update_proj_gap == 0):
                 gs["ortho"], gs["side"] = self._update_projection(G_f, r)
-                # NOTE: do NOT reset m/v here (faithful to official GaLore).
+                # NOTE: do NOT reset m/v here (matches official GaLore).
 
             ortho = gs["ortho"]
             if gs["side"] == "right":
@@ -939,6 +1078,10 @@ def build_optimizer(
     precond_gamma: float = 0.5,
     precond_ema_beta: float = 0.99,
     precond_delta: float = 1e-5,
+    psi_inner_iters: int = 1,
+    psi_momentum: float = 0.9,
+    psi_rho: float = 0.01,
+    psi_momentum_rank: int | None = None,
     galore_update_proj_gap: int = 200,
     galore_scale: float = 0.25,
 ):
@@ -1026,6 +1169,17 @@ def build_optimizer(
             gamma=precond_gamma,
             ema_beta=precond_ema_beta,
             delta=precond_delta,
+        )
+    if optimizer_type == "psi-lora":
+        return PSILoRA(
+            model, lr=lr,
+            gamma=precond_gamma,
+            ema_beta=precond_ema_beta,
+            delta=precond_delta,
+            momentum=psi_momentum,
+            inner_iters=psi_inner_iters,
+            proximal_rho=psi_rho,
+            momentum_rank=psi_momentum_rank,
         )
     if optimizer_type == "sgd":
         params = [p for p in model.parameters() if p.requires_grad]

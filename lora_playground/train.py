@@ -211,6 +211,14 @@ def make_parser():
                         help="EMA smoothing for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
     parser.add_argument("--precond_delta", type=float, default=1e-5,
                         help="Damping floor for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
+    parser.add_argument("--psi_inner_iters", type=int, default=1,
+                        help="K, number of LoRSUM ALS iterations per PSI-LoRA step.")
+    parser.add_argument("--psi_momentum", type=float, default=0.9,
+                        help="α₁ momentum coefficient in PSI-LoRA Algorithm 3.")
+    parser.add_argument("--psi_rho", type=float, default=0.01,
+                        help="ρ proximal regularizer for PSI-LoRA F-LoRSUM.")
+    parser.add_argument("--psi_momentum_rank", type=int, default=None,
+                        help="Rank r_m for PSI-LoRA low-rank momentum (default: lora_r).")
     parser.add_argument("--galore_update_proj_gap", type=int, default=200,
                         help="Steps between GaLore projection updates.")
     parser.add_argument("--galore_scale", type=float, default=0.25,
@@ -334,6 +342,10 @@ def main():
         precond_gamma=args.precond_gamma,
         precond_ema_beta=args.precond_ema_beta,
         precond_delta=args.precond_delta,
+        psi_inner_iters=args.psi_inner_iters,
+        psi_momentum=args.psi_momentum,
+        psi_rho=args.psi_rho,
+        psi_momentum_rank=args.psi_momentum_rank,
         galore_update_proj_gap=args.galore_update_proj_gap,
         galore_scale=args.galore_scale,
     )

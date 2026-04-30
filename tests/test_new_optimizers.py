@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from lora_playground.optim import DiagScaledLoRA, GaLoreAdamW, KronGradLoRA, MuonLoRA
+from lora_playground.optim import DiagScaledLoRA, GaLoreAdamW, KronGradLoRA, MuonLoRA, PSILoRA
 from lora_playground.utils import collect_dense_target_weights, freeze_all_except_targets, spd_frac_power_inv
 
 
@@ -247,6 +247,67 @@ def test_kron_grad_lora_params_update():
     opt.step()
     A_after = model.layer0.lora_A["default"].weight.detach()
     assert not torch.allclose(A_before, A_after)
+
+
+# ─── PSILoRA (F-LoRSUM-based, paper Algorithm 3) ─────────────────────────────
+
+def test_psi_lora_state_shapes():
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    opt = PSILoRA(model, lr=1e-3)
+    for i, (A, B) in enumerate(opt.pairs):
+        s = opt.pair_state[i]
+        assert s["D_V"].shape == (A.shape[1],)
+        assert s["D_U"].shape == (B.shape[0],)
+        assert s["M_A"].shape == A.shape       # (r_m=r, d_in)
+        assert s["M_B"].shape == B.shape       # (d_out, r_m=r)
+
+
+def test_psi_lora_step_runs_and_updates_params():
+    """With LoRA's PEFT init (B=0), the first step's A-update uses B=0 and the
+    proximal prior pulls A back to A₀. The B-update then uses A=A₀ and moves B
+    off zero. After a *second* step, both A and B should have changed."""
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    opt = PSILoRA(model, lr=1e-2, ema_beta=0.9, momentum=0.9,
+                  inner_iters=1, proximal_rho=0.01)
+    A_before = model.layer0.lora_A["default"].weight.detach().clone()
+    B_before = model.layer0.lora_B["default"].weight.detach().clone()
+    for _ in range(2):
+        _trigger_hooks(opt)
+        _set_grads(model)
+        opt.step()
+    A_after = model.layer0.lora_A["default"].weight.detach()
+    B_after = model.layer0.lora_B["default"].weight.detach()
+    assert torch.isfinite(A_after).all() and torch.isfinite(B_after).all()
+    assert not torch.allclose(B_before, B_after), "B did not update"
+    assert not torch.allclose(A_before, A_after), "A did not update after 2 steps"
+
+
+def test_psi_lora_momentum_buffer_updates():
+    """Same K=1 ALS asymmetry as the params update test: M_B (init zero) moves on
+    step 1, M_A moves on step 2."""
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    opt = PSILoRA(model, lr=1e-3, momentum=0.5, inner_iters=1)
+    M_B_before = opt.pair_state[0]["M_B"].clone()
+    _trigger_hooks(opt)
+    _set_grads(model)
+    opt.step()
+    M_B_after = opt.pair_state[0]["M_B"]
+    assert not torch.allclose(M_B_before, M_B_after), "M_B did not update via LoRSUM"
+
+
+def test_psi_lora_dv_du_update():
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    opt = PSILoRA(model, lr=1e-3, ema_beta=0.9)
+    dv_before = opt.pair_state[0]["D_V"].clone()
+    _trigger_hooks(opt)
+    _set_grads(model)
+    opt.step()
+    dv_after = opt.pair_state[0]["D_V"]
+    assert not torch.allclose(dv_before, dv_after), "D_V did not update"
 
 
 # ─── GaLoreAdamW ──────────────────────────────────────────────────────────────
