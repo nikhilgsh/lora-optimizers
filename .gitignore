@@ -24,3 +24,34 @@ runs/
 venv/
 
 .ipynb_checkpoints/
+
+# Local Claude Code state
+.claude/
+
+# Preprocessed datasets
+data/
+
+# Run outputs / logs
+logs/
+disbatch_logs/
+slurm_logs/
+
+# Auto-generated SLURM resize artifacts
+slurm_job_*_resize.sh
+slurm_job_*_resize.csh
+
+# Regenerated notebook renders
+notebooks/_render/
+
+# LaTeX build artifacts (scoped to docs/theory/)
+docs/theory/*.aux
+docs/theory/*.bbl
+docs/theory/*.blg
+docs/theory/*.fls
+docs/theory/*.fdb_latexmk
+docs/theory/*.log
+docs/theory/*.out
+docs/theory/*.run.xml
+docs/theory/*.synctex.gz
+docs/theory/*.toc
+docs/theory/*-blx.bib
