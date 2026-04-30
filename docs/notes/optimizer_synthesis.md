@@ -29,13 +29,30 @@ eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
 - "Geometry on A only" should perform identically to full geometry-then-
   Adam (since B-side is inert). Untested ablation.
 
-**Open mechanism questions:**
-- H_weak vs H_erase on B: is S_A⁻¹ near-identity on ∇B (weak geometry), or
-  does Adam erase a meaningful rotation (erase)? Probe submitted (job
-  6313190); answer at step 20.
-- Why does the geometric correction help at r=64 but not r=16? Hypothesis:
-  more Sylvester degrees of freedom (r×r) for installing structure that
-  per-coord v̂ can't fully flatten — yet to confirm.
+**H_weak vs H_erase RESOLVED (job 6313190):** both, depending on factor.
+
+| factor | cos_pre        | cos_post       | mechanism                                  |
+|--------|----------------|----------------|--------------------------------------------|
+| B      | 0.97-0.99 flat | 0.97-0.99 flat | **H_weak**: S_A⁻¹ near-identity on ∇B      |
+| A early| 0.65 (step 20) | 0.46 (step 20) | **H_erase**: Adam erases meaningful rotation |
+| A late | 0.84-0.88      | 0.80-0.84      | Mild erasure; rotation mostly preserved    |
+
+Why: S_A = AAᵀ where A is Kaiming-initialized → A's rows are
+near-isotropic in d_in-space → AAᵀ ≈ scalar·I_r → S_A⁻¹ acts as uniform
+scaling on ∇B → no rotation. S_B = BᵀB where B starts at 0 and *grows
+directionally* toward loss-reducing structure → B's spectrum is non-isotropic
+→ S_B⁻¹ encodes real geometric structure → S_B⁻¹·∇A is a meaningful rotation.
+
+**Implication:** the productive change is **geometry on A only** (B-side
+correction adds nothing for any plausible Adam pipeline). A "geometry-on-A,
+plain-Adam-on-B" ablation should match or beat the full geometry-then-Adam
+optimizers. Cheap to test.
+
+**Still open:** Why does the geometric correction help more at r=64 than r=16?
+Hypothesis: at higher r, S_B has more dimensions for B to grow into (more
+non-isotropic structure available), so the A-side rotation is richer and
+adds more value. The cos diagnostics from h1_rsweep_diag_2k will speak to
+this when the sweep finishes.
 
 **One-line mechanistic story (provisional):** Adam's per-coordinate v̂⁻¹ᐟ²
 normalization, when applied *to the preconditioned gradient*, erases
@@ -54,18 +71,29 @@ final number pending).
 
 **Cross-rank board:**
 
-| rank | optimizer                | r  | best η | eval loss  | source                         | beats AdamW r=16? |
-|------|--------------------------|----|--------|------------|--------------------------------|-------------------|
-| 1    | **adam-scaled-lora**     | 64 | 3e-4   | **0.7506** | `h3_rsweep_2k`                 | ✅ Δ=−0.0073      |
-| 2    | adam-lin-lora            | 64 | 3e-4   | 0.7527     | `h3_rsweep_2k`                 | ✅ Δ=−0.0052      |
-| 3    | adamw                    | 64 | 3e-4   | 0.7550     | `h3_rsweep_2k`                 | ✅ Δ=−0.0029      |
-| 4    | adam-muon-lora           | 16 | 3e-3   | 0.7557     | `adam_muon_2k`                 | ✅ Δ=−0.0022      |
-| 5    | adam-lin-lora            | 16 | 1e-3   | 0.7564     | `optim_compare_high_eta_2k`    | ≈ tied            |
-| 6    | adam-scaled-lora         | 16 | 1e-3   | 0.7572     | `optim_compare_high_eta_2k`    | ≈ tied            |
-| 7    | adamw                    | 16 | 3e-4   | 0.7579     | `lr_sweep_2k`                  | baseline          |
-| 8    | muon-lora (LoRA+ m=4)    | 16 | 1e-3   | 0.7674     | `muon_loraplus_2k`             | ❌                |
-| 9    | adam-lin-lora-post (unfixed) | 16 | 1e-3 | 0.7875   | `h4_post_2k`                   | ❌                |
-| —    | adam-scaled-lora-post    | 64 | tbd    | tbd        | (not yet run)                  | tbd               |
+| rank | optimizer                       | r  | best η | eval loss  | source                         | vs AdamW r=16 |
+|------|---------------------------------|----|--------|------------|--------------------------------|---------------|
+| 1    | **adam-scaled-lora**            | 64 | 3e-4   | **0.7506** | `h3_rsweep_2k`                 | ✅ Δ=−0.0073* |
+| 2    | adam-lin-lora                   | 64 | 3e-4   | 0.7527     | `h3_rsweep_2k`                 | ✅ Δ=−0.0052* |
+| 3    | adamw                           | 64 | 3e-4   | 0.7550     | `h3_rsweep_2k`                 | ✅ Δ=−0.0029  |
+| 4    | adam-muon-lora                  | 16 | 3e-3   | 0.7557     | `adam_muon_2k`                 | ✅ Δ=−0.0022  |
+| 5    | adam-lin-lora                   | 16 | 1e-3   | 0.7564     | `optim_compare_high_eta_2k`    | ≈ tied        |
+| 6    | **adam-scaled-lora-post (RMS-align)** | 16 | 3e-4   | **0.7570** | `h4_post_rmsalign_2k`     | ≈ tied (NEW)  |
+| 7    | adam-scaled-lora                | 16 | 1e-3   | 0.7572     | `optim_compare_high_eta_2k`    | ≈ tied        |
+| 8    | adamw                           | 16 | 3e-4   | 0.7579     | `lr_sweep_2k`                  | baseline      |
+| 9    | adam-scaled-lora-post (RMS-align) | 16 | 1e-3 | 0.7628     | `h4_post_rmsalign_2k`          | +0.005        |
+| 10   | adam-lin-lora-post (RMS-align)  | 16 | 3e-4   | 0.7641     | `h4_post_rmsalign_2k`          | +0.006        |
+| —    | muon-lora (LoRA+ m=4)           | 16 | 1e-3   | 0.7674     | `muon_loraplus_2k`             | ❌            |
+| —    | adam-lin-lora-post (unfixed)    | 16 | 1e-3   | 0.7875     | `h4_post_2k`                   | ❌ (fix saves it) |
+
+*all r=64 wins are within the single-seed noise floor (≈ 0.004); the
+*direction* is reliable, the *magnitude* needs mechanism evidence (cos
+diagnostics from h1_rsweep_diag_2k) rather than multi-seed.
+
+**Robustness observation from H3:** at r=64 η=1e-3, plain AdamW *diverges*
+to 0.89 while adam-{lin,scaled}-lora hold up at 0.77-0.78. Geometric
+preconditioning gives the optimizers more lr-headroom at high rank — a
+side benefit not visible at r=16.
 
 **r=16-only ranking:** adam-muon-lora wins (0.7557).
 **r=64 ranking:** adam-scaled-lora wins (0.7506).
