@@ -4,22 +4,35 @@ Tracking the campaign to make a Muon variant **strictly beat** AdamW
 (0.7579) and adam-lin-lora (0.7564) on the 2k-step r=16 LoRA fine-tune of
 OLMo-2-1B on Magicoder.
 
-## ✅ Result: adam-muon-lora wins
+## Result: adam-muon-lora wins at r=64; LoRA+ confounded the r=16 headline
 
-| optimizer        | best η | m  | eval loss @ 2000 |
-|------------------|--------|----|------------------|
-| **adam-muon-lora**   | 3e-3   | 4  | **0.7557**       |
-| adam-lin-lora    | 1e-3   | 1  | 0.7564           |
-| adam-scaled-lora | 1e-3   | 1  | 0.7572           |
-| adamw            | 3e-4   | 1  | 0.7579           |
-| muon-lora        | 3e-3   | 1  | 0.7675           |
+| optimizer        | r  | best η | m  | eval loss @ 2000 |
+|------------------|----|--------|----|------------------|
+| adam-muon-lora       | 64 | 3e-3   | 1  | **0.7515**       |
+| adam-muon-lora       | 16 | 3e-3   | 4  | 0.7557           |
+| adam-lin-lora        | 16 | 1e-3   | 1  | 0.7564           |
+| adam-scaled-lora     | 16 | 1e-3   | 1  | 0.7572           |
+| adamw                | 64 | 3e-4   | 1  | 0.7550           |
+| adamw                | 16 | 3e-4   | 1  | 0.7579           |
+| adam-muon-lora       | 16 | 3e-3   | 1  | 0.7624           |
+| muon-lora            | 16 | 3e-3   | 1  | 0.7675           |
 
-`adam-muon-lora` strictly beats both reference frontiers (Δ = −0.0022 vs AdamW,
-−0.0007 vs adam-lin-lora). The mechanism: Newton-Schulz orthogonalization
-applied to Adam's per-element preconditioned direction m̂/(√v̂+ε), per-factor
-independently, with `lr_b_multiplier=4` providing LoRA+ asymmetry. At step
-2000 the trajectory is still descending (step 1800 → 2000 dropped 0.002), so
-longer training or learning-rate decay could push further.
+**Updated picture (post m=1 disentanglement, group `adam_muon_clean_2k`):**
+
+- **r=64, m=1:** adam-muon-lora at η=3e-3 → 0.7515, beats AdamW r=64
+  (0.7550) by Δ=−0.0035 (within trajectory jitter). Real-direction win.
+- **r=16, m=1:** 0.7624 — **loses** to AdamW r=16 (0.7579) by +0.0045.
+  The original 0.7557 r=16 headline was driven mainly by LoRA+ (m=4),
+  not by NS-on-Adam. m=1 alone does not beat AdamW at r=16.
+- **r=16, m=4 (LoRA+):** 0.7557 — confounded result; useful as a working
+  recipe but not a clean attribution to the optimizer.
+
+The mechanism remains: Newton-Schulz orthogonalization applied to Adam's
+per-element preconditioned direction m̂/(√v̂+ε), per-factor independently.
+The strict-win story now lives at **r=64**, not r=16. For an unconfounded
+strict win that clears the noise floor, use **adam-polar-product-lora at
+r=64** (0.7453, Δ=−0.0097) — the spectral-product geometry beats per-factor
+NS on the same composition (Adam → spectral correction).
 
 Plan source: `~/.claude/plans/i-think-we-should-zippy-cake.md`.
 Theory source: `docs/theory/main.tex` lemma at line 622 (spectral product norm
@@ -183,18 +196,28 @@ on the NS output may add a useful second-stage correction.
   | 1e-3  | 0.7851  | 0.8846 (stuck) |
   | 3e-3  | 1.0087 (rising) | 1.5766 (diverged) |
 
-- **Decision:** **H4-reverse falsified.** Best cell (η=1e-3 m=1) lands at
-  ~0.78 at 2k — *worse than AdamW*, and *much* worse than AdamMuonLoRA's
-  0.7557. Higher η diverges, m=4 stalls.
-- **Mechanism**: NS expects a *coherent* direction. AdamMuon's order
-  (Adam → NS) feeds NS a smoothed momentum direction. MuonAdam's order
-  (NS → Adam) feeds NS the noisy raw gradient at every step; consecutive
-  NS outputs are uncorrelated, so the subsequent Adam EMA m̂ partially
-  cancels and √v̂ inflates, making Adam's m̂/√v̂ blow up at high η and
-  crawl at low η.
-- **Implication**: this re-derives the canonical Muon recipe (momentum
-  *before* NS). AdamMuonLoRA's success is partly because Adam's m̂ plays
-  the same smoothing role.
+- **Decision (REVISED):** **NOT a clean falsification of the polar-first
+  composition family — this was the *unstabilized* port that AdaMuon
+  paper warns against.** Best cell (η=1e-3 m=1) at ~0.78 (2k) is real
+  data on `MuonAdamLoRA`-as-implemented, but the implementation is
+  missing all three of AdaMuon's stabilizers:
+    1. **sign(Mₜ) before NS.** We feed NS the raw gradient. AdaMuon
+       feeds NS the sign of the momentum buffer, stabilizing NS's input.
+    2. **Only Vₜ on NS output, no Mₜ on it.** We run full Adam(m, v)
+       on the NS output — double smoothing.
+    3. **No RMS-align.** Step magnitude unbounded vs AdaMuon's
+       `γₜ = 0.2·√(mn)/‖Õₜ‖_F`.
+  The mechanism originally cited ("uncorrelated NS outputs cancel m̂,
+  inflate √v̂") is correct as a description of *this specific port's*
+  failure mode, and it is exactly the failure mode AdaMuon's three
+  stabilizers were designed to prevent.
+- **Proper test of the polar-first composition family:**
+  `AdaMuonLoRA` (vanilla NS, AdaMuon-faithful) and
+  `AdamuonPolarProductLoRA` (AdaMuon-faithful with spectral-product
+  geometry instead of vanilla NS) are the right experiments. Both
+  implemented (commits pending), sweeps queued at r ∈ {16, 64} ×
+  η ∈ {1e-4, 3e-4, 1e-3} (jobs 6314009, 6314010). Until those land,
+  treat the polar-first family as **open**, not falsified.
 
 
 ## H2 ⊗ H4 hybrid — AdamProductMuonLoRA (NEW)

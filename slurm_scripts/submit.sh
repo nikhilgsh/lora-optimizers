@@ -2,7 +2,31 @@
 # Usage: ./slurm_scripts/submit.sh <params_json> <group_name> <n_gpus> [sweep_script] [sbatch_script]
 # Example: ./slurm_scripts/submit.sh params/lr_sweep.json sweep_lr 4
 # Example: ./slurm_scripts/submit.sh params/foo.json my_group 6 scripts/sweep_2k.sh slurm_scripts/sbatch_h100.sh
+#
+# Optional env vars (recommended — consumed by analysis tooling):
+#   SWEEP_SCOPE="ext_compare,polar_family"   comma-separated tags
+#   SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry"
+#   SWEEP_SUPERSEDES="adam_muon_2k"          group name this rerun replaces, if any
 set -euo pipefail
+
+# ── Manifest contract refusal ────────────────────────────────────────────────
+# Refuse to submit without scope tags. The notebook + tests (lora_playground/
+# manifest.py, tests/test_manifests.py) require every populated log group to
+# carry a non-empty scope; enforcing it at submission means "untagged sweep"
+# becomes impossible by construction rather than by reminder.
+if [[ -z "${SWEEP_SCOPE:-}" ]]; then
+    echo "ERROR: SWEEP_SCOPE not set. Set scope tags before submitting:" >&2
+    echo "  SWEEP_SCOPE=\"ext_compare,polar_family\" \\" >&2
+    echo "  SWEEP_PURPOSE=\"E2: AdaMuon-faithful + polar-product geometry\" \\" >&2
+    echo "  ./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [...]" >&2
+    echo "" >&2
+    echo "Known scopes: ext_compare, muon_family, all_optimizers, loraplus_family," >&2
+    echo "              svd_oracle, diagnostics, lin_scaled_investigation," >&2
+    echo "              polar_family, winner_rerun, pilot, legacy" >&2
+    echo "" >&2
+    echo "See lora_playground/manifest.py for the full schema." >&2
+    exit 1
+fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PARAM_FILE="$1"
@@ -31,4 +55,43 @@ echo ""
 echo "Submitting ${N_GPUS} tasks for group '${GROUP}' ..."
 
 export TASK_FILE="${RUN_DIR}/tasks"
-sbatch --ntasks="$N_GPUS" --job-name="$GROUP" "${REPO_DIR}/${SBATCH_SCRIPT}"
+SBATCH_OUT=$(sbatch --ntasks="$N_GPUS" --job-name="$GROUP" "${REPO_DIR}/${SBATCH_SCRIPT}")
+echo "${SBATCH_OUT}"
+SLURM_JOB_ID=$(echo "${SBATCH_OUT}" | awk '{print $NF}')
+
+# ── Manifest contract ─────────────────────────────────────────────────────────
+# Every sweep submission writes meta.json next to the run logs. The notebook
+# (and any other downstream analysis) consumes manifests, never raw directory
+# listings. Untagged sweeps still produce a manifest — analysis code surfaces
+# them as warnings rather than silent dropouts.
+GIT_COMMIT=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY="false"
+if ! git -C "${REPO_DIR}" diff-index --quiet HEAD 2>/dev/null; then
+    GIT_DIRTY="true"
+fi
+SUBMITTED_AT=$(date -Iseconds)
+
+python - <<PYEOF
+import json, os, sys
+from pathlib import Path
+
+scope_raw = os.environ.get("SWEEP_SCOPE", "").strip()
+scope = [s.strip() for s in scope_raw.split(",") if s.strip()] if scope_raw else []
+manifest = {
+    "group": "${GROUP}",
+    "submitted_at": "${SUBMITTED_AT}",
+    "slurm_job_id": "${SLURM_JOB_ID}",
+    "n_gpus": int("${N_GPUS}"),
+    "params_file": "$(basename "${PARAM_FILE}")",
+    "sweep_script": "${SWEEP_SCRIPT}",
+    "sbatch_script": "${SBATCH_SCRIPT}",
+    "git_commit": "${GIT_COMMIT}",
+    "git_dirty": ("${GIT_DIRTY}" == "true"),
+    "scope": scope,
+    "purpose": os.environ.get("SWEEP_PURPOSE", ""),
+    "supersedes": os.environ.get("SWEEP_SUPERSEDES") or None,
+}
+out = Path("${RUN_DIR}") / "meta.json"
+out.write_text(json.dumps(manifest, indent=2) + "\n")
+print(f"Wrote manifest: {out}")
+PYEOF

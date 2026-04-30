@@ -1,0 +1,1 @@
+{"lr": ["5e-5", "7e-5"], "training_mode": ["svd_step_oracle", "svd_cumulative_oracle"], "seed": ["0"]}

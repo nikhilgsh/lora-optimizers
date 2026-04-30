@@ -210,6 +210,72 @@ In priority order:
    done, the data point "unfixed *-Post loses at every η" is publishable
    evidence that the magnitude drift is the dominant failure mode.
 
+## Diagnosis 4 — adam-polar-product-lora: only one ordering tested
+
+### Symptom
+
+`adam-polar-product-lora` (Adam → polar-product geometry) is the headline
+strict win at r=64 (0.7453, Δ=−0.0097 vs AdamW r=64). The docstring in
+`optim.py` justifies the Adam-then-polar ordering on the H1 result that
+"plain pre-Adam preconditioning is erased by Adam's per-coord √v̂ on a
+sign-like input. Here the geometric correction is polar (matrix-structural
+— invariant to per-coord rescaling), so it survives Adam by construction."
+
+This is a defensible argument for *one* of the two orderings. AdaMuon
+(arxiv 2507.11005, §3.1) argues the *reverse*: variance estimation should
+be done on the polar output Oₜ, not on raw G or momentum M, "because the
+raw gradient Gₜ carries ill-conditioned scaling and directional noise that
+Muon's polar decomposition is specifically designed to eliminate, making
+it unsuitable for stable variance tracking." Their published recipe at
+1.1B-pretrain scale claims +40% efficiency over Adam.
+
+The H1 finding does NOT decide between these orderings. H1 ruled out *Gram-
+inverse* preconditioners (S_A⁻¹ᐟ², S_B⁻¹ᐟ²) running before Adam, because
+those are scalar-magnitude-only rescalings on per-coordinate axes that v̂
+straightforwardly undoes. Polar is qualitatively different: it sets all
+singular values to 1, producing a sign-like matrix on which Adam's per-
+coordinate v̂ is meaningful normalization (this is exactly AdaMuon's design
+argument). So "polar-then-Adam" and "Adam-then-polar" are both consistent
+with H1; only one has been tested in this project.
+
+### Earlier evidence is not against this
+
+Earlier `muon-adam-lora` (NS → full Adam(m, v) on the NS output) failed
+at 2k (best η=1e-3 m=1 → ~0.78). Per `muon_beat_adamw_investigation.md`
+H4-reverse, that failure mode looks like NS without sign-stabilization
+producing high step-to-step variance, which inflates v̂ and makes m̂/√v̂
+chaotic. AdaMuon avoids exactly this with (i) sign(M) before NS, (ii)
+*only* second-momentum on the NS output (no first momentum), (iii) RMS-
+align. The naive port did none of the three. So `muon-adam-lora`'s
+failure is not evidence that the "polar-first" composition family fails —
+it's evidence that the naive instance fails.
+
+### Falsifiable next experiment
+
+Implement `AdamuonPolarProductLoRA` (working name): apply polar-product
+geometry first (same as AdamPolarProductLoRA's polar step but on the
+*momentum* of the raw gradients, not on Adam's denoised direction), then
+accumulate Vₜ ← βVₜ₋₁ + (1−β)·Pₜ⊙Pₜ on the polar output Pₜ, then
+elementwise normalize, then RMS-align. Compare at the same (r=16, r=64,
+seed=0, 2k step, η-sweep) configuration as AdamPolarProductLoRA.
+
+Predictions:
+1. If AdaMuon's design argument transfers to LoRA fine-tune scale at
+   r=64: AdamuonPolarProductLoRA ≤ 0.7453 at η ≈ 3e-4.
+2. If H1's "v̂ erases matrix-structural information" reasoning extends
+   to polar (contradicting AdaMuon's argument): AdamuonPolarProductLoRA
+   loses to AdamPolarProductLoRA. Would mean AdaMuon's pretraining-scale
+   gain doesn't transfer here, or that the spectral-product geometry
+   specifically prefers Adam-first.
+3. If both compositions land within noise of each other: ordering is
+   immaterial at this scale, and the spectral-product geometry is the
+   load-bearing piece in both. Useful negative result.
+
+This is a clean experiment because the *only* difference is variance-
+accumulation source (raw ∇ vs polar output) and m̂ inclusion (yes vs no).
+Everything else — polar-product structure, Newton-Schulz iteration count,
+δI regularization, RMS-align — held identical.
+
 ## Provisional acceptance criteria for "fix succeeded"
 
 - *-Post (after RMS-align): final eval < 0.7479 at any η. Below 0.7579

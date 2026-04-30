@@ -30,22 +30,72 @@ DIVERGE_THRESHOLD = 1.5
 # cross-investigation sections. NOTE: pure "black" is reserved for the AdamW
 # baseline overlay; no candidate group should use it.
 OPTIM_COLORS = {
-    "adamw":                       "#1a1a1a",  # near-black; baseline overlay uses pure black
+    # 22 distinct colors — verified no-collision (see test_plot_utils.py).
+    # Grouped by family for readability; assignment is unique across the map.
+    "adamw":                       "#000000",  # baseline — pure black overlay
+    # no-Adam family
     "scaled-lora":                 "#ff7f0e",
     "lin-lora":                    "#2ca02c",
+    "muon-lora":                   "#e377c2",
+    "polar-product-lora":          "#c49c94",
+    # pre-Adam preconditioning (geometry → Adam)
     "adam-scaled-lora":            "#d62728",
     "adam-lin-lora":               "#9467bd",
-    "muon-lora":                   "#e377c2",
+    # post-Adam preconditioning (Adam → geometry, falsified family)
+    "adam-lin-lora-post":          "#aec7e8",
+    "adam-scaled-lora-post":       "#ffbb78",
+    "adam-lin-lora-matrix":        "#98df8a",
+    "adam-scaled-lora-matrix":     "#c5b0d5",
+    # spectral / polar (the headline family)
+    "adam-muon-lora":              "#3cb44b",   # vivid green, distinct from lin-lora's tab green
+    "muon-adam-lora":              "#dbdb8d",
+    "adam-polar-product-lora":     "#8c564b",
+    "adamuon-polar-product-lora":  "#1f77b4",
+    "adamuon-lora":                "#ff9896",
+    # gauge-invariant variants
+    "product-muon-lora":           "#0d3d66",
+    "adam-product-muon-lora":      "#9edae5",
+    # K-FAC / per-coord / dropped families (plotted only in legacy cells)
     "diag-scaled-lora":            "#17becf",
     "kron-grad-lora":              "#bcbd22",
-    "psi-lora":                    "#8c564b",
-    "galore-adamw":                "#7f7f7f",
-    "adam-lin-lora-post":          "#2ca02c",
-    "adam-scaled-lora-post":       "#ff7f0e",
-    "adam-lin-lora-matrix":        "#17becf",
-    "adam-scaled-lora-matrix":     "#bcbd22",
-    "adam-polar-product-lora":     "#8c564b",
-    "polar-product-lora":          "#e377c2",
+    "psi-lora":                    "#7f7f7f",
+    "galore-adamw":                "#a55194",
+}
+
+
+# Marker styles to disambiguate near-color pairs. Default is "o" (circle) for
+# any optimizer not listed; overrides pick distinct shapes where colors are
+# close. Stable to grayscale, colorblind-friendly. Used by plot_leaderboard_by_rank
+# and standard_sweep_figure when a marker_map is passed.
+OPTIM_MARKERS = {
+    # Greens cluster (pure tab green vs vivid green vs olive vs light)
+    "lin-lora":                    "o",
+    "adam-muon-lora":              "^",   # triangle-up to distinguish from lin-lora
+    "muon-adam-lora":              "v",   # triangle-down (yellow-green olive shade)
+    "adam-lin-lora-matrix":        "P",   # plus (light green)
+    # Reds/pinks cluster
+    "adam-scaled-lora":            "o",
+    "adamuon-lora":                "X",   # x-filled (light red)
+    "muon-lora":                   "*",   # star (medium pink)
+    # Blues/cyans cluster
+    "adamuon-polar-product-lora":  "o",
+    "diag-scaled-lora":            "s",   # square (cyan)
+    "adam-product-muon-lora":      "D",   # diamond (light cyan)
+    "adam-lin-lora-post":          "h",   # hexagon (light blue)
+    # Purples cluster
+    "adam-lin-lora":               "o",
+    "adam-scaled-lora-matrix":     "p",   # pentagon (light purple)
+    "galore-adamw":                "<",   # triangle-left (medium purple)
+    # Browns/oranges cluster
+    "adam-polar-product-lora":     "o",
+    "polar-product-lora":          "d",   # thin diamond (light brown)
+    "scaled-lora":                 ">",   # triangle-right (orange)
+    "adam-scaled-lora-post":       "8",   # octagon (light orange)
+    # Olive/yellow + dark
+    "kron-grad-lora":              "o",
+    "product-muon-lora":           "o",
+    "psi-lora":                    "o",
+    "adamw":                       "s",   # baseline override often passed separately
 }
 
 
@@ -140,14 +190,46 @@ def has_runs(group: str, logs_root: str = "../logs") -> bool:
     return any(f.stat().st_size > 0 for f in log_dir.glob("*.out"))
 
 
+def _hidden_axis_fingerprint(cfg: dict) -> tuple:
+    """Tuple of cfg fields that commonly vary across cells but are easy to
+    forget in dedup keys. If two cfgs share key_fn(cfg) but DIFFER on this
+    fingerprint, that's a missing-axis bug — merge_runs raises rather than
+    silently dropping one.
+    """
+    axes = ("lora_plus_multiplier", "lora_r", "muon_ns_steps",
+            "training_mode", "svd_rank", "seed")
+    return tuple((a, cfg.get(a)) for a in axes if a in cfg)
+
+
 def merge_runs(group_priority: Iterable[str],
                key_fn: Callable[[dict], tuple],
                filter_fn: Callable[[dict], bool] | None = None,
                cfg_postprocess: Callable[[dict, str], None] | None = None,
-               logs_root: str = "../logs") -> list[tuple[dict, list[dict]]]:
-    """Merge sweeps in priority order, deduplicating by `key_fn(cfg)`."""
-    out, seen = [], set()
-    for group in group_priority:
+               logs_root: str = "../logs",
+               *, strict_hidden_axes: bool = True) -> list[tuple[dict, list[dict]]]:
+    """Merge sweeps, deduplicating by ``key_fn(cfg)``.
+
+    Dedup rule: **longest trajectory wins**, ties broken by group priority
+    order (earlier group in ``group_priority`` wins). This handles the
+    common case where an in-flight rerun has the same key as a completed
+    older run — the completed run keeps its slot until the rerun catches
+    up, and only takes over when the rerun reaches the same final step.
+
+    Robustness check (``strict_hidden_axes=True`` default): if two runs
+    collide on ``key_fn(cfg)`` but differ on a "hidden" cfg axis (e.g.
+    ``lora_plus_multiplier``, ``muon_ns_steps``, ``training_mode``), raise
+    a clear error pointing at which axis the dedup key is missing. This
+    catches the silent-confounder failure mode where one cfg axis was
+    forgotten in the key and runs are arbitrarily collapsed.
+
+    Pass ``strict_hidden_axes=False`` only when you genuinely want axes
+    collapsed (e.g., showing the best-of across m∈{1,4} as one curve).
+    """
+    # priority index for tie-breaking (lower = higher priority)
+    prio = {g: i for i, g in enumerate(group_priority)}
+    # key → (final_step, group_priority_idx, cfg, evs, fingerprint)
+    best: dict[tuple, tuple[int, int, dict, list[dict], tuple]] = {}
+    for group, idx in sorted(prio.items(), key=lambda kv: kv[1]):
         if not has_runs(group, logs_root):
             continue
         for cfg, evs in load_sweep(group, logs_root):
@@ -156,11 +238,29 @@ def merge_runs(group_priority: Iterable[str],
             if filter_fn is not None and not filter_fn(cfg):
                 continue
             k = key_fn(cfg)
-            if k in seen:
+            fp = _hidden_axis_fingerprint(cfg)
+            final_step = evs[-1]["step"] if evs else 0
+            existing = best.get(k)
+            if existing is None:
+                best[k] = (final_step, idx, cfg, evs, fp)
                 continue
-            seen.add(k)
-            out.append((cfg, evs))
-    return out
+            ex_step, ex_idx, ex_cfg, ex_evs, ex_fp = existing
+            # Hidden-axis robustness: if cfgs share key_fn(cfg) but DIFFER on
+            # any common cfg axis, that's a missing-axis bug — raise loudly
+            # so the caller adds the missing axis to key_fn.
+            if strict_hidden_axes and ex_fp != fp:
+                differing = [a for (a, v_old), (_, v_new) in zip(ex_fp, fp) if v_old != v_new]
+                raise ValueError(
+                    f"merge_runs: dedup key collision on {k!r} between cfgs that "
+                    f"differ on hidden axes {differing!r}. The dedup key_fn does "
+                    f"not include {differing!r}, so two distinct runs would be "
+                    f"silently collapsed. Either include the axis in key_fn, or "
+                    f"pass strict_hidden_axes=False if collapsing is intended."
+                )
+            # Replace iff strictly more steps, OR equal steps but stricter group priority
+            if final_step > ex_step or (final_step == ex_step and idx < ex_idx):
+                best[k] = (final_step, idx, cfg, evs, fp)
+    return [(cfg, evs) for _, _, cfg, evs, _ in best.values()]
 
 
 # ─── diverged-run filtering ───────────────────────────────────────────────────
@@ -228,6 +328,7 @@ def baseline_overlay(reference_runs, optimizer: str, *,
                      label: str | None = None,
                      color: str | None = None,
                      is_primary: bool = False,
+                     marker_map: dict | None = None,
                      ) -> tuple[list, list, list]:
     """Build (hlines, ref_curves, eta_sweeps) entries for overlaying the
     `optimizer` baseline from `reference_runs`.
@@ -278,13 +379,15 @@ def baseline_overlay(reference_runs, optimizer: str, *,
         return [hline], [curve], ([eta_sweep] if eta_sweep else [])
 
     # Secondary reference: ordinary candidate styling. No hline (only the
-    # primary baseline owns one).
+    # primary baseline owns one). Marker honors marker_map if provided.
     color = color or "#1f77b4"
+    marker_map = marker_map or {}
+    marker = marker_map.get(optimizer, "o")
     curve = (f"{label} (η={cfg['lr']:.0e}, final={fl:.4f})",
-             evs, color, "-", LINE_WIDTH, "o")
+             evs, color, "-", LINE_WIDTH, marker)
     eta_sweep = (
         f"{label} η-sweep",
-        sweep_points, color, "-", LINE_WIDTH, "o",
+        sweep_points, color, "-", LINE_WIDTH, marker,
     ) if len(sweep_points) >= 2 else None
     return [], [curve], ([eta_sweep] if eta_sweep else [])
 
@@ -293,9 +396,15 @@ def baseline_overlay(reference_runs, optimizer: str, *,
 
 def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
                               color_map: dict | None = None,
+                              marker_map: dict | None = None,
                               suptitle: str = "Best eval vs rank"):
-    """Single-panel leaderboard: best-η eval loss vs rank, one line per optimizer."""
+    """Single-panel leaderboard: best-η eval loss vs rank, one line per optimizer.
+
+    ``marker_map`` overrides the per-optimizer marker shape (default "o").
+    Use to disambiguate near-color pairs.
+    """
     color_map = color_map or {}
+    marker_map = marker_map or {}
     baseline_floor = {r: best[(baseline_optimizer, r)][2]
                       for (opt, r) in best if opt == baseline_optimizer}
     ranks = sorted(baseline_floor)
@@ -306,7 +415,12 @@ def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
     for opt in series:
         series[opt].sort()
 
-    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    n_optimizers = len(series)
+    # Scale figure to match legend column height. Legend uses ncol=2 when
+    # there are many optimizers so it doesn't tower over a small plot.
+    legend_ncol = 2 if n_optimizers > 8 else 1
+    fig_height = max(5.0, 0.30 * (n_optimizers / legend_ncol) + 1.5)
+    fig, ax = plt.subplots(figsize=(10, fig_height), constrained_layout=True)
     all_losses = []
     for opt, points in sorted(series.items()):
         xs = [p[0] for p in points]
@@ -316,7 +430,7 @@ def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
                 color=BASELINE_COLOR if is_baseline else color_map.get(opt, "grey"),
                 lw=BASELINE_LW_CURVE if is_baseline else LINE_WIDTH,
                 ls=BASELINE_LS_CURVE if is_baseline else "-",
-                marker=BASELINE_MARKER if is_baseline else "o",
+                marker=BASELINE_MARKER if is_baseline else marker_map.get(opt, "o"),
                 markersize=MARKER_SIZE,
                 label=f"{opt} (baseline)" if is_baseline else opt,
                 zorder=BASELINE_ZORDER if is_baseline else 5)
@@ -332,7 +446,11 @@ def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
         hi = min(all_losses) + 0.05
         ax.set_ylim(lo, hi)
     ax.grid(True, alpha=0.25, lw=0.6)
-    ax.legend(**LEGEND_KW_BASE)
+    legend_kw = dict(LEGEND_KW_BASE)
+    legend_kw["ncol"] = legend_ncol
+    legend_kw["fontsize"] = 11 if n_optimizers > 8 else legend_kw.get("fontsize", 14)
+    legend_kw["labelspacing"] = 0.35
+    ax.legend(**legend_kw)
     return fig, ax
 
 
@@ -349,7 +467,8 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                       ref_eta_sweeps: list[tuple] | None = None,
                       title: str = "Final eval loss vs η, per group",
                       legend: bool = True,
-                      adamw_group_keys: set[str] | None = None) -> None:
+                      adamw_group_keys: set[str] | None = None,
+                      marker_map: dict | None = None) -> None:
     """Left panel: η vs final eval loss, one line per group key.
 
     `ref_eta_sweeps`: list of (label, points, color, ls, lw, marker) tuples
@@ -357,6 +476,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
     full LR-sweep curve. Drawn before candidates so candidate lines sit on top.
     """
     adamw_group_keys = adamw_group_keys or set()
+    marker_map = marker_map or {}
 
     all_losses = []
     if ref_eta_sweeps:
@@ -392,7 +512,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         is_adamw = g in adamw_group_keys
         ax.plot(xs, ys,
                 color=BASELINE_COLOR if is_adamw else color_map.get(g, "grey"),
-                marker=BASELINE_MARKER if is_adamw else "o",
+                marker=BASELINE_MARKER if is_adamw else marker_map.get(g, "o"),
                 markersize=MARKER_SIZE,
                 lw=BASELINE_LW_CURVE if is_adamw else LINE_WIDTH,
                 ls=BASELINE_LS_CURVE if is_adamw else "-",
@@ -422,9 +542,11 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
                          title: str = "Best η per group — training curves",
                          x_tick_step: int = 200,
                          legend: bool = True,
-                         adamw_group_keys: set[str] | None = None) -> None:
+                         adamw_group_keys: set[str] | None = None,
+                         marker_map: dict | None = None) -> None:
     """Right panel: training curves for the best (lowest final loss) η per group."""
     adamw_group_keys = adamw_group_keys or set()
+    marker_map = marker_map or {}
 
     if ref_curves:
         for entry in ref_curves:
@@ -447,7 +569,7 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
                  if is_adamw else f"{g} (η={cfg['lr']:.0e}, final={fl:.4f})")
         ax.plot([e["step"] for e in evs], [e["eval_loss"] for e in evs],
                 color=BASELINE_COLOR if is_adamw else color_map.get(g, "grey"),
-                marker=BASELINE_MARKER if is_adamw else "o",
+                marker=BASELINE_MARKER if is_adamw else marker_map.get(g, "o"),
                 markersize=MARKER_SIZE,
                 lw=BASELINE_LW_CURVE if is_adamw else LINE_WIDTH,
                 ls=BASELINE_LS_CURVE if is_adamw else "-",
@@ -478,7 +600,8 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
                            left_title: str = "Final eval loss vs η, per group",
                            right_title: str = "Best η per group — training curves",
                            label_fn: Callable[[dict], str] | None = None,
-                           adamw_group_keys: set[str] | None = None):
+                           adamw_group_keys: set[str] | None = None,
+                           marker_map: dict | None = None):
     """Build the standardized 2-panel sweep figure with diverged-run filtering.
     Returns (fig, axes, n_kept, n_dropped).
 
@@ -516,11 +639,13 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
     plot_eta_vs_final(axes[0], keep_for_left, group_key_fn, color_map,
                       hlines=hlines, ref_eta_sweeps=ref_eta_sweeps,
                       title=left_title, legend=False,
-                      adamw_group_keys=adamw_group_keys)
+                      adamw_group_keys=adamw_group_keys,
+                      marker_map=marker_map)
     plot_best_eta_curves(axes[1], keep_for_right, group_key_fn, color_map,
                          ref_curves=ref_curves, title=right_title,
                          x_tick_step=x_tick_step,
-                         adamw_group_keys=adamw_group_keys)
+                         adamw_group_keys=adamw_group_keys,
+                         marker_map=marker_map)
     if suptitle:
         fig.suptitle(suptitle, fontsize=SUPTITLE_FONTSIZE, fontweight="bold")
     return fig, axes, len(keep), len(drop)
@@ -531,6 +656,7 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
                           suptitle: str = "",
                           extra_baselines: Iterable[tuple[str, str]] = (),
                           baseline_optimizer: str = "adamw",
+                          same_value_axes: tuple = ("lora_plus_multiplier",),
                           **kwargs):
     """High-level uniform sweep figure — every section's single entry point.
 
@@ -561,17 +687,55 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
     Raises:
         ValueError: if `reference_runs` has no run for `baseline_optimizer`.
     """
+    # Robustness: every run in `runs` must agree on `same_value_axes`. Catches
+    # the bug where a panel filter forgets to constrain an axis (e.g. m=1 only)
+    # and runs with mixed values silently collapse via group_key_fn into one
+    # group, picking "best across the omitted axis" rather than the intended
+    # comparison. Pass `same_value_axes=()` to opt out (e.g., muon-variants
+    # cell where m is explicit in the group label).
+    if same_value_axes and runs:
+        for axis in same_value_axes:
+            values = {c.get(axis) for c, _ in runs if axis in c}
+            if len(values) > 1:
+                raise ValueError(
+                    f"standard_sweep_figure: runs span multiple values of "
+                    f"{axis!r}: {sorted(values)}. group_key_fn would silently "
+                    f"collapse these into one group. Filter the runs by "
+                    f"{axis} before calling, or pass same_value_axes=() if "
+                    f"the multi-value comparison is intentional and the "
+                    f"group_key_fn already encodes {axis}."
+                )
+
+    # Marker map propagates to baseline overlays so secondary references
+    # (extra_baselines) and the primary baseline both honor per-optimizer markers.
+    _marker_map = kwargs.get("marker_map") or {}
     hlines, ref_curves, eta_sweeps = baseline_overlay(
         reference_runs, baseline_optimizer, is_primary=True,
+        marker_map=_marker_map,
     )
     if not hlines:
         raise ValueError(
             f"No {baseline_optimizer!r} run found in reference_runs — "
             "every standard sweep figure requires the baseline.")
 
+    # Library-enforced uniform suptitle: every figure declares its rank.
+    # If runs all share a single LoRA rank, append " at r={N}" to suptitle
+    # unless it's already present. If runs span multiple ranks, raise —
+    # callers should split into per-rank panels (the contract).
+    ranks = {int(c.get("lora_r", 16)) for c, _ in runs}
+    if len(ranks) > 1:
+        raise ValueError(
+            f"standard_sweep_figure expects runs at a single LoRA rank, "
+            f"got {sorted(ranks)}. Filter runs by lora_r before calling, "
+            "or split into per-rank panels.")
+    if ranks and suptitle and "r=" not in suptitle:
+        rank = ranks.pop()
+        suptitle = f"{suptitle} at r={rank}"
+
     for opt, color in extra_baselines:
         _h, r, e = baseline_overlay(
             reference_runs, opt, color=color, is_primary=False,
+            marker_map=_marker_map,
         )
         # Secondary baselines contribute the right-panel reference curve
         # AND the left-panel η-sweep (so the LR grid for the secondary

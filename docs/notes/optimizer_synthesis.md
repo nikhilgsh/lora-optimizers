@@ -43,11 +43,27 @@ themselves point at a next experiment.
 These have a measured win or measurable trajectory, with concrete next
 moves to push further.
 
-- **adam-muon-lora** (0.7557 at r=16, the only confirmed strict Δ=−0.0022).
-  Next moves: r=64 sweep (untested combination of two known win-effects);
-  AdaMuon-faithful port (sign-stabilization + per-element v̂ on NS-output +
-  RMS-align — published precedent at pretraining scale claims +40% efficiency
-  but caveats apply for fine-tune regime).
+- **adam-muon-lora** — m=1 disentanglement and r=64 extension complete
+  (group `adam_muon_clean_2k`):
+    r=16 m=1 best η=3e-3 → 0.7624 (Δ=+0.0045 vs AdamW r=16 — m=1 *loses*)
+    r=64 m=1 best η=3e-3 → **0.7515** (Δ=−0.0035 vs AdamW r=64; within
+                                       trajectory jitter)
+    r=16 m=4 best η=3e-3 → 0.7557 (LoRA+ recovers 0.0067 nat at r=16)
+  **LoRA+ verdict:** the original 0.7557 headline at r=16 was substantially
+  driven by LoRA+ (m=4), not by NS-on-Adam alone. At r=16, m=1 alone does
+  not beat AdamW. At r=64, m=1 alone *does* beat AdamW (0.7515) — but
+  by less than the spectral-product variant (0.7453). Going forward, treat
+  adam-muon-lora as a **rank-dependent** variant: useful at r=64, in-noise
+  at r=16 unless paired with LoRA+.
+- **AdaMuon-faithful port (`adamuon-lora`, m=1, vanilla NS):** sweep
+  complete (`adamuon_lora_2k`).
+    r=16 η=3e-4 → 0.7603 (Δ=+0.0024 vs AdamW r=16, ≈ tied)
+    r=64 η=3e-4 → 0.7515 (Δ=−0.0035 vs AdamW r=64, ties adam-muon-lora r=64)
+  Confirms AdaMuon stabilizers (sign(M) before NS, V on NS-output only,
+  RMS-align) recover AdamW pace at r=16 and slightly beat at r=64 — far
+  from the 40% pretraining-scale gain claimed in the paper, but
+  the polar-first composition family is **no longer falsified** at
+  fine-tune scale.
 - **adam-scaled-lora at r=64** (0.7506, leaderboard #1, within noise floor).
   Next moves: cos diagnostics at r=64 to confirm mechanism (job 6313087 in
   flight); full η-sweep at r=64 to confirm peak isn't at η=3e-4.
@@ -58,10 +74,23 @@ moves to push further.
     r=64 η=3e-4 → **0.7453**  (Δ=−0.0097 vs AdamW r=64, **clears strict-win
                                 bar 0.7479 by 0.0026**)
   Behavioral equivalence test passes (reduces to Muon NS at orthogonal
-  init). Mechanistically the cleanest variant: uses both LoRA product
-  structure (S_B and S_A on respective sides) AND a spectrally-meaningful
-  correction (polar) AND composes correctly with Adam (matrix-structural
-  so v̂ doesn't erase). Moves to **Bucket 1 (confirmed result).**
+  init). Composition is **Adam → polar-product**: Adam runs on raw (∇A,
+  ∇B), then polar(·) is sandwiched between two factors of S⁻¹ᐟ² and
+  applied to the Adam direction.
+
+  **Complementary design point — TESTED (adamuon-polar-product-lora):**
+  AdaMuon (arxiv 2507.11005) argues for the *opposite* order — polar first,
+  then accumulate elementwise V on the polar output Oₜ, normalize Oₜ ⊘ √Vₜ,
+  RMS-align. Implemented as `AdamuonPolarProductLoRA`; sweep `adamuon_polar_product_2k`
+  (r ∈ {16, 64} × η ∈ {1e-4, 3e-4, 1e-3}) finished. Best:
+    r=64 η=3e-4 → 0.7486 (Δ=−0.0064 vs AdamW r=64; **loses to
+                  adam-polar-product-lora 0.7453 by 0.0033**)
+    r=16 η=3e-4 → 0.7653 (loses to adam-polar-product-lora r=16 0.7546)
+  **Verdict:** at LoRA fine-tune scale on this benchmark, Adam-then-polar
+  beats AdaMuon-style polar-then-V at every tested (r, η). AdaMuon's
+  pretraining-scale design argument does NOT transfer to this regime. The
+  spectral-product geometry is the load-bearing piece (both compositions
+  beat AdamW); the ordering favors Adam-first.
 - ~~**H5 matrix-Adam fixed**~~: **moved to Bucket 1 — confirmed not
   productive.** Final results: r=16 best 0.7744 (η=1e-3, 0.018 worse than
   regular adam-lin-lora 0.7564); r=64 best 0.7723 (η=1e-3, 0.022 worse than
@@ -82,13 +111,20 @@ than abandonment.
   give a real win under matrix-Adam (H5) with the direction preserved? In
   flight.
 - **muon-adam-lora** (NS first, then Adam). Best η=1e-3 step 600: 0.80,
-  decisively losing. *Theoretically* a reasonable composition (orthogonalize
-  then adapt). Empirical guess for failure: per-coord √v̂ on NS-output is
-  unstable because NS already evened out magnitudes. AdaMuon (paper) handles
-  this with (1) sign(M) before NS, (2) only v̂ no m̂ on NS-output, (3) RMS-
-  align. **Open question:** does our muon-adam-lora's failure trace to
-  one of these three missing ingredients, or is it more fundamental?
-  Untested.
+  decisively losing — but this was an unstabilized port missing all
+  three of AdaMuon's known stabilizers (sign(M) before NS, only v̂ on
+  NS-output, RMS-align). **Faithful AdaMuon ports DONE** (`adamuon_lora_2k`,
+  `adamuon_polar_product_2k`):
+    - `adamuon-lora` (vanilla NS): r=16 → 0.7603 (≈ tied AdamW),
+      r=64 → 0.7515 (Δ=−0.0035, slight win).
+    - `adamuon-polar-product-lora` (AdaMuon-faithful with spectral-product
+      geometry): r=16 → 0.7653 (loses), r=64 → 0.7486 (Δ=−0.0064,
+      slight win but **loses to Adam-then-polar 0.7453 by 0.0033**).
+  **Verdict:** the polar-first family transfers to LoRA fine-tune scale
+  (both variants beat AdamW at r=64) but does NOT outperform the
+  Adam-then-polar ordering. The AdaMuon design argument ("V on polar
+  output is cleaner") does not hold here. Spectral-product geometry is
+  the load-bearing piece across both orderings; Adam-first wins among them.
 - **product-muon-lora** (gauge-invariant Sylvester-recovered NS). Pilot
   showed ~0.81 at step 500; 2k extrapolation didn't suggest a clear win.
   Theory says correct product-norm + spectral. Empirical: middling.
@@ -214,26 +250,36 @@ final number pending).
 
 **Cross-rank board (HEADLINE STRICT WIN: adam-polar-product-lora at r=64):**
 
-| rank | optimizer                             | r  | best η | eval loss  | vs same-rank AdamW       | vs strict-win bar |
-|------|---------------------------------------|----|--------|------------|--------------------------|-------------------|
-| 1    | **adam-polar-product-lora**           | 64 | 3e-4   | **0.7453** | Δ=−0.0097 (>2× noise) ✅ | **−0.0026 (cleared)** |
-| 2    | adam-scaled-lora                      | 64 | 3e-4   | 0.7506     | Δ=−0.0044 (≈ noise)     | +0.0027 (within)  |
-| 3    | adam-lin-lora                         | 64 | 3e-4   | 0.7527     | Δ=−0.0023 (≈ noise)     | +0.0048 (within)  |
-| 4    | **adam-polar-product-lora**           | 16 | 3e-4   | **0.7546** | Δ=−0.0033 (≈ noise)     | +0.0067 (within)  |
-| 5    | adamw                                 | 64 | 3e-4   | 0.7550     | baseline (r=64)          | +0.0071           |
-| 6    | adam-muon-lora                        | 16 | 3e-3   | 0.7557     | Δ=−0.0022 (within noise) | +0.0078           |
-| 7    | adam-lin-lora                         | 16 | 1e-3   | 0.7564     | Δ=−0.0015 (≈ tied)      | +0.0085           |
-| 8    | adam-scaled-lora-post (RMS-align)     | 16 | 3e-4   | 0.7570     | Δ=−0.0009 (≈ tied)      | +0.0091           |
-| 9    | adam-scaled-lora                      | 16 | 1e-3   | 0.7572     | ≈ tied                   | +0.0093           |
-| 10   | adamw                                 | 16 | 3e-4   | 0.7579     | baseline (r=16)          | +0.01 (the bar)   |
+| rank | optimizer                             | r  | m  | best η | eval loss  | vs same-rank AdamW       | vs strict-win bar |
+|------|---------------------------------------|----|----|--------|------------|--------------------------|-------------------|
+| 1    | **adam-polar-product-lora**           | 64 | 1  | 3e-4   | **0.7453** | Δ=−0.0097 (>2× noise) ✅ | **−0.0026 (cleared)** |
+| 2    | adamuon-polar-product-lora            | 64 | 1  | 3e-4   | 0.7486     | Δ=−0.0064 (≈ noise)     | +0.0007 (within)  |
+| 3    | adam-scaled-lora                      | 64 | 1  | 3e-4   | 0.7506     | Δ=−0.0044 (≈ noise)     | +0.0027 (within)  |
+| 4    | adam-muon-lora                        | 64 | 1  | 3e-3   | 0.7515     | Δ=−0.0035 (≈ noise)     | +0.0036 (within)  |
+| 4    | adamuon-lora (AdaMuon-faithful)       | 64 | 1  | 3e-4   | 0.7515     | Δ=−0.0035 (≈ noise)     | +0.0036 (within)  |
+| 6    | adam-lin-lora                         | 64 | 1  | 3e-4   | 0.7527     | Δ=−0.0023 (≈ noise)     | +0.0048 (within)  |
+| 7    | **adam-polar-product-lora**           | 16 | 1  | 3e-4   | **0.7546** | Δ=−0.0033 (≈ noise)     | +0.0067 (within)  |
+| 8    | adamw                                 | 64 | 1  | 3e-4   | 0.7550     | baseline (r=64)          | +0.0071           |
+| 9    | adam-muon-lora (LoRA+)                | 16 | 4  | 3e-3   | 0.7557     | Δ=−0.0022 (within noise; LoRA+ confound) | +0.0078 |
+| 10   | adam-lin-lora                         | 16 | 1  | 1e-3   | 0.7564     | Δ=−0.0015 (≈ tied)      | +0.0085           |
+| 11   | adam-scaled-lora-post (RMS-align)     | 16 | 1  | 3e-4   | 0.7570     | Δ=−0.0009 (≈ tied)      | +0.0091           |
+| 12   | adam-scaled-lora                      | 16 | 1  | 1e-3   | 0.7572     | ≈ tied                   | +0.0093           |
+| 13   | adamw                                 | 16 | 1  | 3e-4   | 0.7579     | baseline (r=16)          | +0.01 (the bar)   |
+| 14   | adamuon-lora (AdaMuon-faithful)       | 16 | 1  | 3e-4   | 0.7603     | Δ=+0.0024 (≈ tied)      | +0.0124           |
+| 15   | adam-muon-lora (m=1)                  | 16 | 1  | 3e-3   | 0.7624     | Δ=+0.0045 (loses)       | +0.0145           |
+| 16   | adamuon-polar-product-lora            | 16 | 1  | 3e-4   | 0.7653     | Δ=+0.0074 (loses)       | +0.0174           |
 
 **Strict-win bar definition:** 1% below same-rank AdamW. For r=64: 0.7479. For r=16: 0.7479.
-Single-seed noise floor: pooled |Δ| ≈ 0.004.
+**Trajectory-jitter proxy** (NOT a calibrated noise floor — see warning at
+"Trajectory variance" section below): pooled |Δ| ≈ 0.004 on r=64 η=3e-4.
+Treat "≈ noise" annotations in the table as "below trajectory jitter";
+significance vs seed-to-seed variance is unverified. Multi-seed deferred.
 
 **Verdict:** `adam-polar-product-lora` at r=64 is the first optimizer that
-clears the strict-win bar AND has Δ outside the single-seed noise floor.
-At r=16 it's within noise of plain `adam-scaled-lora-post` and `adam-lin-lora`
-but already the best entry of the *r=16 only* board.
+clears the strict-win bar with a Δ that is also above trajectory jitter.
+Whether the smaller within-jitter Δ values (other r=64 entries, all r=16
+entries with Δ < 0.004) reflect real signal or noise is **unverified
+without multi-seed confirmation**.
 
 **Robustness observation:** at r=64 η=1e-3, plain AdamW *diverges* to 0.89
 while adam-{lin,scaled}-lora hold at 0.77 and adam-polar-product-lora at
@@ -245,9 +291,13 @@ best is at η=3e-4, the lower boundary. r=64 η-extension queued (job
 6313613) at η ∈ {3e-5, 1e-4} to confirm the polar-product winner isn't
 also lower-pinned.
 
-**r=16-only ranking:** adam-muon-lora wins (0.7557).
-**r=64 ranking:** adam-scaled-lora wins (0.7506).
-**Overall:** adam-scaled-lora at r=64 is the new headline number.
+**r=16-only ranking:** adam-polar-product-lora wins at m=1 (0.7546);
+adam-muon-lora at m=4 LoRA+ (0.7557) is comparable but confounded.
+**r=64 ranking:** adam-polar-product-lora wins (0.7453, the headline).
+**Overall:** adam-polar-product-lora at r=64 — only optimizer above
+trajectory jitter. AdaMuon-style accumulation (adamuon-polar-product-lora,
+0.7486) is *worse* than Adam-then-polar at r=64; the open ordering question
+is now empirically decided in favor of Adam-first.
 
 Two findings tension each other:
 - **At r=16, geometry-then-Adam compositions tie AdamW** (H1 confirmed: cos
@@ -558,17 +608,27 @@ RMS-align) should produce different B-side directions too. We'd predict
 H5's matrix-Adam variant (scalar v̂ per pair) to recover B-side geometric
 direction.
 
-## Trajectory variance — the r=64 "win" is at noise floor
+## Trajectory variance — UNVERIFIED proxy, NOT a calibrated noise floor
+
+⚠ **Caveat:** the value below is trajectory jitter (step-to-step |Δ| within
+a single trajectory in its late phase), not seed-to-seed final-loss variance.
+It is a *lower bound* on the true noise floor — multi-seed variance also
+includes init randomness, data shuffle order, dropout masks, and FP non-
+determinism, all of which trajectory jitter misses. Do not cite 0.004 as
+"the noise floor" in further claims; treat it as a rough sanity check that
+deflates single-seed enthusiasm, not a significance threshold. Multi-seed
+characterization is deferred to a future session per the project's
+"multi-seed is the last resort" rule.
 
 Pulled the eval_loss trajectory of all three optimizers at r=64 η=3e-4 and
 computed late-trajectory step-to-step |Δ|:
 
-- pooled mean step-to-step |Δ_loss|: **0.0038**
+- pooled mean step-to-step |Δ_loss|: **0.0038** (computed once on r=64 η=3e-4 only; not pooled across other configs)
 - max: 0.0051
 
-Final-step gaps at step 2000:
-- adam-scaled-lora vs adamw at r=64: **−0.0044** ← within noise
-- adam-lin-lora vs adamw at r=64: −0.0023 ← below noise
+Final-step gaps at step 2000 — described AS measured, NOT framed as significance:
+- adam-scaled-lora vs adamw at r=64: **−0.0044** (≈ trajectory jitter; significance unverified)
+- adam-lin-lora vs adamw at r=64: −0.0023 (below trajectory jitter; significance unverified)
 
 The *direction* of the rank-dependence effect is unambiguous (gap goes from
 +0.02 at r=2 to −0.005 at r=64), but the *magnitude* of the win at r=64 is
@@ -654,6 +714,8 @@ informative per GPU-hour than confidence intervals on a 0.005 gap.
 4. **adam-muon-lora longer training / lr decay.** The 0.7557 was still
    descending at step 2000. A 4k-step run with cosine decay could push to
    0.74-ish — a real headline.
-5. **Closed-form polar update** (theory line 656): the unique closed-form
-   spectral-product update. Cheaper than ProductMuon (one extra polar
-   per pair per step) and theoretically motivated. Not yet implemented.
+5. ~~**AdaMuon-style variance accumulation on the polar-product output.**~~
+   **DONE — AdaMuon-style ordering loses by 0.0033 at r=64** (0.7486 vs
+   0.7453). The argument that "V on polar output is cleaner than V on
+   raw G" does not transfer from pretraining to LoRA fine-tune scale on
+   this benchmark. Adam-then-polar remains the headline ordering.

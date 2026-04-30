@@ -91,3 +91,41 @@ Every training run emits JSON lines to stdout via `log_event()`: one `config` ev
 Fix across all optimizer comparisons: model name, dataset + split seed, sample counts, LoRA rank/alpha/dropout, target modules, sequence length, batch size, grad accumulation, dtype, compile mode, eval cadence. Use held-out eval loss for hyperparameter selection (never training loss). Hardware comparison baseline is A100; local RTX A6000 is acceptable only for functional smokes, not for timing or optimizer comparisons.
 
 **Canonical comparison horizon: 2000 steps.** All optimizer-vs-optimizer eval-loss comparisons in this project run to `--max_steps 2000` with `--eval_every 200`. Mechanism probes (cosine trajectories, conditioning, etc.) run to the same 2k horizon — short pilots (500-step etc.) are reserved for η-ranking-selection only, never for measurement (per the global "match canonical horizon" rule). The `lr_sweep_2k`, `optim_compare_high_eta_2k`, and `h*_*_2k` log groups all use this horizon; baseline numbers (AdamW 0.7579 at η=3e-4, adam-lin-lora 0.7564 at η=1e-3, etc.) are at step 2000.
+
+## Sweep manifests — pointer to a mechanically-enforced contract
+
+This section is a **navigation aid**, not the contract itself. The contract is enforced mechanically by three choke points; this doc just tells you where to look when one of them refuses:
+
+1. **`slurm_scripts/submit.sh` refuses to submit without `SWEEP_SCOPE`** — exits non-zero with a list of known scopes. You cannot submit an untagged sweep.
+2. **`lora_playground.manifest.load_manifests(strict=True)` raises `UntaggedSweepError`** if any populated log dir lacks a manifest or has empty scope. `strict=False` opts out for ad-hoc exploration.
+3. **`tests/test_manifests.py`** walks `logs/` and fails CI on missing/corrupt/empty-scope manifests.
+
+The data flow: `submit.sh` writes `logs/<group>/run_info/meta.json` at submission. Analysis tooling consumes manifests via `lora_playground.manifest.load_runs_by_scope(scope)` — never raw directory listings or hand-maintained tuples of group names.
+
+**Submitting a sweep:**
+
+```bash
+SWEEP_SCOPE="ext_compare,polar_family" \
+SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry" \
+./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [scripts/sweep_2k_r_diag.sh] [slurm_scripts/sbatch.sh]
+```
+
+Optional: `SWEEP_SUPERSEDES=<old_group>` makes rerun-priority explicit so analysis priority isn't dependent on submission order.
+
+**Known scope tags** (one or more, comma-separated):
+
+| scope                      | when to use                                       |
+|----------------------------|---------------------------------------------------|
+| `ext_compare`              | extension-family optimizer comparison (post-, matrix-, polar-product variants) |
+| `muon_family`              | Muon / AdaMuon / ProductMuon variants             |
+| `all_optimizers`           | comprehensive optimizer comparison at fixed r     |
+| `loraplus_family`          | AdamW + LoRA+ B-multiplier sweeps                 |
+| `svd_oracle`               | SVD step / cumulative oracle modes                |
+| `diagnostics`              | runs whose primary purpose is per-step probes (cos, σ(S), conditioning) |
+| `lin_scaled_investigation` | H1–H5 lin/scaled-lora investigation               |
+| `polar_family`             | spectral-product polar updates                    |
+| `winner_rerun`             | re-run of a known-best config (typically with diagnostics enabled) |
+| `pilot`                    | short-step (~500) ranking-selection runs (analysis ignores) |
+| `legacy`                   | older sweeps kept for reference; usually excluded |
+
+Schema and loader in `lora_playground/manifest.py`. **Bare `sbatch` invocations bypass the contract — always go through `submit.sh` (or `/disbatch` skill).**

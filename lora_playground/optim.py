@@ -79,6 +79,8 @@ OPTIMIZER_CHOICES = {
     "adam-lin-lora-matrix",
     "polar-product-lora",
     "adam-polar-product-lora",
+    "adamuon-polar-product-lora",
+    "adamuon-lora",
     "muon-lora",
     "product-muon-lora",
     "adam-muon-lora",
@@ -1662,6 +1664,295 @@ class AdamPolarProductLoRA(Optimizer):
                 _emit_optim_diagnostics(step_count, diag_records)
 
 
+class AdamuonPolarProductLoRA(Optimizer):
+    """AdaMuon-style polar-first composition of the spectral-product update.
+
+    Contrast with AdamPolarProductLoRA (which does Adam → polar):
+      • Adam(m̂, v̂) on raw (∇A, ∇B), then polar-product geometry on the
+        Adam direction. v̂ is built from raw-gradient statistics.
+    This optimizer does polar → variance-on-polar-output:
+      • Plain momentum M on raw grads, optional sign-stabilization
+        (AdaMuon Thm 1), polar-product geometry on M, then accumulate V
+        elementwise on the polar output, normalize, RMS-align.
+
+    Per pair (A, B):
+        Mₐ ← β₁·Mₐ + ∇A,                M_B ← β₁·M_B + ∇B
+        Sₐ = AAᵀ + δI,                   S_B = BᵀB + δI            (cached as fractional powers)
+        signed Mₐ ← sign(Mₐ) if sign_stabilize else Mₐ              (analog for B)
+        P_B = polar(signed M_B · S_A⁻¹ᐟ²),  D_B = P_B · S_A⁻¹ᐟ²
+        P_A = polar(S_B⁻¹ᐟ² · signed Mₐ),   D_A = S_B⁻¹ᐟ² · P_A
+        Vₐ ← β₂·Vₐ + (1−β₂)·Dₐ⊙Dₐ        (V_B analog)
+        D̃ₐ = Dₐ / (√Vₐ + ε),             D̃_B analog
+        γₐ = 0.2·√(rₐ·dₐ) / ‖D̃ₐ‖_F        (RMS-align to AdamW magnitude)
+        ΔA = −lr·γₐ·D̃ₐ,                  ΔB = −m·lr·γ_B·D̃_B
+
+    AdaMuon (arxiv 2507.11005) §3.1 argues variance estimation belongs on
+    the polar output Oₜ rather than on raw G or momentum M, because the
+    raw gradient carries ill-conditioned scaling that polar is designed
+    to eliminate, making it unsuitable for stable variance tracking. This
+    class tests whether that argument transfers to LoRA fine-tune scale
+    when the polar operator is the spectral-product (S_A, S_B) form
+    rather than vanilla NS.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, ns_steps=5, sign_stabilize=True,
+                 adapter_name=None, lora_plus_multiplier=1.0,
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.ns_steps = ns_steps
+        self.sign_stabilize = sign_stabilize
+        self.lora_plus_multiplier = lora_plus_multiplier
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_A': torch.zeros_like(A, dtype=torch.float32),
+                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                'step': 0,
+            }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamuonPolarProductLoRA update.")
+            state = self.pair_state[i]
+            state['step'] += 1
+
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            # Plain momentum on raw grads (no second moment yet).
+            state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+            mA = state['m_A']
+            mB = state['m_B']
+
+            # AdaMuon Thm 1: sign(·) is the unique admissible elementwise transform
+            # before the polar operator.
+            sA = mA.sign() if self.sign_stabilize else mA
+            sB = mB.sign() if self.sign_stabilize else mB
+
+            # Spectral preconditioners (same as AdamPolarProductLoRA).
+            SA_half_inv = spd_frac_power_inv(A.float() @ A.float().T, gamma=0.5, eps=self.delta)
+            SB_half_inv = spd_frac_power_inv(B.float().T @ B.float(), gamma=0.5, eps=self.delta)
+
+            # Polar-product on (signed) momentum, NOT on Adam direction.
+            X_B = sB @ SA_half_inv
+            P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
+            D_B = P_B @ SA_half_inv
+
+            X_A = SB_half_inv @ sA
+            P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
+            D_A = SB_half_inv @ P_A
+
+            # Variance accumulated on the polar output (AdaMuon §3.1).
+            state['v_A'].mul_(self.beta2).addcmul_(D_A, D_A, value=1.0 - self.beta2)
+            state['v_B'].mul_(self.beta2).addcmul_(D_B, D_B, value=1.0 - self.beta2)
+            bc2 = 1.0 - self.beta2 ** state['step']
+            tildaA = D_A / ((state['v_A'] / bc2).sqrt() + self.eps)
+            tildaB = D_B / ((state['v_B'] / bc2).sqrt() + self.eps)
+
+            # RMS-align: target ‖step‖_F = lr · 0.2·√(rows·cols) (AdaMuon paper §3.3
+            # constant, matched to Adam's empirical RMS ≈ 0.2). Decouples step
+            # magnitude from V's scale.
+            rA, dA_in = A.shape
+            dB_out, rB = B.shape
+            target_A = 0.2 * (rA * dA_in) ** 0.5
+            target_B = 0.2 * (dB_out * rB) ** 0.5
+            tA_norm = tildaA.norm() + 1e-30
+            tB_norm = tildaB.norm() + 1e-30
+            gammaA = target_A / tA_norm
+            gammaB = target_B / tB_norm
+            dA = -lr * gammaA * tildaA
+            dB = -self.lora_plus_multiplier * lr * gammaB * tildaB
+
+            if self.log_diagnostics:
+                # Reference plain-AdamW step direction for cos comparisons.
+                # Cheap side-channel: m̂/(√v̂+ε) on raw grads, no extra state.
+                # We don't maintain Adam first/second moments here, so use the
+                # current-step gradient as a proxy reference (signed). This is
+                # consistent across diagnostic-emitting optimizers as a
+                # "would plain Adam go this way" signal.
+                ref_A = -gA.sign()
+                ref_B = -gB.sign()
+                sa_min, sa_max = _spd_eig_extremes(A.float() @ A.float().T)
+                sb_min, sb_max = _spd_eig_extremes(B.float().T @ B.float())
+                diag_records.append({
+                    "cos_A": _frob_cos(dA, ref_A),
+                    "cos_B": _frob_cos(dB, ref_B),
+                    "norm_dA": float(dA.detach().norm()),
+                    "norm_dA_target": float(lr * target_A),
+                    "norm_dB": float(dB.detach().norm()),
+                    "norm_dB_target": float(self.lora_plus_multiplier * lr * target_B),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                    "SA_min": sa_min, "SA_max": sa_max,
+                    "SB_min": sb_min, "SB_max": sb_max,
+                    "gammaA": float(gammaA),
+                    "gammaB": float(gammaB),
+                })
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
+class AdaMuonLoRA(Optimizer):
+    """Faithful port of AdaMuon (arxiv 2507.11005, Algorithm 1) for LoRA factors.
+
+    Per LoRA factor independently:
+        Mₜ ← β·Mₜ₋₁ + Gₜ                            (plain SGD momentum on raw grad)
+        Oₜ = NewtonSchulz(sign(Mₜ), T)              (sign-stabilized polar)
+        Vₜ ← β·Vₜ₋₁ + (1−β)·Oₜ⊙Oₜ                   (variance on the polar output)
+        Õₜ = Oₜ ⊘ (√Vₜ + ε)                         (elementwise normalize)
+        γₜ = 0.2·√(rows·cols) / ‖Õₜ‖_F              (RMS-align to Adam magnitude)
+        ΔW = −lr·γₜ·Õₜ
+
+    Diff vs the older `MuonAdamLoRA` (which the project earlier called "naive
+    NS→Adam" and reported as ~0.78 at 2k):
+      1. **sign(Mₜ) before NS.** Old impl fed NS the raw gradient, producing
+         step-to-step uncorrelated NS outputs. AdaMuon stabilizes by tracking
+         momentum first and applying sign() before NS so NS sees a stationary
+         input distribution (paper Theorem 1: sign is the unique admissible
+         elementwise transform).
+      2. **Only Vₜ on the polar output, no Mₜ on it.** Old impl ran full
+         Adam(m, v) on the NS output — double smoothing.
+      3. **RMS-align step magnitude.** Old impl applied lr directly to m̂/√v̂,
+         leaving step magnitude unbounded.
+
+    Vanilla-NS counterpart of `AdamuonPolarProductLoRA`. Comparing the two
+    isolates "spectral-product geometry helps" from "AdaMuon stabilizers
+    help" when both are layered on a polar-first composition.
+
+    LoRA+ via `lr_b_multiplier` on B's lr.
+    """
+    def __init__(self, model, lr=3e-4, beta=0.95, eps=1e-8, ns_steps=5,
+                 adapter_name=None, lr_b_multiplier=1.0,
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.beta = beta
+        self.eps = eps
+        self.ns_steps = ns_steps
+        self.lr_b_multiplier = lr_b_multiplier
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+        self.pair_state = {
+            i: {
+                "M_A": torch.zeros_like(A, dtype=torch.float32),
+                "V_A": torch.zeros_like(A, dtype=torch.float32),
+                "M_B": torch.zeros_like(B, dtype=torch.float32),
+                "V_B": torch.zeros_like(B, dtype=torch.float32),
+                "step": 0,
+            }
+            for i, (A, B) in enumerate(pairs)
+        }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("AdaMuonLoRA requires gradients on both A and B.")
+            state = self.pair_state[i]
+            state["step"] += 1
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            # (1) Plain momentum on raw gradient. Per AdaMuon paper Eq. (1)
+            # the recursion is M ← β·M + G (no (1−β) factor on G).
+            state["M_A"].mul_(self.beta).add_(gA)
+            state["M_B"].mul_(self.beta).add_(gB)
+
+            # (2) sign-stabilize, then NS. Per paper Eq. (7) and Theorem 1.
+            sA = state["M_A"].sign()
+            sB = state["M_B"].sign()
+            O_A = _newton_schulz(sA, nsteps=self.ns_steps) if self.ns_steps > 0 else sA
+            O_B = _newton_schulz(sB, nsteps=self.ns_steps) if self.ns_steps > 0 else sB
+
+            # (3) Variance on the polar output. Per paper Eq. (5).
+            state["V_A"].mul_(self.beta).addcmul_(O_A, O_A, value=1.0 - self.beta)
+            state["V_B"].mul_(self.beta).addcmul_(O_B, O_B, value=1.0 - self.beta)
+
+            # (4) Elementwise normalize. Per paper Eq. (6). No bias correction
+            # — paper Appendix B explicitly omits it.
+            tildaA = O_A / (state["V_A"].sqrt() + self.eps)
+            tildaB = O_B / (state["V_B"].sqrt() + self.eps)
+
+            # (5) RMS-align. Per paper Eq. (8): γ = 0.2·√(mn) / ‖Õ‖_F.
+            rA, dA_in = A.shape
+            dB_out, rB = B.shape
+            target_A = 0.2 * (rA * dA_in) ** 0.5
+            target_B = 0.2 * (dB_out * rB) ** 0.5
+            tA_norm = tildaA.norm() + 1e-30
+            tB_norm = tildaB.norm() + 1e-30
+            gammaA = target_A / tA_norm
+            gammaB = target_B / tB_norm
+            dA = -lr * gammaA * tildaA
+            dB = -self.lr_b_multiplier * lr * gammaB * tildaB
+
+            if self.log_diagnostics:
+                ref_A = -gA.sign()
+                ref_B = -gB.sign()
+                diag_records.append({
+                    "cos_A": _frob_cos(dA, ref_A),
+                    "cos_B": _frob_cos(dB, ref_B),
+                    "norm_dA": float(dA.detach().norm()),
+                    "norm_dA_target": float(lr * target_A),
+                    "norm_dB": float(dB.detach().norm()),
+                    "norm_dB_target": float(self.lr_b_multiplier * lr * target_B),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                    "gammaA": float(gammaA),
+                    "gammaB": float(gammaB),
+                })
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]["step"]
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
 class MuonAdamLoRA(Optimizer):
     """
     Reverse of AdamMuonLoRA: NS first, then Adam (instead of Adam then NS).
@@ -2396,6 +2687,28 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "adamuon-polar-product-lora":
+        return AdamuonPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            sign_stabilize=True,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "adamuon-lora":
+        return AdaMuonLoRA(
+            model, lr=lr,
+            beta=0.95,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lr_b_multiplier=lora_plus_multiplier,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )

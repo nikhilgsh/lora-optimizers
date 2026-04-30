@@ -19,7 +19,9 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from lora_playground.optim import (
+    AdaMuonLoRA,
     AdamPolarProductLoRA,
+    AdamuonPolarProductLoRA,
     PolarProductLoRA,
     _newton_schulz,
 )
@@ -57,7 +59,7 @@ def _make(seed=0):
     return m, x, target
 
 
-@pytest.mark.parametrize("OptCls", [PolarProductLoRA, AdamPolarProductLoRA])
+@pytest.mark.parametrize("OptCls", [PolarProductLoRA, AdamPolarProductLoRA, AdamuonPolarProductLoRA])
 def test_step_runs_and_changes_params(OptCls):
     m, x, target = _make()
     pre = [p.detach().clone() for p in m.parameters()]
@@ -72,7 +74,7 @@ def test_step_runs_and_changes_params(OptCls):
     assert max(diffs) > 0.0, "No params changed"
 
 
-@pytest.mark.parametrize("OptCls", [PolarProductLoRA, AdamPolarProductLoRA])
+@pytest.mark.parametrize("OptCls", [PolarProductLoRA, AdamPolarProductLoRA, AdamuonPolarProductLoRA])
 def test_zero_grad_no_finite_failure(OptCls):
     """With zero grads on a step the optimizer must not produce NaN/Inf."""
     m, x, target = _make()
@@ -85,7 +87,7 @@ def test_zero_grad_no_finite_failure(OptCls):
         assert torch.isfinite(p).all(), "Non-finite param after zero-grad step"
 
 
-@pytest.mark.parametrize("OptCls", [PolarProductLoRA, AdamPolarProductLoRA])
+@pytest.mark.parametrize("OptCls", [PolarProductLoRA, AdamPolarProductLoRA, AdamuonPolarProductLoRA])
 def test_determinism(OptCls):
     def run():
         m, x, target = _make(seed=42)
@@ -100,6 +102,101 @@ def test_determinism(OptCls):
     b = run()
     for pa, pb in zip(a, b):
         assert torch.allclose(pa, pb, atol=0.0)
+
+
+def test_adamuon_first_step_rms_align():
+    """AdaMuonPolarProductLoRA invariant: at step 1 with V=0, the elementwise
+    normalized direction has |D̃[i,j]| ≈ 1, so RMS-align fixes ‖step‖_F to
+    lr · 0.2 · √(rows·cols) regardless of the polar output scale.
+    """
+    torch.manual_seed(0)
+    m = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    x = torch.randn(3, 8)
+    target = torch.randn(3, 8)
+    pre = {n: p.detach().clone() for n, p in m.named_parameters()}
+    loss = ((m(x) - target) ** 2).mean()
+    loss.backward()
+
+    lr = 1e-2
+    opt = AdamuonPolarProductLoRA(m, lr=lr, ns_steps=5, sign_stabilize=True)
+    opt.step()
+    post = {n: p.detach().clone() for n, p in m.named_parameters()}
+
+    for n, p_pre in pre.items():
+        change = post[n] - p_pre
+        rows, cols = p_pre.shape
+        target_norm = lr * 0.2 * (rows * cols) ** 0.5
+        rel_err = abs(change.norm().item() - target_norm) / target_norm
+        # RMS-align is exact up to (a) ε in the denominator, (b) bias
+        # correction at step 1 (bc2 = 1−β₂ = 1e-3 → V/bc2 = D⊙D exactly).
+        # Tolerance accounts for ε in (√V + ε) shifting D̃ slightly off sign(D).
+        assert rel_err < 0.05, (
+            f"At step 1, ‖{n} step‖_F should be ~lr·0.2·√(rows·cols) = {target_norm:.6f} "
+            f"but got {change.norm().item():.6f} (rel_err={rel_err:.4f})"
+        )
+
+
+def test_adamuon_lora_first_step_rms_align():
+    """Vanilla AdaMuonLoRA first-step invariant: ‖step‖_F = lr · 0.2·√(rows·cols).
+    No spectral-product preconditioner; pure NS on sign(M).
+    """
+    torch.manual_seed(0)
+    m = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    x = torch.randn(3, 8)
+    target = torch.randn(3, 8)
+    pre = {n: p.detach().clone() for n, p in m.named_parameters()}
+    loss = ((m(x) - target) ** 2).mean()
+    loss.backward()
+
+    lr = 1e-2
+    opt = AdaMuonLoRA(m, lr=lr, ns_steps=5, beta=0.95)
+    opt.step()
+    post = {n: p.detach().clone() for n, p in m.named_parameters()}
+
+    for n, p_pre in pre.items():
+        change = post[n] - p_pre
+        rows, cols = p_pre.shape
+        target_norm = lr * 0.2 * (rows * cols) ** 0.5
+        rel_err = abs(change.norm().item() - target_norm) / target_norm
+        assert rel_err < 0.05, (
+            f"AdaMuonLoRA first-step ‖{n}‖_F should be ~{target_norm:.6f}, "
+            f"got {change.norm().item():.6f}, rel_err={rel_err:.4f}"
+        )
+
+
+def test_adamuon_lora_ns_steps_zero_runs():
+    """ns_steps=0 (sanity check; no NS, just sign+normalize+rms-align) runs without NaN."""
+    m, x, target = _make()
+    opt = AdaMuonLoRA(m, lr=1e-2, ns_steps=0)
+    loss = ((m(x) - target) ** 2).mean()
+    loss.backward()
+    opt.step()
+    for p in m.parameters():
+        assert torch.isfinite(p).all()
+
+
+def test_adamuon_lora_determinism():
+    def run():
+        m, x, target = _make(seed=42)
+        opt = AdaMuonLoRA(m, lr=1e-3)
+        for _ in range(3):
+            ((m(x) - target) ** 2).mean().backward()
+            opt.step()
+        return [p.detach().clone() for p in m.parameters()]
+    a = run(); b = run()
+    for pa, pb in zip(a, b):
+        assert torch.allclose(pa, pb, atol=0.0)
+
+
+def test_adamuon_no_sign_runs():
+    """sign_stabilize=False path also produces a finite step."""
+    m, x, target = _make()
+    opt = AdamuonPolarProductLoRA(m, lr=1e-2, sign_stabilize=False)
+    loss = ((m(x) - target) ** 2).mean()
+    loss.backward()
+    opt.step()
+    for p in m.parameters():
+        assert torch.isfinite(p).all()
 
 
 def test_orthogonal_factors_reduce_to_per_factor_polar():
