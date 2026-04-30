@@ -3,12 +3,50 @@
 **Goal:** find a LoRA-aware optimizer that strictly beats AdamW (0.7579 final
 eval loss at r=16, 2k steps, OLMo-2-1B + Magicoder code-instruct).
 
-**One-line mechanistic story:** Adam's per-coordinate v̂⁻¹ᐟ² normalization, when
-applied *to the preconditioned gradient*, erases whatever cross-coordinate
-scale structure the preconditioner installed. The optimizers that beat AdamW
-are the ones that apply their geometric correction **after** Adam (so v̂ can't
-normalize it away) AND choose a correction that survives a sign-like input —
-**spectral capping (NS)** survives, **Gram-inverse rescaling (S⁻¹)** does not.
+## What we currently believe (2026-04-30 ~13:00)
+
+**Confirmed:**
+- At r=16, the original `adam-{lin,scaled}-lora` are ε-perturbed AdamW.
+  Adam's per-coord √v̂ erases the geometric correction (H1, cos_B ≈ 0.97
+  throughout, cos_A → 0.84 over training).
+- The *-Post variants without RMS-align (H4 unfixed) lose to AdamW by
+  ~0.03 — step magnitude varied by 100× over training (σ_min(S_B) climbs
+  from 0.011 → 1.08).
+- adam-muon-lora (Muon NS applied to Adam's step direction) is the only
+  unambiguous strict win at r=16: 0.7557 vs AdamW 0.7579.
+- The geometric correction's effect is **rank-dependent**: gap goes from
+  +0.02 at r=2 (lin/scaled lose) to −0.005 at r=64 (lin/scaled win).
+  Crossover near r=16.
+- B-side geometric correction is essentially inert at every r (cos_B
+  saturated near 1). All useful geometric work happens on A.
+
+**Likely but not yet verified:**
+- The r=64 win is real-direction but its *magnitude* (~0.005) is within
+  the single-seed noise floor (mean step-to-step |Δ_loss| ≈ 0.004 in late
+  trajectory). Mechanism evidence > confidence intervals.
+- The RMS-align fix gets *-Post into AdamW pace at r=16 — final verdict
+  pending (step 1000 trajectory matches plain AdamW).
+- "Geometry on A only" should perform identically to full geometry-then-
+  Adam (since B-side is inert). Untested ablation.
+
+**Open mechanism questions:**
+- H_weak vs H_erase on B: is S_A⁻¹ near-identity on ∇B (weak geometry), or
+  does Adam erase a meaningful rotation (erase)? Probe submitted (job
+  6313190); answer at step 20.
+- Why does the geometric correction help at r=64 but not r=16? Hypothesis:
+  more Sylvester degrees of freedom (r×r) for installing structure that
+  per-coord v̂ can't fully flatten — yet to confirm.
+
+**One-line mechanistic story (provisional):** Adam's per-coordinate v̂⁻¹ᐟ²
+normalization, when applied *to the preconditioned gradient*, erases
+whatever cross-coordinate scale structure the preconditioner installed —
+*at small rank*. At higher rank (r ≥ 64) the geometric subspace is rich
+enough that Adam can't fully flatten it and a small win opens up. The
+optimizers that beat AdamW unambiguously at r=16 are the ones that apply
+geometry **after** Adam AND choose a correction structurally meaningful on
+a sign-like input — **NS (spectral cap)** qualifies, **S⁻¹ (Gram-inverse)**
+seemingly does not (H4 *-Post falsifying even after the magnitude fix —
+final number pending).
 
 ---
 
@@ -285,6 +323,82 @@ certainly does not — fine-tuning regimes are dominated by Adam's variance
 adaptation in ways pretraining is not. Useful for design-space mapping,
 not for predicting headline numbers.
 
+## A/B asymmetry — refining H1 with rank-sweep diagnostics
+
+H1 ran at r=16 and reported cos(geometric step, plain-AdamW step) saturated
+near 0.97 throughout training. The H1 r-sweep (job 6313087, in flight)
+extends the cos probe to r ∈ {4, 64} and surfaces a sharper picture:
+
+| r  | cos_A_median (early) | cos_A_median (late) | cos_B_median  | σ_min(S_B) early |
+|----|----------------------|----------------------|----------------|--------------------|
+| 4  | 0.62 (step 20)       | 0.66 (step 520)     | **0.999** flat | 0.005              |
+| 16 | 0.46 (step 20)       | 0.84 (step 1500)    | 0.94–0.98     | 0.011              |
+| 64 | 0.36 (step 20)       | 0.72 (step 400)     | 0.97–0.98     | 0.0006 (smaller!)  |
+
+**Two new mechanistic claims:**
+
+1. **cos_B saturates near 1 at every r** (0.97 to 0.999). The B-direction of
+   the geometric step is approximately AdamW's B-direction at every rank we
+   measured. Whatever advantage the geometric correction provides at large r,
+   it does NOT come through B. The geometric work is happening on A only.
+
+2. **cos_A is rank-dependent but non-monotonically informative.** At r=4
+   cos_A is *lower* (more different from AdamW) than at r=16 or r=64, yet
+   r=4 LOSES to AdamW by +0.02. So "different direction" ≠ "better
+   direction" — at small r the geometric step is plausibly randomly-rotated
+   noise (S_B near δI for many steps because B is tiny rank, rotation
+   informationless). At large r the direction differs *and* helps.
+
+3. **Conditioning is NOT the lever.** σ_min(S_B) is *worse* at r=64 (0.0006)
+   than at r=4 (0.005) — because S_B has more eigenvalues at high r and the
+   smallest one tends to be smaller. Yet r=64 wins. The "well-conditioned
+   geometry helps" intuition is wrong; what helps is *the dimension of the
+   subspace the geometric solve has to install structure in*.
+
+## H_weak vs H_erase — open mechanism question
+
+If cos_B ≈ 1 at every r, two failure modes for the B-side correction:
+
+- **H_weak**: S_A⁻¹ is approximately identity-like on ∇B, so the geometric
+  rotation barely happens before Adam runs (cos_pre_B ≈ 1).
+- **H_erase**: S_A⁻¹ rotates ∇B meaningfully, but Adam's per-coord √v̂
+  erases the rotation post-hoc (cos_pre_B < 1, cos_post_B ≈ 1).
+
+Distinguishable with one new probe: cos(precond_B, ∇B) measured *before*
+Adam touches it. Added to the diagnostic logger (commit 1c74ba5). Submitted
+fast probe at 500 steps × 2 optimizers (job 6313190) — answer at step 20.
+
+If H_weak: B-side geometry adds nothing, *not because Adam is too aggressive
+but because the geometry itself doesn't rotate ∇B in this regime*. Implies
+the productive change is "geometry on A only, plain Adam on B" — gives the
+same result as the full geometry-then-Adam compositions, with half the
+preconditioning cost.
+
+If H_erase: Adam's √v̂ is the culprit on B as it is on A. Then the
+"preserve direction by avoiding per-coord v̂" fix family (matrix-Adam,
+RMS-align) should produce different B-side directions too. We'd predict
+H5's matrix-Adam variant (scalar v̂ per pair) to recover B-side geometric
+direction.
+
+## Trajectory variance — the r=64 "win" is at noise floor
+
+Pulled the eval_loss trajectory of all three optimizers at r=64 η=3e-4 and
+computed late-trajectory step-to-step |Δ|:
+
+- pooled mean step-to-step |Δ_loss|: **0.0038**
+- max: 0.0051
+
+Final-step gaps at step 2000:
+- adam-scaled-lora vs adamw at r=64: **−0.0044** ← within noise
+- adam-lin-lora vs adamw at r=64: −0.0023 ← below noise
+
+The *direction* of the rank-dependence effect is unambiguous (gap goes from
++0.02 at r=2 to −0.005 at r=64), but the *magnitude* of the win at r=64 is
+within the noise floor of a single seed. Multi-seed would establish
+significance but is the wrong tool — mechanism evidence (H_weak vs H_erase
+verdict, cos_pre values, ablations of A-only / B-only geometry) is more
+informative per GPU-hour than confidence intervals on a 0.005 gap.
+
 ## Open questions
 
 1. **Does H5 (matrix-Adam) save the geometry → Adam family?** With per-pair
@@ -332,17 +446,19 @@ not for predicting headline numbers.
 
 ---
 
-## Running experiments (as of 2026-04-30 ~12:00 local)
+## Running experiments (as of 2026-04-30 ~13:00 local)
 
-| job     | group           | runs | GPUs | state    | hypothesis | expected verdict |
-|---------|-----------------|------|------|----------|------------|------------------|
-| 6312334 | h1_diag_2k      | 2/2  | 2    | DONE     | H1 v̂ erases geometry | confirmed: cos_B ≈ 0.97 throughout |
-| 6312277 | h4_post_2k      | 6/10 | 4    | RUNNING  | H4 *-Post wins | falsifying: η=1e-3 trending to 0.79 |
-| 6312335 | h3_rsweep_2k    | 12/18| 6    | RUNNING  | H3 small-r benefit | falsified: lin loses by +0.02 at r=2,4 |
-| 6312759 | h5_matrix_2k    | 0/10 | 4    | PENDING  | H5 scalar v̂ preserves geometry | tbd (resubmitted with fix) |
-| 6312406 | adam_product_muon_500 | _ | _ | (Muon campaign) | H2⊗H4 hybrid | tbd |
-| 6312401 | psi_lora_2k     | _    | _    | (Original sweep) | PSI Algorithm 3 | tbd |
-| —       | galore_fixed_2k | done | _    | DONE     | full-weight projected | (read from logs) |
+| job     | group                    | runs   | state         | hypothesis / role                      | verdict so far |
+|---------|--------------------------|--------|---------------|----------------------------------------|----------------|
+| 6312334 | h1_diag_2k               | 2/2    | DONE          | H1 v̂ erases geometry @ r=16           | **confirmed**: cos_B ≈ 0.97 throughout, cos_A → 0.84 |
+| 6312277 | h4_post_2k (unfixed)     | 10/10  | DONE          | H4 *-Post wins (unfixed)               | **falsified**: best 0.7875 at η=1e-3, 0.03 worse than AdamW |
+| 6312335 | h3_rsweep_2k             | 12/18  | RUNNING (η=1e-3) | H3 small-r benefit                  | **falsified**: lin loses at r=2,4; **r=64 marginally wins** (within noise floor) |
+| 6312759 | h5_matrix_2k (fixed)     | 4/10   | RUNNING       | H5 scalar v̂ preserves direction        | learning now (was 1.187 before fix); high-η runs pending |
+| 6313020 | h4_post_rmsalign_2k      | 4/4 step ~1000 | RUNNING | RMS-align fix for *-Post              | **trajectory matches AdamW pace** at step 1000; final pending |
+| 6313087 | h1_rsweep_diag_2k        | 4/4 step ~200-400 | RUNNING | cos at r=4, r=64 (mechanism)        | r=4 cos_A=0.62, r=64 cos_A=0.36→0.72; cos_B≈1 at all r |
+| 6313190 | h1_pre_probe_500         | 2/2 (just submitted) | PENDING | H_weak vs H_erase                  | answer at step 20 |
+| —       | adam_muon_2k             | done   | DONE          | Muon campaign winner                   | **0.7557**, current overall #2 |
+| —       | (none — new from H3)     | done   | DONE          | adam-scaled-lora at r=64               | **0.7506**, current overall #1 (within noise) |
 
 ---
 
