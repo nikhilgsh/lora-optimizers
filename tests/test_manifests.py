@@ -134,16 +134,24 @@ def test_standard_sweep_figure_appends_rank() -> None:
     plt.close(fig)
     assert sup == "Already r=16 in title", f"expected idempotent, got {sup!r}"
 
-    # Multi-rank input: must raise.
+    # Multi-rank input: auto-splits, returns a list of (fig, axes, kept, dropped)
+    # tuples — one per rank, sorted ascending. Each figure has its own rank
+    # in the suptitle.
     runs_mixed = runs_r16 + [
-        ({"optimizer": "adam-lin-lora", "lr": "3e-4", "lora_r": "64", "command": ""}, fake_evs),
+        ({"optimizer": "adamw", "lr": 3e-4, "lora_r": 64, "command": ""}, fake_evs),
+        ({"optimizer": "adam-lin-lora", "lr": 3e-4, "lora_r": 64, "command": ""}, fake_evs),
     ]
-    with pytest.raises(ValueError, match="single LoRA rank"):
-        standard_sweep_figure(
-            runs_mixed, group_key_fn=lambda c: c["optimizer"],
-            color_map={"adamw": "#000", "adam-lin-lora": "#888"},
-            reference_runs=runs_mixed, suptitle="Mixed",
-        )
+    results = standard_sweep_figure(
+        runs_mixed, group_key_fn=lambda c: c["optimizer"],
+        color_map={"adamw": "#000", "adam-lin-lora": "#888"},
+        reference_runs=runs_mixed, suptitle="Mixed",
+    )
+    assert isinstance(results, list) and len(results) == 2, \
+        f"expected 2 figures (r=16 and r=64), got {len(results) if isinstance(results, list) else type(results)}"
+    titles = sorted(r[0]._suptitle.get_text() for r in results)
+    assert titles == ["Mixed at r=16", "Mixed at r=64"], titles
+    for fig, *_ in results:
+        plt.close(fig)
 
 
 def test_optim_choices_have_color_entries() -> None:

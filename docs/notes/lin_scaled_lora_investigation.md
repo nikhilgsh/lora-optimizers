@@ -12,9 +12,9 @@ scale structure the geometric step just installed. Diagnostics confirm /
 falsify this; productive code changes either reorder the composition (H4) or
 swap per-coord v̂ for a per-pair scalar (H5).
 
-Success bar (per `feedback_beat_dont_match.md`): a productive change wins iff
-its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
-0.7579). Parity is failure.
+Goal (per `feedback_beat_dont_match.md`): a productive change comes in
+below AdamW's 0.7579 single-seed at the canonical 2k-step horizon.
+Multi-seed verification is deferred.
 
 ---
 
@@ -107,8 +107,7 @@ its best-η final eval loss is **≤ 0.7479** (i.e. ≥ 0.010 below AdamW's
   (lora_playground/optim.py); 7 unit tests in `tests/test_optim_post.py`.
 - **Sweep:** η ∈ {3e-5, 1e-4, 3e-4, 1e-3, 3e-3} × 2 optimizers, r=16, 2k steps
   (10 runs, 4 GPUs, 4h time limit).
-- **Falsifier:** best `*-post` final eval ≥ 0.7529 (within 0.005 of AdamW).
-  Success bar: ≤ 0.7479.
+- **Goal:** best `*-post` final eval below AdamW's 0.7579 single-seed.
 - **Command:** `./slurm_scripts/submit.sh params/h4_post_2k.json h4_post_2k 4 scripts/sweep_2k.sh slurm_scripts/sbatch_4h.sh`
 - **Artifacts:** `logs/h4_post_2k/run_info/logs/log_{00..09}.out`
 - **Smoke (5-step on A6000):** adam-lin-lora-post η=3e-3 → eval 1.121;
@@ -165,4 +164,4 @@ For the full cross-investigation leaderboard see `docs/notes/optimizer_synthesis
 | ?    | adam-lin-lora-matrix | tbd     | tbd       | H5 sweep (resubmitted)      | tbd             |
 | ?    | adam-scaled-lora-matrix | tbd  | tbd       | H5 sweep (resubmitted)      | tbd             |
 
-Target: any new entry ≤ 0.7479.
+Target: any new entry below AdamW's 0.7579 single-seed.

@@ -28,8 +28,8 @@ themselves point at a next experiment.
   Established the magnitude-drift bug (σ_min(S_B) climbs 0.011→1.08 → step
   magnitude varies 100× over training at fixed lr).
 - **H4 RMS-aligned *-Post** (job 6313020, done): adam-scaled-lora-post
-  η=3e-4 → 0.7570. After magnitude fix, ties AdamW (within noise floor).
-  Confirmed magnitude was the dominant H4 bug.
+  η=3e-4 → 0.7570. After magnitude fix, single-seed loss matches AdamW
+  (0.7579) within 0.0009. Confirmed magnitude was the dominant H4 bug.
 - **muon-lora baseline** (`new_optimizers_high_eta_2k`): 0.7675 (NS without
   Adam). Establishes how much NS alone gets you.
 - **muon ns_steps=0** (`muon_nsoff_2k`): 0.95+ at every η. NS contributes
@@ -44,11 +44,11 @@ These have a measured win or measurable trajectory, with concrete next
 moves to push further.
 
 - **adam-muon-lora** — m=1 disentanglement and r=64 extension complete
-  (group `adam_muon_clean_2k`):
-    r=16 m=1 best η=3e-3 → 0.7624 (Δ=+0.0045 vs AdamW r=16 — m=1 *loses*)
-    r=64 m=1 best η=3e-3 → **0.7515** (Δ=−0.0035 vs AdamW r=64; within
-                                       trajectory jitter)
-    r=16 m=4 best η=3e-3 → 0.7557 (LoRA+ recovers 0.0067 nat at r=16)
+  (group `adam_muon_clean_2k`). Single-seed:
+    r=16 m=1 best η=3e-3 → 0.7624 (above AdamW r=16 by 0.0045)
+    r=64 m=1 best η=3e-3 → **0.7515** (below AdamW r=64 by 0.0035)
+    r=16 m=4 best η=3e-3 → 0.7557 (sweep pinned at upper end {1e-3, 3e-3};
+                                    true optimum at m=4 unknown)
   **LoRA+ verdict:** the original 0.7557 headline at r=16 was substantially
   driven by LoRA+ (m=4), not by NS-on-Adam alone. At r=16, m=1 alone does
   not beat AdamW. At r=64, m=1 alone *does* beat AdamW (0.7515) — but
@@ -64,15 +64,15 @@ moves to push further.
   from the 40% pretraining-scale gain claimed in the paper, but
   the polar-first composition family is **no longer falsified** at
   fine-tune scale.
-- **adam-scaled-lora at r=64** (0.7506, leaderboard #1, within noise floor).
-  Next moves: cos diagnostics at r=64 to confirm mechanism (job 6313087 in
-  flight); full η-sweep at r=64 to confirm peak isn't at η=3e-4.
+- **adam-scaled-lora at r=64** (0.7506, single-seed below AdamW r=64
+  by 0.0044). Next moves: cos diagnostics at r=64 to confirm mechanism
+  (job 6313087 in flight); full η-sweep at r=64 to confirm peak isn't
+  at η=3e-4.
 - **AdamPolarProductLoRA** (theory's closed-form polar update under
-  spectral-product norm) — **CONFIRMED HEADLINE WIN.** Final results
-  (job 6313375, 2k steps, seed=0):
-    r=16 η=3e-4 → 0.7546  (Δ=−0.0033 vs AdamW r=16, within noise)
-    r=64 η=3e-4 → **0.7453**  (Δ=−0.0097 vs AdamW r=64, **clears strict-win
-                                bar 0.7479 by 0.0026**)
+  spectral-product norm) — **lowest single-seed loss in the project.**
+  Final results (job 6313375, 2k steps, seed=0):
+    r=16 η=3e-4 → 0.7546  (below AdamW r=16 by 0.0033)
+    r=64 η=3e-4 → **0.7453** (below AdamW r=64 by 0.0097)
   Behavioral equivalence test passes (reduces to Muon NS at orthogonal
   init). Composition is **Adam → polar-product**: Adam runs on raw (∇A,
   ∇B), then polar(·) is sandwiched between two factors of S⁻¹ᐟ² and
@@ -168,8 +168,9 @@ hour as 6 jobs finish:
 - The *-Post variants without RMS-align (H4 unfixed) lose to AdamW by
   ~0.03 — step magnitude varied by 100× over training (σ_min(S_B) climbs
   from 0.011 → 1.08).
-- adam-muon-lora (Muon NS applied to Adam's step direction) is the only
-  unambiguous strict win at r=16: 0.7557 vs AdamW 0.7579.
+- adam-muon-lora (Muon NS applied to Adam's step direction) at r=16 m=4
+  comes in at 0.7557 vs AdamW 0.7579 (single-seed; m=4 LoRA+ confound;
+  η-sweep pinned at upper end).
 - The geometric correction's effect is **rank-dependent**: gap goes from
   +0.02 at r=2 (lin/scaled lose) to −0.005 at r=64 (lin/scaled win).
   Crossover near r=16.
@@ -184,9 +185,8 @@ hour as 6 jobs finish:
   applies at init; it does NOT prove S_A stays isotropic as A trains.
 
 **Likely but not yet verified:**
-- The r=64 win is real-direction but its *magnitude* (~0.005) is within
-  the single-seed noise floor (mean step-to-step |Δ_loss| ≈ 0.004 in late
-  trajectory). Mechanism evidence > confidence intervals.
+- The r=64 result direction holds across configs, but all measurements
+  are single-seed at 2k steps. Multi-seed verification deferred.
 - The RMS-align fix gets *-Post into AdamW pace at r=16 — final verdict
   pending (step 1000 trajectory matches plain AdamW).
 - "Geometry on A only" should perform identically to full geometry-then-
@@ -248,56 +248,46 @@ final number pending).
 
 ## Standing leaderboard (best η, seed=0, 2k steps)
 
-**Cross-rank board (HEADLINE STRICT WIN: adam-polar-product-lora at r=64):**
+**Cross-rank board (single-seed at 2k steps; multi-seed deferred):**
 
-| rank | optimizer                             | r  | m  | best η | eval loss  | vs same-rank AdamW       | vs strict-win bar |
-|------|---------------------------------------|----|----|--------|------------|--------------------------|-------------------|
-| 1    | **adam-polar-product-lora**           | 64 | 1  | 3e-4   | **0.7453** | Δ=−0.0097 (>2× noise) ✅ | **−0.0026 (cleared)** |
-| 2    | adamuon-polar-product-lora            | 64 | 1  | 3e-4   | 0.7486     | Δ=−0.0064 (≈ noise)     | +0.0007 (within)  |
-| 3    | adam-scaled-lora                      | 64 | 1  | 3e-4   | 0.7506     | Δ=−0.0044 (≈ noise)     | +0.0027 (within)  |
-| 4    | adam-muon-lora                        | 64 | 1  | 3e-3   | 0.7515     | Δ=−0.0035 (≈ noise)     | +0.0036 (within)  |
-| 4    | adamuon-lora (AdaMuon-faithful)       | 64 | 1  | 3e-4   | 0.7515     | Δ=−0.0035 (≈ noise)     | +0.0036 (within)  |
-| 6    | adam-lin-lora                         | 64 | 1  | 3e-4   | 0.7527     | Δ=−0.0023 (≈ noise)     | +0.0048 (within)  |
-| 7    | **adam-polar-product-lora**           | 16 | 1  | 3e-4   | **0.7546** | Δ=−0.0033 (≈ noise)     | +0.0067 (within)  |
-| 8    | adamw                                 | 64 | 1  | 3e-4   | 0.7550     | baseline (r=64)          | +0.0071           |
-| 9    | adam-muon-lora (LoRA+)                | 16 | 4  | 3e-3   | 0.7557     | Δ=−0.0022 (within noise; LoRA+ confound) | +0.0078 |
-| 10   | adam-lin-lora                         | 16 | 1  | 1e-3   | 0.7564     | Δ=−0.0015 (≈ tied)      | +0.0085           |
-| 11   | adam-scaled-lora-post (RMS-align)     | 16 | 1  | 3e-4   | 0.7570     | Δ=−0.0009 (≈ tied)      | +0.0091           |
-| 12   | adam-scaled-lora                      | 16 | 1  | 1e-3   | 0.7572     | ≈ tied                   | +0.0093           |
-| 13   | adamw                                 | 16 | 1  | 3e-4   | 0.7579     | baseline (r=16)          | +0.01 (the bar)   |
-| 14   | adamuon-lora (AdaMuon-faithful)       | 16 | 1  | 3e-4   | 0.7603     | Δ=+0.0024 (≈ tied)      | +0.0124           |
-| 15   | adam-muon-lora (m=1)                  | 16 | 1  | 3e-3   | 0.7624     | Δ=+0.0045 (loses)       | +0.0145           |
-| 16   | adamuon-polar-product-lora            | 16 | 1  | 3e-4   | 0.7653     | Δ=+0.0074 (loses)       | +0.0174           |
+| rank | optimizer                             | r  | m  | best η | eval loss  | Δ vs same-r AdamW    |
+|------|---------------------------------------|----|----|--------|------------|----------------------|
+| 1    | **adam-polar-product-lora**           | 64 | 1  | 3e-4   | **0.7453** | −0.0097              |
+| 2    | adamuon-polar-product-lora            | 64 | 1  | 3e-4   | 0.7486     | −0.0064              |
+| 3    | adam-scaled-lora                      | 64 | 1  | 3e-4   | 0.7506     | −0.0044              |
+| 4    | adam-muon-lora                        | 64 | 1  | 3e-3   | 0.7515     | −0.0035              |
+| 4    | adamuon-lora (AdaMuon-faithful)       | 64 | 1  | 3e-4   | 0.7515     | −0.0035              |
+| 6    | adam-lin-lora                         | 64 | 1  | 3e-4   | 0.7527     | −0.0023              |
+| 7    | **adam-polar-product-lora**           | 16 | 1  | 3e-4   | **0.7546** | −0.0033              |
+| 8    | adamw                                 | 64 | 1  | 3e-4   | 0.7550     | baseline (r=64)      |
+| 9    | adam-muon-lora (LoRA+, η pinned high) | 16 | 4  | 3e-3   | 0.7557     | −0.0022              |
+| 10   | adam-lin-lora                         | 16 | 1  | 1e-3   | 0.7564     | −0.0015              |
+| 11   | adam-scaled-lora-post (RMS-align)     | 16 | 1  | 3e-4   | 0.7570     | −0.0009              |
+| 12   | adam-scaled-lora                      | 16 | 1  | 1e-3   | 0.7572     | −0.0007              |
+| 13   | adamw                                 | 16 | 1  | 3e-4   | 0.7579     | baseline (r=16)      |
+| 14   | adamuon-lora (AdaMuon-faithful)       | 16 | 1  | 3e-4   | 0.7603     | +0.0024              |
+| 15   | adam-muon-lora (m=1)                  | 16 | 1  | 3e-3   | 0.7624     | +0.0045              |
+| 16   | adamuon-polar-product-lora            | 16 | 1  | 3e-4   | 0.7653     | +0.0074              |
 
-**Strict-win bar definition:** 1% below same-rank AdamW. For r=64: 0.7479. For r=16: 0.7479.
-**Trajectory-jitter proxy** (NOT a calibrated noise floor — see warning at
-"Trajectory variance" section below): pooled |Δ| ≈ 0.004 on r=64 η=3e-4.
-Treat "≈ noise" annotations in the table as "below trajectory jitter";
-significance vs seed-to-seed variance is unverified. Multi-seed deferred.
+All numbers single-seed at the canonical 2k-step horizon; multi-seed
+deferred. Differences here describe the single seed measured, not
+seed-to-seed significance.
 
-**Verdict:** `adam-polar-product-lora` at r=64 is the first optimizer that
-clears the strict-win bar with a Δ that is also above trajectory jitter.
-Whether the smaller within-jitter Δ values (other r=64 entries, all r=16
-entries with Δ < 0.004) reflect real signal or noise is **unverified
-without multi-seed confirmation**.
-
-**Robustness observation:** at r=64 η=1e-3, plain AdamW *diverges* to 0.89
+**Robustness observation:** at r=64 η=1e-3, plain AdamW diverges to 0.89
 while adam-{lin,scaled}-lora hold at 0.77 and adam-polar-product-lora at
 ~0.79 (mid-trajectory). Geometric/spectral preconditioning gives lr-headroom
 at high rank.
 
-**Caveat on r=64 polar-product η:** sweep covered η ∈ {3e-4, 1e-3} so far —
-best is at η=3e-4, the lower boundary. r=64 η-extension queued (job
-6313613) at η ∈ {3e-5, 1e-4} to confirm the polar-product winner isn't
-also lower-pinned.
-
-**r=16-only ranking:** adam-polar-product-lora wins at m=1 (0.7546);
-adam-muon-lora at m=4 LoRA+ (0.7557) is comparable but confounded.
-**r=64 ranking:** adam-polar-product-lora wins (0.7453, the headline).
-**Overall:** adam-polar-product-lora at r=64 — only optimizer above
-trajectory jitter. AdaMuon-style accumulation (adamuon-polar-product-lora,
-0.7486) is *worse* than Adam-then-polar at r=64; the open ordering question
-is now empirically decided in favor of Adam-first.
+**r=16-only ranking:** adam-polar-product-lora at m=1 (0.7546) is the lowest
+single-seed loss; adam-muon-lora at m=4 LoRA+ (0.7557) is comparable but
+the m=4 η-sweep is pinned at the upper end.
+**r=64 ranking:** adam-polar-product-lora (0.7453) is the lowest single-seed
+loss in the project.
+**Polar-first ordering (adamuon-polar-product-lora) vs Adam-first
+(adam-polar-product-lora):** at r=64 single-seed, polar-first is 0.0033
+above Adam-first (0.7486 vs 0.7453); at r=16 single-seed, 0.0107 above
+(0.7653 vs 0.7546). Multi-seed and additional configs would harden the
+ordering claim.
 
 Two findings tension each other:
 - **At r=16, geometry-then-Adam compositions tie AdamW** (H1 confirmed: cos
@@ -608,35 +598,6 @@ RMS-align) should produce different B-side directions too. We'd predict
 H5's matrix-Adam variant (scalar v̂ per pair) to recover B-side geometric
 direction.
 
-## Trajectory variance — UNVERIFIED proxy, NOT a calibrated noise floor
-
-⚠ **Caveat:** the value below is trajectory jitter (step-to-step |Δ| within
-a single trajectory in its late phase), not seed-to-seed final-loss variance.
-It is a *lower bound* on the true noise floor — multi-seed variance also
-includes init randomness, data shuffle order, dropout masks, and FP non-
-determinism, all of which trajectory jitter misses. Do not cite 0.004 as
-"the noise floor" in further claims; treat it as a rough sanity check that
-deflates single-seed enthusiasm, not a significance threshold. Multi-seed
-characterization is deferred to a future session per the project's
-"multi-seed is the last resort" rule.
-
-Pulled the eval_loss trajectory of all three optimizers at r=64 η=3e-4 and
-computed late-trajectory step-to-step |Δ|:
-
-- pooled mean step-to-step |Δ_loss|: **0.0038** (computed once on r=64 η=3e-4 only; not pooled across other configs)
-- max: 0.0051
-
-Final-step gaps at step 2000 — described AS measured, NOT framed as significance:
-- adam-scaled-lora vs adamw at r=64: **−0.0044** (≈ trajectory jitter; significance unverified)
-- adam-lin-lora vs adamw at r=64: −0.0023 (below trajectory jitter; significance unverified)
-
-The *direction* of the rank-dependence effect is unambiguous (gap goes from
-+0.02 at r=2 to −0.005 at r=64), but the *magnitude* of the win at r=64 is
-within the noise floor of a single seed. Multi-seed would establish
-significance but is the wrong tool — mechanism evidence (H_weak vs H_erase
-verdict, cos_pre values, ablations of A-only / B-only geometry) is more
-informative per GPU-hour than confidence intervals on a 0.005 gap.
-
 ## Open questions
 
 1. **Does H5 (matrix-Adam) save the geometry → Adam family?** With per-pair
@@ -690,13 +651,13 @@ informative per GPU-hour than confidence intervals on a 0.005 gap.
 |---------|--------------------------|--------|---------------|----------------------------------------|----------------|
 | 6312334 | h1_diag_2k               | 2/2    | DONE          | H1 v̂ erases geometry @ r=16           | **confirmed**: cos_B ≈ 0.97 throughout, cos_A → 0.84 |
 | 6312277 | h4_post_2k (unfixed)     | 10/10  | DONE          | H4 *-Post wins (unfixed)               | **falsified**: best 0.7875 at η=1e-3, 0.03 worse than AdamW |
-| 6312335 | h3_rsweep_2k             | 12/18  | RUNNING (η=1e-3) | H3 small-r benefit                  | **falsified**: lin loses at r=2,4; **r=64 marginally wins** (within noise floor) |
+| 6312335 | h3_rsweep_2k             | 12/18  | RUNNING (η=1e-3) | H3 small-r benefit                  | **falsified**: lin above AdamW at r=2,4; r=64 single-seed slightly below AdamW |
 | 6312759 | h5_matrix_2k (fixed)     | 4/10   | RUNNING       | H5 scalar v̂ preserves direction        | learning now (was 1.187 before fix); high-η runs pending |
 | 6313020 | h4_post_rmsalign_2k      | 4/4 step ~1000 | RUNNING | RMS-align fix for *-Post              | **trajectory matches AdamW pace** at step 1000; final pending |
 | 6313087 | h1_rsweep_diag_2k        | 4/4 step ~200-400 | RUNNING | cos at r=4, r=64 (mechanism)        | r=4 cos_A=0.62, r=64 cos_A=0.36→0.72; cos_B≈1 at all r |
 | 6313190 | h1_pre_probe_500         | 2/2 (just submitted) | PENDING | H_weak vs H_erase                  | answer at step 20 |
 | —       | adam_muon_2k             | done   | DONE          | Muon campaign winner                   | **0.7557**, current overall #2 |
-| —       | (none — new from H3)     | done   | DONE          | adam-scaled-lora at r=64               | **0.7506**, current overall #1 (within noise) |
+| —       | (none — new from H3)     | done   | DONE          | adam-scaled-lora at r=64               | **0.7506** single-seed (below AdamW r=64 by 0.0044) |
 
 ---
 

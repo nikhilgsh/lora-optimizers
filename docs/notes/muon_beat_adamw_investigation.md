@@ -19,20 +19,22 @@ OLMo-2-1B on Magicoder.
 
 **Updated picture (post m=1 disentanglement, group `adam_muon_clean_2k`):**
 
-- **r=64, m=1:** adam-muon-lora at η=3e-3 → 0.7515, beats AdamW r=64
-  (0.7550) by Δ=−0.0035 (within trajectory jitter). Real-direction win.
-- **r=16, m=1:** 0.7624 — **loses** to AdamW r=16 (0.7579) by +0.0045.
+- **r=64, m=1:** adam-muon-lora at η=3e-3 → 0.7515, below AdamW r=64
+  (0.7550) by 0.0035 (single-seed).
+- **r=16, m=1:** 0.7624 — above AdamW r=16 (0.7579) by 0.0045 (single-seed).
   The original 0.7557 r=16 headline was driven mainly by LoRA+ (m=4),
-  not by NS-on-Adam. m=1 alone does not beat AdamW at r=16.
-- **r=16, m=4 (LoRA+):** 0.7557 — confounded result; useful as a working
-  recipe but not a clean attribution to the optimizer.
+  not by NS-on-Adam.
+- **r=16, m=4 (LoRA+):** 0.7557 — entangled with the LoRA+ effect; the
+  η-sweep is pinned at the upper end ({1e-3, 3e-3} only), so the true
+  optimum at m=4 is unknown.
 
 The mechanism remains: Newton-Schulz orthogonalization applied to Adam's
 per-element preconditioned direction m̂/(√v̂+ε), per-factor independently.
-The strict-win story now lives at **r=64**, not r=16. For an unconfounded
-strict win that clears the noise floor, use **adam-polar-product-lora at
-r=64** (0.7453, Δ=−0.0097) — the spectral-product geometry beats per-factor
-NS on the same composition (Adam → spectral correction).
+The cleanest single-seed below-AdamW result for this family is at **r=64**.
+The lowest single-seed loss in the project overall is **adam-polar-product-lora
+at r=64** (0.7453) — the spectral-product geometry beats per-factor NS on
+the same Adam → spectral correction composition. All numbers are
+single-seed; multi-seed verification is deferred.
 
 Plan source: `~/.claude/plans/i-think-we-should-zippy-cake.md`.
 Theory source: `docs/theory/main.tex` lemma at line 622 (spectral product norm
@@ -43,9 +45,9 @@ does not produce a spectrally-bounded product update ΔW = (α/r)(B·δA + δB·
 breaks gauge invariance under A→RA, B→BR⁻¹, and at PEFT's B=0 init makes NS
 on m_A wasted (since B·δA ≈ 0 contributes nothing to ΔW early).
 
-**Success bar** (per `feedback_beat_dont_match.md`): best-η final eval loss
-**< 0.7579** (strictly beats AdamW). Headline win: < 0.7564 (strictly beats
-adam-lin-lora). Parity is failure.
+**Goal** (per `feedback_beat_dont_match.md`): best-η final eval loss below
+AdamW (0.7579 at r=16, 0.7550 at r=64). Numbers are single-seed; multi-seed
+deferred.
 
 ---
 

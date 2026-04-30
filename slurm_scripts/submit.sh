@@ -20,9 +20,10 @@ if [[ -z "${SWEEP_SCOPE:-}" ]]; then
     echo "  SWEEP_PURPOSE=\"E2: AdaMuon-faithful + polar-product geometry\" \\" >&2
     echo "  ./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [...]" >&2
     echo "" >&2
-    echo "Known scopes: ext_compare, muon_family, all_optimizers, loraplus_family," >&2
-    echo "              svd_oracle, diagnostics, lin_scaled_investigation," >&2
-    echo "              polar_family, winner_rerun, pilot, legacy" >&2
+    echo "Known scopes: ext_compare, muon_family, all_optimizers (r=16 only)," >&2
+    echo "              r_extension (r != 16), loraplus_family, svd_oracle," >&2
+    echo "              diagnostics, lin_scaled_investigation, polar_family," >&2
+    echo "              winner_rerun, pilot, legacy" >&2
     echo "" >&2
     echo "See lora_playground/manifest.py for the full schema." >&2
     exit 1

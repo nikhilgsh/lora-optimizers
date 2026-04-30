@@ -214,8 +214,9 @@ In priority order:
 
 ### Symptom
 
-`adam-polar-product-lora` (Adam → polar-product geometry) is the headline
-strict win at r=64 (0.7453, Δ=−0.0097 vs AdamW r=64). The docstring in
+`adam-polar-product-lora` (Adam → polar-product geometry) is the lowest
+single-seed loss at r=64 (0.7453 vs AdamW r=64 0.7550; multi-seed deferred).
+The docstring in
 `optim.py` justifies the Adam-then-polar ordering on the H1 result that
 "plain pre-Adam preconditioning is erased by Adam's per-coord √v̂ on a
 sign-like input. Here the geometric correction is polar (matrix-structural
@@ -267,9 +268,9 @@ Predictions:
    loses to AdamPolarProductLoRA. Would mean AdaMuon's pretraining-scale
    gain doesn't transfer here, or that the spectral-product geometry
    specifically prefers Adam-first.
-3. If both compositions land within noise of each other: ordering is
-   immaterial at this scale, and the spectral-product geometry is the
-   load-bearing piece in both. Useful negative result.
+3. If both compositions land at similar single-seed losses: ordering is
+   plausibly immaterial at this scale, and the spectral-product geometry
+   is the load-bearing piece in both. Multi-seed would harden the claim.
 
 This is a clean experiment because the *only* difference is variance-
 accumulation source (raw ∇ vs polar output) and m̂ inclusion (yes vs no).
@@ -278,11 +279,8 @@ Everything else — polar-product structure, Newton-Schulz iteration count,
 
 ## Provisional acceptance criteria for "fix succeeded"
 
-- *-Post (after RMS-align): final eval < 0.7479 at any η. Below 0.7579
-  counts as a partial success, ≥ 0.7579 counts as falsification of the
-  *-Post family on this benchmark.
-- AdaMuonLoRA (after implementation): final eval < 0.7557 (current
-  headline). Below AdamW (0.7579) is a partial success.
-- matrix-Adam (after fix): same as *-Post.
+Single-seed at the canonical 2k-step horizon; multi-seed deferred.
 
-Each is a single number with no ambiguity.
+- *-Post (after RMS-align): final eval below AdamW's 0.7579.
+- AdaMuonLoRA (after implementation): final eval below AdamW's 0.7579.
+- matrix-Adam (after fix): final eval below AdamW's 0.7579.

@@ -7,7 +7,7 @@ curves) that all sections of the notebook share.
 Design: every section of the notebook supplies a sequence of (cfg, evs) runs,
 plus a callable `group_key(cfg) → str` that maps a run to a color/legend group.
 Everything else (filtering, axes, legend placement, training-curve picking,
-AdamW baseline overlay, strict-win bar, layout, fonts) is handled here.
+AdamW baseline overlay, layout, fonts) is handled here.
 The intended call site is `standard_sweep_figure(runs, group_key_fn,
 color_map, suptitle=..., reference_runs=...)` — every figure produced this
 way is uniform by construction.
@@ -63,6 +63,17 @@ OPTIM_COLORS = {
 }
 
 
+# Linestyles for LoRA+ multiplier disambiguation. Convention: same color per
+# base optimizer across all m, with linestyle carrying the m signal. Used by
+# muon-variants and leaderboard cells via M_LINESTYLES (looked up by
+# extracting m from the group label "(m=N)" suffix).
+M_LINESTYLES = {
+    1: "-",         # solid
+    4: (0, (5, 2)),    # long-dash
+    16: (0, (1, 2)),   # dotted (gappy)
+    32: (0, (3, 2, 1, 2)),  # dash-dot
+}
+
 # Marker styles to disambiguate near-color pairs. Default is "o" (circle) for
 # any optimizer not listed; overrides pick distinct shapes where colors are
 # close. Stable to grayscale, colorblind-friendly. Used by plot_leaderboard_by_rank
@@ -117,19 +128,21 @@ TICK_LABEL_FONTSIZE = 13
 LEGEND_KW = LEGEND_KW_BASE
 
 # Candidate-line styling.
-MARKER_SIZE = 6
+MARKER_SIZE = 9
 LINE_WIDTH = 2.0
 
 # Reference / overlay styling for non-primary baselines (e.g. adam-lin-lora).
 REF_LINE_WIDTH = 1.5
 
-# Primary baseline (AdamW): visually distinct from every candidate.
+# Primary baseline (AdamW): solid black, circle markers, thicker line. The
+# weight + black color + thicker stroke make it visually salient without the
+# busy dashed-square convention.
 BASELINE_COLOR = "black"
 BASELINE_LW_HLINE = 1.5
-BASELINE_LS_HLINE = (0, (1, 1.5))   # fine dotted — distinguished from the curve
-BASELINE_LW_CURVE = 2.5
-BASELINE_LS_CURVE = (0, (5, 2))     # long-dash; reads cleanly over data
-BASELINE_MARKER = "s"               # square — distinguished from candidates' "o"
+BASELINE_LS_HLINE = (0, (1, 1.5))   # fine dotted hline — visually distinct from the curve
+BASELINE_LW_CURVE = 3.0             # heavier than candidate LINE_WIDTH (2.0)
+BASELINE_LS_CURVE = "-"             # solid (was dashed) per user preference
+BASELINE_MARKER = "o"               # circle, matches candidate default
 BASELINE_ZORDER = 2                 # behind candidates so it never covers a crossing
 
 # Default figure size. Wide enough that an outside legend with long entries
@@ -397,14 +410,17 @@ def baseline_overlay(reference_runs, optimizer: str, *,
 def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
                               color_map: dict | None = None,
                               marker_map: dict | None = None,
+                              linestyle_map: dict | None = None,
                               suptitle: str = "Best eval vs rank"):
     """Single-panel leaderboard: best-η eval loss vs rank, one line per optimizer.
 
     ``marker_map`` overrides the per-optimizer marker shape (default "o").
-    Use to disambiguate near-color pairs.
+    ``linestyle_map`` overrides the per-optimizer linestyle (default "-").
+    Use both to disambiguate near-color pairs and per-m variants.
     """
     color_map = color_map or {}
     marker_map = marker_map or {}
+    linestyle_map = linestyle_map or {}
     baseline_floor = {r: best[(baseline_optimizer, r)][2]
                       for (opt, r) in best if opt == baseline_optimizer}
     ranks = sorted(baseline_floor)
@@ -416,11 +432,15 @@ def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
         series[opt].sort()
 
     n_optimizers = len(series)
-    # Scale figure to match legend column height. Legend uses ncol=2 when
-    # there are many optimizers so it doesn't tower over a small plot.
-    legend_ncol = 2 if n_optimizers > 8 else 1
-    fig_height = max(5.0, 0.30 * (n_optimizers / legend_ncol) + 1.5)
-    fig, ax = plt.subplots(figsize=(10, fig_height), constrained_layout=True)
+    # Legend below the plot in N columns so it doesn't squish a wide plot.
+    # Plot itself stays at a fixed comfortable size; figure height grows with
+    # the legend block underneath.
+    legend_ncol = max(1, min(4, (n_optimizers + 7) // 8))
+    legend_rows = (n_optimizers + legend_ncol - 1) // legend_ncol
+    plot_height = 5.0
+    legend_height = 0.30 * legend_rows + 0.5
+    fig_height = plot_height + legend_height
+    fig, ax = plt.subplots(figsize=(11, fig_height), constrained_layout=True)
     all_losses = []
     for opt, points in sorted(series.items()):
         xs = [p[0] for p in points]
@@ -429,7 +449,7 @@ def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
         ax.plot(xs, ys,
                 color=BASELINE_COLOR if is_baseline else color_map.get(opt, "grey"),
                 lw=BASELINE_LW_CURVE if is_baseline else LINE_WIDTH,
-                ls=BASELINE_LS_CURVE if is_baseline else "-",
+                ls=BASELINE_LS_CURVE if is_baseline else linestyle_map.get(opt, "-"),
                 marker=BASELINE_MARKER if is_baseline else marker_map.get(opt, "o"),
                 markersize=MARKER_SIZE,
                 label=f"{opt} (baseline)" if is_baseline else opt,
@@ -446,10 +466,17 @@ def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
         hi = min(all_losses) + 0.05
         ax.set_ylim(lo, hi)
     ax.grid(True, alpha=0.25, lw=0.6)
-    legend_kw = dict(LEGEND_KW_BASE)
-    legend_kw["ncol"] = legend_ncol
-    legend_kw["fontsize"] = 11 if n_optimizers > 8 else legend_kw.get("fontsize", 14)
-    legend_kw["labelspacing"] = 0.35
+    legend_kw = dict(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.12),
+        ncol=legend_ncol,
+        fontsize=11 if n_optimizers > 8 else 13,
+        frameon=True,
+        handlelength=2.2,
+        handletextpad=0.6,
+        labelspacing=0.4,
+        columnspacing=1.5,
+    )
     ax.legend(**legend_kw)
     return fig, ax
 
@@ -468,7 +495,8 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                       title: str = "Final eval loss vs η, per group",
                       legend: bool = True,
                       adamw_group_keys: set[str] | None = None,
-                      marker_map: dict | None = None) -> None:
+                      marker_map: dict | None = None,
+                      linestyle_map: dict | None = None) -> None:
     """Left panel: η vs final eval loss, one line per group key.
 
     `ref_eta_sweeps`: list of (label, points, color, ls, lw, marker) tuples
@@ -477,6 +505,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
     """
     adamw_group_keys = adamw_group_keys or set()
     marker_map = marker_map or {}
+    linestyle_map = linestyle_map or {}
 
     all_losses = []
     if ref_eta_sweeps:
@@ -502,23 +531,51 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
     raw_losses = [e[-1]["eval_loss"] for c, e in runs]
     y_cap = (min(raw_losses) + 0.15) if raw_losses else float("inf")
 
+    # Surface points clipped by y_cap (above the visible window but below the
+    # divergence threshold). Silent NaN-clipping was a recurring source of
+    # "where's my data?" confusion. Both stdout (for CI / log) and a visual
+    # out-of-range triangle at the top of the panel (for at-a-glance reading).
+    clipped = [(group_key_fn(c), c["lr"], e[-1]["eval_loss"])
+               for c, e in runs if e[-1]["eval_loss"] > y_cap]
+    if clipped:
+        print(f"  [clipped from left panel y_cap={y_cap:.3f}] {len(clipped)} run(s):")
+        for g, lr, fl in sorted(clipped):
+            print(f"    {g} η={lr:.0e} final={fl:.4f}")
+
     for g in groups:
         rows = sorted([(c["lr"], e[-1]["eval_loss"]) for c, e in runs
                        if group_key_fn(c) == g])
         if not rows:
             continue
         xs = [r[0] for r in rows]
-        ys = [r[1] if r[1] <= y_cap else float("nan") for r in rows]
+        # Clamp out-of-range ys to y_cap so the line stays connected; the
+        # actual visible distinction is the hollow marker drawn separately.
+        ys = [min(r[1], y_cap) for r in rows]
+        is_oor = [r[1] > y_cap for r in rows]
         is_adamw = g in adamw_group_keys
-        ax.plot(xs, ys,
-                color=BASELINE_COLOR if is_adamw else color_map.get(g, "grey"),
-                marker=BASELINE_MARKER if is_adamw else marker_map.get(g, "o"),
-                markersize=MARKER_SIZE,
-                lw=BASELINE_LW_CURVE if is_adamw else LINE_WIDTH,
-                ls=BASELINE_LS_CURVE if is_adamw else "-",
-                zorder=BASELINE_ZORDER if is_adamw else 5,
+        color = BASELINE_COLOR if is_adamw else color_map.get(g, "grey")
+        marker = BASELINE_MARKER if is_adamw else marker_map.get(g, "o")
+        ls = BASELINE_LS_CURVE if is_adamw else linestyle_map.get(g, "-")
+        lw = BASELINE_LW_CURVE if is_adamw else LINE_WIDTH
+        zorder = BASELINE_ZORDER if is_adamw else 5
+        # Connecting line through clamped y values (no per-point markers).
+        ax.plot(xs, ys, color=color, lw=lw, ls=ls, zorder=zorder,
                 label=f"{g} (baseline)" if is_adamw else g)
-        in_range_losses.extend(y for y in ys if y == y)
+        # Filled markers at in-range points.
+        in_x = [x for x, oor in zip(xs, is_oor) if not oor]
+        in_y = [y for y, oor in zip(ys, is_oor) if not oor]
+        if in_x:
+            ax.plot(in_x, in_y, color=color, marker=marker,
+                    markersize=MARKER_SIZE, ls="", zorder=zorder + 1)
+        # Hollow markers at out-of-range points (clamped to y_cap), signal:
+        # actual value is higher, this is an indicator not the real y.
+        oor_x = [x for x, oor in zip(xs, is_oor) if oor]
+        oor_y = [y for y, oor in zip(ys, is_oor) if oor]
+        if oor_x:
+            ax.plot(oor_x, oor_y, color=color, marker=marker,
+                    markersize=MARKER_SIZE + 4, markerfacecolor="none",
+                    markeredgewidth=2.2, ls="", zorder=zorder + 2)
+        in_range_losses.extend(ys[i] for i, oor in enumerate(is_oor) if not oor)
 
     ax.set_xscale("log")
     ax.set_xlabel("η (log)", fontsize=AXIS_LABEL_FONTSIZE)
@@ -533,6 +590,9 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                else max(all_losses)) + 0.01
         hi = min(hi + 0.005, lo + 0.16)
         ax.set_ylim(lo, hi)
+
+    # (Out-of-range hollow markers are drawn inline above per-group, connected
+    # to the line via clamped y. No standalone overlay needed here.)
     if legend:
         ax.legend(**_legend_kw(len(groups)))
 
@@ -543,10 +603,12 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
                          x_tick_step: int = 200,
                          legend: bool = True,
                          adamw_group_keys: set[str] | None = None,
-                         marker_map: dict | None = None) -> None:
+                         marker_map: dict | None = None,
+                         linestyle_map: dict | None = None) -> None:
     """Right panel: training curves for the best (lowest final loss) η per group."""
     adamw_group_keys = adamw_group_keys or set()
     marker_map = marker_map or {}
+    linestyle_map = linestyle_map or {}
 
     if ref_curves:
         for entry in ref_curves:
@@ -572,7 +634,7 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
                 marker=BASELINE_MARKER if is_adamw else marker_map.get(g, "o"),
                 markersize=MARKER_SIZE,
                 lw=BASELINE_LW_CURVE if is_adamw else LINE_WIDTH,
-                ls=BASELINE_LS_CURVE if is_adamw else "-",
+                ls=BASELINE_LS_CURVE if is_adamw else linestyle_map.get(g, "-"),
                 zorder=BASELINE_ZORDER if is_adamw else 5,
                 label=label)
     ax.set_xlabel("Step", fontsize=AXIS_LABEL_FONTSIZE)
@@ -601,7 +663,8 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
                            right_title: str = "Best η per group — training curves",
                            label_fn: Callable[[dict], str] | None = None,
                            adamw_group_keys: set[str] | None = None,
-                           marker_map: dict | None = None):
+                           marker_map: dict | None = None,
+                           linestyle_map: dict | None = None):
     """Build the standardized 2-panel sweep figure with diverged-run filtering.
     Returns (fig, axes, n_kept, n_dropped).
 
@@ -640,12 +703,14 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
                       hlines=hlines, ref_eta_sweeps=ref_eta_sweeps,
                       title=left_title, legend=False,
                       adamw_group_keys=adamw_group_keys,
-                      marker_map=marker_map)
+                      marker_map=marker_map,
+                      linestyle_map=linestyle_map)
     plot_best_eta_curves(axes[1], keep_for_right, group_key_fn, color_map,
                          ref_curves=ref_curves, title=right_title,
                          x_tick_step=x_tick_step,
                          adamw_group_keys=adamw_group_keys,
-                         marker_map=marker_map)
+                         marker_map=marker_map,
+                         linestyle_map=linestyle_map)
     if suptitle:
         fig.suptitle(suptitle, fontsize=SUPTITLE_FONTSIZE, fontweight="bold")
     return fig, axes, len(keep), len(drop)
@@ -687,6 +752,32 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
     Raises:
         ValueError: if `reference_runs` has no run for `baseline_optimizer`.
     """
+    # Multi-rank input: auto-split into per-rank figures. Avoids the
+    # silent-collision failure mode (runs at different ranks collapsing under
+    # one group_key_fn(cfg)) without forcing callers to pre-filter. Each rank
+    # gets its own complete 2-panel figure with the rank in the suptitle.
+    ranks = sorted({int(c.get("lora_r", 16)) for c, _ in runs})
+    if len(ranks) > 1:
+        results = []
+        for r in ranks:
+            run_slice = [(c, e) for c, e in runs if int(c.get("lora_r", 16)) == r]
+            ref_slice = [(c, e) for c, e in reference_runs
+                         if int(c.get("lora_r", 16)) == r]
+            # Fall back to full reference_runs if the rank-filtered slice has
+            # no baseline (older reference data may not be rank-tagged).
+            if not any(c.get("optimizer") == baseline_optimizer for c, _ in ref_slice):
+                ref_slice = reference_runs
+            results.append(standard_sweep_figure(
+                run_slice, group_key_fn, color_map,
+                reference_runs=ref_slice,
+                suptitle=suptitle,
+                extra_baselines=extra_baselines,
+                baseline_optimizer=baseline_optimizer,
+                same_value_axes=same_value_axes,
+                **kwargs,
+            ))
+        return results
+
     # Robustness: every run in `runs` must agree on `same_value_axes`. Catches
     # the bug where a panel filter forgets to constrain an axis (e.g. m=1 only)
     # and runs with mixed values silently collapse via group_key_fn into one
@@ -718,19 +809,10 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
             f"No {baseline_optimizer!r} run found in reference_runs — "
             "every standard sweep figure requires the baseline.")
 
-    # Library-enforced uniform suptitle: every figure declares its rank.
-    # If runs all share a single LoRA rank, append " at r={N}" to suptitle
-    # unless it's already present. If runs span multiple ranks, raise —
-    # callers should split into per-rank panels (the contract).
-    ranks = {int(c.get("lora_r", 16)) for c, _ in runs}
-    if len(ranks) > 1:
-        raise ValueError(
-            f"standard_sweep_figure expects runs at a single LoRA rank, "
-            f"got {sorted(ranks)}. Filter runs by lora_r before calling, "
-            "or split into per-rank panels.")
+    # Library-enforced uniform suptitle: append " at r={N}" when single-rank
+    # and rank isn't already in the title.
     if ranks and suptitle and "r=" not in suptitle:
-        rank = ranks.pop()
-        suptitle = f"{suptitle} at r={rank}"
+        suptitle = f"{suptitle} at r={ranks[0]}"
 
     for opt, color in extra_baselines:
         _h, r, e = baseline_overlay(

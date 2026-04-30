@@ -102,6 +102,19 @@ This section is a **navigation aid**, not the contract itself. The contract is e
 
 The data flow: `submit.sh` writes `logs/<group>/run_info/meta.json` at submission. Analysis tooling consumes manifests via `lora_playground.manifest.load_runs_by_scope(scope)` — never raw directory listings or hand-maintained tuples of group names.
 
+### Updating docs/notes from sweep data — mandatory provenance
+
+Before writing any numerical claim to `docs/notes/*.md` (final losses, Δ vs baseline, "best η", "pinned/not pinned", leaderboard rows), the source MUST be one of:
+
+1. Re-executing the relevant cell in `notebooks/sweep_analysis.ipynb` (or `notebooks/lin_scaled_investigation.ipynb`) and reading the actual output. The notebook's `load_runs_by_scope` calls enumerate ALL groups in scope via the manifest system.
+2. A direct call to `lora_playground.manifest.load_runs_by_scope(<scope>)` from a fresh script.
+
+**NEVER** a hand-typed list of group names. Hand-typed lists drift from the manifest and silently miss data, producing phantom "pinned at boundary" / "missing data" claims. If you find yourself writing `groups = ['foo_2k', 'bar_2k', ...]`, stop — call the loader.
+
+All numbers in `docs/notes/*.md` are single-seed at the canonical 2k-step horizon unless explicitly multi-seed. Do NOT annotate Δ values with significance qualifiers — no "within jitter", no "above noise", no "≈ noise", no "trajectory jitter", no arbitrary thresholds (0.5%/1%/etc). Multi-seed verification is deferred project-wide; until then, single-seed Δ values are reported as raw numbers and described in plain language ("X is below AdamW by 0.0097", not "X strictly wins"). If the user later asks for significance claims, that's the cue to plan a multi-seed run.
+
+Workflow for `docs/notes/*.md` data-derived edits: pull data via canonical loader → propose concrete diff in chat → user confirms → edit. Never write multi-paragraph data-derived sections in a single unsupervised pass.
+
 **Submitting a sweep:**
 
 ```bash
@@ -118,7 +131,8 @@ Optional: `SWEEP_SUPERSEDES=<old_group>` makes rerun-priority explicit so analys
 |----------------------------|---------------------------------------------------|
 | `ext_compare`              | extension-family optimizer comparison (post-, matrix-, polar-product variants) |
 | `muon_family`              | Muon / AdaMuon / ProductMuon variants             |
-| `all_optimizers`           | comprehensive optimizer comparison at fixed r     |
+| `all_optimizers`           | comprehensive optimizer comparison at **fixed r=16** (the reference overlay scope; do NOT tag rank-extension runs with this) |
+| `r_extension`              | rank-extension sweeps (r ≠ 16, typically r ∈ {64, 128, 256, …}); kept distinct from `all_optimizers` so the r=16 reference set stays clean |
 | `loraplus_family`          | AdamW + LoRA+ B-multiplier sweeps                 |
 | `svd_oracle`               | SVD step / cumulative oracle modes                |
 | `diagnostics`              | runs whose primary purpose is per-step probes (cos, σ(S), conditioning) |
