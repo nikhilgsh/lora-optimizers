@@ -89,3 +89,5 @@ Every training run emits JSON lines to stdout via `log_event()`: one `config` ev
 ## Experiment Rules
 
 Fix across all optimizer comparisons: model name, dataset + split seed, sample counts, LoRA rank/alpha/dropout, target modules, sequence length, batch size, grad accumulation, dtype, compile mode, eval cadence. Use held-out eval loss for hyperparameter selection (never training loss). Hardware comparison baseline is A100; local RTX A6000 is acceptable only for functional smokes, not for timing or optimizer comparisons.
+
+**Canonical comparison horizon: 2000 steps.** All optimizer-vs-optimizer eval-loss comparisons in this project run to `--max_steps 2000` with `--eval_every 200`. Mechanism probes (cosine trajectories, conditioning, etc.) run to the same 2k horizon — short pilots (500-step etc.) are reserved for η-ranking-selection only, never for measurement (per the global "match canonical horizon" rule). The `lr_sweep_2k`, `optim_compare_high_eta_2k`, and `h*_*_2k` log groups all use this horizon; baseline numbers (AdamW 0.7579 at η=3e-4, adam-lin-lora 0.7564 at η=1e-3, etc.) are at step 2000.

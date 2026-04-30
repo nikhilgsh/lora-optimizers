@@ -14,7 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from lora_playground.optim import DiagScaledLoRA, GaLoreAdamW, KronGradLoRA, MuonLoRA, PSILoRA
+from lora_playground.optim import (
+    AdamMuonLoRA,
+    AdamProductMuonLoRA,
+    DiagScaledLoRA,
+    GaLoreAdamW,
+    KronGradLoRA,
+    MuonAdamLoRA,
+    MuonLoRA,
+    ProductMuonLoRA,
+    PSILoRA,
+)
 from lora_playground.utils import collect_dense_target_weights, freeze_all_except_targets, spd_frac_power_inv
 
 
@@ -149,6 +159,217 @@ def test_muon_lora_zero_grad_after_step():
     for name, p in model.named_parameters():
         if p.grad is not None:
             assert p.grad.abs().max() == 0.0, f"Gradient not zeroed for {name}"
+
+
+def test_muon_lora_lr_b_multiplier_scales_b_step():
+    """LoRA+ for Muon: with B init at 0 and m=k, ‖δB‖ = k · ‖δB at m=1‖ exactly.
+    A's update is unchanged across m values (no coupling in vanilla Muon)."""
+    for k in [1.0, 4.0, 16.0]:
+        torch.manual_seed(0)
+        model = TinyLoRAModel()
+        for p in model.parameters():
+            if p.requires_grad and p.dim() == 2 and p.shape[0] < p.shape[1]:
+                continue  # leave A as Kaiming
+        # B was already zeroed in _FakeLoRALinear.__init__
+        _set_grads(model, seed=7)
+        opt = MuonLoRA(model, lr=1e-2, lr_b_multiplier=k)
+        # Snapshot A grads before step (zeroed during step)
+        A_grads = {name: p.grad.detach().clone() for name, p in model.named_parameters() if "lora_A" in name}
+        B_before = {name: p.detach().clone() for name, p in model.named_parameters() if "lora_B" in name}
+        A_before = {name: p.detach().clone() for name, p in model.named_parameters() if "lora_A" in name}
+        opt.step()
+        for name, p in model.named_parameters():
+            if "lora_B" in name:
+                if k == 1.0:
+                    ref_dB_norm_1 = (p.detach() - B_before[name]).norm().item()
+                    test_muon_lora_lr_b_multiplier_scales_b_step._ref = ref_dB_norm_1
+                else:
+                    ref = test_muon_lora_lr_b_multiplier_scales_b_step._ref
+                    actual = (p.detach() - B_before[name]).norm().item()
+                    assert abs(actual - k * ref) / max(k * ref, 1e-9) < 1e-3, \
+                        f"k={k}: |δB| should be {k}× ref={ref:.4e}, got {actual:.4e}"
+
+
+def test_muon_lora_ns_steps_zero_is_momentum_sgd():
+    """ns_steps=0 disables Newton-Schulz; update is then plain momentum × lr.
+    Tier-2 sanity check — isolates orthogonalization's contribution."""
+    torch.manual_seed(0)
+    model = TinyLoRAModel()
+    opt = MuonLoRA(model, lr=1e-2, ns_steps=0, beta=0.9)
+    _set_grads(model, seed=3)
+    # Snapshot grads (zeroed after step)
+    grad_snap = {name: p.grad.detach().clone() for name, p in model.named_parameters() if p.grad is not None}
+    param_before = {name: p.detach().clone() for name, p in model.named_parameters() if p.grad is not None}
+    opt.step()
+    # Step 1 momentum: m = 0.1 * g; update = -lr * m
+    for name, p in model.named_parameters():
+        if name not in grad_snap:
+            continue
+        expected = -1e-2 * 0.1 * grad_snap[name]
+        actual = p.detach() - param_before[name]
+        assert torch.allclose(actual, expected.to(actual.dtype), atol=1e-6), \
+            f"ns_steps=0 should give momentum SGD update; mismatch on {name}"
+
+
+# ─── ProductMuonLoRA (Tier 3) ────────────────────────────────────────────────
+
+def test_product_muon_lora_step_runs():
+    """B=0 init: at step 1 only B updates (min-norm Sylvester sets δA=0 because
+    B·δA = 0 contributes nothing to ΔW). At step 2 B is nonzero so A also updates.
+    This is the *correct* product-norm behavior — and re-derives the H1 motivation
+    for LoRA+ asymmetry."""
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    # Manually init B to nonzero so step 1 already exercises both updates.
+    with torch.no_grad():
+        model.layer0.lora_B["default"].weight.copy_(0.1 * torch.randn(6, 2))
+        model.layer1.lora_B["default"].weight.copy_(0.1 * torch.randn(8, 2))
+    opt = ProductMuonLoRA(model, lr=1e-2, alpha=2, rank=2, ns_steps=5)
+    A_before = model.layer0.lora_A["default"].weight.detach().clone()
+    B_before = model.layer0.lora_B["default"].weight.detach().clone()
+    _set_grads(model, seed=2)
+    opt.step()
+    A_after = model.layer0.lora_A["default"].weight.detach()
+    B_after = model.layer0.lora_B["default"].weight.detach()
+    assert not torch.allclose(A_before, A_after), "ProductMuonLoRA did not update A"
+    assert not torch.allclose(B_before, B_after), "ProductMuonLoRA did not update B"
+    assert torch.isfinite(A_after).all() and torch.isfinite(B_after).all()
+
+
+def test_product_muon_lora_b_zero_init_only_b_updates():
+    """At B=0 init, the min-Frobenius Sylvester recovery sets δA=0 (any δA
+    produces zero merged-W contribution since B·δA = 0). This re-derives
+    why LoRA+ asymmetry helps: A is "frozen" until B picks up signal."""
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    # B is already zero from _FakeLoRALinear's init.
+    opt = ProductMuonLoRA(model, lr=1e-2, alpha=2, rank=2, ns_steps=5)
+    A_before = model.layer0.lora_A["default"].weight.detach().clone()
+    _set_grads(model, seed=2)
+    opt.step()
+    A_after = model.layer0.lora_A["default"].weight.detach()
+    assert torch.allclose(A_before, A_after, atol=1e-7), \
+        "B=0 init should imply δA=0 at step 1 (min-Frobenius Sylvester)"
+
+
+def test_product_muon_lora_gauge_invariance():
+    """Gauge symmetry: A → R A, B → B R^{-1} leaves the model output unchanged.
+    A correctly-formulated Muon for LoRA should produce updates that, after
+    composition with R, yield the SAME merged-weight update ΔW = B'·δA' + δB'·A'.
+
+    We check: starting from two gauge-equivalent (A, B) and (A', B') = (R A, B R^{-1})
+    with consistent gradients, one step of ProductMuonLoRA produces the SAME ΔW
+    in merged-weight space."""
+    torch.manual_seed(11)
+    r, d_in, d_out = 2, 8, 6
+    A = torch.randn(r, d_in) * 0.3
+    B = torch.randn(d_out, r) * 0.3   # NB: nonzero B, otherwise gauge orbit collapses
+    # Random invertible R ∈ ℝ^{r×r}
+    R = torch.eye(r) + 0.3 * torch.randn(r, r)
+    R_inv = torch.linalg.inv(R)
+    A_p = R @ A           # (r, d_in)
+    B_p = B @ R_inv       # (d_out, r)
+    # Pick a merged-weight target gradient G ∈ ℝ^{d_out × d_in} consistent across gauges
+    G = 0.01 * torch.randn(d_out, d_in)
+
+    def _run(A0, B0, G0):
+        m = TinyLoRAModel(d_in=d_in, d_out=d_out, r=r)
+        m.layer1 = m.layer0  # Tie layers so we have a single (A, B) to act on; we'll only inspect layer0
+        m.layer0.lora_A["default"].weight.data.copy_(A0)
+        m.layer0.lora_B["default"].weight.data.copy_(B0)
+        # Set grads consistent with chain-rule from G: ∇_A = (α/r) B^T G, ∇_B = (α/r) G A^T
+        scale = 1.0  # alpha=rank=r in this test, so α/r = 1
+        for name, p in m.named_parameters():
+            p.grad = torch.zeros_like(p)
+        m.layer0.lora_A["default"].weight.grad = scale * (B0.T @ G0)
+        m.layer0.lora_B["default"].weight.grad = scale * (G0 @ A0.T)
+        opt = ProductMuonLoRA(m, lr=1e-2, alpha=r, rank=r, ns_steps=5, beta=0.0)
+        opt.step()
+        A1 = m.layer0.lora_A["default"].weight.detach().clone()
+        B1 = m.layer0.lora_B["default"].weight.detach().clone()
+        # Linearized merged update: ΔW ≈ (α/r)(B (A1−A0) + (B1−B0) A) — at α/r = 1
+        dW = B0 @ (A1 - A0) + (B1 - B0) @ A0
+        return dW
+
+    dW = _run(A, B, G)
+    dW_p = _run(A_p, B_p, G)
+    rel = (dW - dW_p).norm() / max(dW.norm().item(), 1e-9)
+    assert rel < 5e-2, f"Gauge invariance broken: relative ΔW mismatch = {rel:.3e}"
+
+
+def test_product_muon_lora_zero_grad_after_step():
+    torch.manual_seed(0)
+    model = TinyLoRAModel()
+    opt = ProductMuonLoRA(model, lr=1e-3, alpha=2, rank=2)
+    _set_grads(model)
+    opt.step()
+    for name, p in model.named_parameters():
+        if p.grad is not None:
+            assert p.grad.abs().max() == 0.0
+
+
+# ─── AdamMuonLoRA (Tier 4) ──────────────────────────────────────────────────
+
+def test_adam_muon_lora_step_runs():
+    torch.manual_seed(0)
+    model = TinyLoRAModel()
+    opt = AdamMuonLoRA(model, lr=1e-3, ns_steps=5)
+    A_before = model.layer0.lora_A["default"].weight.detach().clone()
+    _set_grads(model)
+    opt.step()
+    A_after = model.layer0.lora_A["default"].weight.detach()
+    assert not torch.allclose(A_before, A_after)
+    assert torch.isfinite(A_after).all()
+
+
+# ─── AdamProductMuonLoRA (H2 ⊗ H4) ──────────────────────────────────────────
+
+def test_adam_product_muon_lora_step_runs():
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    with torch.no_grad():
+        model.layer0.lora_B["default"].weight.copy_(0.1 * torch.randn(6, 2))
+        model.layer1.lora_B["default"].weight.copy_(0.1 * torch.randn(8, 2))
+    opt = AdamProductMuonLoRA(model, lr=1e-2, alpha=2, rank=2, ns_steps=5)
+    A_before = model.layer0.lora_A["default"].weight.detach().clone()
+    B_before = model.layer0.lora_B["default"].weight.detach().clone()
+    _set_grads(model, seed=2)
+    opt.step()
+    A_after = model.layer0.lora_A["default"].weight.detach()
+    B_after = model.layer0.lora_B["default"].weight.detach()
+    assert not torch.allclose(A_before, A_after)
+    assert not torch.allclose(B_before, B_after)
+    assert torch.isfinite(A_after).all() and torch.isfinite(B_after).all()
+
+
+def test_muon_adam_lora_step_runs():
+    """MuonAdamLoRA = NS first, then Adam (reverse of AdamMuonLoRA)."""
+    torch.manual_seed(0)
+    model = TinyLoRAModel()
+    opt = MuonAdamLoRA(model, lr=1e-3, ns_steps=5)
+    A_before = model.layer0.lora_A["default"].weight.detach().clone()
+    _set_grads(model)
+    opt.step()
+    A_after = model.layer0.lora_A["default"].weight.detach()
+    assert not torch.allclose(A_before, A_after)
+    assert torch.isfinite(A_after).all()
+
+
+def test_adam_product_muon_lora_b_zero_init_only_b_updates():
+    """Like ProductMuonLoRA: at B=0, Sylvester min-Frobenius sets precond_A=0,
+    so m_A stays 0 and δA=0 at step 1. B updates normally."""
+    torch.manual_seed(0)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=2)
+    opt = AdamProductMuonLoRA(model, lr=1e-2, alpha=2, rank=2, ns_steps=5)
+    A_before = model.layer0.lora_A["default"].weight.detach().clone()
+    B_before = model.layer0.lora_B["default"].weight.detach().clone()
+    _set_grads(model, seed=2)
+    opt.step()
+    A_after = model.layer0.lora_A["default"].weight.detach()
+    B_after = model.layer0.lora_B["default"].weight.detach()
+    assert torch.allclose(A_before, A_after, atol=1e-7), \
+        "B=0 init: AdamProductMuonLoRA should leave A unchanged at step 1"
+    assert not torch.allclose(B_before, B_after)
 
 
 # ─── DiagScaledLoRA ───────────────────────────────────────────────────────────
