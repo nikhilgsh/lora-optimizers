@@ -6,7 +6,9 @@
 # Optional env vars (recommended — consumed by analysis tooling):
 #   SWEEP_SCOPE="ext_compare,polar_family"   comma-separated tags
 #   SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry"
-#   SWEEP_SUPERSEDES="adam_muon_2k"          group name this rerun replaces, if any
+#
+# To exclude an old sweep from analysis, set "deprecated": true in its
+# own meta.json (or delete its log dir).
 set -euo pipefail
 
 # ── Manifest contract refusal ────────────────────────────────────────────────
@@ -35,6 +37,12 @@ GROUP="$2"
 N_GPUS="$3"
 SWEEP_SCRIPT="${4:-scripts/sweep.sh}"
 SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
+
+if [[ -n "${SWEEP_SUPERSEDES:-}" ]]; then
+    echo "WARN: SWEEP_SUPERSEDES is no longer honored." >&2
+    echo "      To exclude '${SWEEP_SUPERSEDES}' from analysis, set" >&2
+    echo "      \"deprecated\": true in its meta.json or delete its log dir." >&2
+fi
 
 RUN_DIR="${REPO_DIR}/logs/${GROUP}/run_info"
 mkdir -p "${RUN_DIR}/logs" "${REPO_DIR}/slurm_logs" "${REPO_DIR}/disbatch_logs"
@@ -90,7 +98,7 @@ manifest = {
     "git_dirty": ("${GIT_DIRTY}" == "true"),
     "scope": scope,
     "purpose": os.environ.get("SWEEP_PURPOSE", ""),
-    "supersedes": os.environ.get("SWEEP_SUPERSEDES") or None,
+    "deprecated": False,
 }
 out = Path("${RUN_DIR}") / "meta.json"
 out.write_text(json.dumps(manifest, indent=2) + "\n")

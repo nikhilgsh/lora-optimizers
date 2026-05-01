@@ -100,14 +100,31 @@ This section is a **navigation aid**, not the contract itself. The contract is e
 2. **`lora_playground.manifest.load_manifests(strict=True)` raises `UntaggedSweepError`** if any populated log dir lacks a manifest or has empty scope. `strict=False` opts out for ad-hoc exploration.
 3. **`tests/test_manifests.py`** walks `logs/` and fails CI on missing/corrupt/empty-scope manifests.
 
-The data flow: `submit.sh` writes `logs/<group>/run_info/meta.json` at submission. Analysis tooling consumes manifests via `lora_playground.manifest.load_runs_by_scope(scope)` — never raw directory listings or hand-maintained tuples of group names.
+The data flow: `submit.sh` writes `logs/<group>/run_info/meta.json` at submission. Analysis tooling consumes manifests via `lora_playground.loader.load_runs(where=...)` (predicate-based) — never raw directory listings or hand-maintained tuples of group names.
+
+### Loader (current path) — `load_runs(where=…)`
+
+New code uses `lora_playground.loader.load_runs(where=…)`. The `where` dict is one predicate per cfg field; literals match equality, lists/sets/tuples match membership, callables match by predicate. Scope strings are metadata only — they do NOT drive loading. Example:
+
+```python
+from lora_playground.loader import load_runs
+runs = load_runs(where={"optimizer": ["adam-polar-product-lora", "adamw"], "lora_r": 64})
+```
+
+Companion: `inventory_runs(logs_root)` returns a structured audit (orphaned / deprecated / unknown-optimizer groups + lr-pinning per cell). The audit cell at the top of `notebooks/sweep_analysis_v2.ipynb` calls it and prints the report — single source of truth for "what could be silently wrong."
+
+To **exclude an old sweep** from analysis, set `"deprecated": true` in its OWN `meta.json`. The previous remote-action mechanism (`SWEEP_SUPERSEDES` on a NEW sweep silently dropping an OLD group) is removed — it caused a 24-run silent dropout from a single typo and is gone. Newest-wins-on-collision (already in `merge_runs`) handles "rerun supersedes old" without any explicit field.
+
+### Legacy loader — thin shim, do not extend
+
+`lora_playground.manifest.load_runs_by_scope(scope, key_fn, filter_fn)` and `groups_by_scope(scope)` are kept as thin shims so the existing `notebooks/sweep_analysis.ipynb` (~25 cells) keeps working unchanged. They will be removed once that notebook migrates to the predicate API. Do not write new code against them.
 
 ### Updating docs/notes from sweep data — mandatory provenance
 
 Before writing any numerical claim to `docs/notes/*.md` (final losses, Δ vs baseline, "best η", "pinned/not pinned", leaderboard rows), the source MUST be one of:
 
-1. Re-executing the relevant cell in `notebooks/sweep_analysis.ipynb` (or `notebooks/lin_scaled_investigation.ipynb`) and reading the actual output. The notebook's `load_runs_by_scope` calls enumerate ALL groups in scope via the manifest system.
-2. A direct call to `lora_playground.manifest.load_runs_by_scope(<scope>)` from a fresh script.
+1. Re-executing the relevant cell in `notebooks/sweep_analysis_v2.ipynb` (preferred), `notebooks/sweep_analysis.ipynb`, or `notebooks/lin_scaled_investigation.ipynb` and reading the actual output.
+2. A direct call to `lora_playground.loader.load_runs(where=…)` from a fresh script.
 
 **NEVER** a hand-typed list of group names. Hand-typed lists drift from the manifest and silently miss data, producing phantom "pinned at boundary" / "missing data" claims. If you find yourself writing `groups = ['foo_2k', 'bar_2k', ...]`, stop — call the loader.
 
@@ -123,7 +140,7 @@ SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry" \
 ./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [scripts/sweep_2k_r_diag.sh] [slurm_scripts/sbatch.sh]
 ```
 
-Optional: `SWEEP_SUPERSEDES=<old_group>` makes rerun-priority explicit so analysis priority isn't dependent on submission order.
+`SWEEP_SUPERSEDES` is no longer honored (was a destructive footgun — typo silently dropped a whole sweep from view). To exclude an old sweep, set `"deprecated": true` in its own `meta.json`, or delete its log dir.
 
 **Known scope tags** (one or more, comma-separated):
 
@@ -142,4 +159,4 @@ Optional: `SWEEP_SUPERSEDES=<old_group>` makes rerun-priority explicit so analys
 | `pilot`                    | short-step (~500) ranking-selection runs (analysis ignores) |
 | `legacy`                   | older sweeps kept for reference; usually excluded |
 
-Schema and loader in `lora_playground/manifest.py`. **Bare `sbatch` invocations bypass the contract — always go through `submit.sh` (or `/disbatch` skill).**
+Schema in `lora_playground/manifest.py`; loader in `lora_playground/loader.py`. **Bare `sbatch` invocations bypass the contract — always go through `submit.sh` (or `/disbatch` skill).**
