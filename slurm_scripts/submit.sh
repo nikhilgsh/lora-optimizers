@@ -7,8 +7,7 @@
 #   SWEEP_SCOPE="ext_compare,polar_family"   comma-separated tags
 #   SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry"
 #
-# To exclude an old sweep from analysis, set "deprecated": true in its
-# own meta.json (or delete its log dir).
+# To exclude an old sweep from analysis, delete its log dir.
 set -euo pipefail
 
 # ── Manifest contract refusal ────────────────────────────────────────────────
@@ -40,8 +39,7 @@ SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
 
 if [[ -n "${SWEEP_SUPERSEDES:-}" ]]; then
     echo "WARN: SWEEP_SUPERSEDES is no longer honored." >&2
-    echo "      To exclude '${SWEEP_SUPERSEDES}' from analysis, set" >&2
-    echo "      \"deprecated\": true in its meta.json or delete its log dir." >&2
+    echo "      To exclude '${SWEEP_SUPERSEDES}' from analysis, delete its log dir." >&2
 fi
 
 RUN_DIR="${REPO_DIR}/logs/${GROUP}/run_info"
@@ -98,7 +96,6 @@ manifest = {
     "git_dirty": ("${GIT_DIRTY}" == "true"),
     "scope": scope,
     "purpose": os.environ.get("SWEEP_PURPOSE", ""),
-    "deprecated": False,
 }
 out = Path("${RUN_DIR}") / "meta.json"
 out.write_text(json.dumps(manifest, indent=2) + "\n")

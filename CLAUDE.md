@@ -113,7 +113,7 @@ runs = load_runs(where={"optimizer": ["adam-polar-product-lora", "adamw"], "lora
 
 Companion: `inventory_runs(logs_root)` returns a structured audit (orphaned / deprecated / unknown-optimizer groups + lr-pinning per cell). The audit cell at the top of both notebooks calls it and prints the report — single source of truth for "what could be silently wrong."
 
-To **exclude an old sweep** from analysis, set `"deprecated": true` in its OWN `meta.json`. Newest-wins-on-collision (in `merge_runs`) handles "rerun supersedes old" without any explicit field.
+To **exclude an old sweep** from analysis, delete its log dir. Newest-wins-on-collision (in `merge_runs`) handles "rerun supersedes old" automatically when the new sweep covers the same configs.
 
 ### Updating docs/notes from sweep data — mandatory provenance
 
@@ -136,7 +136,7 @@ SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry" \
 ./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [scripts/sweep_2k_r_diag.sh] [slurm_scripts/sbatch.sh]
 ```
 
-To exclude an old sweep from analysis, set `"deprecated": true` in its own `meta.json`, or delete its log dir.
+To exclude an old sweep from analysis, delete its log dir.
 
 **Known scope tags** (one or more, comma-separated):
 

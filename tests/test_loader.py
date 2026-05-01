@@ -4,10 +4,10 @@ Synthetic-fixture tests — build a temp logs/ tree per test so behavior is
 fully isolated from the real project state. Validates:
 
   - Predicate matching: literal, list, callable.
-  - load_runs honors `where`, dedups via key_axes, excludes deprecated groups.
-  - Newest-wins-on-collision (replaces the destructive supersedes mechanism).
-  - inventory_runs detects orphans, deprecated, unknown optimizers, and
-    pinning at the lr-range boundary.
+  - load_runs honors `where`, dedups via key_axes.
+  - Newest-wins-on-collision.
+  - inventory_runs detects orphans, unknown optimizers, and pinning at
+    the lr-range boundary.
   - render_inventory smoke (returns non-empty plain-text report).
 """
 from __future__ import annotations
@@ -140,20 +140,6 @@ def test_load_runs_callable_predicate(tmp_path: Path):
     assert {int(c["lora_r"]) for c, _ in runs} == {128, 256}
 
 
-def test_load_runs_excludes_deprecated_groups(tmp_path: Path):
-    logs = tmp_path / "logs"
-    _write_group(logs, "g_old", {"scope": ["polar_family"], "deprecated": True}, [
-        (_cfg("adam-polar-product-lora", 3e-4), _evs((2000, 0.74))),
-    ])
-    _write_group(logs, "g_new", {"scope": ["polar_family"]}, [
-        (_cfg("adam-polar-product-lora", 1e-3), _evs((2000, 0.78))),
-    ])
-    runs = load_runs(where={"optimizer": "adam-polar-product-lora"}, logs_root=str(logs))
-    assert len(runs) == 1
-    cfg, _ = runs[0]
-    assert float(cfg["lr"]) == 1e-3, "deprecated group's run leaked through"
-
-
 def test_load_runs_newest_wins_on_dedup_collision(tmp_path: Path):
     """When two non-deprecated groups have a colliding key, newer wins.
     Replaces the role the destructive `supersedes` field used to play."""
@@ -207,16 +193,6 @@ def test_inventory_detects_orphaned_group(tmp_path: Path):
     inv = inventory_runs(str(logs))
     assert "g_orphan" in inv.groups_orphaned
     assert "g_tagged" not in inv.groups_orphaned
-
-
-def test_inventory_detects_deprecated(tmp_path: Path):
-    logs = tmp_path / "logs"
-    _write_group(logs, "g_dep", {"scope": ["polar_family"], "deprecated": True}, [
-        (_cfg("adam-polar-product-lora", 3e-4), _evs((2000, 0.74))),
-    ])
-    inv = inventory_runs(str(logs))
-    assert "g_dep" in inv.groups_deprecated
-    assert "g_dep" not in inv.groups_loaded
 
 
 def test_inventory_detects_unknown_optimizer(tmp_path: Path):

@@ -1,11 +1,11 @@
 """Predicate-based sweep loader and inventory.
 
 ``load_runs(where=...)`` selects runs whose cfg matches a per-field predicate;
-``inventory_runs(logs_root)`` returns a structural audit (orphans, deprecated,
-unknown optimizers, lr-pinning) for a notebook audit cell.
+``inventory_runs(logs_root)`` returns a structural audit (orphans, unknown
+optimizers, lr-pinning) for a notebook audit cell.
 
 Scope tags on manifests are metadata only — they don't drive loading. To
-exclude an old sweep set ``"deprecated": true`` in its own ``meta.json``.
+remove an old sweep, delete its log dir.
 """
 from __future__ import annotations
 
@@ -81,8 +81,6 @@ def load_runs(
     keeps newest-trajectory-wins; group priority is newest-first (by
     ``submitted_at``). The hidden-axis collision check still fires if two
     runs share the dedup key but differ on another cfg axis.
-
-    Deprecated groups (manifest field ``deprecated: true``) are excluded.
     """
     manifests = load_manifests(logs_root, strict=False)
     groups = [m["group"] for m in live_manifests_newest_first(manifests)]
@@ -120,7 +118,6 @@ class RunInventory:
     groups_on_disk: tuple[str, ...]            # populated logs/<group>/run_info dirs
     groups_loaded: tuple[str, ...]             # subset that contributes runs
     groups_orphaned: tuple[str, ...]           # populated, no manifest or empty scope
-    groups_deprecated: tuple[str, ...]         # self-flagged via meta.json deprecated:true
     optimizers_unknown: tuple[str, ...]        # in logs but not in OPTIM_COLORS
     coverage: tuple[CoverageRow, ...]
 
@@ -148,7 +145,6 @@ def inventory_runs(logs_root: str = "../logs") -> RunInventory:
 
     Each problem reported is a fact, not a threshold judgment:
       - groups_orphaned: populated dir without a valid scope-tagged manifest.
-      - groups_deprecated: self-declared via ``meta.json`` ``deprecated: true``.
       - optimizers_unknown: optimizer present in some run's cfg but absent
         from ``OPTIM_COLORS`` — silently dropped from any cell that filters
         on color-map membership.
@@ -158,7 +154,6 @@ def inventory_runs(logs_root: str = "../logs") -> RunInventory:
     """
     manifests = load_manifests(logs_root, strict=False)
     on_disk = sorted(m["group"] for m in manifests)
-    deprecated = sorted(m["group"] for m in manifests if m.get("deprecated"))
     orphaned = sorted(warn_untagged(manifests))
     live = live_manifests_newest_first(manifests)
     live_groups = [m["group"] for m in live]
@@ -218,7 +213,6 @@ def inventory_runs(logs_root: str = "../logs") -> RunInventory:
         groups_on_disk=tuple(on_disk),
         groups_loaded=tuple(sorted(contributing_groups)),
         groups_orphaned=tuple(orphaned),
-        groups_deprecated=tuple(deprecated),
         optimizers_unknown=optimizers_unknown,
         coverage=tuple(coverage),
     )
@@ -233,12 +227,6 @@ def render_inventory(inv: RunInventory) -> str:
         lines.append("")
         lines.append(f"ORPHANED ({len(inv.groups_orphaned)}) — populated but no valid manifest, will not load:")
         for g in inv.groups_orphaned:
-            lines.append(f"  {g}")
-
-    if inv.groups_deprecated:
-        lines.append("")
-        lines.append(f"DEPRECATED ({len(inv.groups_deprecated)}) — self-flagged, excluded:")
-        for g in inv.groups_deprecated:
             lines.append(f"  {g}")
 
     if inv.optimizers_unknown:

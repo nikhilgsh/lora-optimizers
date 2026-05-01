@@ -16,13 +16,11 @@ Schema (written by submit.sh):
       "git_commit":    "<sha>",
       "git_dirty":     false,
       "scope":         ["ext_compare", "polar_family"],
-      "purpose":       "E2: AdaMuon-faithful + polar-product geometry",
-      "deprecated":    false
+      "purpose":       "E2: AdaMuon-faithful + polar-product geometry"
     }
 
 Loading: ``lora_playground.loader.load_runs(where=...)`` — predicate-based,
-no scope strings. To exclude an old sweep from analysis, set
-``"deprecated": true`` in its own ``meta.json``.
+no scope strings. To remove an old sweep from analysis, delete its log dir.
 """
 from __future__ import annotations
 
@@ -111,12 +109,10 @@ def warn_untagged(manifests: list[dict]) -> list[str]:
 
 
 def live_manifests_newest_first(manifests: list[dict]) -> list[dict]:
-    """Filter to non-deprecated, non-corrupt, scope-tagged manifests, sorted
-    by ``submitted_at`` descending (newest first → wins ``merge_runs`` dedup).
+    """Filter to non-corrupt, scope-tagged manifests, sorted by
+    ``submitted_at`` descending (newest first → wins ``merge_runs`` dedup).
     """
     live = [m for m in manifests
-            if not m.get("deprecated")
-            and not m.get("_corrupt")
-            and not m.get("_untagged")]
+            if not m.get("_corrupt") and not m.get("_untagged")]
     live.sort(key=lambda m: m.get("submitted_at", ""), reverse=True)
     return live
