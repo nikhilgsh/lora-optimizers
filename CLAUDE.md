@@ -82,7 +82,7 @@ Every training run emits JSON lines to stdout via `log_event()`: one `config` ev
 ## Coding Conventions
 
 - PascalCase for optimizer classes, snake_case for functions
-- New optimizers: add class to `optim.py`, add entry to `OPTIMIZER_CHOICES`, add branch in `build_optimizer()`
+- New optimizers: add class to `optim.py`, add entry to `OPTIMIZER_CHOICES`, add branch in `build_optimizer()`, register in `OPTIM_COLORS` and at least one `OPTIM_FAMILIES` set in `lora_playground/plot_utils.py` (the orphan-warning fires at notebook startup if you forget the family).
 - Optimizer math operates in float32 (cast inputs, cast updates back to param dtype/device before applying)
 - Tests: shapes, dtype/device behavior, numerical residuals, determinism on tiny tensors; CPU-only for unit tests; GPU required for functional smokes
 

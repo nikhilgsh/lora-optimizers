@@ -50,6 +50,7 @@ OPTIM_COLORS = {
     "adam-muon-lora":              "#3cb44b",   # vivid green, distinct from lin-lora's tab green
     "muon-adam-lora":              "#dbdb8d",
     "adam-polar-product-lora":     "#8c564b",
+    "adam-polar-product-lora-coupled": "#5d342c",   # darker brown — coupled-pair variant of adam-polar
     "adamuon-polar-product-lora":  "#1f77b4",
     "adamuon-lora":                "#ff9896",
     # gauge-invariant variants
@@ -61,6 +62,82 @@ OPTIM_COLORS = {
     "psi-lora":                    "#7f7f7f",
     "galore-adamw":                "#a55194",
 }
+
+
+# Family membership for per-cell comparisons. Each entry is "the set of
+# optimizers a particular notebook cell wants to compare." Cells reference
+# OPTIM_FAMILIES["<family>"] instead of inlining a literal set, so adding a
+# new optimizer is a one-file change here (color + family) rather than
+# hunting hard-coded sets across the notebook.
+#
+# When adding a new optimizer:
+#   1. add an entry to OPTIM_COLORS above.
+#   2. add it to whichever family/families it belongs in below.
+# The _validate_family_membership() check at module load surfaces any
+# OPTIM_COLORS entry that's missing from every family as a warning.
+OPTIM_FAMILIES = {
+    # Headline polar/muon spectral family (post-Adam direction-shaping).
+    "headline_polar": {
+        "adamw",
+        "adam-polar-product-lora",
+        "adam-polar-product-lora-coupled",
+        "adamuon-lora",
+        "adamuon-polar-product-lora",
+    },
+    # Pre-Adam linear preconditioning (geometry → Adam, H1 found ε-perturbed).
+    "pre_adam_lin_scaled": {
+        "adamw",
+        "adam-lin-lora",
+        "adam-scaled-lora",
+    },
+    # No-Adam family (raw momentum / NS / closed-form, no per-coord v̂).
+    "no_adam": {
+        "adamw",
+        "muon-lora",
+        "polar-product-lora",
+        "lin-lora",
+        "scaled-lora",
+    },
+    # Post-Adam preconditioning + matrix-Adam (H4 falsified family).
+    "post_adam_h4": {
+        "adamw",
+        "adam-lin-lora-post",
+        "adam-scaled-lora-post",
+        "adam-lin-lora-matrix",
+        "adam-scaled-lora-matrix",
+        "muon-adam-lora",
+    },
+    # Bucket-3: theoretically promising, empirically weak.
+    "bucket3_weak": {
+        "adamw",
+        "product-muon-lora",
+        "adam-product-muon-lora",
+        "diag-scaled-lora",
+        "kron-grad-lora",
+        "psi-lora",
+        "galore-adamw",
+    },
+}
+
+
+def _validate_family_membership() -> None:
+    """Warn at module load when an OPTIM_COLORS entry is in no OPTIM_FAMILIES
+    set. Soft check — some optimizers may be intentionally excluded from every
+    cell-level comparison; the warning surfaces the more likely "you added a
+    color but forgot a family" failure that silently empties plots."""
+    in_some_family: set[str] = set().union(*OPTIM_FAMILIES.values())
+    orphans = sorted(set(OPTIM_COLORS) - in_some_family)
+    if orphans:
+        import warnings
+        warnings.warn(
+            f"OPTIM_COLORS entries with no OPTIM_FAMILIES membership "
+            f"(plots filtering by family will silently drop them): {orphans}. "
+            f"Add to a family in plot_utils.py or accept the exclusion.",
+            stacklevel=2,
+        )
+
+
+_validate_family_membership()
 
 
 # Linestyles for LoRA+ multiplier disambiguation. Convention: same color per
@@ -99,6 +176,7 @@ OPTIM_MARKERS = {
     "galore-adamw":                "<",   # triangle-left (medium purple)
     # Browns/oranges cluster
     "adam-polar-product-lora":     "o",
+    "adam-polar-product-lora-coupled": "P",   # plus (darker brown)
     "polar-product-lora":          "d",   # thin diamond (light brown)
     "scaled-lora":                 ">",   # triangle-right (orange)
     "adam-scaled-lora-post":       "8",   # octagon (light orange)
@@ -179,8 +257,14 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
             evals.append(obj)
     if config is not None and evals:
         config.setdefault("lr", evals[0]["lr"])
-        lp = parse_flag(config.get("command", ""), "--lora_plus_multiplier")
+        cmd = config.get("command", "")
+        lp = parse_flag(cmd, "--lora_plus_multiplier")
         config.setdefault("lora_plus_multiplier", float(lp) if lp else 1.0)
+        # CLI-only fields commonly varied across runs; surfaced as first-class
+        # cfg fields so load_runs(where=...) and key_axes can filter on them.
+        rk = parse_flag(cmd, "--precond_refresh_every")
+        config.setdefault("precond_refresh_every", int(rk) if rk else 1)
+        config.setdefault("precond_method", parse_flag(cmd, "--precond_method"))
     return config, evals
 
 
@@ -246,6 +330,7 @@ def merge_runs(group_priority: Iterable[str],
         if not has_runs(group, logs_root):
             continue
         for cfg, evs in load_sweep(group, logs_root):
+            cfg["log_group"] = group
             if cfg_postprocess is not None:
                 cfg_postprocess(cfg, group)
             if filter_fn is not None and not filter_fn(cfg):

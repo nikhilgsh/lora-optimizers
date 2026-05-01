@@ -10,12 +10,18 @@ remove an old sweep, delete its log dir.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .manifest import live_manifests_newest_first, load_manifests, warn_untagged
 from .plot_utils import (
     DIVERGE_THRESHOLD, OPTIM_COLORS, has_runs, load_sweep, max_loss, merge_runs,
 )
+
+
+def _default_logs_root() -> str:
+    """Repo-anchored ``logs/`` path, independent of caller cwd."""
+    return str(Path(__file__).resolve().parent.parent / "logs")
 
 # Default dedup axes used by 95% of notebook cells. Override per-cell when
 # specialty axes (e.g. training_mode for the SVD oracle) matter.
@@ -65,7 +71,7 @@ def load_runs(
     *,
     key_axes: tuple[str, ...] = DEFAULT_KEY_AXES,
     cfg_postprocess: Callable[[dict, str], None] | None = None,
-    logs_root: str = "../logs",
+    logs_root: str | None = None,
 ) -> list[tuple[dict, list[dict]]]:
     """Load all runs whose cfg matches every predicate in ``where``.
 
@@ -82,6 +88,8 @@ def load_runs(
     ``submitted_at``). The hidden-axis collision check still fires if two
     runs share the dedup key but differ on another cfg axis.
     """
+    if logs_root is None:
+        logs_root = _default_logs_root()
     manifests = load_manifests(logs_root, strict=False)
     groups = [m["group"] for m in live_manifests_newest_first(manifests)]
     filter_fn = _build_filter(where)
@@ -140,7 +148,7 @@ def _classify_pinning(lrs_swept: tuple[float, ...], best_lr: float | None) -> st
     return PINNING_INTERIOR
 
 
-def inventory_runs(logs_root: str = "../logs") -> RunInventory:
+def inventory_runs(logs_root: str | None = None) -> RunInventory:
     """Walk all manifests + runs, return a structural audit.
 
     Each problem reported is a fact, not a threshold judgment:
@@ -152,6 +160,8 @@ def inventory_runs(logs_root: str = "../logs") -> RunInventory:
         lrs, the best lr (lowest non-diverged final loss), and a pinning
         classification.
     """
+    if logs_root is None:
+        logs_root = _default_logs_root()
     manifests = load_manifests(logs_root, strict=False)
     on_disk = sorted(m["group"] for m in manifests)
     orphaned = sorted(warn_untagged(manifests))

@@ -72,6 +72,61 @@ def spd_frac_power_inv(H, gamma, eps=1e-6):
     return Q @ torch.diag(evals.clamp(min=eps).pow(-gamma)) @ Q.T
 
 
+def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4):
+    """
+    Compute H^{-1/2} for SPD H via the coupled Newton-Schulz iteration
+    (Iannazzo / Denman-Beavers-Newton). Replaces spd_frac_power_inv(H, 0.5)
+    with O(n_iters) matrix multiplies — kernel-launch friendly, no eigh.
+
+    The iteration:
+        Y_0 = H_scaled = H / s,  Z_0 = I,    where s ≈ λ_max(H)
+        T = 3I − Z_k Y_k
+        Y_{k+1} = (1/2) Y_k T
+        Z_{k+1} = (1/2) T Z_k
+    converges quadratically to Y_∞ = H_scaled^{1/2}, Z_∞ = H_scaled^{-1/2}.
+    Then H^{-1/2} = Z_∞ / sqrt(s).
+
+    Quadratic convergence requires Y_0's eigenvalues clustered near 1, which means
+    `s` must be a tight estimate of λ_max — Frobenius norm overshoots by √n on
+    typical SPD matrices and kills convergence. We use a few power iterations to
+    estimate λ_max directly.
+
+    Args:
+        H: (n, n) float32, SPD.
+        n_iters: number of coupled NS iterations (default 7; quadratic convergence).
+        eps: regularization added to H's diagonal before the iteration.
+        n_power_iter: power-iteration steps for λ_max estimate (default 4 — cheap,
+            each iter is one matvec). Increase for ill-conditioned H.
+
+    Returns:
+        Z: (n, n) float32 approximation of H^{-1/2}.
+    """
+    H = spdify(H, eps)
+    n = H.shape[0]
+    eye = torch.eye(n, dtype=H.dtype, device=H.device)
+
+    # Estimate λ_max(H) via power iteration. This is the only O(n²) cost beyond
+    # the NS iters; tight scaling is critical for quadratic convergence.
+    v = torch.randn(n, dtype=H.dtype, device=H.device)
+    v = v / v.norm().clamp(min=eps)
+    for _ in range(n_power_iter):
+        v = H @ v
+        nv = v.norm().clamp(min=eps)
+        v = v / nv
+    lam_max = nv  # ≥ λ_max, tight after a few iters
+
+    # Y_0 = H / λ_max has spectrum in (0, 1]; iteration converges quadratically.
+    s = lam_max
+    Y = H / s
+    Z = eye.clone()
+    three_eye = 3.0 * eye
+    for _ in range(n_iters):
+        T = three_eye - Z @ Y
+        Y = 0.5 * (Y @ T)
+        Z = 0.5 * (T @ Z)
+    return Z / s.sqrt()
+
+
 def _solve_ridge(A, B, eps=1e-6):
     """Solve (A + eps·I) X = B via Cholesky with fallback to dense solve.
 

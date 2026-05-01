@@ -11,9 +11,21 @@ from .utils import (
     solve_spd,
     solve_sylvester,
     spd_frac_power_inv,
+    spd_inv_sqrt_higham,
     spdify,
     truncated_svd,
 )
+
+
+def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
+    """Dispatch (H + eps·I)^{-1/2}: 'eigh' uses spd_frac_power_inv; 'higham' uses
+    Newton-Schulz (no eigh, ~10× faster on (r×r) at r=256 due to no kernel-launch
+    storm). Caller can swap between them via precond_method=... at construction."""
+    if method == "eigh":
+        return spd_frac_power_inv(H, gamma=0.5, eps=eps)
+    if method == "higham":
+        return spd_inv_sqrt_higham(H, n_iters=higham_iters, eps=eps)
+    raise ValueError(f"Unknown precond_method '{method}' (expected 'eigh' or 'higham').")
 
 
 def _adamw_side_step(grad, m_raw, v_raw, beta1, beta2, eps, step, lr):
@@ -43,8 +55,25 @@ def _frob_cos(a, b):
 
 
 def _spd_eig_extremes(M):
-    ev = torch.linalg.eigvalsh(M.to(torch.float32))
+    # eigvalsh can fail (LinAlgError, code 257) on near-degenerate Gram matrices;
+    # this is a side-channel diagnostic, so degrade to NaN instead of killing the
+    # training run.
+    try:
+        ev = torch.linalg.eigvalsh(M.to(torch.float32))
+    except torch._C._LinAlgError:
+        return float("nan"), float("nan")
     return float(ev[0]), float(ev[-1])
+
+
+def _gram_eig_extremes_from_factor(X):
+    # λ(XᵀX) = σ(X)². Routing through svdvals(X) avoids forming the Gram
+    # (which squares condition number) and is robust where eigvalsh(XᵀX)
+    # fails on near-degenerate spectra.
+    try:
+        sv = torch.linalg.svdvals(X.to(torch.float32))
+    except torch._C._LinAlgError:
+        return float("nan"), float("nan")
+    return float(sv[-1] ** 2), float(sv[0] ** 2)
 
 
 def _emit_optim_diagnostics(step_count, per_pair_records):
@@ -79,6 +108,7 @@ OPTIMIZER_CHOICES = {
     "adam-lin-lora-matrix",
     "polar-product-lora",
     "adam-polar-product-lora",
+    "adam-polar-product-lora-coupled",
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
@@ -243,7 +273,7 @@ class AdamLinLoRA(Optimizer):
             Δθ = -lr * m̂_t / (√v̂_t + ε)
     where S_A = A A^T + δ I and S_B = B^T B + δ I.
     """
-    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0, log_diagnostics=False, diagnostics_every=20):
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0, log_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -256,6 +286,7 @@ class AdamLinLoRA(Optimizer):
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
+        self.precond_refresh_every = precond_refresh_every
 
         # Initialize state: first and second moments for each (A, B) pair
         # Use pair_state to avoid conflicts with PyTorch's Optimizer.state
@@ -314,22 +345,41 @@ class AdamLinLoRA(Optimizer):
             gA = A.grad          # ∇_A ∈ ℝ^{r×d_in}
             gB = B.grad          # ∇_B ∈ ℝ^{d_out×r}
 
-            # Regularized Gram matrices: S_A = A A^T + δ I, S_B = B^T B + δ I
-            SB = spdify(B.T @ B, self.delta)       # S_B ∈ ℝ^{r×r}
-            SA = spdify(A @ A.T, self.delta)       # S_A ∈ ℝ^{r×r}
+            # Regularized Gram matrices: S_A = A A^T + δ I, S_B = B^T B + δ I.
+            # Cache eigendecomp (for Sylvester solve) and Cholesky factor (for
+            # the two solve_spd calls); refresh every K steps. K=1 reproduces
+            # the original per-step behavior.
+            need_refresh = (state['step'] - 1) % self.precond_refresh_every == 0
+            if need_refresh:
+                SB = spdify(B.T @ B, self.delta)
+                SA = spdify(A @ A.T, self.delta)
+                state['evalA'], state['QA'] = torch.linalg.eigh(SA)
+                state['evalB'], state['QB'] = torch.linalg.eigh(SB)
+                state['LA'] = torch.linalg.cholesky(SA)
+                state['LB'] = torch.linalg.cholesky(SB)
+                if self.log_diagnostics:
+                    state['SA_eig_extremes'] = (float(state['evalA'][0]), float(state['evalA'][-1]))
+                    state['SB_eig_extremes'] = (float(state['evalB'][0]), float(state['evalB'][-1]))
+            evalA, QA = state['evalA'], state['QA']
+            evalB, QB = state['evalB'], state['QB']
+            LA, LB = state['LA'], state['LB']
+
             RHS = -gamma * (gA @ A.T).float()              # RHS = -(∇_A A^T) ∈ ℝ^{r×r} [no lr]
 
-            # Solve Sylvester equation: S_B K + K S_A = RHS for K ∈ ℝ^{r×r}
-            K = solve_sylvester(SB, (gamma ** 2) * SA, RHS)       # K ∈ ℝ^{r×r}
+            # Solve Sylvester equation: S_B K + (γ² S_A) K^T = RHS via cached eigendecomps.
+            # eigh(c·M) shares Q with eigh(M); eigenvalues scale by c, so multiply evalA by γ².
+            T_syl = QB.T @ RHS @ QA                                         # (r, r)
+            denom = evalB[:, None] + (gamma ** 2) * evalA[None, :]          # (r, r)
+            K = QB @ (T_syl / denom) @ QA.T                                 # (r, r)
 
             # Compute preconditioned gradients (without lr factor)
             # precond_B = (∇_B + B K) S_A^{-1}
             termB = (gB + (1. / gamma) * B @ K.to(dtype=B.dtype)).float()   # ℝ^{d_out×r}
-            precond_B = solve_spd(SA, termB.T).T             # ∈ ℝ^{d_out×r}
+            precond_B = torch.cholesky_solve(termB.T, LA).T                 # ∈ ℝ^{d_out×r}
 
             # precond_A = S_B^{-1} (∇_A + K A)
-            termA = (gA + gamma * K.to(dtype=A.dtype) @ A).float()   # ℝ^{r×d_in}
-            precond_A = solve_spd(SB, termA)                 # ∈ ℝ^{r×d_in}
+            termA = (gA + gamma * K.to(dtype=A.dtype) @ A).float()          # ℝ^{r×d_in}
+            precond_A = torch.cholesky_solve(termA, LB)                     # ∈ ℝ^{r×d_in}
 
             # Update first moment: m_t = β₁ m_{t-1} + (1-β₁) v_t
             state['m_A'].mul_(self.beta1).add_(precond_A, alpha=1 - self.beta1)
@@ -363,8 +413,9 @@ class AdamLinLoRA(Optimizer):
                     gB, state['m_B_raw'], state['v_B_raw'],
                     self.beta1, self.beta2, self.eps, state['step'], lr,
                 )
-                sa_min, sa_max = _spd_eig_extremes(SA)
-                sb_min, sb_max = _spd_eig_extremes(SB)
+                # SA/SB extremes from cached eigenvalues (free; computed at refresh).
+                sa_min, sa_max = state['SA_eig_extremes']
+                sb_min, sb_max = state['SB_eig_extremes']
                 # cos_pre_*: cos(geometric direction, raw gradient) — measures
                 # how much the geometric solve rotates the gradient BEFORE
                 # Adam touches it. Distinguishes "weak geometry" (cos_pre ≈ 1
@@ -414,7 +465,7 @@ class AdamScaledLoRA(Optimizer):
         v_t = β₂ v_{t-1} + (1-β₂) v_t²
         Δθ = -lr * m_t / (√v_t + ε)
     """
-    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, log_diagnostics=False, diagnostics_every=20):
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, log_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -426,6 +477,7 @@ class AdamScaledLoRA(Optimizer):
         self.beta1, self.beta2 = betas
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
+        self.precond_refresh_every = precond_refresh_every
 
         # Initialize state: first and second moments for each (A, B) pair
         # Use pair_state instead of state to avoid conflicts with PyTorch's Optimizer.state
@@ -473,13 +525,28 @@ class AdamScaledLoRA(Optimizer):
             gA = A.grad          # ∇_A ∈ ℝ^{r×d_in}
             gB = B.grad          # ∇_B ∈ ℝ^{d_out×r}
 
-            # Compute preconditioning matrices: S_A = A A^T + δ I, S_B = B^T B + δ I
-            SB = spdify(B.T @ B, self.delta)       # S_B ∈ ℝ^{r×r}
-            SA = spdify(A @ A.T, self.delta)       # S_A ∈ ℝ^{r×r}
+            # Preconditioning matrices: S_A = A A^T + δ I, S_B = B^T B + δ I.
+            # Cached as Cholesky factors and refreshed every K steps; cholesky_solve
+            # against the cached factor between refreshes. K=1 ⇒ refresh every step
+            # (original behavior). For diagnostics we still need SA/SB on refresh
+            # steps; on stale steps we skip the materialization.
+            need_refresh = (state['step'] - 1) % self.precond_refresh_every == 0
+            if need_refresh:
+                SB = spdify(B.T @ B, self.delta)       # S_B ∈ ℝ^{r×r}
+                SA = spdify(A @ A.T, self.delta)       # S_A ∈ ℝ^{r×r}
+                state['LA'] = torch.linalg.cholesky(SA)
+                state['LB'] = torch.linalg.cholesky(SB)
+                if self.log_diagnostics:
+                    state['SA_for_diag'] = SA
+                    state['SB_for_diag'] = SB
+            LA = state['LA']
+            LB = state['LB']
 
-            # Compute preconditioned gradients (not scaled by lr yet)
-            precond_B = solve_spd(SA, gB.T).T      # ∇_B S_A^{-1} ∈ ℝ^{d_out×r}
-            precond_A = solve_spd(SB, gA)          # S_B^{-1} ∇_A ∈ ℝ^{r×d_in}
+            # Compute preconditioned gradients (not scaled by lr yet). Match
+            # solve_spd's dtype handling — gA/gB may be bf16; cholesky_solve
+            # requires matching dtype with the cached float32 L, so cast here.
+            precond_B = torch.cholesky_solve(gB.T.to(LA.dtype), LA).T   # ∇_B S_A^{-1} ∈ ℝ^{d_out×r}
+            precond_A = torch.cholesky_solve(gA.to(LB.dtype), LB)       # S_B^{-1} ∇_A ∈ ℝ^{r×d_in}
 
             # Update first moment: m_t = β₁ m_{t-1} + (1-β₁) v_t
             state['m_A'].mul_(self.beta1).add_(precond_A, alpha=1 - self.beta1)
@@ -511,8 +578,11 @@ class AdamScaledLoRA(Optimizer):
                     gB, state['m_B_raw'], state['v_B_raw'],
                     self.beta1, self.beta2, self.eps, state['step'], lr,
                 )
-                sa_min, sa_max = _spd_eig_extremes(SA)
-                sb_min, sb_max = _spd_eig_extremes(SB)
+                # SA/SB only re-materialize on refresh; otherwise read from cache.
+                SA_diag = state['SA_for_diag'] if not need_refresh else SA
+                SB_diag = state['SB_for_diag'] if not need_refresh else SB
+                sa_min, sa_max = _spd_eig_extremes(SA_diag)
+                sb_min, sb_max = _spd_eig_extremes(SB_diag)
                 # cos_pre_*: cos(geometric direction, raw gradient) — measures
                 # how much the geometric solve rotates the gradient BEFORE
                 # Adam touches it. Distinguishes "weak geometry" (cos_pre ≈ 1
@@ -1557,7 +1627,10 @@ class AdamPolarProductLoRA(Optimizer):
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_diagnostics=False, diagnostics_every=20,
+                 precond_refresh_every=1,
+                 precond_method="eigh", higham_iters=10,
+                 picard_iters=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1571,6 +1644,12 @@ class AdamPolarProductLoRA(Optimizer):
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
+        self.precond_refresh_every = precond_refresh_every
+        self.precond_method = precond_method
+        self.higham_iters = higham_iters
+        self.picard_iters = picard_iters
+        if picard_iters < 1:
+            raise ValueError("picard_iters must be >= 1")
 
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
@@ -1581,6 +1660,24 @@ class AdamPolarProductLoRA(Optimizer):
                 'v_B': torch.zeros_like(B, dtype=torch.float32),
                 'step': 0,
             }
+
+    def _polar_pipeline(self, u_A, u_B, SA_half_inv, SB_half_inv, lr):
+        """One pass of the polar-product update + RMS-align. Returns (dA, dB)."""
+        X_B = u_B @ SA_half_inv
+        P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
+        geo_B = P_B @ SA_half_inv
+
+        X_A = SB_half_inv @ u_A
+        P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
+        geo_A = SB_half_inv @ P_A
+
+        uA_norm = u_A.norm()
+        uB_norm = u_B.norm()
+        gA_norm = geo_A.norm() + 1e-30
+        gB_norm = geo_B.norm() + 1e-30
+        dA = -lr * (uA_norm / gA_norm) * geo_A
+        dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
+        return dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -1610,34 +1707,51 @@ class AdamPolarProductLoRA(Optimizer):
             u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
             u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
 
-            # Spectral square-root preconditioners
-            SA_half_inv = spd_frac_power_inv(A.float() @ A.float().T, gamma=0.5, eps=self.delta)
-            SB_half_inv = spd_frac_power_inv(B.float().T @ B.float(), gamma=0.5, eps=self.delta)
+            # Spectral square-root preconditioners. Refresh every K steps; reuse
+            # cached value otherwise. K=1 ⇒ refresh every step (original behavior).
+            # precond_method='higham' uses Newton-Schulz iteration instead of eigh
+            # — ~10× faster at r=256 by avoiding the eigh kernel-launch storm.
+            if (state['step'] - 1) % self.precond_refresh_every == 0:
+                state['SA_half_inv'] = _spd_inv_half(
+                    A.float() @ A.float().T, eps=self.delta,
+                    method=self.precond_method, higham_iters=self.higham_iters,
+                )
+                state['SB_half_inv'] = _spd_inv_half(
+                    B.float().T @ B.float(), eps=self.delta,
+                    method=self.precond_method, higham_iters=self.higham_iters,
+                )
+            SA_half_inv = state['SA_half_inv']
+            SB_half_inv = state['SB_half_inv']
 
-            # Polar-product on Adam direction (substitute u for ∇).
-            X_B = u_B @ SA_half_inv
-            P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
-            geo_B = P_B @ SA_half_inv
-
-            X_A = SB_half_inv @ u_A
-            P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
-            geo_A = SB_half_inv @ P_A
-
-            # RMS-align: target ‖step‖_F = lr·‖u‖_F. Decouples step magnitude
-            # from the spectral preconditioner's scale (which depends on σ(S)
-            # and drifts over training).
-            uA_norm = u_A.norm()
-            uB_norm = u_B.norm()
-            gA_norm = geo_A.norm() + 1e-30
-            gB_norm = geo_B.norm() + 1e-30
-            dA = -lr * (uA_norm / gA_norm) * geo_A
-            dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
+            # Picard fixed-point iteration on the joint natural-gradient
+            # equations. picard_iters=1 ⇒ block-diagonal (Adam direction fed
+            # in as-is); picard_iters≥2 ⇒ feed cross-coupling correction
+            # (1/η)·Bᵀ·dB_prev·A and (1/η)·B·dA_prev·Aᵀ into the polar pipeline.
+            # Joint normal eqs (under spectral-product metric):
+            #   S_B·ΔA + Bᵀ·ΔB·A = -η·u_A
+            #   ΔB·S_A + B·ΔA·Aᵀ = -η·u_B
+            # Block-diagonal drops the cross-terms; Picard restores them.
+            A_f = A.float()
+            B_f = B.float()
+            dA_prev = torch.zeros_like(A_f)
+            dB_prev = torch.zeros_like(B_f)
+            for k in range(self.picard_iters):
+                if k == 0:
+                    u_A_eff = u_A
+                    u_B_eff = u_B
+                else:
+                    u_A_eff = u_A + (B_f.T @ dB_prev @ A_f) / lr
+                    u_B_eff = u_B + (B_f @ dA_prev @ A_f.T) / lr
+                dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm = \
+                    self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv, SB_half_inv, lr)
+                dA_prev = dA
+                dB_prev = dB
 
             if self.log_diagnostics:
                 # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
                 # for sign-convention rationale.
-                sa_min, sa_max = _spd_eig_extremes(A.float() @ A.float().T)
-                sb_min, sb_max = _spd_eig_extremes(B.float().T @ B.float())
+                sa_min, sa_max = _gram_eig_extremes_from_factor(A)
+                sb_min, sb_max = _gram_eig_extremes_from_factor(B)
                 diag_records.append({
                     "cos_A": _frob_cos(dA, -u_A),
                     "cos_B": _frob_cos(dB, -u_B),
@@ -1698,7 +1812,9 @@ class AdamuonPolarProductLoRA(Optimizer):
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
                  eps=1e-8, ns_steps=5, sign_stabilize=True,
                  adapter_name=None, lora_plus_multiplier=1.0,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_diagnostics=False, diagnostics_every=20,
+                 precond_refresh_every=1,
+                 precond_method="eigh", higham_iters=10):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1713,6 +1829,9 @@ class AdamuonPolarProductLoRA(Optimizer):
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
+        self.precond_refresh_every = precond_refresh_every
+        self.precond_method = precond_method
+        self.higham_iters = higham_iters
 
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
@@ -1752,9 +1871,20 @@ class AdamuonPolarProductLoRA(Optimizer):
             sA = mA.sign() if self.sign_stabilize else mA
             sB = mB.sign() if self.sign_stabilize else mB
 
-            # Spectral preconditioners (same as AdamPolarProductLoRA).
-            SA_half_inv = spd_frac_power_inv(A.float() @ A.float().T, gamma=0.5, eps=self.delta)
-            SB_half_inv = spd_frac_power_inv(B.float().T @ B.float(), gamma=0.5, eps=self.delta)
+            # Spectral preconditioners (same as AdamPolarProductLoRA). Cached
+            # and refreshed every K steps; K=1 reproduces the original per-step
+            # behavior. precond_method='higham' swaps eigh for NS iteration.
+            if (state['step'] - 1) % self.precond_refresh_every == 0:
+                state['SA_half_inv'] = _spd_inv_half(
+                    A.float() @ A.float().T, eps=self.delta,
+                    method=self.precond_method, higham_iters=self.higham_iters,
+                )
+                state['SB_half_inv'] = _spd_inv_half(
+                    B.float().T @ B.float(), eps=self.delta,
+                    method=self.precond_method, higham_iters=self.higham_iters,
+                )
+            SA_half_inv = state['SA_half_inv']
+            SB_half_inv = state['SB_half_inv']
 
             # Polar-product on (signed) momentum, NOT on Adam direction.
             X_B = sB @ SA_half_inv
@@ -1795,8 +1925,8 @@ class AdamuonPolarProductLoRA(Optimizer):
                 # "would plain Adam go this way" signal.
                 ref_A = -gA.sign()
                 ref_B = -gB.sign()
-                sa_min, sa_max = _spd_eig_extremes(A.float() @ A.float().T)
-                sb_min, sb_max = _spd_eig_extremes(B.float().T @ B.float())
+                sa_min, sa_max = _gram_eig_extremes_from_factor(A)
+                sb_min, sb_max = _gram_eig_extremes_from_factor(B)
                 diag_records.append({
                     "cos_A": _frob_cos(dA, ref_A),
                     "cos_B": _frob_cos(dB, ref_B),
@@ -2561,6 +2691,9 @@ def build_optimizer(
     muon_rank: int = 16,
     log_optim_diagnostics: bool = False,
     optim_diagnostics_every: int = 20,
+    precond_refresh_every: int = 1,
+    precond_method: str = "eigh",
+    higham_iters: int = 10,
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -2622,6 +2755,7 @@ def build_optimizer(
             eps=1e-8,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
         )
     if optimizer_type == "adam-lin-lora":
         return AdamLinLoRA(
@@ -2634,6 +2768,7 @@ def build_optimizer(
             lora_plus_multiplier=lora_plus_multiplier,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
         )
     if optimizer_type == "adam-scaled-lora-post":
         return AdamScaledLoRAPost(
@@ -2689,6 +2824,25 @@ def build_optimizer(
             lora_plus_multiplier=lora_plus_multiplier,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=1,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled":
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=2,
         )
     if optimizer_type == "adamuon-polar-product-lora":
         return AdamuonPolarProductLoRA(
@@ -2701,6 +2855,9 @@ def build_optimizer(
             lora_plus_multiplier=lora_plus_multiplier,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
         )
     if optimizer_type == "adamuon-lora":
         return AdaMuonLoRA(

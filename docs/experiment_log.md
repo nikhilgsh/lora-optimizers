@@ -5,6 +5,70 @@ Each entry: motivation → action → result → next step. Newest entries on to
 
 ---
 
+## 2026-05-01 — Stale-preconditioner Phase 1 validation (r=64, r=256)
+
+**Motivation.** Plan in `docs/plans/stale_preconditioner_speedup.md` proposes
+caching `S_A^{-1/2}, S_B^{-1/2}` for K steps to amortize per-step preconditioner
+cost. Validate that final eval loss survives staleness, separately at r=64
+(the rank where we already have a non-coupled baseline) and r=256 (where the
+speedup matters most).
+
+**Sweeps.** `polar_K_sweep_r64_2k`, `polar_K_sweep_r256_2k`, `polar_K_higham_r256_2k`.
+Single-seed, lr=3e-4, optimizer `adam-polar-product-lora` (non-coupled), 2000 steps.
+
+**r=64, eigh, K∈{1,2,5,10,20}:**
+
+| K  | eval_loss |
+|----|-----------|
+| 1  | 0.7454 |
+| 2  | 0.7453 |
+| 5  | 0.7455 |
+| 10 | 0.7459 |
+| 20 | 0.7462 |
+
+Δ(K=1 → K=20) = +0.0008.
+
+**r=256, eigh, K∈{1,5,10,20}:**
+
+| K  | eval_loss | step |
+|----|-----------|------|
+| 1  | 0.7502 | 1820 (SLURM time-limit, not converged at boundary) |
+| 5  | 0.7497 | 2000 |
+| 10 | 0.7568 | 2000 |
+| 20 | 0.7596 | 2000 |
+
+**r=256, higham (Phase 2 prototype), K∈{1,5}:**
+
+| K | eval_loss | step |
+|---|-----------|------|
+| 1 | — | crashed at step 800 in diagnostic probe (see below) |
+| 5 | 0.7504 | 2000 |
+
+**Findings.**
+- At r=64, eval loss is essentially flat across K∈[1,20]; staleness up to
+  K=20 is harmless at this rank, lr, and seed.
+- At r=256, the picture changes: K=5 matches K=1 within the incomplete-K=1
+  data; K=10 is +0.0071 worse than K=5, K=20 is +0.0099 worse. The break is
+  between K=5 and K=10 at this rank.
+- higham vs eigh at r=256, K=5: 0.7504 vs 0.7497, Δ=+0.0007. Quality
+  indistinguishable at this single comparison point. Wall-time speedup not
+  measured cleanly here.
+
+**Probe crash on higham K=1.** The optim-diagnostics probe called
+`torch.linalg.eigvalsh(BᵀB)` on a 256×256 Gram matrix that became
+near-degenerate, raising `_LinAlgError: code 257`. The polar update math
+itself was healthy at step 800 (eval_loss=0.7830 mid-trajectory). Patched in
+this commit: `_spd_eig_extremes` is now NaN-tolerant on `LinAlgError`, and
+the two factor-Gram call sites in `AdamPolarProductLoRA` and
+`AdamuonPolarProductLoRA` use `svdvals(X)**2` (numerically more accurate
+for `λ_min` of `XᵀX` than `eigvalsh` on the formed Gram).
+
+**Next step.** Rerun K=1 r=256 cells (eigh + higham) with the probe fix and
+a 4h time limit — submitted as group `polar_K1_r256_rerun_2k` (SLURM job
+6315528). Closes the K=1 data point at r=256.
+
+---
+
 ## 2026-04-30 — η-bracketing for scaled-lora, lin-lora, diag-scaled-lora
 
 **Motivation.** Original `lr_sweep_2k` topped out at η=1e-3 with these three optimizers

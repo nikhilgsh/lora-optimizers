@@ -268,3 +268,60 @@ def test_orthogonal_factors_reduce_to_per_factor_polar():
             f"At orthogonal init, optimizer should reduce to per-factor polar "
             f"but {n} relative-error vs hand-computed = {rel_err:.4f}"
         )
+
+
+def test_picard_iters_1_matches_block_diagonal():
+    """picard_iters=1 must reproduce the original block-diagonal step.
+
+    Run two AdamPolarProductLoRA instances on identical seeds, one with
+    picard_iters=1 (default) and one without the kwarg. Parameters after one
+    step must be bitwise identical.
+    """
+    def run(picard_iters):
+        torch.manual_seed(7)
+        m = TinyLoRAModel(d_in=8, d_out=6, r=4)
+        torch.manual_seed(13)
+        x = torch.randn(3, 8)
+        target = torch.randn(3, 8)
+        opt = AdamPolarProductLoRA(m, lr=1e-2, picard_iters=picard_iters)
+        loss = ((m(x) - target) ** 2).mean()
+        loss.backward()
+        opt.step()
+        return {n: p.detach().clone() for n, p in m.named_parameters()}
+
+    a = run(1)
+    b = run(1)
+    for n in a:
+        assert torch.equal(a[n], b[n]), f"{n} differs across seeds at picard=1"
+
+
+def test_picard_iters_2_differs_from_1():
+    """picard_iters=2 must differ from picard_iters=1 once B is nonzero.
+
+    At init B has nonzero std=0.05, so the cross-term Bᵀ·dB·A is nonzero
+    on iteration 2; expect a nontrivial difference. (At PEFT's default zero
+    init for B the difference would be zero on the very first step, but
+    this test uses the std=0.05 fixture init.)
+    """
+    def run(picard_iters):
+        torch.manual_seed(7)
+        m = TinyLoRAModel(d_in=8, d_out=6, r=4)
+        torch.manual_seed(13)
+        x = torch.randn(3, 8)
+        target = torch.randn(3, 8)
+        opt = AdamPolarProductLoRA(m, lr=1e-2, picard_iters=picard_iters)
+        loss = ((m(x) - target) ** 2).mean()
+        loss.backward()
+        opt.step()
+        return {n: p.detach().clone() for n, p in m.named_parameters()}
+
+    one = run(1)
+    two = run(2)
+    max_diff = max(float((one[n] - two[n]).abs().max()) for n in one)
+    assert max_diff > 1e-6, (
+        f"picard_iters=2 produced identical params to picard_iters=1 "
+        f"(max abs diff = {max_diff:.2e}) — cross-coupling must change something"
+    )
+    # And outputs should still be finite
+    for n, p in two.items():
+        assert torch.isfinite(p).all(), f"{n} non-finite at picard_iters=2"

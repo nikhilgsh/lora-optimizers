@@ -233,6 +233,22 @@ def make_parser():
                              "--no-log_optim_diagnostics to disable for throughput-only benchmarks.")
     parser.add_argument("--optim_diagnostics_every", type=int, default=20,
                         help="Cadence (in optimizer steps) for --log_optim_diagnostics.")
+    parser.add_argument("--precond_refresh_every", type=int, default=1,
+                        help="K-step cadence for refreshing the per-pair Gram-preconditioner cache "
+                             "(adam-scaled-lora, adam-lin-lora, adam-polar-product-lora, "
+                             "adamuon-polar-product-lora). K=1 reproduces the original per-step "
+                             "behavior; K>1 reuses the cached preconditioner for K-1 steps after "
+                             "each refresh, trading a small amount of staleness for a large step-time "
+                             "speedup at high LoRA rank.")
+    parser.add_argument("--precond_method", choices=["eigh", "higham"], default="eigh",
+                        help="Method for computing S^{-1/2} in the polar-product optimizers. "
+                             "'eigh' is the reference (eigendecomp + diag-pow + reconstruct). "
+                             "'higham' uses Newton-Schulz iteration (matmul-only) — much faster "
+                             "at high LoRA rank because it avoids the eigh kernel-launch storm.")
+    parser.add_argument("--higham_iters", type=int, default=10,
+                        help="Newton-Schulz iterations when --precond_method=higham. "
+                             "10 is needed for κ ≈ 200 (the worst case observed for SB "
+                             "during training); 5 is fine on well-conditioned SA only.")
     parser.add_argument("--wandb_project", default=None, help="W&B project name. Omit to disable W&B.")
     parser.add_argument("--wandb_run_name", default=None, help="W&B run name. Auto-generated from key params if omitted.")
     return parser
@@ -363,6 +379,9 @@ def main():
         muon_rank=args.lora_r,
         log_optim_diagnostics=args.log_optim_diagnostics,
         optim_diagnostics_every=args.optim_diagnostics_every,
+        precond_refresh_every=args.precond_refresh_every,
+        precond_method=args.precond_method,
+        higham_iters=args.higham_iters,
     )
     scheduler = get_scheduler(
         name=args.lr_scheduler_type,
