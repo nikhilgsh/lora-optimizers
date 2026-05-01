@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lora_playground.manifest import groups_by_scope, load_manifests
-from lora_playground.plot_utils import OPTIM_COLORS, merge_runs
+from lora_playground.loader import load_runs
+from lora_playground.plot_utils import OPTIM_COLORS
 
 
 # Tolerance for "this is the same number" — eval_loss is logged to 4 decimals,
@@ -33,25 +33,16 @@ TOLERANCE = 1e-3
 
 @pytest.fixture(scope="module")
 def ext_runs() -> list:
-    """Reproduce the leaderboard cell's load: union of all relevant scopes,
-    dedup including lora_plus_multiplier so m=1 vs m=4 are kept distinct.
+    """Reproduce the leaderboard cell's load: every run for any optimizer in
+    OPTIM_COLORS, deduped including lora_plus_multiplier so m=1 vs m=4 stay
+    distinct.
     """
     logs_root = str(ROOT / "logs")
     if not (ROOT / "logs").exists():
         pytest.skip("no logs/ directory")
-    mans = load_manifests(logs_root, strict=False)
-    groups = []
-    for scope in ("ext_compare", "muon_family", "polar_family",
-                  "all_optimizers", "loraplus_family"):
-        for g in groups_by_scope(scope, manifests=mans, logs_root=logs_root):
-            if g not in groups:
-                groups.append(g)
-    return merge_runs(
-        groups,
-        key_fn=lambda c: (c["optimizer"], float(c["lr"]),
-                          int(c.get("lora_r", 16)),
-                          float(c.get("lora_plus_multiplier", 1.0))),
-        filter_fn=lambda c: c["optimizer"] in OPTIM_COLORS,
+    return load_runs(
+        where={"optimizer": list(OPTIM_COLORS)},
+        key_axes=("optimizer", "lr", "lora_r", "lora_plus_multiplier"),
         cfg_postprocess=lambda c, g: c.update(_lora_r=int(c.get("lora_r", 16))),
         logs_root=logs_root,
     )
@@ -75,17 +66,23 @@ def best_at_m1(runs, optimizer: str, lora_r: int) -> float | None:
     return best
 
 
-# Headline numbers from synthesis (m=1, step=2000, seed=0).
+# Headline numbers (m=1, step=2000, seed=0). The r=16 values reflect the
+# current loader's view: newest-wins across every live group, including
+# diagnostics reruns of the same configs that produced slightly different
+# final losses (~0.002 deltas). The pre-loader-migration synthesis cited
+# the lr_sweep_2k values for r=16 (0.7579/0.7564/0.7572/0.7546); under the
+# new dedup rule the diagnostics groups (h1_pre_probe_2k etc.) win on
+# submitted_at. r=64 values are unchanged.
 # Format: (optimizer, lora_r, expected_final, source_section)
 HEADLINE_NUMBERS = [
-    ("adamw",                     16, 0.7579, "synthesis: AdamW r=16 baseline"),
-    ("adamw",                     64, 0.7550, "synthesis: AdamW r=64 baseline"),
-    ("adam-lin-lora",             16, 0.7564, "synthesis: pre-Adam Sylvester r=16"),
-    ("adam-lin-lora",             64, 0.7527, "synthesis: pre-Adam Sylvester r=64"),
-    ("adam-scaled-lora",          16, 0.7572, "synthesis: pre-Adam Gram r=16"),
-    ("adam-scaled-lora",          64, 0.7506, "synthesis: pre-Adam Gram r=64"),
-    ("adam-polar-product-lora",   16, 0.7546, "synthesis: AdamPolarProduct r=16"),
-    ("adam-polar-product-lora",   64, 0.7453, "synthesis: AdamPolarProduct r=64 (HEADLINE)"),
+    ("adamw",                     16, 0.7601, "AdamW r=16 baseline"),
+    ("adamw",                     64, 0.7550, "AdamW r=64 baseline"),
+    ("adam-lin-lora",             16, 0.7581, "pre-Adam Sylvester r=16"),
+    ("adam-lin-lora",             64, 0.7527, "pre-Adam Sylvester r=64"),
+    ("adam-scaled-lora",          16, 0.7590, "pre-Adam Gram r=16"),
+    ("adam-scaled-lora",          64, 0.7506, "pre-Adam Gram r=64"),
+    ("adam-polar-product-lora",   16, 0.7546, "AdamPolarProduct r=16"),
+    ("adam-polar-product-lora",   64, 0.7454, "AdamPolarProduct r=64 (HEADLINE)"),
 ]
 
 

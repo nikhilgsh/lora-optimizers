@@ -20,21 +20,16 @@ Schema (written by submit.sh):
       "deprecated":    false
     }
 
-Loading: prefer ``lora_playground.loader.load_runs(where=...)`` —
-predicate-based, no scope strings. ``load_runs_by_scope`` and
-``groups_by_scope`` here are thin shims kept for the existing
-``sweep_analysis.ipynb`` until it migrates.
-
-To exclude an old sweep from analysis: set ``"deprecated": true`` in its
-own ``meta.json``.
+Loading: ``lora_playground.loader.load_runs(where=...)`` — predicate-based,
+no scope strings. To exclude an old sweep from analysis, set
+``"deprecated": true`` in its own ``meta.json``.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable
 
-from .plot_utils import has_runs, merge_runs
+from .plot_utils import has_runs
 
 
 class UntaggedSweepError(RuntimeError):
@@ -118,8 +113,6 @@ def warn_untagged(manifests: list[dict]) -> list[str]:
 def live_manifests_newest_first(manifests: list[dict]) -> list[dict]:
     """Filter to non-deprecated, non-corrupt, scope-tagged manifests, sorted
     by ``submitted_at`` descending (newest first → wins ``merge_runs`` dedup).
-
-    Shared by ``groups_by_scope`` (legacy shim) and ``loader.load_runs``.
     """
     live = [m for m in manifests
             if not m.get("deprecated")
@@ -127,37 +120,3 @@ def live_manifests_newest_first(manifests: list[dict]) -> list[dict]:
             and not m.get("_untagged")]
     live.sort(key=lambda m: m.get("submitted_at", ""), reverse=True)
     return live
-
-
-def groups_by_scope(scope: str, manifests: list[dict] | None = None,
-                    logs_root: str = "../logs") -> tuple[str, ...]:
-    """Return groups whose manifest declares ``scope`` in its scope list,
-    in priority order suitable for ``merge_runs`` (newest first).
-
-    Excludes deprecated groups (``meta.json`` ``deprecated: true``).
-
-    Legacy shim — new code should use ``loader.load_runs(where=...)``.
-    """
-    if manifests is None:
-        manifests = load_manifests(logs_root, strict=False)
-    matched = [m for m in live_manifests_newest_first(manifests)
-               if scope in m.get("scope", [])]
-    return tuple(m["group"] for m in matched)
-
-
-def load_runs_by_scope(scope: str,
-                       key_fn: Callable[[dict], tuple],
-                       filter_fn: Callable[[dict], bool] | None = None,
-                       cfg_postprocess: Callable[[dict, str], None] | None = None,
-                       manifests: list[dict] | None = None,
-                       logs_root: str = "../logs"):
-    """Legacy shim — kept so existing ``sweep_analysis.ipynb`` cells work.
-
-    New code: use ``loader.load_runs(where=...)`` instead. Predicates over
-    cfg fields replace the (scope string + filter_fn) pair, eliminating
-    several silent-failure modes (typo'd scope, OPTIM_COLORS membership
-    drift). See ``lora_playground/loader.py`` for the new API.
-    """
-    groups = groups_by_scope(scope, manifests=manifests, logs_root=logs_root)
-    return merge_runs(groups, key_fn=key_fn, filter_fn=filter_fn,
-                      cfg_postprocess=cfg_postprocess, logs_root=logs_root)
