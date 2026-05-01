@@ -1,0 +1,8 @@
+{
+  "lr": ["3e-4"],
+  "lora_plus_multiplier": ["1.0"],
+  "seed": ["0"],
+  "lora_r": ["16", "128"],
+  "picard_alpha": ["0.25", "0.5", "0.75"],
+  "optimizer": ["adam-polar-product-lora-coupled"]
+}

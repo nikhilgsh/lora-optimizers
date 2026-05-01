@@ -37,6 +37,22 @@ N_GPUS="$3"
 SWEEP_SCRIPT="${4:-scripts/sweep.sh}"
 SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
 
+# ── Reuse-existing-data refusal ──────────────────────────────────────────────
+# Refuse to submit if any cell in the cartesian product of PARAM_FILE already
+# exists in logs/. Override with FORCE_OVERLAP=1 (and document the reason in
+# SWEEP_PURPOSE). The audit covers semantic equivalences (e.g. picard_alpha=0
+# is equivalent to picard_iters=1 / uncoupled). See
+# scripts/audit_sweep_overlap.py.
+if [[ -z "${FORCE_OVERLAP:-}" ]]; then
+    if ! python "${REPO_DIR}/scripts/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${REPO_DIR}/logs"; then
+        echo "" >&2
+        echo "ERROR: sweep overlaps with existing logs (see ✓ rows above)." >&2
+        echo "Drop the duplicate cells from ${PARAM_FILE}, or set FORCE_OVERLAP=1" >&2
+        echo "and explain the rerun in SWEEP_PURPOSE." >&2
+        exit 1
+    fi
+fi
+
 if [[ -n "${SWEEP_SUPERSEDES:-}" ]]; then
     echo "WARN: SWEEP_SUPERSEDES is no longer honored." >&2
     echo "      To exclude '${SWEEP_SUPERSEDES}' from analysis, delete its log dir." >&2

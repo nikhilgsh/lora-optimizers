@@ -109,6 +109,7 @@ OPTIMIZER_CHOICES = {
     "polar-product-lora",
     "adam-polar-product-lora",
     "adam-polar-product-lora-coupled",
+    "adam-polar-product-lora-coupled-endrms",
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
@@ -1630,7 +1631,7 @@ class AdamPolarProductLoRA(Optimizer):
                  log_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=1,
                  precond_method="eigh", higham_iters=10,
-                 picard_iters=1):
+                 picard_iters=1, end_rms_align=False, picard_alpha=1.0):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1648,6 +1649,18 @@ class AdamPolarProductLoRA(Optimizer):
         self.precond_method = precond_method
         self.higham_iters = higham_iters
         self.picard_iters = picard_iters
+        # Damping factor on the iter-2+ cross-coupling term. α=1 reproduces
+        # standard Picard; α=0 zeros the cross-term (equivalent to picard_iters=1
+        # except in passing through the diagnostic instrumentation). Continuous
+        # probe of cross-term magnitude.
+        self.picard_alpha = picard_alpha
+        # When True, override the polar pipeline's per-iterate RMS-align so
+        # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
+        # (Adam direction norms before any cross-term correction). The
+        # default (False) reproduces the original behavior where the
+        # pipeline rescales to ‖u_A_eff‖ — which inflates the step when
+        # the cross-term is large. No-op at picard_iters=1 (cross-term=0).
+        self.end_rms_align = end_rms_align
         if picard_iters < 1:
             raise ValueError("picard_iters must be >= 1")
 
@@ -1740,15 +1753,31 @@ class AdamPolarProductLoRA(Optimizer):
             B_f = B.float()
             dA_prev = torch.zeros_like(A_f)
             dB_prev = torch.zeros_like(B_f)
+            # Saved BEFORE the loop — these are the AdaMuon RMS-align targets
+            # in end_rms_align mode (vs ‖u_A_eff‖ in the original mode).
+            uA_norm_orig = u_A.norm()
+            uB_norm_orig = u_B.norm()
             for k in range(self.picard_iters):
                 if k == 0:
                     u_A_eff = u_A
                     u_B_eff = u_B
                 else:
-                    u_A_eff = u_A + (B_f.T @ dB_prev @ A_f) / lr
-                    u_B_eff = u_B + (B_f @ dA_prev @ A_f.T) / lr
+                    u_A_eff = u_A + self.picard_alpha * (B_f.T @ dB_prev @ A_f) / lr
+                    u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_f.T) / lr
                 dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
                     self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv, SB_half_inv, lr)
+                if self.end_rms_align:
+                    # Override the pipeline's RMS-align: rescale to the
+                    # ORIGINAL Adam-direction norm rather than ‖u_A_eff‖.
+                    # Re-expose uA_norm / gA_norm / rms_scale_A consistently
+                    # so the diagnostics block below still reflects what
+                    # was actually applied.
+                    gA_norm = geo_A.norm() + 1e-30
+                    gB_norm = geo_B.norm() + 1e-30
+                    uA_norm = uA_norm_orig
+                    uB_norm = uB_norm_orig
+                    dA = -lr * (uA_norm / gA_norm) * geo_A
+                    dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
                 dA_prev = dA
                 dB_prev = dB
 
@@ -2760,6 +2789,8 @@ def build_optimizer(
     precond_refresh_every: int = 1,
     precond_method: str = "eigh",
     higham_iters: int = 10,
+    picard_alpha: float = 1.0,
+    picard_iters_override: int | None = None,
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -2908,7 +2939,24 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 2,
+            picard_alpha=picard_alpha,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-endrms":
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
             picard_iters=2,
+            end_rms_align=True,
         )
     if optimizer_type == "adamuon-polar-product-lora":
         return AdamuonPolarProductLoRA(

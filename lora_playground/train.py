@@ -249,6 +249,16 @@ def make_parser():
                         help="Newton-Schulz iterations when --precond_method=higham. "
                              "10 is needed for κ ≈ 200 (the worst case observed for SB "
                              "during training); 5 is fine on well-conditioned SA only.")
+    parser.add_argument("--picard_alpha", type=float, default=1.0,
+                        help="Damping on the Picard cross-coupling correction in "
+                             "AdamPolarProductLoRA (only takes effect when picard_iters > 1). "
+                             "α=1 standard Picard; α=0 zeros the cross-term; intermediate "
+                             "values continuously interpolate between block-diagonal and "
+                             "joint-NE targets.")
+    parser.add_argument("--picard_iters_override", type=int, default=None,
+                        help="Override picard_iters for AdamPolarProductLoRA "
+                             "(adam-polar-product-lora-coupled). Default uses the "
+                             "factory's hardcoded value (2 for coupled).")
     parser.add_argument("--wandb_project", default=None, help="W&B project name. Omit to disable W&B.")
     parser.add_argument("--wandb_run_name", default=None, help="W&B run name. Auto-generated from key params if omitted.")
     return parser
@@ -382,6 +392,8 @@ def main():
         precond_refresh_every=args.precond_refresh_every,
         precond_method=args.precond_method,
         higham_iters=args.higham_iters,
+        picard_alpha=args.picard_alpha,
+        picard_iters_override=args.picard_iters_override,
     )
     scheduler = get_scheduler(
         name=args.lr_scheduler_type,
