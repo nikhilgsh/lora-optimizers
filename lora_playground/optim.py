@@ -1662,7 +1662,12 @@ class AdamPolarProductLoRA(Optimizer):
             }
 
     def _polar_pipeline(self, u_A, u_B, SA_half_inv, SB_half_inv, lr):
-        """One pass of the polar-product update + RMS-align. Returns (dA, dB)."""
+        """One pass of the polar-product update + RMS-align.
+
+        Returns (dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm,
+        P_A, P_B). P_A, P_B are the polar (Newton-Schulz) outputs used
+        for the H3 polar-sensitivity diagnostic.
+        """
         X_B = u_B @ SA_half_inv
         P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
         geo_B = P_B @ SA_half_inv
@@ -1677,7 +1682,7 @@ class AdamPolarProductLoRA(Optimizer):
         gB_norm = geo_B.norm() + 1e-30
         dA = -lr * (uA_norm / gA_norm) * geo_A
         dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
-        return dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm
+        return dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, P_A, P_B
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -1742,17 +1747,19 @@ class AdamPolarProductLoRA(Optimizer):
                 else:
                     u_A_eff = u_A + (B_f.T @ dB_prev @ A_f) / lr
                     u_B_eff = u_B + (B_f @ dA_prev @ A_f.T) / lr
-                dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm = \
+                dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
                     self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv, SB_half_inv, lr)
                 dA_prev = dA
                 dB_prev = dB
 
             if self.log_diagnostics:
+                step_count_local = state['step']
+                is_probe_step = (step_count_local % self.diagnostics_every == 0)
                 # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
                 # for sign-convention rationale.
                 sa_min, sa_max = _gram_eig_extremes_from_factor(A)
                 sb_min, sb_max = _gram_eig_extremes_from_factor(B)
-                diag_records.append({
+                rec = {
                     "cos_A": _frob_cos(dA, -u_A),
                     "cos_B": _frob_cos(dB, -u_B),
                     "norm_dA": float(dA.detach().norm()),
@@ -1765,7 +1772,66 @@ class AdamPolarProductLoRA(Optimizer):
                     "SB_min": sb_min, "SB_max": sb_max,
                     "rms_scale_A": float(uA_norm / gA_norm),
                     "rms_scale_B": float(uB_norm / gB_norm),
-                })
+                }
+
+                # H1 — cross-term ratios γ_A, γ_B. Always cheap; uses the
+                # APPLIED step (dA, dB) as the dB_prev/dA_prev surrogate for
+                # the would-be iter-2 correction. Defined as the relative
+                # magnitude of the perturbation that iter-2 would inject:
+                #     γ_A = ‖Bᵀ dB A / lr‖_F / ‖u_A‖_F
+                #     γ_B = ‖B  dA Aᵀ / lr‖_F / ‖u_B‖_F
+                cross_A = (B_f.T @ dB.float() @ A_f) / lr
+                cross_B = (B_f @ dA.float() @ A_f.T) / lr
+                rec["gamma_A"] = float(cross_A.norm() / (u_A.norm() + 1e-30))
+                rec["gamma_B"] = float(cross_B.norm() / (u_B.norm() + 1e-30))
+
+                # H4 — numerical and stable rank of S_A, S_B (r×r, cheap).
+                # nrank_τ = #{σᵢ > τ·σ_max}; stable rank = sum(σ²)/σ_max².
+                # eigvalsh(SA) returns σ²(A) directly (S_A = A Aᵀ has eigs σᵢ²).
+                try:
+                    eigA = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
+                    eigB = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
+                    smax_A = float(eigA.max())
+                    smax_B = float(eigB.max())
+                    rec["nrank_A_1e3"] = int((eigA > 1e-3 * smax_A).sum())
+                    rec["nrank_A_1e2"] = int((eigA > 1e-2 * smax_A).sum())
+                    rec["nrank_B_1e3"] = int((eigB > 1e-3 * smax_B).sum())
+                    rec["nrank_B_1e2"] = int((eigB > 1e-2 * smax_B).sum())
+                    rec["stable_rank_A"] = float(eigA.sum() / (smax_A + 1e-30))
+                    rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
+                except torch._C._LinAlgError:
+                    for k in ("nrank_A_1e3", "nrank_A_1e2", "nrank_B_1e3",
+                              "nrank_B_1e2", "stable_rank_A", "stable_rank_B"):
+                        rec[k] = float("nan")
+
+                # H2/H3 — Picard contraction + polar sensitivity.
+                # Probe-step only (every diagnostics_every) since it costs 3
+                # extra polar-pipeline calls per pair. Independent of the
+                # applied step (self.picard_iters); always runs 3 iters from
+                # zero so we can compare uncoupled and coupled symmetrically.
+                if is_probe_step:
+                    dA1, dB1, _, _, _, _, _, _, P_A1, P_B1 = self._polar_pipeline(
+                        u_A, u_B, SA_half_inv, SB_half_inv, lr)
+                    u_A_2 = u_A + (B_f.T @ dB1 @ A_f) / lr
+                    u_B_2 = u_B + (B_f @ dA1 @ A_f.T) / lr
+                    dA2, dB2, _, _, _, _, _, _, P_A2, P_B2 = self._polar_pipeline(
+                        u_A_2, u_B_2, SA_half_inv, SB_half_inv, lr)
+                    u_A_3 = u_A + (B_f.T @ dB2 @ A_f) / lr
+                    u_B_3 = u_B + (B_f @ dA2 @ A_f.T) / lr
+                    dA3, dB3, _, _, _, _, _, _, _, _ = self._polar_pipeline(
+                        u_A_3, u_B_3, SA_half_inv, SB_half_inv, lr)
+                    nA1 = float(dA1.norm()) + 1e-30
+                    nA2 = float(dA2.norm()) + 1e-30
+                    nB1 = float(dB1.norm()) + 1e-30
+                    nB2 = float(dB2.norm()) + 1e-30
+                    rec["picard_contract_A_12"] = float((dA2 - dA1).norm()) / nA1
+                    rec["picard_contract_A_23"] = float((dA3 - dA2).norm()) / nA2
+                    rec["picard_contract_B_12"] = float((dB2 - dB1).norm()) / nB1
+                    rec["picard_contract_B_23"] = float((dB3 - dB2).norm()) / nB2
+                    rec["polar_cos_A_12"] = _frob_cos(P_A1, P_A2)
+                    rec["polar_cos_B_12"] = _frob_cos(P_B1, P_B2)
+
+                diag_records.append(rec)
 
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
