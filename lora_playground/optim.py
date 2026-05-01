@@ -1859,6 +1859,64 @@ class AdamPolarProductLoRA(Optimizer):
                     rec["picard_contract_B_23"] = float((dB3 - dB2).norm()) / nB2
                     rec["polar_cos_A_12"] = _frob_cos(P_A1, P_A2)
                     rec["polar_cos_B_12"] = _frob_cos(P_B1, P_B2)
+                    # Oscillation detector — cos between successive Picard
+                    # iterate displacements δ_0 = dA2 - dA1 and δ_1 = dA3 - dA2.
+                    # Positive ⇒ monotone contraction toward fixed point.
+                    # Negative ⇒ iterates oscillating across the fixed point;
+                    # signature of negative-eigenvalue Picard Jacobian.
+                    # Per-pair scalar; aggregated to {min, median, max} via
+                    # _emit_optim_diagnostics.
+                    delta_A_0 = dA2 - dA1
+                    delta_A_1 = dA3 - dA2
+                    delta_B_0 = dB2 - dB1
+                    delta_B_1 = dB3 - dB2
+                    rec["picard_osc_cos_A"] = _frob_cos(delta_A_1, delta_A_0)
+                    rec["picard_osc_cos_B"] = _frob_cos(delta_B_1, delta_B_0)
+                    # Cross-term direction probe — does the iter-1→iter-2
+                    # displacement (the part the cross-term injects) point
+                    # along the gradient direction (-u_A)? Positive ⇒ cross-
+                    # term is descent-aligned refinement. Negative or near-
+                    # zero ⇒ cross-term is rotation orthogonal to gradient
+                    # (the noise hypothesis at small r).
+                    rec["cross_cos_A"] = _frob_cos(delta_A_0, -u_A)
+                    rec["cross_cos_B"] = _frob_cos(delta_B_0, -u_B)
+                    rec["cross_norm_A_rel"] = float(delta_A_0.norm() / nA1)
+                    rec["cross_norm_B_rel"] = float(delta_B_0.norm() / nB1)
+
+                    # Cautious-mask diagnostic — per-coordinate sign agreement of
+                    # the iter-2 correction (δ = dA2−dA1) with the descent
+                    # direction (−grad_A). Two reductions:
+                    #   *_count_frac: fraction of coordinates where signs agree
+                    #     (= what fraction of the correction the cautious mask
+                    #     would preserve if applied uniformly).
+                    #   *_norm_frac: fraction of ‖δ‖² coming from agreeing
+                    #     coordinates (= what fraction of the correction's
+                    #     energy survives the cautious mask). More directly
+                    #     predicts how cautious-coupled would behave.
+                    # gA, gB are the raw gradients on A, B (computed earlier
+                    # in this step from A.grad / B.grad).
+                    neg_gA = -gA
+                    neg_gB = -gB
+                    mask_A = (torch.sign(delta_A_0) == torch.sign(neg_gA))
+                    mask_B = (torch.sign(delta_B_0) == torch.sign(neg_gB))
+                    rec["cautious_mask_A_count_frac"] = float(mask_A.float().mean())
+                    rec["cautious_mask_B_count_frac"] = float(mask_B.float().mean())
+                    delta_A_sq = delta_A_0 * delta_A_0
+                    delta_B_sq = delta_B_0 * delta_B_0
+                    den_A = float(delta_A_sq.sum()) + 1e-30
+                    den_B = float(delta_B_sq.sum()) + 1e-30
+                    rec["cautious_mask_A_norm_frac"] = float(
+                        (delta_A_sq * mask_A.float()).sum() / den_A)
+                    rec["cautious_mask_B_norm_frac"] = float(
+                        (delta_B_sq * mask_B.float()).sum() / den_B)
+                    # Baseline: agreement of iter-1 step itself with −grad.
+                    # If iter-1 already disagrees on many coordinates, the
+                    # mask isn't isolating "iter-2 is bad" from "every step
+                    # has noise vs raw grad."
+                    iter1_mask_A = (torch.sign(dA1) == torch.sign(neg_gA))
+                    iter1_mask_B = (torch.sign(dB1) == torch.sign(neg_gB))
+                    rec["cautious_iter1_A_count_frac"] = float(iter1_mask_A.float().mean())
+                    rec["cautious_iter1_B_count_frac"] = float(iter1_mask_B.float().mean())
 
                 diag_records.append(rec)
 
