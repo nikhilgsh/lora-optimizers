@@ -111,7 +111,7 @@ from lora_playground.loader import load_runs
 runs = load_runs(where={"optimizer": ["adam-polar-product-lora", "adamw"], "lora_r": 64})
 ```
 
-Companion: `inventory_runs(logs_root)` returns a structured audit (orphaned / deprecated / unknown-optimizer groups + lr-pinning per cell). The audit cell at the top of both notebooks calls it and prints the report — single source of truth for "what could be silently wrong."
+Companion: `inventory_runs(logs_root)` returns a structured audit (orphaned groups, optimizers in logs but missing from `OPTIM_COLORS`, lr-pinning per cell). The audit cell at the top of `sweep_analysis.ipynb` calls it and prints the report — single source of truth for "what could be silently wrong."
 
 To **exclude an old sweep** from analysis, delete its log dir. Newest-wins-on-collision (in `merge_runs`) handles "rerun supersedes old" automatically when the new sweep covers the same configs.
 
@@ -119,7 +119,7 @@ To **exclude an old sweep** from analysis, delete its log dir. Newest-wins-on-co
 
 Before writing any numerical claim to `docs/notes/*.md` (final losses, Δ vs baseline, "best η", "pinned/not pinned", leaderboard rows), the source MUST be one of:
 
-1. Re-executing the relevant cell in `notebooks/sweep_analysis.ipynb`, `notebooks/sweep_analysis_v2.ipynb`, or `notebooks/lin_scaled_investigation.ipynb` and reading the actual output.
+1. Re-executing the relevant cell in `notebooks/sweep_analysis.ipynb` or `notebooks/lin_scaled_investigation.ipynb` and reading the actual output.
 2. A direct call to `lora_playground.loader.load_runs(where=…)` from a fresh script.
 
 **NEVER** a hand-typed list of group names. Hand-typed lists drift from the manifest and silently miss data, producing phantom "pinned at boundary" / "missing data" claims. If you find yourself writing `groups = ['foo_2k', 'bar_2k', ...]`, stop — call the loader.
