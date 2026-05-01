@@ -103,20 +103,42 @@ def normalize_cell(cell: dict) -> list[dict]:
     return forms
 
 
+def cfg_field_or_command(cfg: dict, key: str, command: str):
+    """Return cfg[key] if present (and not None), else parse `--key VALUE`
+    from the recorded command line. Returns None if neither has the field.
+
+    Older runs / runs predating a CLI flag won't record the field in the
+    cfg dict — falling back to the command string lets us still match.
+    """
+    if key in cfg and cfg[key] is not None:
+        return cfg[key]
+    flag = "--" + key
+    if flag in command:
+        toks = command.split()
+        try:
+            idx = toks.index(flag)
+            return toks[idx + 1]
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
 def cell_matches_cfg(cell: dict, cfg: dict) -> bool:
     """A normalized cell-form matches cfg iff all its keys are present and equal.
 
     Tries every canonical form returned by normalize_cell — overlap is
     declared if ANY form matches.
     """
+    command = cfg.get("command", "")
     for form in normalize_cell(cell):
         ok = True
         for k, v in form.items():
             cfg_key = KEY_ALIASES.get(k, k)
-            if cfg_key not in cfg:
+            cfg_val = cfg_field_or_command(cfg, cfg_key, command)
+            if cfg_val is None:
                 ok = False
                 break
-            if coerce(cfg[cfg_key]) != coerce(v):
+            if coerce(cfg_val) != coerce(v):
                 ok = False
                 break
         if ok:

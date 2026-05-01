@@ -449,6 +449,8 @@ def main():
             "compile": args.compile,
             "compile_mode": args.compile_mode,
             "profile_steps": args.profile_steps,
+            "picard_alpha": args.picard_alpha,
+            "picard_iters_override": args.picard_iters_override,
         }
     )
 
