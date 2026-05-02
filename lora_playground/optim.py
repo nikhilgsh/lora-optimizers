@@ -111,7 +111,12 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled",
     "adam-polar-product-lora-coupled-endrms",
     "polar-coupled-core-lora",
+    "polar-coupled-core-imbalance-scalar-lora",
+    "polar-coupled-core-imbalance-lora",
+    "polar-coupled-core-imbalance-restore-lora",
     "muon-coupled-core-lora",
+    "muon-coupled-core-imbalance-scalar-lora",
+    "muon-coupled-core-imbalance-lora",
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
@@ -2992,12 +2997,107 @@ def _project_zero_22(M, r):
     return R
 
 
+def _imbalance_gauge_shift(dA_0, dB_0, A, B, *, mode, rho=None, delta=1e-6):
+    """Compute kernel-direction shift S that adjusts (ΔA_0, ΔB_0) toward an
+    iLoRA-style imbalance target. See docs/notes/polar_coupled_problem.md
+    "Recommended gauge: imbalance-preserving (iLoRA-style)".
+
+    The kernel of J_t is {(SA, -BS) : S ∈ R^(r×r)}, so the lifts
+        ΔA(S) = ΔA_0 + S A
+        ΔB(S) = ΔB_0 - B S
+    all give the same tangent J_t[ΔA, ΔB]. Use this freedom to control the
+    imbalance functional I(A, B) = AA^T - ρ B^T B (ρ = r / d_out, after
+    iLoRA Corollary 1: forward-variance preservation gives μ_1 = O(r/m)).
+
+    Linearization in the lifted update:
+        I(A + ΔA, B + ΔB) ≈ I_t + δI_0 + L(S)
+    with
+        δI_0 = ΔA_0 A^T + A ΔA_0^T - ρ(ΔB_0^T B + B^T ΔB_0)
+        L(S) = S S_R + S_R S^T + ρ(S^T S_L + S_L S),  S_R = AA^T, S_L = B^T B.
+
+    Restricting to symmetric S (the antisymmetric part is range-redundant
+    when T = S_R + ρ S_L is positive definite), L(S) reduces to the
+    symmetric Sylvester operator
+        L_sym(S_s) = S_s T + T S_s,  T = S_R + ρ S_L.
+
+    Modes:
+      - "preserve": solve L_sym(S) = -δI_0 ⇒ post-step ΔI ≈ 0 (preserve I_t).
+        Conservative; safe at PEFT init since δI_0 ≈ 0 there.
+      - "restore":  solve L_sym(S) = -(I_t + δI_0) ⇒ post-step I ≈ 0.
+        Aggressive; can blow up A at PEFT init (I_t = AA^T large) — boundary
+        case must be handled separately by the caller (e.g., Case-2 fallback).
+
+    Returns (dA_new, dB_new, S, gauge_diag_dict).
+    """
+    r = A.shape[0]
+    m = B.shape[0]
+    if rho is None:
+        rho = r / max(m, 1)
+    AAT = A @ A.T
+    BTB = B.T @ B
+    I_t = AAT - rho * BTB
+    # δI_0 from the base lift (symmetric).
+    dA0_AT = dA_0 @ A.T
+    dB0T_B = dB_0.T @ B
+    delta_I_0 = (dA0_AT + dA0_AT.T) - rho * (dB0T_B + dB0T_B.T)
+    # T = AA^T + ρ B^T B is the operator whose Sylvester L_sym(S) = ST + TS
+    # acts on symmetric S. Used by both the scalar and full-S branches and
+    # by the linearized-residual diagnostic below.
+    T = spdify(AAT + rho * BTB, eps=delta)
+    if mode == "preserve-scalar":
+        # Restrict S = s · I (single scalar). Closed form, no Sylvester solve.
+        # δI(s) = δI_0 + 2 s M where M = AA^T + ρ B^T B.
+        # Minimizing ‖δI(s)‖_F² gives s = -⟨δI_0, M⟩ / (2 ‖M‖_F²).
+        # This is the smallest-complexity gauge fix per the doc's
+        # "Recommended gauge: imbalance-preserving" guidance — fixes only
+        # the scalar rescaling gauge, no hyperparameters.
+        M = AAT + rho * BTB
+        denom = 2.0 * float((M * M).sum().item()) + 1e-30
+        s_scalar = -float((delta_I_0 * M).sum().item()) / denom
+        S = s_scalar * torch.eye(r, device=A.device, dtype=A.dtype)
+        dA_new = dA_0 + s_scalar * A
+        dB_new = dB_0 - s_scalar * B
+    else:
+        if mode == "preserve":
+            target = -delta_I_0
+        elif mode == "restore":
+            target = -(I_t + delta_I_0)
+        else:
+            raise ValueError(f"Unknown imbalance gauge mode '{mode}'.")
+        # Symmetric Sylvester: S T + T S = target.
+        S = solve_sylvester(T, T, target)
+        # Symmetrize numerically (the analytic solution is symmetric).
+        S = 0.5 * (S + S.T)
+        dA_new = dA_0 + S @ A
+        dB_new = dB_0 - B @ S
+    # Diagnostics: imbalance residual before/after gauge shift (linearized).
+    nan = float("nan")
+    den_pre = float(I_t.norm().item()) + 1e-30
+    pre = float(I_t.norm().item()) / (float(AAT.norm().item()) + rho * float(BTB.norm().item()) + 1e-30)
+    # Linearized post-step imbalance (we don't apply the step here; just for telemetry).
+    L_S = S @ T + T @ S
+    post_lin_residual = (I_t + delta_I_0 + L_S).norm().item()
+    base_lift_residual = (I_t + delta_I_0).norm().item()
+    gauge_diag = {
+        "gauge_S_norm": float(S.norm().item()),
+        "gauge_dA_shift_norm": float((S @ A).norm().item()),
+        "gauge_dB_shift_norm": float((B @ S).norm().item()),
+        "imbalance_residual_lin_pre": float(base_lift_residual),
+        "imbalance_residual_lin_post": float(post_lin_residual),
+    }
+    return dA_new, dB_new, S, gauge_diag
+
+
 def _polar_coupled_core_lift(
     core_obj, bases, lr, r, *,
     core_scale="squared_penalty",
     core_norm="operator",
     delta=1e-6,
     H_hat_for_align=None,
+    gauge="min-frobenius",
+    A_for_gauge=None,
+    B_for_gauge=None,
+    rho=None,
 ):
     """Sections 2 + 4: polar of `core_obj` (Ĥ for variant 1, M_hat for variant
     2), project (22), renormalize, scale, lift back via Sylvester gauge.
@@ -3077,6 +3177,24 @@ def _polar_coupled_core_lift(
         RHS_B = RHS_B + (U @ W) @ R_R.T
     dB = solve_spd(S_R, RHS_B.T).T
 
+    # Gauge shift (Section "Open sub-problem" of polar_coupled_problem.md).
+    # min-frobenius is the base lift above; imbalance modes shift through the
+    # kernel of J_t to control the iLoRA imbalance functional.
+    gauge_diag = {}
+    if gauge in ("imbalance-preserve", "imbalance-restore", "imbalance-preserve-scalar"):
+        if A_for_gauge is None or B_for_gauge is None:
+            raise ValueError("imbalance gauge requires A_for_gauge and B_for_gauge.")
+        mode = {
+            "imbalance-preserve": "preserve",
+            "imbalance-restore": "restore",
+            "imbalance-preserve-scalar": "preserve-scalar",
+        }[gauge]
+        dA, dB, _S, gauge_diag = _imbalance_gauge_shift(
+            dA, dB, A_for_gauge, B_for_gauge, mode=mode, rho=rho, delta=delta,
+        )
+    elif gauge != "min-frobenius":
+        raise ValueError(f"Unknown gauge '{gauge}'.")
+
     certs = {
         "gamma": float(gamma) if gamma == gamma else nan,
         "nuc": nuc,
@@ -3086,7 +3204,9 @@ def _polar_coupled_core_lift(
         "align_inst": align_inst,
         "s_active": s,
         "t_active": t,
+        "gauge": gauge,
     }
+    certs.update(gauge_diag)
     return dA, dB, certs
 
 
@@ -3187,6 +3307,8 @@ def _polar_coupled_core_step(
     core_scale="squared_penalty",
     core_norm="operator",
     sv_tol=1e-5,
+    gauge="min-frobenius",
+    rho=None,
 ):
     """Variant 1 entry point: build active core, polar+lift on Ĥ.
     Returns (dA, dB, certs, bases) — bases enables variant-2 reuse.
@@ -3195,12 +3317,6 @@ def _polar_coupled_core_step(
     B_f = B.float()
     GA_f = G_A.float()
     GB_f = G_B.float()
-    # Boundary case (Section 1 standing assumption): PEFT's default LoRA
-    # init zeros B, making the joint-solver QR of B undefined. The joint
-    # problem at B = 0 reduces *exactly* to Case 2, so we use that closed
-    # form for this step. NOT triggered by mere poor conditioning mid-
-    # training (which the spdify δI inside the joint solver handles as
-    # a numerical regularizer); only by initialization-zero factors.
     if _factor_essentially_zero(B_f) or _factor_essentially_zero(A_f):
         return _zero_B_fallback(A, B, G_A, G_B, lr, delta=delta, core_scale=core_scale)
     bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=delta, sv_tol=sv_tol)
@@ -3210,6 +3326,7 @@ def _polar_coupled_core_step(
         H_hat, bases, lr, r,
         core_scale=core_scale, core_norm=core_norm, delta=delta,
         H_hat_for_align=H_hat,
+        gauge=gauge, A_for_gauge=A_f, B_for_gauge=B_f, rho=rho,
     )
     certs["compat"] = bases["compat"]
     _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB)
@@ -3281,6 +3398,7 @@ class PolarCoupledCoreLoRA(Optimizer):
 
     def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
                  core_scale="squared_penalty",
+                 gauge="min-frobenius", rho=None,
                  log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -3290,6 +3408,8 @@ class PolarCoupledCoreLoRA(Optimizer):
         self.pairs = pairs
         self.delta = delta
         self.core_scale = core_scale
+        self.gauge = gauge
+        self.rho = rho
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0} for i in range(len(pairs))}
@@ -3313,6 +3433,8 @@ class PolarCoupledCoreLoRA(Optimizer):
                 delta=self.delta,
                 core_scale=self.core_scale,
                 core_norm="operator",
+                gauge=self.gauge,
+                rho=self.rho,
             )
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
@@ -3320,7 +3442,7 @@ class PolarCoupledCoreLoRA(Optimizer):
             B.grad.zero_()
 
             if self.log_diagnostics:
-                rec = {k: float(v) for k, v in certs.items()}
+                rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
                 rec["norm_dA"] = float(dA.norm().item())
                 rec["norm_dB"] = float(dB.norm().item())
                 diag_records.append(rec)
@@ -3357,6 +3479,7 @@ class MuonCoupledCoreLoRA(Optimizer):
     def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
                  beta1=0.95,
                  core_scale="squared_penalty",
+                 gauge="min-frobenius", rho=None,
                  log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -3367,6 +3490,8 @@ class MuonCoupledCoreLoRA(Optimizer):
         self.delta = delta
         self.beta1 = beta1
         self.core_scale = core_scale
+        self.gauge = gauge
+        self.rho = rho
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0,
@@ -3406,7 +3531,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                 A.grad.zero_()
                 B.grad.zero_()
                 if self.log_diagnostics:
-                    rec = {k: float(v) for k, v in certs_fb.items()}
+                    rec = {k: float(v) for k, v in certs_fb.items() if isinstance(v, (int, float))}
                     rec["norm_dA"] = float(dA_fb.norm().item())
                     rec["norm_dB"] = float(dB_fb.norm().item())
                     rec["transport_residual"] = float("nan")
@@ -3442,6 +3567,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                 M_step, bases, lr, r,
                 core_scale=self.core_scale, core_norm="operator",
                 delta=self.delta, H_hat_for_align=H_hat,
+                gauge=self.gauge, A_for_gauge=A_f, B_for_gauge=B_f, rho=self.rho,
             )
             certs["compat"] = bases["compat"]
             _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB)
@@ -3455,7 +3581,7 @@ class MuonCoupledCoreLoRA(Optimizer):
             state["V_prev"] = V_cur
 
             if self.log_diagnostics:
-                rec = {k: float(v) for k, v in certs.items()}
+                rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
                 rec["norm_dA"] = float(dA.norm().item())
                 rec["norm_dB"] = float(dB.norm().item())
                 rec["transport_residual"] = transport_residual
@@ -3543,7 +3669,7 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
                 A.grad.zero_()
                 B.grad.zero_()
                 if self.log_diagnostics:
-                    rec = {k: float(v) for k, v in certs_fb.items()}
+                    rec = {k: float(v) for k, v in certs_fb.items() if isinstance(v, (int, float))}
                     rec["norm_dA"] = float(dA_fb.norm().item())
                     rec["norm_dB"] = float(dB_fb.norm().item())
                     rec["s_rms"] = float(state["s"])
@@ -3607,7 +3733,7 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
             state["V_prev"] = V_cur
 
             if self.log_diagnostics:
-                rec = {k: float(v) for k, v in certs.items()}
+                rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
                 rec["compat"] = bases["compat"]
                 rec["norm_dA"] = float(dA.norm().item())
                 rec["norm_dB"] = float(dB.norm().item())
@@ -3823,15 +3949,49 @@ def build_optimizer(
     if optimizer_type == "polar-coupled-core-lora":
         return PolarCoupledCoreLoRA(
             model, lr=lr, delta=1e-6,
-            core_scale="squared_penalty",
+            core_scale="squared_penalty", gauge="min-frobenius",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "polar-coupled-core-imbalance-scalar-lora":
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty", gauge="imbalance-preserve-scalar",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "polar-coupled-core-imbalance-lora":
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty", gauge="imbalance-preserve",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "polar-coupled-core-imbalance-restore-lora":
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty", gauge="imbalance-restore",
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-lora":
         return MuonCoupledCoreLoRA(
-            model, lr=lr, delta=1e-6,
-            beta1=0.95,
-            core_scale="squared_penalty",
+            model, lr=lr, delta=1e-6, beta1=0.95,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "muon-coupled-core-imbalance-scalar-lora":
+        return MuonCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6, beta1=0.95,
+            core_scale="squared_penalty", gauge="imbalance-preserve-scalar",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "muon-coupled-core-imbalance-lora":
+        return MuonCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6, beta1=0.95,
+            core_scale="squared_penalty", gauge="imbalance-preserve",
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )

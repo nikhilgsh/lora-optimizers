@@ -53,7 +53,12 @@ OPTIM_COLORS = {
     "adam-polar-product-lora-coupled": "#5d342c",   # darker brown — coupled-pair variant of adam-polar
     "adam-polar-product-lora-coupled-endrms": "#a04a3c",  # warm brown — coupled w/ end-of-loop RMS-align
     "polar-coupled-core-lora":     "#7a3a2c",   # variant 1: projected quotient polar, raw factor grads
+    "polar-coupled-core-imbalance-scalar-lora":  "#a05030",  # + scalar imbalance-preserving gauge S=sI (recommended primary)
+    "polar-coupled-core-imbalance-lora":         "#b86a48",  # + full r×r imbalance-preserving gauge
+    "polar-coupled-core-imbalance-restore-lora": "#d8a070",  # + iLoRA imbalance-restoring gauge (aggressive; experimental)
     "muon-coupled-core-lora":      "#3a5a8a",   # variant 2: + transported core-space momentum
+    "muon-coupled-core-imbalance-scalar-lora":   "#4a6aa8",  # variant 2 + scalar imbalance gauge
+    "muon-coupled-core-imbalance-lora":          "#5a8ac8",  # variant 2 + full imbalance gauge
     "adamuon-polar-product-lora":  "#1f77b4",
     "adamuon-lora":                "#ff9896",
     # gauge-invariant variants
@@ -86,7 +91,12 @@ OPTIM_FAMILIES = {
         "adam-polar-product-lora-coupled",
         "adam-polar-product-lora-coupled-endrms",
         "polar-coupled-core-lora",
+        "polar-coupled-core-imbalance-scalar-lora",
+        "polar-coupled-core-imbalance-lora",
+        "polar-coupled-core-imbalance-restore-lora",
         "muon-coupled-core-lora",
+        "muon-coupled-core-imbalance-scalar-lora",
+        "muon-coupled-core-imbalance-lora",
         "adamuon-lora",
         "adamuon-polar-product-lora",
     },

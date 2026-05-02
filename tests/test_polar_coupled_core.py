@@ -25,6 +25,7 @@ from lora_playground.optim import (
     MuonCoupledCoreLoRA,
     PolarCoupledCoreLoRA,
     _build_active_core,
+    _imbalance_gauge_shift,
     _polar_coupled_core_step,
 )
 
@@ -239,6 +240,215 @@ def test_compat_near_machine_eps_for_compatible_grads():
 
 
 # --- Variant 2 momentum tests ---------------------------------------------
+
+# --- Imbalance-preserving gauge tests --------------------------------------
+
+def test_imbalance_gauge_preserves_imbalance_to_linear_order():
+    """gauge='imbalance-preserve' should make the linearized post-step
+    imbalance ≈ I_t (cancel δI_0 from the base lift). Verify by checking
+    that the linearized post-step imbalance F-norm is smaller than the
+    base-lift's after gauge correction.
+    """
+    torch.manual_seed(11)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.3
+    G = torch.randn(m_, n)
+    G_A = B.T @ G
+    G_B = G @ A.T
+
+    # Base lift via min-Frobenius.
+    dA0, dB0, certs0, _ = _polar_coupled_core_step(
+        A, B, G_A, G_B, lr=1e-2, gauge="min-frobenius",
+    )
+    # With gauge fix.
+    dA1, dB1, certs1, _ = _polar_coupled_core_step(
+        A, B, G_A, G_B, lr=1e-2, gauge="imbalance-preserve",
+    )
+
+    # Tangent should be (nearly) identical: J(dA, dB) = B dA + dB A.
+    Z0 = B @ dA0 + dB0 @ A
+    Z1 = B @ dA1 + dB1 @ A
+    rel_tan_diff = (Z0 - Z1).norm() / (Z0.norm() + 1e-30)
+    assert rel_tan_diff < 1e-4, f"gauge changed tangent (rel {rel_tan_diff})"
+
+    # Imbalance trajectory: linearized δI under each lift.
+    rho = r / m_
+    AAT = A @ A.T
+    BTB = B.T @ B
+    def lin_dI(dA, dB):
+        return (dA @ A.T + A @ dA.T) - rho * (dB.T @ B + B.T @ dB)
+    dI0 = lin_dI(dA0, dB0)
+    dI1 = lin_dI(dA1, dB1)
+    assert dI1.norm() < 0.1 * dI0.norm() + 1e-7, (
+        f"imbalance-preserve should null δI; |δI| went {dI0.norm():.4e} → {dI1.norm():.4e}"
+    )
+
+
+def test_imbalance_gauge_restore_zeros_total_imbalance_to_linear_order():
+    """gauge='imbalance-restore' should drive the LINEARIZED post-step total
+    imbalance to ≈ 0 (i.e., I_t + δI_total ≈ 0).
+    """
+    torch.manual_seed(13)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.3
+    G = torch.randn(m_, n)
+    G_A = B.T @ G
+    G_B = G @ A.T
+
+    dA, dB, _, _ = _polar_coupled_core_step(
+        A, B, G_A, G_B, lr=1e-2, gauge="imbalance-restore",
+    )
+
+    rho = r / m_
+    AAT = A @ A.T
+    BTB = B.T @ B
+    I_t = AAT - rho * BTB
+    dI = (dA @ A.T + A @ dA.T) - rho * (dB.T @ B + B.T @ dB)
+    total = I_t + dI
+    rel = total.norm() / (I_t.norm() + 1e-30)
+    assert rel < 1e-4, f"imbalance-restore should zero linearized total; rel = {rel}"
+
+
+def test_imbalance_gauge_preserves_tangent():
+    """Both imbalance gauges must preserve the tangent J(dA, dB) bit-exactly
+    in math; numerically to ~1e-5.
+    """
+    torch.manual_seed(17)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.3
+    G = torch.randn(m_, n)
+    G_A = B.T @ G
+    G_B = G @ A.T
+
+    dA0, dB0, _, _ = _polar_coupled_core_step(A, B, G_A, G_B, 1e-2, gauge="min-frobenius")
+    Z0 = B @ dA0 + dB0 @ A
+    for mode in ("imbalance-preserve", "imbalance-restore"):
+        dA, dB, _, _ = _polar_coupled_core_step(A, B, G_A, G_B, 1e-2, gauge=mode)
+        Z = B @ dA + dB @ A
+        rel = (Z - Z0).norm() / (Z0.norm() + 1e-30)
+        assert rel < 1e-4, f"{mode} broke tangent invariance (rel {rel})"
+
+
+def test_imbalance_gauge_scalar_mode():
+    """Scalar-S gauge S = sI is the simplest first patch (no Sylvester).
+    Verify it preserves the tangent and reduces the linearized δI vs the
+    base lift on average.
+    """
+    torch.manual_seed(23)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.3
+    G = torch.randn(m_, n)
+    G_A = B.T @ G
+    G_B = G @ A.T
+
+    dA0, dB0, _, _ = _polar_coupled_core_step(A, B, G_A, G_B, 1e-2, gauge="min-frobenius")
+    dA1, dB1, _, _ = _polar_coupled_core_step(A, B, G_A, G_B, 1e-2, gauge="imbalance-preserve-scalar")
+
+    # Tangent invariance.
+    Z0 = B @ dA0 + dB0 @ A
+    Z1 = B @ dA1 + dB1 @ A
+    rel = (Z1 - Z0).norm() / (Z0.norm() + 1e-30)
+    assert rel < 1e-4, f"scalar gauge broke tangent (rel {rel})"
+
+    # Linearized δI under each lift.
+    rho = r / m_
+    def lin_dI(dA, dB):
+        return (dA @ A.T + A @ dA.T) - rho * (dB.T @ B + B.T @ dB)
+    dI0 = float(lin_dI(dA0, dB0).norm().item())
+    dI1 = float(lin_dI(dA1, dB1).norm().item())
+    assert dI1 <= dI0 + 1e-7, (
+        f"scalar gauge should never increase ‖δI‖_F (least-squares minimizer); "
+        f"|δI| went {dI0:.4e} → {dI1:.4e}"
+    )
+
+
+def test_imbalance_gauge_helper_directly():
+    """Direct test of _imbalance_gauge_shift: feed a base lift and verify
+    the kernel-shift identity (B dA + dB A unchanged).
+    """
+    torch.manual_seed(19)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.3
+    dA0 = torch.randn(r, n) * 0.01
+    dB0 = torch.randn(m_, r) * 0.01
+
+    Z0 = B @ dA0 + dB0 @ A
+    dA1, dB1, S, gd = _imbalance_gauge_shift(dA0, dB0, A, B, mode="preserve")
+    Z1 = B @ dA1 + dB1 @ A
+    rel = (Z1 - Z0).norm() / (Z0.norm() + 1e-30)
+    assert rel < 1e-5, f"kernel shift broke tangent (rel {rel})"
+    # Preserve mode: post-lift linearized imbalance should equal ‖I_t‖_F
+    # (gauge cancels δI_0 → total change ≈ 0 → post-step ≈ I_t).
+    rho = A.shape[0] / B.shape[0]
+    I_t_norm = float((A @ A.T - rho * B.T @ B).norm().item())
+    assert abs(gd["imbalance_residual_lin_post"] - I_t_norm) < 1e-4, (
+        f"preserve mode post-residual {gd['imbalance_residual_lin_post']:.4e} "
+        f"should equal ‖I_t‖_F = {I_t_norm:.4e}"
+    )
+    # Restore mode: post-lift linearized imbalance should be ≈ 0.
+    dA2, dB2, S2, gd2 = _imbalance_gauge_shift(dA0, dB0, A, B, mode="restore")
+    assert gd2["imbalance_residual_lin_post"] < 1e-3 * I_t_norm, (
+        f"restore mode post-residual {gd2['imbalance_residual_lin_post']:.4e} "
+        f"should be ≪ ‖I_t‖_F = {I_t_norm:.4e}"
+    )
+
+
+def test_imbalance_restore_drives_to_iLoRA_stable_point():
+    """Multi-step trajectory: under imbalance-restore, ‖B‖/‖A‖ should approach
+    √(m/r) (the iLoRA stable point, Corollary 1) within ~10 steps from a
+    PEFT-asymmetric initialization. Preserve modes leave the ratio stuck.
+
+    This is the test for whether the gauge actually does what's claimed —
+    single-step ratio doesn't move under any gauge (structural property:
+    kernel motion `(SA, -BS)` preserves ‖A‖/‖B‖ asymmetry); the gauge
+    effect is over a trajectory.
+    """
+    torch.manual_seed(7)
+    r, m_, n = 16, 200, 200       # smaller for fast tests
+    rho = r / m_
+    target_ratio = (m_ / r) ** 0.5  # √(m/r) = √12.5 ≈ 3.54 here
+
+    def init():
+        torch.manual_seed(7)
+        A = torch.randn(r, n) / (n ** 0.5)
+        B = torch.randn(m_, r) * 1e-3
+        return A, B
+
+    def trajectory(gauge, n_steps=20, lr=1e-3):
+        A, B = init()
+        torch.manual_seed(11)
+        for _ in range(n_steps):
+            G = torch.randn(m_, n) * 0.1
+            G_A = B.T @ G
+            G_B = G @ A.T
+            dA, dB, _, _ = _polar_coupled_core_step(A, B, G_A, G_B, lr=lr, gauge=gauge)
+            A = A + dA
+            B = B + dB
+        return float(B.norm() / A.norm())
+
+    # restore mode should converge to √(m/r).
+    final_ratio_restore = trajectory("imbalance-restore", n_steps=20)
+    assert abs(final_ratio_restore - target_ratio) / target_ratio < 0.05, (
+        f"imbalance-restore should drive ‖B‖/‖A‖ to √(m/r)={target_ratio:.2f}; "
+        f"got {final_ratio_restore:.2f}"
+    )
+    # preserve modes should NOT move the ratio appreciably from the initial.
+    initial_A, initial_B = init()
+    initial_ratio = float(initial_B.norm() / initial_A.norm())
+    for gauge in ["min-frobenius", "imbalance-preserve-scalar", "imbalance-preserve"]:
+        final = trajectory(gauge, n_steps=20)
+        # These modes don't drive the ratio; final should stay close to initial.
+        # Use a generous tolerance (trajectory grows both A and B).
+        assert final < 0.5 * target_ratio, (
+            f"{gauge} should not move ratio toward √(m/r) (it preserves rather than restores); "
+            f"got {final:.2f} vs target {target_ratio:.2f}"
+        )
+
 
 def test_muon_first_step_matches_variant1_at_beta_zero():
     """With β=0, EMA reduces to current grad, Nesterov lookahead reduces to
