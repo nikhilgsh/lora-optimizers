@@ -195,7 +195,7 @@ one sentence of what changes from the baseline solver of §2.1.
 | E4 | core sign-norm, $\widehat H \to \widehat H / (\|\widehat H\| + \varepsilon)$ elementwise before polar (per-coord adaptivity in core space, no momentum) | **0.7680** (lr 1e-4) | diverges | +0.013 / — |
 | E5 | core-EMA + Nesterov (Muon-style on the rotating $Q_L, Q_R$ basis with overlap-matrix transport: $M_t = \beta\, T_L M_{t-1} T_R^\top + (1-\beta)\widehat H_t$) | 0.9073 | 0.8883 | far worse |
 | E6 | compounds: E4 ⊕ E5 ⊕ E2 in 4 combinations | 0.7684 | 0.9440 | tied with E4 / worse |
-| E7 | factor-Adam preconditioning before §2.1 (Adam EMA on $G_A, G_B$, feed $u_A, u_B$ into the §2.1 solver) — closest analog of Picard with our solver replacing Picard's per-factor polar | extrap $\sim$0.78 | catastrophic | extrap +0.025 / +0.18 |
+| E7 | factor-Adam preconditioning before §2.1 (Adam EMA on $G_A, G_B$, feed $u_A, u_B$ into the §2.1 solver) — closest analog of Picard with our solver replacing Picard's per-factor polar | 0.7846 (lr 1e-4) | extrap $\sim$0.95 | +0.030 / extrap +0.21 |
 | E8 | cross-check on a DIFFERENT LoRA solver: take a Sylvester-based factor-Adam solver that already works (the one labeled "Adam-then-Sylvester" in §3.1, eval 0.7581 at $r=16$) and move its Adam EMA into core space ($r \times r$ Sylvester RHS matrix) instead of factor space — DIVERGES at step 2 | div | div | — |
 
 **Best so far per rank, both from our solver family:**
