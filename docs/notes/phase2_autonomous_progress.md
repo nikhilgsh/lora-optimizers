@@ -80,6 +80,23 @@ Pending QOS slot. Updates once started.
 
 ## Progress updates (most recent on top)
 
+### state_rebalanced_2k r=16 FINAL (step 2000)
+
+| optimizer | r | best_lr | final eval |
+|---|---|---|---|
+| polar-coupled-core-state-rebalanced-lora | 16 | 3e-3 | **0.8104** |
+| muon-coupled-core-state-rebalanced-lora | 16 | 3e-3 | 0.8641 |
+
+**State-rebalance r=16 verdict: borderline PARTIAL (0.81 boundary).**
+- Δ vs hybrid Picard 0.7557 = +0.055.
+- Δ vs vanilla 0.8188 = -0.008 (tiny improvement).
+- Doesn't move the needle meaningfully. The "rebalance the factor
+  state to iLoRA invariant" intervention is structurally correct but
+  empirically doesn't translate to substantially better eval at r=16.
+
+r=64 cells still running at step 1000 (eval ≈ 0.7884). Could land
+0.76-0.78 final, which would be a clearer win at r=64. Wait and see.
+
 ### Update at job-elapsed 58 min (state_rebalanced) + 32 min (wide_lr)
 
 Summary script output:
