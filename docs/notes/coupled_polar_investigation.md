@@ -1,337 +1,496 @@
-# Coupled-polar LoRA optimizer investigation — unified doc
+# Coupled-polar LoRA optimizer — empirical investigation and open puzzle
 
-This is the single coherent record of the investigation into closing the
-eval-loss gap to hybrid Picard (`adam-polar-product-lora-coupled`).
-Supersedes `phase2_autonomous_progress.md`, `phase2_results_summary.md`,
-and `factor_adam_progress.md`.
+Companion to `polar_coupled_problem.md` (problem statement) and
+`polar_coupled_core_solver.md` (candidate solution). Those docs state
+the variational problem and propose a solver. This doc records the
+empirical study of that solver against a strong empirical baseline
+(hybrid Picard) and surfaces the open puzzle: **why does a
+variationally principled $\tfrac{1}{2}$-approximation to the joint
+operator-norm tangent step lose to a damped fixed-point recipe that
+makes no variational claim?**
 
-**Status: Picard still wins by ~0.011 at both ranks despite nine variants
-of our principled coupled-polar-core solver. Theory says we should be
-beating it. We are not. This doc accounts for what we tried, what the
-diagnostics say, and the open hypotheses for what's wrong.**
+We are looking for outside advice on what to try next.
 
-All numbers single-seed, m=1, OLMo-2-0425-1B + Magicoder-OSS-Instruct,
-canonical 2k-step horizon, seed 0.
-
----
-
-## 1. The problem (math)
-
-LoRA update: `W → W + (α/r) B A`. Frozen base, train factors A ∈ ℝ^(r,n),
-B ∈ ℝ^(m,r). Per-step factor gradients
-
-  G_A = (α/r) B^T ∇_W L           shape (r, n)
-  G_B = (α/r) ∇_W L A^T           shape (m, r)
-
-By construction these are compatible: B^T G_B = G_A A^T (both are
-projections of the same dense gradient ∇_W L).
-
-The joint operator-norm constrained step ("Case 3" of
-`docs/notes/polar_coupled_problem.md`):
-
-  min  ⟨G_A, ΔA⟩ + ⟨G_B, ΔB⟩
-  s.t. ‖B ΔA + ΔB A‖_op ≤ λ
-
-This is the LoRA-tangent analogue of Muon's spectral-norm-constrained
-update, but coupled across the two factors.
+All numbers single-seed, 2k-step horizon, on
+[OLMo-2-0425-1B](https://huggingface.co/allenai/OLMo-2-0425-1B)
+fine-tuned on
+[Magicoder-OSS-Instruct-75K](https://huggingface.co/datasets/ise-uiuc/Magicoder-OSS-Instruct-75K-Instruction-Response).
+LoRA on `all-linear` excluding `lm_head`, $\alpha = r$,
+PEFT init ($A \sim$ Kaiming, $B = 0$).
 
 ---
 
-## 2. Our solver — `polar-coupled-core-lora` (variant 1)
+## 1. Notation recap
 
-**File:** `lora_playground/optim.py` PolarCoupledCoreLoRA class (line ~3510),
-core helper `_polar_coupled_core_step` (line ~3425).
+We follow `polar_coupled_problem.md`. For each frozen base weight
+$W \in \mathbb{R}^{m \times n}$ ($m = d_\text{out}$,
+$n = d_\text{in}$), a LoRA correction
+$W \to W + \tfrac{\alpha}{r} B A$ with
+$A \in \mathbb{R}^{r \times n}$, $B \in \mathbb{R}^{m \times r}$.
+Per-factor gradients
 
-**Math:** at each step, build the **active core** Ĥ in the bases of the
-current factors and gradient-residual SVDs:
+$$
+G_A := \nabla_A L = (\alpha/r)\, B^\top \nabla_W L, \qquad
+G_B := \nabla_B L = (\alpha/r)\, \nabla_W L\, A^\top.
+$$
 
-  B = Q_L R_L           (thin QR, Q_L ∈ ℝ^(m,r))
-  A = R_R Q_R^T          (thin QR of A^T, Q_R ∈ ℝ^(n,r))
-  L_⊥ = R_L^{-T} G_A − C Q_R^T,   E from SVD of L_⊥
-  R_⊥ = G_B R_R^{-T} − Q_L C,     F from SVD of R_⊥
-  C   = ½(R_L^{-T} G_A Q_R + Q_L^T G_B R_R^{-T})
+Compatibility (raw autograd):
+$G_A A^\top = B^\top G_B$.
 
-  Ĥ = [[ C , E ],
-       [ F , 0 ]]                        ((r+t) × (r+s))
+The joint operator-norm step solves
 
-Project quotient polar:
-
-  P = polar(Ĥ)                           // SVD-based, U Σ V^T → U V^T
-  R = P with R[r:, r:] := 0              // forbid (22) extension
-  γ = ‖R‖_op,  Z+ = R / γ                // ½-approximation guarantee
-  τ̂ = ‖Ĥ‖_*  / γ                        // squared-penalty scale
-  Z_upd = -lr · τ̂ · Z+
-
-Sylvester gauge lift back to factor space:
-
-  S_L = R_L^T R_L + δI,  S_R = R_R R_R^T + δI
-  Solve  S_L K + K S_R = R_L^T X R_R^T   (X = Z_upd[:r,:r])
-  dA = solve_spd(S_L,  R_L^T X − K R_R) Q_R^T  +  R_L^T Y V^T
-  dB = Q_L (X R_R^T − R_L K) solve_spd(S_R^T)  +  U W R_R^T
-
-(See `_polar_coupled_core_lift` for exact form; X, Y, W are blocks of
-Z_upd: X is (1,1), Y is (1,2), W is (2,1).)
-
-**Key certificates (logged per step):**
-- γ ∈ [1, 2]                   the ½-approximation factor
-- compat = ‖C_L − C_R‖ / (‖C_L‖+‖C_R‖+ε)  gradient-compatibility violation
-  — for raw gradients ≈ machine eps
-- relgap = 1 − 1/γ ∈ [0, 0.5]  how far from rank-1 polar is
-- ratio_dA_dB = ‖dA‖/‖dB‖
-- imbalance_residual = ‖AA^T − ρ B^T B‖_F / (norm sum)  ρ = r/m
+$$
+\min_{\Delta A,\Delta B}\; \langle G_A, \Delta A \rangle +
+\langle G_B, \Delta B \rangle
+\quad \text{s.t.} \quad
+\| B \Delta A + \Delta B\, A \|_2 \le \lambda.
+$$
 
 ---
 
-## 3. Picard — `adam-polar-product-lora-coupled`
+## 2. Two algorithms
 
-**File:** `lora_playground/optim.py` AdamPolarProductLoRA (line ~1814),
-default `picard_iters=2` for the coupled build.
+### 2.1 Our solver — projected-quotient-polar core (variant 1)
 
-**Math:** factor-Adam, then per-factor polar with spectral preconditioner,
-optionally cross-coupled via Picard iteration:
+Implementation: `lora_playground/optim.py::PolarCoupledCoreLoRA`,
+helpers `_polar_coupled_core_step`, `_polar_coupled_core_lift`. Matches
+`polar_coupled_core_solver.md` Sections 1–3. Per step:
 
-  m_A, v_A = Adam EMA on G_A;  u_A = m̂_A / (√v̂_A + ε)
-  m_B, v_B = Adam EMA on G_B;  u_B = m̂_B / (√v̂_B + ε)
+1. Thin QR: $B = Q_L R_L$, $A = R_R Q_R^\top$.
+2. Active core construction:
 
-  S_A^{-1/2} = (A A^T + δI)^{-1/2}      (m × r side)
-  S_B^{-1/2} = (B^T B + δI)^{-1/2}      (n × r side)
+   $$
+   C \;=\; \tfrac{1}{2}\bigl(R_L^{-\top} G_A Q_R + Q_L^\top G_B R_R^{-\top}\bigr),
+   \qquad
+   L_\perp = R_L^{-\top} G_A - C Q_R^\top,
+   \quad
+   R_\perp = G_B R_R^{-\top} - Q_L C.
+   $$
 
-  for k in range(picard_iters):
-    if k == 0:    u_A_eff, u_B_eff = u_A, u_B
-    else:         u_A_eff = u_A + α (B^T dB_prev A) / lr
-                  u_B_eff = u_B + α (B dA_prev A^T) / lr
-    X_B  = u_B_eff @ S_A^{-1/2}
-    P_B  = polar(X_B)                                  // (m × r) polar
-    geo_B = P_B @ S_A^{-1/2}
-    X_A  = S_B^{-1/2} @ u_A_eff
-    P_A  = polar(X_A)                                  // (r × n) polar
-    geo_A = S_B^{-1/2} @ P_A
-    dA   = -lr · (‖u_A‖/‖geo_A‖) · geo_A               // RMS-align
-    dB   = -lr · (‖u_B‖/‖geo_B‖) · geo_B               // RMS-align
+   Thin SVD of residuals: $L_\perp = E V^\top$, $R_\perp = U F$.
+3. Form
+   $\widehat H = \begin{bmatrix} C & E \\ F & 0 \end{bmatrix}
+   \in \mathbb{R}^{(r+t)\times(r+s)}$.
+4. Compact polar $P = \mathrm{polar}(\widehat H)$, then project the
+   $(2,2)$ block to zero, renormalize:
+
+   $$
+   R = \Pi(P), \quad \gamma = \|R\|_2, \quad
+   \widehat Z_+ = R / \gamma.
+   $$
+
+   $\gamma \in [1, 2]$ certifies a deterministic
+   $\tfrac{1}{2}$-approximation to ($\dagger$).
+5. Scale (squared-penalty default):
+   $\widehat Z_\text{upd} = -\eta\, \tau\, \widehat Z_+$ where
+   $\tau = \|\widehat H\|_* / \gamma$.
+6. Lift to factor space via min-Frobenius gauge (Sylvester solve):
+   write $\widehat Z_\text{upd}$ as blocks $X, Y, W$
+   ($X$ is $(1,1)$, $Y$ is $(1,2)$, $W$ is $(2,1)$). Solve
+   $S_L K + K S_R = R_L^\top X R_R^\top$ for $K$ where
+   $S_L = R_L^\top R_L + \delta I$,
+   $S_R = R_R R_R^\top + \delta I$, then
+
+   $$
+   \Delta A \;=\; S_L^{-1}\bigl(R_L^\top X - K R_R\bigr) Q_R^\top
+              + S_L^{-1} R_L^\top Y\, V^\top,
+   \quad
+   \Delta B \;=\; Q_L\bigl(X R_R^\top - R_L K\bigr) S_R^{-\top}
+              + U\, W\, R_R^\top S_R^{-\top}.
+   $$
+
+7. Apply $A \leftarrow A + \Delta A$, $B \leftarrow B + \Delta B$.
+
+Diagnostics logged per step: $\gamma$, $\|\widehat H\|_*$,
+$\mathrm{relgap} = 1 - 1/\gamma$, $\mathrm{compat} =
+\|C_L - C_R\|_F / (\|C_L\|_F + \|C_R\|_F + \varepsilon)$,
+$\|\Delta A\|/\|\Delta B\|$, the iLoRA imbalance residual
+$\|A A^\top - \rho B^\top B\|_F / (\cdot)$ with $\rho = r/m$.
+
+### 2.2 Picard — `adam-polar-product-lora-coupled`
+
+Implementation: `lora_playground/optim.py::AdamPolarProductLoRA` with
+`picard_iters=2`. This is the strong empirical baseline we cannot beat.
+**Picard makes no variational claim.** It is a damped fixed-point recipe
+on the joint normal equations
+$S_B \Delta A + B^\top \Delta B\, A = -\eta u_A$,
+$\Delta B\, S_A + B \Delta A\, A^\top = -\eta u_B$ (with
+$S_A = A A^\top + \delta I$, $S_B = B^\top B + \delta I$). Per step:
+
+```text
+# Adam EMA on raw factor gradients
+m_A, v_A = adam_ema(G_A); u_A = m̂_A / (√v̂_A + ε)
+m_B, v_B = adam_ema(G_B); u_B = m̂_B / (√v̂_B + ε)
+
+# Spectral preconditioners (refresh each step)
+SA_half_inv = (A Aᵀ + δI)^{-1/2}
+SB_half_inv = (Bᵀ B + δI)^{-1/2}
+
+# Picard fixed-point iteration (default picard_iters=2)
+dA_prev, dB_prev = 0, 0
+for k in range(picard_iters):
+    if k == 0:
+        u_A_eff, u_B_eff = u_A, u_B
+    else:
+        u_A_eff = u_A + α (Bᵀ dB_prev A) / lr
+        u_B_eff = u_B + α (B dA_prev Aᵀ) / lr
+
+    # Per-factor polar in spectrally-preconditioned space
+    P_B = polar(u_B_eff @ SA_half_inv)        # (m, r)
+    geo_B = P_B @ SA_half_inv
+    P_A = polar(SB_half_inv @ u_A_eff)        # (r, n)
+    geo_A = SB_half_inv @ P_A
+
+    # RMS-align: rescale step magnitude back to Adam direction norm
+    dA = -lr * (‖u_A‖ / ‖geo_A‖) * geo_A
+    dB = -lr * (‖u_B‖ / ‖geo_B‖) * geo_B
     dA_prev, dB_prev = dA, dB
-  apply (dA, dB)
 
-**Crucial differences:**
+apply (dA, dB)
+```
+
+Defaults: $\beta_1=0.9$, $\beta_2=0.999$, $\varepsilon=10^{-8}$, $\delta
+= 10^{-6}$, $\alpha=1$ (the Picard damping factor — not LoRA $\alpha$),
+`picard_iters=2`.
+
+### 2.3 Side-by-side structural differences
 
 | aspect | our solver | Picard |
 |---|---|---|
-| polar | one joint, `(r+t)×(r+s)` core | two separate, `(m×r)` and `(r×n)` |
-| basis extraction | thin QR of A,B + SVD of residuals | none — direct on factors |
-| (22) extension | explicitly zeroed | not constrained |
-| symmetrization | C = ½(C_L + C_R), can lose info | no symmetrization |
-| step magnitude | lr · τ̂ (depends on ‖Ĥ‖_*) | lr · ‖u_A‖ via RMS-align (preserves Adam scale) |
-| coupling | one-shot variational | Picard iterate (2 inner passes by default) |
-
-Picard does NOT solve the joint operator-norm problem. It does
-"factor-Adam → per-factor polar → RMS-align → Picard couple". It makes
-no variational claim. Empirically it wins.
+| polar | one **joint** $(r+t)\times(r+s)$ core | two **separate**: $(m \times r)$ and $(r \times n)$ |
+| basis extraction | thin QR of $A,B$ + SVD of residuals | none — direct on factors |
+| $(2,2)$ extension mode | explicitly zeroed, $\Pi$ projection | not constrained |
+| symmetrization | $C = \tfrac{1}{2}(C_L + C_R)$ | none |
+| step magnitude | $\eta \tau = \eta \|\widehat H\|_*/\gamma$ | $\eta \|u_A\|$ via RMS-align |
+| coupling | one-shot | inner Picard fixed-point (default 2 passes) |
+| variational claim | $\tfrac{1}{2}$-optimal for joint op-norm | none |
 
 ---
 
-## 4. What we tried (full chronology)
+## 3. Empirical results
 
-| # | optimizer (commit) | mechanism | r=16 best | r=64 best | result |
-|---|---|---|---|---|---|
-| 0 | `adam-polar-product-lora-coupled` (Picard) | factor-Adam + per-factor polar + iterate | 0.7557 | 0.7382 | reference target |
-| 0' | `adam-polar-product-lora` (uncoupled) | same minus Picard iteration | 0.7546 | — | r=16 BEST |
-| 0'' | `adamw` | per-coord Adam | 0.7601 | 0.7550 | reference baseline |
-| 1 | `polar-coupled-core-lora` vanilla | one-shot proj-quot-polar, raw factor grads | 0.8188 (lr=3e-3) | 0.7821 (lr=3e-3) | -0.063 / -0.044 |
-| 2 | + state-rebalance (commit `c8482e7`) | post-step (B,A)→(BR, R⁻¹A) iLoRA invariant | 0.8104 | 0.7686 | small at r=64, none at r=16 |
-| 3 | + wide-lr (no code, just lr) | extend lr scan to 1e-2, 3e-2 | 0.8049 | **0.7490** (lr=3e-2) | beats AdamW r=64; r=16 ceiling |
-| 4 | `polar-coupled-core-sign-lora` (commit `1565976`) | + `Ĥ / (\|Ĥ\|+ε)` before polar | **0.7680** (lr=1e-4) | diverges | first to break r=16 ceiling |
-| 5 | `muon-coupled-core-lora` (variant 2) | + transported core EMA, Nesterov | 0.9073 | 0.8883 | far worse |
-| 6 | followup `muon-coupled-core-sign-rebalanced-lora` | sign + EMA + rebalance | 0.7684 (lr=1e-4) | 0.9440 | tied with #4, r=64 worse |
-| 7 | `adam-lin-core-lora` (commit `0b4713c`) | core-Adam in DIFFERENT solver | DIVERGES step 2 | — | cross-check: core-Adam structurally broken |
-| 8 | `polar-coupled-core-factor-adam-lora` (commit `f031dce`) | factor-Adam on (G_A,G_B), then our solver | extrap ~0.78 (lr=1e-4) | catastrophic | rung-6 ablation, **falsified** |
-| 9 | + state-rebalance | (8) + post-step rebalance | extrap ~0.80 | catastrophic | no help |
+### 3.1 Reference baselines (best per rank)
 
-**Best so far per rank:**
-- r=16: `polar-coupled-core-sign-lora` lr=1e-4 → 0.7680 (still 0.013 behind r=16 best 0.7546)
-- r=64: `polar-coupled-core-lora` (vanilla) lr=3e-2 → 0.7490 (beats AdamW; still 0.011 behind Picard 0.7382)
+| optimizer | $r=16$ best lr | $r=16$ eval | $r=64$ best lr | $r=64$ eval |
+|---|---|---|---|---|
+| `adam-polar-product-lora` (uncoupled, no Picard iter) | 3e-4 | **0.7546** | — | — |
+| `adam-polar-product-lora-coupled` (Picard, 2 iters) | 3e-4 | 0.7557 | 3e-4 | **0.7382** |
+| `adamw` | 3e-4 | 0.7601 | 3e-4 | 0.7550 |
+| `adam-lin-lora` (Sylvester closed form, factor-Adam) | 1e-3 | 0.7581 | — | — |
 
----
+At $r=16$ the spread among baselines is small (Picard $\approx$ AdamW).
+At $r=64$ Picard has a real $\sim 0.017$ lead over AdamW. The
+serious test is $r=64$.
 
-## 5. Diagnostic summary
+### 3.2 Our solver and its variants
 
-What the per-step logs say across the variants:
+| # | variant (commit) | $r=16$ best | $r=64$ best | gap to best |
+|---|---|---|---|---|
+| 1 | vanilla `polar-coupled-core-lora` | 0.8188 (lr 3e-3) | 0.7821 (lr 3e-3) | +0.064 / +0.044 |
+| 2 | + state rebalance ($A A^\top \leftarrow \rho B^\top B$ post-step) | 0.8104 | 0.7686 | +0.056 / +0.030 |
+| 3 | + wide-lr (1e-2, 3e-2) | 0.8049 | **0.7490** (lr 3e-2) | +0.050 / +0.011 |
+| 4 | core sign-norm, $\widehat H \to \widehat H / (\|\widehat H\| + \varepsilon)$ before polar | **0.7680** (lr 1e-4) | diverges | +0.013 / — |
+| 5 | variant 2 (transported core EMA, Muon-style) | 0.9073 | 0.8883 | far worse |
+| 6 | sign + EMA + rebalance compounds (4 cells) | 0.7684 | 0.9440 | tied with #4 / worse |
+| 7 | factor-Adam + our solver (rung 6 ablation) | extrap $\sim$0.78 | catastrophic | extrap +0.025 / +0.18 |
+| 8 | `adam-lin-core-lora` (cross-check: core-Adam in the lin-LoRA Sylvester solver) | DIVERGES at step 2 | — | — |
 
-**`compat`** — gradient-compatibility violation in core construction.
-- Variants 1-6 (raw factor gradients): ≈ machine ε. Compatibility holds
-  by construction; the (C_L+C_R)/2 averaging is a no-op.
-- Variant 8 (factor-Adam): **0.65–0.88** in r=4 smoke at early steps.
-  Factor-Adam genuinely breaks compatibility; the symmetrization is
-  doing real work and may be lossy.
+**Best so far per rank, both ours:**
 
-**`align_inst` vs `align_mom`** (variant 2 only — measures EMA alignment
-with chosen polar direction, comparable to instantaneous-gradient
-alignment).
-- align_inst median: 0.45–0.50
-- align_mom median: 0.30–0.55, **frequently below align_inst**
-- Reading: core-space EMA does NOT accumulate constructively in the
-  rotating basis. Successive cores point in different directions in the
-  Q_L/Q_R frame; averaging dilutes rather than reinforces.
+- $r=16$: variant 4 (core sign normalization), $0.7680$. Still
+  $+0.013$ behind the $r=16$ best (`adam-polar-product-lora`).
+- $r=64$: variant 3 (vanilla + lr=3e-2), $0.7490$. Beats `adamw`
+  ($0.7550$); still $+0.011$ behind Picard ($0.7382$).
 
-**`transport_residual`** (variant 2 only):
-- median 0.04, max 0.08–0.10 → small. Transport is fine. The variant-2
-  failure is the EMA itself, not the transport mechanism.
+### 3.3 What the variants tell us (each isolates one axis)
 
-**`imbalance_residual`** (state-rebalance variant):
-- 1.0 → 0.001 in 2 steps and stays there. Rebalance does what it claims.
-- Eval gain: -0.014 at r=64, ~0 at r=16. Mechanism works but doesn't
-  translate to loss reduction. The factor-imbalance pathology is real
-  but not the bottleneck.
-
-**`adam-lin-core-lora` cross-check (variant 7):**
-- Smoke at lr=1e-3, r=4: eval 2.58 → 12.67 at step 2, Cholesky fails
-  step 3. Core-space Adam is structurally broken in a completely
-  different solver, by the same mechanism as variant 2: the small core
-  matrix lacks heterogeneous coordinate scales, so /√v_M degenerates to
-  ≈3·sign(M) at step 1, inflating step magnitude.
-
-**`gamma`, `relgap`** (all our variants):
-- γ within [1, 2] always. relgap typically 0.05–0.15. The ½-approximation
-  certificate is well-behaved. We're computing the polar correctly.
-
----
-
-## 6. Why we may still be losing — open hypotheses
-
-**The user's question: it doesn't make sense that we can't beat Picard
-when our algorithm is theoretically superior.** The hypotheses below are
-ordered by how much we believe each.
-
-### H1. We are solving the wrong problem.
-
-The joint operator-norm problem is variationally clean but may not be
-what Picard's recipe is solving. Picard does (i) factor-Adam, (ii) per-
-factor polar in the spectral-preconditioned space, (iii) RMS-align step
-magnitude back to Adam scale. None of (i-iii) is "solve the joint
-operator-norm problem"; it's "do something Muon-shaped per factor with
-Adam preconditioning". The fact that it works empirically suggests the
-LoRA fine-tuning loss landscape doesn't reward the joint operator-norm
-constraint — or rewards a different geometry that Picard happens to
-match.
-
-**Test:** strip our solver of the operator-norm objective and replicate
-Picard's per-factor polar with our gauge analysis. Does it match Picard?
-
-### H2. The (22) zero projection discards real signal.
-
-Our active-core construction Ĥ = [[C, E], [F, 0]] explicitly zeros the
-"extend both A and B simultaneously" mode. Picard's per-factor polar has
-no such restriction. At low rank (r=16) where the bottleneck might be
-exactly that joint-extension mode, our projection is removing what
-Picard preserves.
-
-**Test:** what does a variant of our solver with the (22) block UN-zeroed
-do? It violates the variational story but may match Picard.
-
-### H3. Step magnitude is wrong by a factor of τ̂.
-
-Our step magnitude is `lr · τ̂` where τ̂ = ‖Ĥ‖_* / γ. Picard's step
-magnitude is `lr · ‖u_A‖` (RMS-aligned to Adam direction norm). At fixed
-lr, these are different scales. A variant 1 with lr=3e-2 r=64 = 0.7490
-suggests we need bigger effective steps — but the right comparison is
-"are we taking the same effective step magnitude as Picard at lr=3e-4?"
-
-**Test:** plot ‖dA‖ trajectories of variant 1 vs Picard at their
-respective best lr's. Match magnitudes; rerun.
-
-### H4. Symmetrization (C_L+C_R)/2 is lossy at high compat.
-
-Variant 8 directly hits this: factor-Adam → compat 0.65–0.88. The
-averaging projects two genuinely different views into one. Picard avoids
-it by never building C; instead it does two separate per-factor polars.
-We'd want a variant that processes factor-Adam'd gradients without ever
-symmetrizing.
-
-**Test:** "factor-Adam + per-factor polar in core space" — pull factor
-gradients, build C_L and C_R separately (no average), do separate polars,
-lift separately.
-
-### H5. Picard's iteration is doing something we lack.
-
-Picard's k=2 cross-coupling step adds (B^T dB_prev A)/lr to u_A and (B
-dA_prev A^T)/lr to u_B. This is a fixed-point iteration on the joint
-problem. Our solver is one-shot. Even if our one-shot direction is
-1/2-optimal for the *single-step* objective, Picard's iteration may
-converge to a better fixed point of the implicit *training* dynamics.
-
-**Test:** add an outer Picard-style iteration around our solver. Or: try
-picard_iters=3, 4, 5 in Picard itself — is performance sensitive to
-iteration count?
-
-### H6. We have a bug.
-
-Possibilities worth re-checking:
-- α/r LoRA scaling in the gradient: PEFT applies (α/r) at the model
-  layer, so G_A, G_B already include it. Our solver doesn't separately
-  multiply. Picard also doesn't. Probably fine but worth confirming on
-  a tiny case.
-- The Sylvester lift formula. The blocks X, Y, W of Z_upd map to (dA,
-  dB) via the formulas at top of section 2; the algebra is gauge-
-  consistent in unit tests but the *practical* lift may have a sign
-  mismatch on some block. Compare a 1-step output of our solver vs a
-  hand-derived AdamLinLoRA Sylvester closed-form solution at β=0 and
-  no Adam — they should match to ~1e-5 (test 4 in
-  test_polar_coupled_core.py asserts this; passes). So this is unlikely
-  but cheap to re-verify with a step-by-step trace at a real LoRA pair
-  (not a synthetic one).
-- The B=0 PEFT-init boundary case. Our solver triggers
-  `_zero_B_fallback` at step 1 (B all zero); thereafter regular path.
-  Picard's S_B^{-1/2} = (B^T B + δI)^{-1/2} just hits δ^{-1/2}·I at
-  step 1, no special-casing. Could the fallback step's magnitude differ
-  from what the regular path would compute on an infinitesimally non-
-  zero B? Cheap test: initialize B=ε·N(0,1) for small ε at step 1,
-  run vanilla path, compare to fallback.
+- **Variant 2** (state rebalance): drives the iLoRA invariant
+  $\|A A^\top - \rho B^\top B\|_F / (\cdot)$ from $1.0 \to 10^{-3}$ in
+  two steps. Mechanism works as designed; eval gain $\le 0.014$.
+  Conclusion: factor-state imbalance is real but not the bottleneck.
+- **Variant 3** (wide-lr): variant 1's lr ceiling is around $3\times$
+  the canonical Adam lr. Beats AdamW at $r=64$. At $r=16$ ceiling
+  $\sim 0.80$.
+- **Variant 4** (core sign): per-coord adaptivity in **core space**
+  (after the $Q_L, Q_R$ projection). First variant to break the
+  $r=16$ ceiling; useless at $r=64$.
+- **Variant 5** (transported core EMA): theoretically the principled
+  Muon-on-tangent answer; far worse than variant 1. See diagnostic
+  below.
+- **Variant 7** (factor-Adam, rung 6): replicates Picard's
+  preconditioning step but feeds into our solver instead of Picard's
+  per-factor polar. **Does not help.** This is the experiment that
+  most directly tests "is the missing piece factor-space adaptivity?"
+  Answer: no.
+- **Variant 8** (cross-check on a different solver, `adam-lin-lora`'s
+  Sylvester pipeline with Adam-EMA on the $r \times r$ Sylvester core
+  matrix instead of the factor preconditioned grads): **diverges at
+  step 2 of OLMo-2-1B smoke**. Cholesky fails at step 3. Mechanism:
+  $\sqrt{v_M}$ on a small $r\times r$ matrix (homogeneous coordinate
+  scales) degenerates to $\approx 3\,\mathrm{sign}(M)$ at step 1,
+  inflating step magnitude. Independently confirms variant 5's failure
+  mode generalizes — core-space Adam-style momentum is structurally
+  broken because the core object lacks heterogeneous coordinate scales
+  that Adam exists to normalize.
 
 ---
 
-## 7. What to try next
+## 4. Diagnostic findings
+
+### 4.1 `compat` — gradient compatibility violation
+
+Defined as
+$\|C_L - C_R\|_F / (\|C_L\|_F + \|C_R\|_F + \varepsilon)$, where
+$C_L = R_L^{-\top} G_A Q_R$, $C_R = Q_L^\top G_B R_R^{-\top}$.
+
+- Variants 1–6 (raw factor gradients): $\mathrm{compat} \approx
+  \varepsilon_\text{machine}$. Compatibility holds by construction; the
+  averaging step in (2.1.2) is averaging two equal numbers.
+- Variant 7 (factor-Adam): $\mathrm{compat} \in [0.65, 0.88]$ in r=4
+  smoke at early steps. **Factor-Adam genuinely breaks
+  compatibility**; the $\tfrac{1}{2}(C_L + C_R)$ averaging is doing
+  real work and may be lossy.
+
+### 4.2 `align_inst` and `align_mom` — alignment of EMA core with chosen direction
+
+For variant 5 (transported core EMA). Per-pair median across the model:
+
+- $\mathrm{align\_inst}$ (cosine of instantaneous core $\widehat H_t$
+  with chosen polar direction $\widehat Z_+$): $\approx 0.45$–$0.50$.
+- $\mathrm{align\_mom}$ (cosine of EMA-preconditioned core with the
+  same direction): $\approx 0.30$–$0.55$, **frequently below
+  align_inst**.
+
+EMA averaging in core space does **not** accumulate constructively.
+Successive cores point in different directions in the rotating
+$Q_L, Q_R$ frame; averaging dilutes rather than reinforces signal.
+
+### 4.3 `transport_residual` — basis transport error in variant 5
+
+$\|M_t - M_\text{transported}\|_F / (\|M_\text{transported}\|_F + \varepsilon)$
+where $M_\text{transported} = T_L M_{t-1} T_R^\top$ with overlap
+matrices $T_L = U_\text{cur}^\top U_\text{prev}$, $T_R =
+V_\text{cur}^\top V_\text{prev}$.
+
+Median $\approx 0.04$, max $\approx 0.10$. **Small.** Transport is
+fine. Variant 5's failure is the EMA itself, not the transport
+mechanism.
+
+### 4.4 $\gamma$, $\mathrm{relgap}$ — solver health
+
+$\gamma \in [1, 2]$ on every step. $\mathrm{relgap} = 1 - 1/\gamma$
+typically $0.05$–$0.15$. The $\tfrac{1}{2}$-approximation certificate
+holds. Polar is computed correctly.
+
+### 4.5 `imbalance_residual`
+
+Drops from $\approx 1.0$ at PEFT init to $\approx 10^{-3}$ in 2 steps
+under state rebalance and stays there. The factor-state geometry can
+be fully restored to the iLoRA invariant — and it doesn't help.
+
+---
+
+## 5. The puzzle
+
+Theory says our solver should beat Picard. The argument:
+
+1. Both algorithms are doing "Muon-style" updates on the LoRA tangent.
+2. Picard makes no variational claim — it's a damped fixed-point
+   iteration.
+3. Our solver has a deterministic $\tfrac{1}{2}$-approximation
+   guarantee for the principled joint operator-norm objective.
+4. Therefore at fixed preconditioning, ours should be no worse and
+   plausibly better.
+
+But variant 7 directly tests this: replace our raw factor gradients
+with Picard's exact Adam-preconditioned $u_A, u_B$, run our solver,
+compare to Picard at the same lr. Result: ours is $\sim 0.025$ worse
+at $r=16$ (extrapolated from step 1200 trajectory) and catastrophically
+worse at $r=64$. Even with matched preconditioning, our step
+direction loses to Picard's.
+
+**This is the puzzle we are stuck on.** Our principled solver is
+producing a worse practical step than Picard's recipe.
+
+---
+
+## 6. Open hypotheses (for external review)
+
+In our order of belief, with a quick test for each.
+
+### H1. We are solving the wrong variational problem
+
+The joint operator-norm constraint
+$\|B \Delta A + \Delta B\, A\|_2 \le \lambda$ is variationally clean
+but may not be what the fine-tuning loss landscape rewards. Picard's
+recipe is "factor-Adam → per-factor polar in spectrally-preconditioned
+space → RMS-align" — none of which corresponds to constraining the
+joint tangent operator norm. Empirically, that recipe wins.
+
+**Test:** drop the joint constraint and run a per-factor polar in our
+gauge framework — i.e.\ apply our Sylvester gauge lift on top of
+Picard's per-factor polar steps, post-hoc enforcing
+$B^\top \Delta B = \Delta A\, A^\top$. If this beats Picard, our gauge
+analysis is the missing piece. If it ties, gauge is irrelevant. If it
+loses, our solver is structurally wrong.
+
+### H2. The $(2,2)$ zero projection discards real signal
+
+Our active-core construction sets $\widehat H_{22} := 0$ (the "extend
+both $A$ and $B$ into new directions simultaneously" mode). The
+solver doc justifies this from the $(2,2)$ block of feasible
+$\widehat Z$ being zero. Picard's per-factor polar has no such
+restriction — its step on $A$ can flow signal into directions $B$
+doesn't currently span, and vice versa, simultaneously.
+
+**Test:** un-zero the $(2,2)$ block, replace $\Pi(P)$ with $P$
+itself in step (2.1.4). One-line change; it would violate the
+variational story but tells us if the projection is empirically
+costly.
+
+### H3. Step magnitude mismatch
+
+Our step magnitude is $\eta \tau = \eta \|\widehat H\|_* / \gamma$.
+Picard's is $\eta \|u_A\|$ (RMS-aligned to Adam direction norm). At
+fixed $\eta$ these are different scales. We see this empirically:
+variant 3 (vanilla) needs $\eta = 3 \times 10^{-2}$ at $r=64$ to be
+competitive, while Picard's optimum is $\eta = 3 \times 10^{-4}$
+— a 100$\times$ ratio.
+
+**Test:** plot $\|\Delta A\|, \|\Delta B\|$ trajectories of variant 1
+vs Picard at their best lr's. Are the effective per-step magnitudes
+matched? If ours is way larger (or smaller), that's a knob we haven't
+calibrated. (Variant 7 supposedly fixes this by inheriting Picard's
+preconditioning — but we still see catastrophic behavior at $r=64$,
+suggesting the magnitude story is more subtle.)
+
+### H4. Symmetrization $\tfrac{1}{2}(C_L + C_R)$ is lossy when compat is high
+
+Variant 7 directly hits this: factor-Adam → compat 0.65–0.88. The
+averaging projects two genuinely different views into a single one.
+Picard avoids it by never building $C$ — instead, two separate
+per-factor polars, each operating on its own preconditioned gradient.
+
+**Test:** version of our solver that never symmetrizes — keep $C_L$
+and $C_R$ as separate inputs, do separate per-factor polars in core
+space, lift separately. (Closely related to H1's test.)
+
+### H5. Picard's iteration is doing something we lack
+
+Picard's $k=2$ inner step adds
+$\alpha (B^\top \Delta B_\text{prev} A)/\eta$ to $u_A$ and
+$\alpha (B \Delta A_\text{prev} A^\top)/\eta$ to $u_B$. This is a
+fixed-point iteration on the joint normal equations with damping
+$\alpha = 1$. Our solver is one-shot. Even if our one-shot direction
+is $\tfrac{1}{2}$-optimal for the *single-step* objective, Picard's
+iteration may be converging to a better fixed point of the implicit
+training dynamics across steps — or to a different objective entirely.
+
+**Test:** sensitivity of Picard to `picard_iters $\in \{1, 2, 3, 5, 10\}$.
+- iters=1 disables the cross-coupling entirely — that's
+  `adam-polar-product-lora` (uncoupled), eval $0.7546$ at $r=16$.
+- iters=2 (default) is $0.7557$ at $r=16$.
+- We have not swept iters=3+. **This is a config-only experiment
+  with zero new code.**
+
+If iters=2 is significantly better than iters=1, Picard's iteration
+is doing real work, and our one-shot solver structurally cannot match.
+If iters $\geq 2$ is flat or worse, the iteration isn't the
+explanation.
+
+### H6. We have a bug
+
+Possible defects worth re-checking:
+
+- The $\alpha/r$ LoRA scaling. PEFT applies $\alpha/r$ at the model
+  layer; our solver does not separately scale. Picard also does not.
+  Should match in principle. Worth a 1-pair trace to confirm.
+- The Sylvester lift formula in (2.1.6). Our test 4 in
+  `tests/test_polar_coupled_core.py` verifies that on synthetic random
+  $(A, B, G_A, G_B)$ pairs, our solver in `core_norm="frobenius"` mode
+  (i.e.\ no operator constraint, equivalent to plain GD on the joint
+  problem) matches a hand-derived Sylvester closed form to $10^{-5}$.
+  This passes. Worth a single real-LoRA-pair trace at $r=4$ to verify
+  the operator-norm path matches an alternative implementation.
+- The $B = 0$ PEFT-init boundary case. Our solver triggers
+  `_zero_B_fallback` at step 1; thereafter regular path. Picard's
+  $S_B^{-1/2} = (B^\top B + \delta I)^{-1/2}$ → $\delta^{-1/2} I$
+  smoothly handles it. Could the fallback step's magnitude differ
+  from what the regular path would compute on $B = \varepsilon\, X$
+  for small $\varepsilon$? Cheap test.
+
+---
+
+## 7. What we plan to try (subject to advice)
 
 In order of expected information per GPU-hour:
 
-1. **Match Picard's recipe with our gauge analysis** (tests H1, H4).
-   Build `polar-per-factor-lora`: factor-Adam → per-factor polar (NOT
-   joint core polar) → Sylvester gauge lift to enforce
-   `B^T dB = dA A^T` post-hoc. If this beats Picard, the gauge analysis
-   is the missing piece. If it ties Picard, the gauge analysis is
-   irrelevant. If it loses to Picard, something else.
-
-2. **Variant 1 with the (22) block UN-zeroed** (tests H2). Same as
-   variant 1 but `R = P` not `P[r:,r:]:=0`. Quickest possible code change.
-
-3. **Step-magnitude diagnostic comparison** (tests H3). Run variant 1
-   vs Picard at their best lr's (3e-2 vs 3e-4 at r=64), log ‖dA‖, ‖dB‖
-   per step. Plot. If ours is 10× larger or smaller, that's signal.
-
-4. **Re-verify the Sylvester lift on a real LoRA pair, not a synthetic
-   one** (tests H6). Single-pair trace, hand-compute, compare. ~30 min.
-
-5. **Sensitivity of Picard to picard_iters** (tests H5). Sweep
-   picard_iters ∈ {1, 2, 3, 5, 10} on Picard itself. If the optimum is
-   at iters=2, our one-shot solver structurally cannot match. If iters
-   doesn't matter, our one-shot story isn't the problem.
-
-(1) and (5) are most informative. (1) is the experiment that would
-either confirm we have a real solver advantage or settle that
-gauge/coupling don't matter in practice. (5) is the only experiment
-that doesn't require new code — a config sweep on existing Picard.
+1. **Picard sensitivity to `picard_iters`** (tests H5). Config-only,
+   $\sim 50$ min wall on 16 GPUs. Free.
+2. **Variant 1 with $(2,2)$ block UN-zeroed** (tests H2). One-line
+   change. Tells us if $\Pi$ is empirically costly.
+3. **Step-magnitude diagnostic**: trajectory plot of $\|\Delta A\|,
+   \|\Delta B\|$ for variant 1 vs Picard at best lr's (tests H3).
+   No new code.
+4. **Per-factor polar with our gauge lift** (tests H1, H4). New
+   optimizer: do Picard's per-factor polar steps, but post-hoc lift
+   into the min-Frobenius gauge. If it beats Picard, we have a
+   reason to ship it; if it ties or loses, our gauge analysis is
+   irrelevant.
+5. **Real-LoRA-pair Sylvester-lift trace** (tests H6).
+   $\sim 30$ min, one-pair printout.
 
 ---
 
-## 8. Reproducibility
+## 8. What we want from external review
 
-All sweeps logged in `logs/<group>/run_info/` with manifest. Pull final
-results via `lora_playground.loader.load_runs(where={...})`. Diagnostics
-on every cell via `--log_optim_diagnostics --optim_diagnostics_every 200`.
+Concretely:
 
-Headline analysis script: `scripts/phase2_summary.py`.
+- **Are we mis-formulating the variational problem?** Is the
+  operator-norm constraint on
+  $\|B \Delta A + \Delta B\, A\|_2$ even the right object for
+  fine-tuning? Should it be a different norm, a different combination,
+  or constrained on each factor separately?
+- **Is the $(2,2)$-zero projection actually justified?** The doc's
+  argument is that feasible $\widehat Z$ has zero $(2,2)$ block, so
+  $\widehat H_{22}$ is undefined-as-data. But the *polar of $\widehat H$*
+  has nonzero $(2,2)$ entries before $\Pi$ is applied; we throw them
+  away. Is there a principled reformulation where we don't?
+- **Is the symmetrization $C = \tfrac{1}{2}(C_L + C_R)$ throwing away
+  signal Picard preserves?** When $\mathrm{compat}$ is high (e.g.,
+  factor-Adam), is there a better way to combine $C_L$ and $C_R$ than
+  averaging?
+- **Why does core-space momentum fail?** Variant 5's `align_mom`
+  $<$ `align_inst` data and variant 8's outright divergence say
+  core-space EMA-Adam is structurally broken. Is the rotating
+  $Q_L, Q_R$ basis truly incompatible with momentum, or is there a
+  variant of basis transport / parallel-transport that would fix it?
+- **Is Picard's fixed-point iteration empirically equivalent to
+  something we could compute one-shot?** If `picard_iters=10` matches
+  the iters=2 result, we know the iteration is essentially
+  block-Jacobi. If iters=10 is much better, our one-shot story has
+  a structural problem.
 
-Sweeps:
-- `polar_coupled_core_2k` — variant 1, variant 2 baseline
-- `state_rebalanced_2k` — variant 1.5
-- `polar_core_wide_lr_2k` — wide-lr scan
-- `polar_core_sign_2k` — sign normalization
-- `polar_core_sign_followup_2k` — sign × EMA × rebalance compounds
-- `polar_factor_adam_2k` — factor-Adam ablation (rung 6)
+---
+
+## 9. Reproducibility
+
+All sweeps logged in `logs/<group>/run_info/`. Pull final results via
+`lora_playground.loader.load_runs(where={...})`. Diagnostics on every
+cell via `--log_optim_diagnostics --optim_diagnostics_every 200`.
+
+Sweep groups referenced in this doc:
+
+- `polar_coupled_core_2k` — variants 1, 5
+- `state_rebalanced_2k` — variant 2
+- `polar_core_wide_lr_2k` — variant 3
+- `polar_core_sign_2k` — variant 4
+- `polar_core_sign_followup_2k` — variant 6
+- `polar_factor_adam_2k` — variant 7
+
+Code: `lora_playground/optim.py`,
+classes `PolarCoupledCoreLoRA` (variants 1–4),
+`MuonCoupledCoreLoRA` (variant 5),
+`PolarCoupledCoreFactorAdamLoRA` (variant 7),
+`AdamLinCoreLoRA` (variant 8 cross-check),
+`AdamPolarProductLoRA` (Picard).
