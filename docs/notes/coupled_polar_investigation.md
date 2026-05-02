@@ -195,7 +195,7 @@ one sentence of what changes from the baseline solver of §2.1.
 | E4 | core sign-norm, $\widehat H \to \widehat H / (\|\widehat H\| + \varepsilon)$ elementwise before polar (per-coord adaptivity in core space, no momentum) | **0.7680** (lr 1e-4) | diverges | +0.013 / — |
 | E5 | core-EMA + Nesterov (Muon-style on the rotating $Q_L, Q_R$ basis with overlap-matrix transport: $M_t = \beta\, T_L M_{t-1} T_R^\top + (1-\beta)\widehat H_t$) | 0.9073 | 0.8883 | far worse |
 | E6 | compounds: E4 ⊕ E5 ⊕ E2 in 4 combinations | 0.7684 | 0.9440 | tied with E4 / worse |
-| E7 | factor-Adam preconditioning before §2.1 (Adam EMA on $G_A, G_B$, feed $u_A, u_B$ into the §2.1 solver) — closest analog of Picard with our solver replacing Picard's per-factor polar | 0.7846 (lr 1e-4) | extrap $\sim$0.95 | +0.030 / extrap +0.21 |
+| E7 | factor-Adam preconditioning before §2.1 (Adam EMA on $G_A, G_B$, feed $u_A, u_B$ into the §2.1 solver) — closest analog of Picard with our solver replacing Picard's per-factor polar | 0.7846 (lr 1e-4) | 1.097 (lr 1e-4, step 1600 of 2000; cancelled — clearly falsified) | +0.030 / +0.36 |
 | E8 | cross-check on a DIFFERENT LoRA solver: take a Sylvester-based factor-Adam solver that already works (the one labeled "Adam-then-Sylvester" in §3.1, eval 0.7581 at $r=16$) and move its Adam EMA into core space ($r \times r$ Sylvester RHS matrix) instead of factor space — DIVERGES at step 2 | div | div | — |
 
 **Best so far per rank, both from our solver family:**
@@ -225,6 +225,12 @@ one sentence of what changes from the baseline solver of §2.1.
 - **E7** (factor-Adam, the closest analog of Picard with our solver):
   replicates Picard's preconditioning step but feeds into the §2.1
   solver instead of Picard's per-factor polar. **Does not help.**
+  At $r=16$, best lr ($1\mathrm{e}{-4}$, plain) lands at $0.7846$
+  ($+0.030$ over the $r=16$ best). At $r=64$ the same configuration
+  is dramatically worse ($1.097$ at step 1600, vs Picard $0.7382$);
+  the $r=64$ run was cancelled at step 1600 of 2000 — the gap is
+  $+0.36$ and shows no closing trend, so the conclusion does not
+  depend on the last 400 steps.
   This is the experiment that most directly tests "is the missing
   piece factor-space adaptivity?" Answer: no.
 - **E8** (cross-check on a different working solver — the
