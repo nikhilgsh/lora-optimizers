@@ -50,7 +50,7 @@ $$
 
 ## 2. Two algorithms
 
-### 2.1 Our solver — projected-quotient-polar core (variant 1)
+### 2.1 Our solver — projected-quotient-polar core (this is the §2.1 baseline; experiments E1–E7 below are modifications of this)
 
 Implementation: `lora_playground/optim.py::PolarCoupledCoreLoRA`,
 helpers `_polar_coupled_core_step`, `_polar_coupled_core_lift`. Matches
@@ -173,65 +173,71 @@ Defaults: $\beta_1=0.9$, $\beta_2=0.999$, $\varepsilon=10^{-8}$, $\delta
 
 | optimizer | $r=16$ best lr | $r=16$ eval | $r=64$ best lr | $r=64$ eval |
 |---|---|---|---|---|
-| `adam-polar-product-lora` (uncoupled, no Picard iter) | 3e-4 | **0.7546** | — | — |
-| `adam-polar-product-lora-coupled` (Picard, 2 iters) | 3e-4 | 0.7557 | 3e-4 | **0.7382** |
-| `adamw` | 3e-4 | 0.7601 | 3e-4 | 0.7550 |
-| `adam-lin-lora` (Sylvester closed form, factor-Adam) | 1e-3 | 0.7581 | — | — |
+| Uncoupled spectral-product (Picard with `picard_iters=1`) | 3e-4 | **0.7546** | — | — |
+| Hybrid Picard (`picard_iters=2`, the algorithm of §2.2) | 3e-4 | 0.7557 | 3e-4 | **0.7382** |
+| AdamW | 3e-4 | 0.7601 | 3e-4 | 0.7550 |
+| Adam-then-Sylvester (Adam EMA on factors, then closed-form L²-balanced Sylvester step) | 1e-3 | 0.7581 | — | — |
 
 At $r=16$ the spread among baselines is small (Picard $\approx$ AdamW).
-At $r=64$ Picard has a real $\sim 0.017$ lead over AdamW. The
-serious test is $r=64$.
+At $r=64$ Picard has a real $\sim 0.017$ lead over AdamW. **The
+serious test is $r=64$.**
 
-### 3.2 Our solver and its variants
+### 3.2 Our solver and its variants — table
 
-| # | variant (commit) | $r=16$ best | $r=64$ best | gap to best |
+We use **experiment ID E1, E2, ...** for our results. Each row gives
+one sentence of what changes from the baseline solver of §2.1.
+
+| ID | what changes from §2.1 baseline | $r=16$ best | $r=64$ best | gap to best |
 |---|---|---|---|---|
-| 1 | vanilla `polar-coupled-core-lora` | 0.8188 (lr 3e-3) | 0.7821 (lr 3e-3) | +0.064 / +0.044 |
-| 2 | + state rebalance ($A A^\top \leftarrow \rho B^\top B$ post-step) | 0.8104 | 0.7686 | +0.056 / +0.030 |
-| 3 | + wide-lr (1e-2, 3e-2) | 0.8049 | **0.7490** (lr 3e-2) | +0.050 / +0.011 |
-| 4 | core sign-norm, $\widehat H \to \widehat H / (\|\widehat H\| + \varepsilon)$ before polar | **0.7680** (lr 1e-4) | diverges | +0.013 / — |
-| 5 | variant 2 (transported core EMA, Muon-style) | 0.9073 | 0.8883 | far worse |
-| 6 | sign + EMA + rebalance compounds (4 cells) | 0.7684 | 0.9440 | tied with #4 / worse |
-| 7 | factor-Adam + our solver (rung 6 ablation) | extrap $\sim$0.78 | catastrophic | extrap +0.025 / +0.18 |
-| 8 | `adam-lin-core-lora` (cross-check: core-Adam in the lin-LoRA Sylvester solver) | DIVERGES at step 2 | — | — |
+| E1 | nothing (the §2.1 baseline) | 0.8188 (lr 3e-3) | 0.7821 (lr 3e-3) | +0.064 / +0.044 |
+| E2 | post-step state rebalance: rotate $(A,B) \to (R^{-1}A, BR)$ to enforce iLoRA invariant $A A^\top = (r/m) B^\top B$, preserving $BA$ exactly | 0.8104 | 0.7686 | +0.056 / +0.030 |
+| E3 | wider lr scan on E1 (extend to 1e-2, 3e-2) | 0.8049 | **0.7490** (lr 3e-2) | +0.050 / +0.011 |
+| E4 | core sign-norm, $\widehat H \to \widehat H / (\|\widehat H\| + \varepsilon)$ elementwise before polar (per-coord adaptivity in core space, no momentum) | **0.7680** (lr 1e-4) | diverges | +0.013 / — |
+| E5 | core-EMA + Nesterov (Muon-style on the rotating $Q_L, Q_R$ basis with overlap-matrix transport: $M_t = \beta\, T_L M_{t-1} T_R^\top + (1-\beta)\widehat H_t$) | 0.9073 | 0.8883 | far worse |
+| E6 | compounds: E4 ⊕ E5 ⊕ E2 in 4 combinations | 0.7684 | 0.9440 | tied with E4 / worse |
+| E7 | factor-Adam preconditioning before §2.1 (Adam EMA on $G_A, G_B$, feed $u_A, u_B$ into the §2.1 solver) — closest analog of Picard with our solver replacing Picard's per-factor polar | extrap $\sim$0.78 | catastrophic | extrap +0.025 / +0.18 |
+| E8 | cross-check on a DIFFERENT LoRA solver: take a Sylvester-based factor-Adam solver that already works (the one labeled "Adam-then-Sylvester" in §3.1, eval 0.7581 at $r=16$) and move its Adam EMA into core space ($r \times r$ Sylvester RHS matrix) instead of factor space — DIVERGES at step 2 | div | div | — |
 
-**Best so far per rank, both ours:**
+**Best so far per rank, both from our solver family:**
 
-- $r=16$: variant 4 (core sign normalization), $0.7680$. Still
-  $+0.013$ behind the $r=16$ best (`adam-polar-product-lora`).
-- $r=64$: variant 3 (vanilla + lr=3e-2), $0.7490$. Beats `adamw`
-  ($0.7550$); still $+0.011$ behind Picard ($0.7382$).
+- $r=16$: **E4** (core sign normalization), $0.7680$. Still $+0.013$
+  behind the $r=16$ best (uncoupled spectral-product, $0.7546$).
+- $r=64$: **E3** (E1 + lr=3e-2), $0.7490$. Beats AdamW ($0.7550$);
+  still $+0.011$ behind hybrid Picard ($0.7382$).
 
-### 3.3 What the variants tell us (each isolates one axis)
+### 3.3 What each experiment tells us (one mechanism per row)
 
-- **Variant 2** (state rebalance): drives the iLoRA invariant
-  $\|A A^\top - \rho B^\top B\|_F / (\cdot)$ from $1.0 \to 10^{-3}$ in
+- **E2** (state rebalance): drives the iLoRA invariant
+  $\|A A^\top - (r/m) B^\top B\|_F / (\cdot)$ from $1.0 \to 10^{-3}$ in
   two steps. Mechanism works as designed; eval gain $\le 0.014$.
   Conclusion: factor-state imbalance is real but not the bottleneck.
-- **Variant 3** (wide-lr): variant 1's lr ceiling is around $3\times$
-  the canonical Adam lr. Beats AdamW at $r=64$. At $r=16$ ceiling
-  $\sim 0.80$.
-- **Variant 4** (core sign): per-coord adaptivity in **core space**
-  (after the $Q_L, Q_R$ projection). First variant to break the
-  $r=16$ ceiling; useless at $r=64$.
-- **Variant 5** (transported core EMA): theoretically the principled
-  Muon-on-tangent answer; far worse than variant 1. See diagnostic
-  below.
-- **Variant 7** (factor-Adam, rung 6): replicates Picard's
-  preconditioning step but feeds into our solver instead of Picard's
-  per-factor polar. **Does not help.** This is the experiment that
-  most directly tests "is the missing piece factor-space adaptivity?"
-  Answer: no.
-- **Variant 8** (cross-check on a different solver, `adam-lin-lora`'s
-  Sylvester pipeline with Adam-EMA on the $r \times r$ Sylvester core
-  matrix instead of the factor preconditioned grads): **diverges at
-  step 2 of OLMo-2-1B smoke**. Cholesky fails at step 3. Mechanism:
-  $\sqrt{v_M}$ on a small $r\times r$ matrix (homogeneous coordinate
-  scales) degenerates to $\approx 3\,\mathrm{sign}(M)$ at step 1,
-  inflating step magnitude. Independently confirms variant 5's failure
-  mode generalizes — core-space Adam-style momentum is structurally
-  broken because the core object lacks heterogeneous coordinate scales
-  that Adam exists to normalize.
+- **E3** (wider lr scan): the §2.1 baseline's lr ceiling is around $3\times$
+  the canonical Adam lr ($3 \times 10^{-2}$ vs $3 \times 10^{-4}$).
+  Beats AdamW at $r=64$. At $r=16$ ceiling $\sim 0.80$, so wider lr
+  does not save us at low rank.
+- **E4** (core sign): per-coord adaptivity in **core space** (after
+  the $Q_L, Q_R$ basis projection). First variant to break the $r=16$
+  ceiling; useless at $r=64$.
+- **E5** (transported core EMA, Muon-style): the principled
+  "Muon-on-LoRA-tangent" answer — should be the right thing
+  theoretically, but is the worst variant tested. Diagnostics in §4.2
+  show why.
+- **E7** (factor-Adam, the closest analog of Picard with our solver):
+  replicates Picard's preconditioning step but feeds into the §2.1
+  solver instead of Picard's per-factor polar. **Does not help.**
+  This is the experiment that most directly tests "is the missing
+  piece factor-space adaptivity?" Answer: no.
+- **E8** (cross-check on a different working solver — the
+  Adam-then-Sylvester baseline from §3.1, which gets $0.7581$ at
+  $r=16$; we move its Adam EMA from factor space to its $r \times r$
+  core/Sylvester matrix and rerun): **diverges at step 2** of OLMo-2-1B
+  smoke; Cholesky fails at step 3. Mechanism: $\sqrt{v_M}$ on a small
+  $r\times r$ matrix (homogeneous coordinate scales) degenerates to
+  $\approx 3\,\mathrm{sign}(M)$ at step 1, inflating step magnitude.
+  This independently confirms E5's failure-mode generalizes — core-
+  space Adam-style momentum is structurally broken because the core
+  object lacks the heterogeneous coordinate scales that Adam's
+  $\sqrt{v}$ rescaling exists to normalize.
 
 ---
 
@@ -253,7 +259,7 @@ $C_L = R_L^{-\top} G_A Q_R$, $C_R = Q_L^\top G_B R_R^{-\top}$.
 
 ### 4.2 `align_inst` and `align_mom` — alignment of EMA core with chosen direction
 
-For variant 5 (transported core EMA). Per-pair median across the model:
+For E5 (transported core EMA). Per-pair median across the model:
 
 - $\mathrm{align\_inst}$ (cosine of instantaneous core $\widehat H_t$
   with chosen polar direction $\widehat Z_+$): $\approx 0.45$–$0.50$.
@@ -265,7 +271,7 @@ EMA averaging in core space does **not** accumulate constructively.
 Successive cores point in different directions in the rotating
 $Q_L, Q_R$ frame; averaging dilutes rather than reinforces signal.
 
-### 4.3 `transport_residual` — basis transport error in variant 5
+### 4.3 `transport_residual` — basis transport error in E5
 
 $\|M_t - M_\text{transported}\|_F / (\|M_\text{transported}\|_F + \varepsilon)$
 where $M_\text{transported} = T_L M_{t-1} T_R^\top$ with overlap
@@ -302,7 +308,7 @@ Theory says our solver should beat Picard. The argument:
 4. Therefore at fixed preconditioning, ours should be no worse and
    plausibly better.
 
-But variant 7 directly tests this: replace our raw factor gradients
+But E7 directly tests this: replace our raw factor gradients
 with Picard's exact Adam-preconditioned $u_A, u_B$, run our solver,
 compare to Picard at the same lr. Result: ours is $\sim 0.025$ worse
 at $r=16$ (extrapolated from step 1200 trajectory) and catastrophically
@@ -353,14 +359,14 @@ costly.
 Our step magnitude is $\eta \tau = \eta \|\widehat H\|_* / \gamma$.
 Picard's is $\eta \|u_A\|$ (RMS-aligned to Adam direction norm). At
 fixed $\eta$ these are different scales. We see this empirically:
-variant 3 (vanilla) needs $\eta = 3 \times 10^{-2}$ at $r=64$ to be
+E3 (E1 + wider lr) needs $\eta = 3 \times 10^{-2}$ at $r=64$ to be
 competitive, while Picard's optimum is $\eta = 3 \times 10^{-4}$
 — a 100$\times$ ratio.
 
-**Test:** plot $\|\Delta A\|, \|\Delta B\|$ trajectories of variant 1
-vs Picard at their best lr's. Are the effective per-step magnitudes
+**Test:** plot $\|\Delta A\|, \|\Delta B\|$ trajectories of E1 vs
+Picard at their best lr's. Are the effective per-step magnitudes
 matched? If ours is way larger (or smaller), that's a knob we haven't
-calibrated. (Variant 7 supposedly fixes this by inheriting Picard's
+calibrated. (E7 supposedly fixes this by inheriting Picard's
 preconditioning — but we still see catastrophic behavior at $r=64$,
 suggesting the magnitude story is more subtle.)
 
@@ -430,7 +436,7 @@ In order of expected information per GPU-hour:
 2. **Variant 1 with $(2,2)$ block UN-zeroed** (tests H2). One-line
    change. Tells us if $\Pi$ is empirically costly.
 3. **Step-magnitude diagnostic**: trajectory plot of $\|\Delta A\|,
-   \|\Delta B\|$ for variant 1 vs Picard at best lr's (tests H3).
+   \|\Delta B\|$ for E1 vs Picard at best lr's (tests H3).
    No new code.
 4. **Per-factor polar with our gauge lift** (tests H1, H4). New
    optimizer: do Picard's per-factor polar steps, but post-hoc lift
@@ -461,7 +467,7 @@ Concretely:
   factor-Adam), is there a better way to combine $C_L$ and $C_R$ than
   averaging?
 - **Why does core-space momentum fail?** Variant 5's `align_mom`
-  $<$ `align_inst` data and variant 8's outright divergence say
+  $<$ `align_inst` data and E8's outright divergence say
   core-space EMA-Adam is structurally broken. Is the rotating
   $Q_L, Q_R$ basis truly incompatible with momentum, or is there a
   variant of basis transport / parallel-transport that would fix it?
@@ -482,15 +488,15 @@ cell via `--log_optim_diagnostics --optim_diagnostics_every 200`.
 Sweep groups referenced in this doc:
 
 - `polar_coupled_core_2k` — variants 1, 5
-- `state_rebalanced_2k` — variant 2
-- `polar_core_wide_lr_2k` — variant 3
-- `polar_core_sign_2k` — variant 4
-- `polar_core_sign_followup_2k` — variant 6
-- `polar_factor_adam_2k` — variant 7
+- `state_rebalanced_2k` — E2
+- `polar_core_wide_lr_2k` — E3
+- `polar_core_sign_2k` — E4
+- `polar_core_sign_followup_2k` — E6
+- `polar_factor_adam_2k` — E7
 
 Code: `lora_playground/optim.py`,
 classes `PolarCoupledCoreLoRA` (variants 1–4),
-`MuonCoupledCoreLoRA` (variant 5),
-`PolarCoupledCoreFactorAdamLoRA` (variant 7),
-`AdamLinCoreLoRA` (variant 8 cross-check),
+`MuonCoupledCoreLoRA` (E5),
+`PolarCoupledCoreFactorAdamLoRA` (E7),
+`AdamLinCoreLoRA` (E8 cross-check),
 `AdamPolarProductLoRA` (Picard).
