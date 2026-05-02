@@ -240,14 +240,10 @@ def test_compat_near_machine_eps_for_compatible_grads():
 
 # --- Variant 2 momentum tests ---------------------------------------------
 
-def test_muon_first_step_matches_variant1():
-    """At step 1, M_prev is None so M_t = Ĥ_t. Variant 2's update should
-    therefore match variant 1's exactly (modulo any bias-correction-at-step-1
-    factor — with bias_correction=True, bc1 = 1 - β1, so M_hat = Ĥ / (1−β1)
-    and the step magnitude is rescaled).
-
-    Test with bias_correction=False to bypass that scaling: variant 2 step 1
-    must equal variant 1 step 1 bit-exactly.
+def test_muon_first_step_matches_variant1_at_beta_zero():
+    """With β=0, EMA reduces to current grad, Nesterov lookahead reduces to
+    current grad: M_step = (1-0)·Ĥ + 0·M_t = Ĥ. Variant 2 at β=0 must match
+    variant 1 bit-exactly. This pins the canonical-Muon (no bc) form.
     """
     torch.manual_seed(7)
     m1 = TinyLoRAModel(d_in=8, d_out=6, r=4)
@@ -258,11 +254,81 @@ def test_muon_first_step_matches_variant1():
     target = torch.randn(3, 8)
 
     opt1 = PolarCoupledCoreLoRA(m1, lr=1e-2)
-    opt2 = MuonCoupledCoreLoRA(m2, lr=1e-2, beta1=0.95, bias_correction=False)
+    opt2 = MuonCoupledCoreLoRA(m2, lr=1e-2, beta1=0.0)
     ((m1(x) - target) ** 2).mean().backward()
     opt1.step()
     ((m2(x) - target) ** 2).mean().backward()
     opt2.step()
     for (n1, p1), (n2, p2) in zip(m1.named_parameters(), m2.named_parameters()):
         assert torch.allclose(p1, p2, atol=1e-7), \
-            f"variant-1 vs variant-2 first step mismatch on {n1}"
+            f"variant-1 vs variant-2-at-β0 first step mismatch on {n1}"
+
+
+def test_muon_first_step_canonical_magnitude():
+    """At step 1 with M_prev = 0 and Nesterov: M_t = (1-β)·Ĥ;
+    M_step = (1-β)·Ĥ + β·M_t = (1-β)(1+β)·Ĥ = (1-β²)·Ĥ.
+    With β=0.95, that's 0.0975·Ĥ — a ~10× SMALLER first step than Ĥ,
+    matching canonical Muon's "build up gradually" behavior.
+
+    Test by comparing variant-2 step-1 dB norm against (1-β²) × variant-1's.
+    """
+    torch.manual_seed(7)
+    m1 = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    torch.manual_seed(7)
+    m2 = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    torch.manual_seed(13)
+    x = torch.randn(3, 8)
+    target = torch.randn(3, 8)
+
+    pre1 = {n: p.detach().clone() for n, p in m1.named_parameters()}
+    pre2 = {n: p.detach().clone() for n, p in m2.named_parameters()}
+
+    beta = 0.95
+    PolarCoupledCoreLoRA(m1, lr=1e-2)
+    MuonCoupledCoreLoRA(m2, lr=1e-2, beta1=beta)
+    # Re-do, since constructing the optimizer doesn't run a step yet:
+    opt1 = PolarCoupledCoreLoRA(m1, lr=1e-2)
+    opt2 = MuonCoupledCoreLoRA(m2, lr=1e-2, beta1=beta)
+    ((m1(x) - target) ** 2).mean().backward()
+    opt1.step()
+    ((m2(x) - target) ** 2).mean().backward()
+    opt2.step()
+
+    expected_ratio = 1.0 - beta * beta  # squared-penalty form is linear in M_step magnitude
+    # Pick lora_B params (where step 1 falls back to Case-2 zero-init route — both opts do
+    # the same fallback, magnitude-quadratic in ‖G_B U_R Σ_R⁻¹‖_*) — wait, both run
+    # zero-B fallback at step 1 since PEFT zeros B. So variant 2's step-1 in EMA mode
+    # never executes; both produce identical Case-2 dB. Skip the magnitude test if both
+    # took the fallback path — covered by test_muon_first_step_matches_variant1_at_beta_zero.
+    # Instead, advance B off zero in both, then compare a follow-up step.
+    for n, p in m1.named_parameters():
+        if "lora_B" in n:
+            p.data.copy_(torch.randn_like(p) * 0.1)
+    for n, p in m2.named_parameters():
+        if "lora_B" in n:
+            p.data.copy_(torch.randn_like(p) * 0.1)
+    # Reset optimizer state for the post-bootstrap step (still step 1 of EMA path
+    # since we replaced the model).
+    opt1 = PolarCoupledCoreLoRA(m1, lr=1e-2)
+    opt2 = MuonCoupledCoreLoRA(m2, lr=1e-2, beta1=beta)
+
+    for _ in range(2):
+        m1.zero_grad(); m2.zero_grad()
+        ((m1(x) - target) ** 2).mean().backward()
+        ((m2(x) - target) ** 2).mean().backward()
+
+    pre1 = {n: p.detach().clone() for n, p in m1.named_parameters()}
+    pre2 = {n: p.detach().clone() for n, p in m2.named_parameters()}
+    opt1.step()
+    opt2.step()
+    delta1 = next(p2 - p1 for (n1, p1), (n2, p2) in zip(pre1.items(), m1.named_parameters()) if "lora_B" in n1)
+    delta2 = next(p2 - p1 for (n1, p1), (n2, p2) in zip(pre2.items(), m2.named_parameters()) if "lora_B" in n1)
+    norm1 = float(delta1.norm().item())
+    norm2 = float(delta2.norm().item())
+    if norm1 < 1e-30:
+        return  # nothing to compare; skip
+    ratio = norm2 / norm1
+    assert abs(ratio - expected_ratio) < 0.1 * expected_ratio, (
+        f"Variant 2 first non-fallback step magnitude {norm2:.4f} vs variant 1 {norm1:.4f} "
+        f"(ratio {ratio:.3f}, expected ~{expected_ratio:.3f} from Nesterov + EMA at β={beta})"
+    )

@@ -3277,17 +3277,29 @@ class PolarCoupledCoreLoRA(Optimizer):
 
 class MuonCoupledCoreLoRA(Optimizer):
     """Variant 2 of the Section 6 ladder: variant 1 + transported core
-    momentum. The Muon-style LoRA tangent optimizer.
+    momentum, mirroring canonical Muon (~/modded-nanogpt/train_gpt.py:170+).
 
-    Maintains an EMA M_t of the core covector Ĥ_t in the (rotating) bases
-    [Q_L, U] / [Q_R, V]. Between steps, the previous EMA is parallel-
-    transported onto the new bases via small overlap matrices (Section 6),
-    then mixed with the new instantaneous core. The polar runs on the
-    bias-corrected EMA.
+    Each step:
+      1. Build the active core Ĥ_t and bases (Q_L, U), (Q_R, V).
+      2. Transport the previous EMA M_{t-1} onto current bases:
+             M_transported = T_L · M_{t-1} · T_R^T
+         where T_L = U_cur^T U_prev, T_R = V_cur^T V_prev.
+      3. EMA update (no bias correction — matches canonical Muon):
+             M_t = β · Π(M_transported) + (1 − β) · Ĥ_t
+      4. Nesterov lookahead in core space:
+             M_step = (1 − β) · Ĥ_t + β · M_t
+      5. Run projected quotient polar on M_step, lift back via Sylvester.
+      6. Save M_t (EMA, NOT M_step) for next-step transport.
+
+    The non-bias-corrected EMA gives a small step-1 magnitude
+    (~(1−β)·grad with the lookahead, ~0.10·grad at β=0.95), which is the
+    Muon-typical "build up momentum gradually" behavior. Adam-style bc
+    would inflate step 1 by 1/(1−β)=20×, which causes divergence at
+    moderate lr — empirically observed and removed here.
     """
 
     def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
-                 beta1=0.95, bias_correction=True,
+                 beta1=0.95,
                  core_scale="squared_penalty",
                  log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
@@ -3298,7 +3310,6 @@ class MuonCoupledCoreLoRA(Optimizer):
         self.pairs = pairs
         self.delta = delta
         self.beta1 = beta1
-        self.bias_correction = bias_correction
         self.core_scale = core_scale
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
@@ -3354,9 +3365,11 @@ class MuonCoupledCoreLoRA(Optimizer):
             U_cur = torch.cat([bases["Q_L"], bases["U"]], dim=1) if tt > 0 else bases["Q_L"]
             V_cur = torch.cat([bases["Q_R"], bases["V"]], dim=1) if ss > 0 else bases["Q_R"]
 
+            # EMA in core space, mirroring canonical Muon (no bias correction).
             transport_residual = float("nan")
             if state["M_prev"] is None or t_step == 1:
-                M_t = H_hat.clone()
+                # First-ever non-fallback step: M_prev = 0 ⇒ M_t = (1-β)·H_hat.
+                M_t = (1.0 - self.beta1) * H_hat
             else:
                 T_L = U_cur.T @ state["U_prev"]
                 T_R = V_cur.T @ state["V_prev"]
@@ -3366,14 +3379,11 @@ class MuonCoupledCoreLoRA(Optimizer):
                 den = M_transported.norm().item() + 1e-30
                 transport_residual = float((M_t - M_transported).norm().item() / den)
 
-            if self.bias_correction and self.beta1 < 1.0:
-                bc1 = 1.0 - self.beta1 ** t_step
-                M_hat = M_t / bc1
-            else:
-                M_hat = M_t
+            # Nesterov lookahead in core space (canonical Muon: g = (1-β)·grad + β·mb).
+            M_step = (1.0 - self.beta1) * H_hat + self.beta1 * M_t
 
             dA, dB, certs = _polar_coupled_core_lift(
-                M_hat, bases, lr, r,
+                M_step, bases, lr, r,
                 core_scale=self.core_scale, core_norm="operator",
                 delta=self.delta, H_hat_for_align=H_hat,
             )
@@ -3607,7 +3617,7 @@ def build_optimizer(
     if optimizer_type == "muon-coupled-core-lora":
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6,
-            beta1=0.95, bias_correction=True,
+            beta1=0.95,
             core_scale="squared_penalty",
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
