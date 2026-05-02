@@ -3106,24 +3106,70 @@ def _factor_rank_deficient(X, rank_tol=1e-4):
     return (sv_min / sv_max) < rank_tol
 
 
-def _zero_B_fallback(A, B, G_A, G_B, lr, *, delta=1e-6, ns_steps=5):
-    """Bootstrap fallback when B is (near-)zero / rank-deficient: PEFT's
-    default LoRA init zeros B, which makes the joint-solver QRs degenerate.
-    The standing assumption (full-rank A, B) is violated, so apply a Muon
-    step on B alone (equalize singular values of G_B) and leave A unchanged.
-    Once B becomes full-rank after a step or two, the joint solver takes
-    over.
+def _zero_B_fallback(A, B, G_A, G_B, lr, *, delta=1e-6, core_scale="squared_penalty"):
+    """Bootstrap fallback when B is (near-)zero / rank-deficient (PEFT's
+    default LoRA init), violating the Section 1 standing assumption.
+
+    At B = 0: the tangent constraint ‖B ΔA + ΔB A‖_2 ≤ λ collapses to
+    ‖ΔB A‖_2 ≤ λ, and the linear cost reduces to ⟨G_B, ΔB⟩ (since
+    G_A = B^T (·) = 0). This is exactly Case 2 (one-factor restriction)
+    of polar_coupled_problem.md, with closed-form
+        ΔB = -λ · polar(G_B U_R Σ_R^{-1}) · Σ_R^{-1} U_R^T,
+    where A = U_R Σ_R V_R^T (compact SVD). Plain Muon polar(G_B) misses
+    the A-spectrum preconditioner; this form preserves it.
+
+    Symmetric case (A near-zero, B full-rank) is unusual under standard
+    PEFT init but handled by the (A ↔ B^T) transpose symmetry of the
+    construction — we apply Case 2 on B if A is degenerate, else
+    Case 2 on A.
     """
     A_f = A.float()
     B_f = B.float()
+    GA_f = G_A.float()
     GB_f = G_B.float()
-    # Muon-style polar step on G_B; equalize spectrum, no scale.
-    P_B = _newton_schulz(GB_f, nsteps=ns_steps)
-    # Match magnitude to a unit-RMS step so it has a sensible scale early on.
-    rms = (P_B.numel() ** 0.5)
-    dB = -lr * P_B / max(P_B.norm().item(), 1e-30) * rms
-    dA = A_f.new_zeros(A_f.shape)
     nan = float("nan")
+    # Pick which side is degenerate.
+    A_def = _factor_rank_deficient(A_f)
+    B_def = _factor_rank_deficient(B_f)
+
+    if B_def and not A_def:
+        # B = 0, A full-rank: Case 2 on B.  A = U_R Σ_R V_R^T (compact SVD).
+        U_R, S_R, _ = torch.linalg.svd(A_f, full_matrices=False)
+        S_clamp = S_R.clamp_min(delta)
+        X = (GB_f @ U_R) / S_clamp.unsqueeze(0)        # G_B U_R Σ_R^{-1}, (m, r)
+        Up, _, Vhp = torch.linalg.svd(X, full_matrices=False)
+        P = Up @ Vhp                                    # polar(G_B U_R Σ_R^{-1})
+        # ΔB = -lr · P · Σ_R^{-1} · U_R^T
+        scale = (-lr) if core_scale == "constrained" else (-lr * float(X.norm().item() + 1e-30))
+        # squared_penalty form: scale by ‖X‖_*. Approximate via Frobenius
+        # is not exact; use nuclear via svdvals.
+        if core_scale == "squared_penalty":
+            scale = -lr * float(torch.linalg.svdvals(X).sum().item())
+        dB = scale * (P / S_clamp.unsqueeze(0)) @ U_R.T
+        dA = A_f.new_zeros(A_f.shape)
+    elif A_def and not B_def:
+        # A = 0, B full-rank: Case 2 on A by symmetry. B = U_L Σ_L V_L^T.
+        U_L, S_L, Vh_L = torch.linalg.svd(B_f, full_matrices=False)
+        S_clamp = S_L.clamp_min(delta)
+        # ΔA = -lr · Σ_L^{-1} V_L^T · polar(V_L Σ_L^{-1} V_L^T G_A)
+        # Equivalently use (B^T B)^{-1/2} preconditioner symmetric to Case 2.
+        # Y = V_L Σ_L^{-1} V_L^T G_A, (r, n).
+        VL = Vh_L.T
+        Y = VL @ ((VL.T @ GA_f) / S_clamp.unsqueeze(1))
+        Up, _, Vhp = torch.linalg.svd(Y, full_matrices=False)
+        P = Up @ Vhp
+        if core_scale == "squared_penalty":
+            scale = -lr * float(torch.linalg.svdvals(Y).sum().item())
+        else:
+            scale = -lr
+        dA = scale * VL @ ((VL.T @ P) / S_clamp.unsqueeze(1))
+        dB = B_f.new_zeros(B_f.shape)
+    else:
+        # Both degenerate (A=0 AND B=0) or other pathological case.
+        # No useful gradient signal — leave both unchanged this step.
+        dA = A_f.new_zeros(A_f.shape)
+        dB = B_f.new_zeros(B_f.shape)
+
     certs = {"gamma": nan, "nuc": float(GB_f.norm().item()),
              "LB": nan, "UB": nan, "relgap": nan,
              "align_inst": nan, "s_active": 0, "t_active": 0,
@@ -3150,7 +3196,7 @@ def _polar_coupled_core_step(
     # default zero-init violates this on B; fall back to a Muon-on-B
     # bootstrap step that gets B off zero.
     if _factor_rank_deficient(B_f, rank_tol) or _factor_rank_deficient(A_f, rank_tol):
-        return _zero_B_fallback(A, B, G_A, G_B, lr, delta=delta)
+        return _zero_B_fallback(A, B, G_A, G_B, lr, delta=delta, core_scale=core_scale)
     bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=delta, sv_tol=sv_tol)
     H_hat = bases["H_hat"]
     r = A_f.shape[0]
@@ -3284,6 +3330,7 @@ class MuonCoupledCoreLoRA(Optimizer):
             if _factor_rank_deficient(B_f) or _factor_rank_deficient(A_f):
                 dA_fb, dB_fb, certs_fb, _ = _zero_B_fallback(
                     A, B, A.grad, B.grad, lr, delta=self.delta,
+                    core_scale=self.core_scale,
                 )
                 A.add_(dA_fb.to(dtype=A.dtype, device=A.device))
                 B.add_(dB_fb.to(dtype=B.dtype, device=B.device))
