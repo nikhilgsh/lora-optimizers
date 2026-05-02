@@ -80,6 +80,21 @@ Pending QOS slot. Updates once started.
 
 ## Progress updates (most recent on top)
 
+### Update at 1:07 elapsed (state_rebal r=64 still running)
+
+State_rebal r=64 lr=3e-3 step 1000 = **0.7884**. Drop rate from step
+800 → 1000 is -0.006 per 200 steps and slowing. Linear extrapolation
+to step 2000 lands ~0.77. **Δ vs hybrid Picard 0.7382 = +0.03,
+PARTIAL improvement at best for r=64.**
+
+So r=64 is slightly better than r=16 outcome under state-rebalance,
+but not the "BIG WIN" we hoped for in either rank.
+
+Wide_lr: lr=1e-2 r=16 step 1400 = 0.8179 ≈ vanilla 0.8188 final.
+Confirms (A) ruled out.
+
+Sign sweep still pending. Both other sweeps need to wrap up first.
+
 ### state_rebalanced_2k r=16 FINAL (step 2000)
 
 | optimizer | r | best_lr | final eval |
