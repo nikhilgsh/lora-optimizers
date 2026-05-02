@@ -80,6 +80,26 @@ Pending QOS slot. Updates once started.
 
 ## Progress updates (most recent on top)
 
+### Update at 1:55 elapsed — state_rebal r=64 trending toward BIG WIN
+
+state_rebal r=64 lr=3e-3 trajectory continuing strongly:
+- step 1400: 0.7786
+- step 1600: 0.7744
+- step 1800: **0.7713**
+
+Drop rate ~0.003 per 200 steps. Final at step 2000 projects ~0.768.
+**< 0.78 = BIG WIN at r=64.** Comparable to AdamW 0.7550, Δ to hybrid
+Picard 0.7382 = +0.03.
+
+The asymmetry remains stark:
+- r=16 final = 0.8104 (NO HELP)
+- r=64 projected final ~0.77 (BIG WIN)
+
+State-rebalance is more impactful at higher rank. Possibly because
+ρ = r/d_out is less extreme at r=64 (0.016 vs 0.004 at r=16) → the
+iLoRA target geometry is less far from initialization → easier to
+maintain over training.
+
 ### Update at 1:24 elapsed — state_rebal r=64 step 1400 BEATS vanilla
 
 **State-rebal r=64 lr=3e-3 step 1400 = 0.7786** vs vanilla r=64 final
