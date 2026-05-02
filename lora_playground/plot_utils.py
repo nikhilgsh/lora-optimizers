@@ -59,6 +59,8 @@ OPTIM_COLORS = {
     "polar-coupled-core-state-rebalanced-lora":  "#5a2018",  # + post-step state-gauge rebalance (recommended)
     "polar-coupled-core-sign-lora":              "#9a4030",  # + per-step elementwise core sign normalization (rung 5-lite)
     "polar-coupled-core-sign-rebalanced-lora":   "#bb6048",  # + sign + state rebalance (compound)
+    "polar-coupled-core-factor-adam-lora":       "#c08040",  # rung 6: factor-Adam + projected-quotient-polar (Picard analog)
+    "polar-coupled-core-factor-adam-rebalanced-lora": "#e0a060",  # + state rebalance compound
     "muon-coupled-core-lora":      "#3a5a8a",   # variant 2: + transported core-space momentum
     "muon-coupled-core-imbalance-scalar-lora":   "#4a6aa8",  # variant 2 + scalar imbalance gauge
     "muon-coupled-core-imbalance-lora":          "#5a8ac8",  # variant 2 + full imbalance gauge
@@ -103,6 +105,8 @@ OPTIM_FAMILIES = {
         "polar-coupled-core-state-rebalanced-lora",
         "polar-coupled-core-sign-lora",
         "polar-coupled-core-sign-rebalanced-lora",
+        "polar-coupled-core-factor-adam-lora",
+        "polar-coupled-core-factor-adam-rebalanced-lora",
         "muon-coupled-core-lora",
         "muon-coupled-core-imbalance-scalar-lora",
         "muon-coupled-core-imbalance-lora",

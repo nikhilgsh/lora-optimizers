@@ -118,6 +118,8 @@ OPTIMIZER_CHOICES = {
     "polar-coupled-core-state-rebalanced-lora",
     "polar-coupled-core-sign-lora",
     "polar-coupled-core-sign-rebalanced-lora",
+    "polar-coupled-core-factor-adam-lora",
+    "polar-coupled-core-factor-adam-rebalanced-lora",
     "muon-coupled-core-lora",
     "muon-coupled-core-imbalance-scalar-lora",
     "muon-coupled-core-imbalance-lora",
@@ -3593,6 +3595,127 @@ class PolarCoupledCoreLoRA(Optimizer):
                 _emit_optim_diagnostics(step_count, diag_records)
 
 
+class PolarCoupledCoreFactorAdamLoRA(Optimizer):
+    """Rung-6 ablation: factor-space Adam preconditioning + projected-quotient-polar core solver.
+
+    Picard's adam-polar-product-lora-coupled runs Adam-EMA on factor gradients
+    G_A, G_B before its spectral-product step. This class does the SAME factor-Adam
+    preconditioning but feeds u_A, u_B into our exact-KKT projected-quotient-polar
+    core solver instead of Picard iteration.
+
+    Tests whether (a) factor-space adaptivity is the ingredient Picard wins on,
+    and (b) given factor-Adam, our solver outperforms Picard's iteration.
+
+    Compatibility note: factor-Adam breaks the gradient-compatibility identity
+    B^T G_B = G_A A^T (u_A and u_B are normalized in different feature frames).
+    The core construction's (C_L + C_R)/2 averaging projects back to the
+    compatible subspace; cost shows up as compat > 0 in diagnostics. Per
+    docs/notes/polar_coupled_core_solver.md Section 6 this is "ablation only";
+    we run the ablation because Picard's empirical win contradicts the doc's
+    a priori reasoning.
+    """
+
+    def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
+                 betas=(0.9, 0.999), eps=1e-8,
+                 core_scale="squared_penalty",
+                 gauge="min-frobenius", rho=None,
+                 state_rebalance=False, rebalance_every=1,
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.core_scale = core_scale
+        self.gauge = gauge
+        self.rho = rho
+        self.state_rebalance = state_rebalance
+        self.rebalance_every = rebalance_every
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                "step": 0,
+                "m_A": torch.zeros_like(A, dtype=torch.float32),
+                "v_A": torch.zeros_like(A, dtype=torch.float32),
+                "m_B": torch.zeros_like(B, dtype=torch.float32),
+                "v_B": torch.zeros_like(B, dtype=torch.float32),
+            }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for PolarCoupledCoreFactorAdamLoRA update.")
+            state = self.pair_state[i]
+            state["step"] += 1
+            t = state["step"]
+
+            gA = A.grad.float()
+            gB = B.grad.float()
+            state["m_A"].mul_(self.beta1).add_(gA, alpha=1 - self.beta1)
+            state["v_A"].mul_(self.beta2).addcmul_(gA, gA, value=1 - self.beta2)
+            state["m_B"].mul_(self.beta1).add_(gB, alpha=1 - self.beta1)
+            state["v_B"].mul_(self.beta2).addcmul_(gB, gB, value=1 - self.beta2)
+
+            bc1 = 1 - self.beta1 ** t
+            bc2 = 1 - self.beta2 ** t
+            m_hat_A = state["m_A"] / bc1
+            v_hat_A = state["v_A"] / bc2
+            m_hat_B = state["m_B"] / bc1
+            v_hat_B = state["v_B"] / bc2
+            u_A = m_hat_A / (v_hat_A.sqrt() + self.eps)
+            u_B = m_hat_B / (v_hat_B.sqrt() + self.eps)
+
+            dA, dB, certs, _ = _polar_coupled_core_step(
+                A, B, u_A, u_B, lr,
+                delta=self.delta,
+                core_scale=self.core_scale,
+                core_norm="operator",
+                gauge=self.gauge,
+                rho=self.rho,
+                pre_polar_normalize=None,
+            )
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+            if (self.state_rebalance
+                    and t % self.rebalance_every == 0
+                    and not _factor_essentially_zero(B.detach().float())):
+                A_new, B_new = _rebalance_state(A.detach(), B.detach(),
+                                                 rho=self.rho, eps=self.delta)
+                A.data.copy_(A_new)
+                B.data.copy_(B_new)
+
+            if self.log_diagnostics:
+                rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
+                rec["norm_dA"] = float(dA.norm().item())
+                rec["norm_dB"] = float(dB.norm().item())
+                rec["norm_gA"] = float(gA.norm().item())
+                rec["norm_gB"] = float(gB.norm().item())
+                rec["norm_uA"] = float(u_A.norm().item())
+                rec["norm_uB"] = float(u_B.norm().item())
+                diag_records.append(rec)
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]["step"]
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
 class MuonCoupledCoreLoRA(Optimizer):
     """Variant 2 of the Section 6 ladder: variant 1 + transported core
     momentum, mirroring canonical Muon (~/modded-nanogpt/train_gpt.py:170+).
@@ -4158,6 +4281,25 @@ def build_optimizer(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="min-frobenius",
             pre_polar_normalize="sign",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "polar-coupled-core-factor-adam-lora":
+        # Rung-6 ablation: Adam-EMA on factor gradients, then projected-quotient-polar.
+        # Direct theoretical comparison to Picard's adam-polar-product-lora-coupled.
+        return PolarCoupledCoreFactorAdamLoRA(
+            model, lr=lr, delta=1e-6,
+            betas=(0.9, 0.999), eps=1e-8,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "polar-coupled-core-factor-adam-rebalanced-lora":
+        return PolarCoupledCoreFactorAdamLoRA(
+            model, lr=lr, delta=1e-6,
+            betas=(0.9, 0.999), eps=1e-8,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            state_rebalance=True, rebalance_every=1,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
