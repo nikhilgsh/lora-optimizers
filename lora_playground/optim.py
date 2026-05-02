@@ -102,6 +102,7 @@ OPTIMIZER_CHOICES = {
     "scaled-lora",
     "adam-scaled-lora",
     "adam-lin-lora",
+    "adam-lin-core-lora",
     "adam-scaled-lora-post",
     "adam-lin-lora-post",
     "adam-scaled-lora-matrix",
@@ -479,6 +480,164 @@ class AdamLinLoRA(Optimizer):
 
         if self.log_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
+class AdamLinCoreLoRA(Optimizer):
+    """Cross-check on core-space momentum.
+
+    Same Sylvester-based solver as AdamLinLoRA, but EMA-Adam lives in the
+    core/Sylvester-quotient space (the r×r rotation matrix K) instead of on
+    the factor preconditioned gradients. Tests the hypothesis that core-space
+    momentum is generally broken (independent of our coupled-polar solver),
+    by comparing apples-to-apples against AdamLinLoRA which has the same
+    base solver but factor-space Adam.
+
+    Per step:
+      1. Compute core covector M = -gA · A^T (r×r), the Sylvester RHS.
+         By gradient compatibility this equals B^T · gB up to sign/scale.
+      2. EMA-Adam on M: m_M, v_M (r×r).
+      3. Solve Sylvester with M_hat (the EMA-Adam'd core covector) as RHS,
+         giving K_hat.
+      4. Lift to (dA, dB) using K_hat and raw factor gradients (the
+         outside-rotation terms still use gA, gB).
+
+    Eval below adam-lin-lora at matched lr → core-space momentum is degraded
+    in this solver too → general failure mode (confirms variant 2 diagnosis).
+    Eval at-or-above adam-lin-lora → core-space momentum is fine here, our
+    coupled-polar solver has a specific issue.
+
+    EMPIRICAL FINDING (do not ship): a 5-step smoke at OLMo-2-1B r=4 lr=1e-3
+    diverges — eval jumps 2.58 → 12.67 at step 2, Cholesky fails at step 3.
+    The /sqrt(v_M) normalization on a small r×r matrix degenerates to
+    ≈ 3·sign(M) (homogeneous coordinate scales mean Adam's per-coord
+    rescaling doesn't help, just inflates magnitude). This independently
+    confirms variant 2's align_mom diagnosis: core-space Adam-style momentum
+    is structurally broken because the core object lacks the heterogeneous
+    coordinate scales Adam exists to normalize. Kept as documented evidence
+    against core-space momentum; do not include in production sweeps.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+                 adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0,
+                 bias_correction=False,
+                 log_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.bias_correction = bias_correction
+        self.lora_plus_multiplier = lora_plus_multiplier
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+        self.precond_refresh_every = precond_refresh_every
+
+        self.pair_state = {}
+        self.gammas = []
+        for i, (A, B) in enumerate(pairs):
+            r = A.shape[0]
+            self.pair_state[i] = {
+                "m_M": torch.zeros((r, r), dtype=torch.float32, device=A.device),
+                "v_M": torch.zeros((r, r), dtype=torch.float32, device=A.device),
+                "step": 0,
+            }
+            r, d_in = A.shape
+            if scaled_metric:
+                self.gammas.append((d_in / r) ** 0.5)
+            else:
+                self.gammas.append(1.0)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamLinCoreLoRA update.")
+            state = self.pair_state[i]
+            state["step"] += 1
+
+            gA = A.grad
+            gB = B.grad
+
+            need_refresh = (state["step"] - 1) % self.precond_refresh_every == 0
+            if need_refresh:
+                SB = spdify(B.T @ B, self.delta)
+                SA = spdify(A @ A.T, self.delta)
+                state["evalA"], state["QA"] = torch.linalg.eigh(SA)
+                state["evalB"], state["QB"] = torch.linalg.eigh(SB)
+                state["LA"] = torch.linalg.cholesky(SA)
+                state["LB"] = torch.linalg.cholesky(SB)
+            evalA, QA = state["evalA"], state["QA"]
+            evalB, QB = state["evalB"], state["QB"]
+            LA, LB = state["LA"], state["LB"]
+
+            # Core covector M = -γ (gA · A^T) (r×r). This is the Sylvester
+            # RHS — the projected dense gradient onto the active rank-r
+            # tangent expressed in the (B, A) basis. By compatibility,
+            # gA · A^T = B^T · gB, so M is the unique core-space cost gradient.
+            M = -gamma * (gA @ A.T).float()
+
+            # EMA-Adam on M (core space).
+            state["m_M"].mul_(self.beta1).add_(M, alpha=1 - self.beta1)
+            state["v_M"].mul_(self.beta2).addcmul_(M, M, value=1 - self.beta2)
+            if self.bias_correction:
+                bc1 = 1 - self.beta1 ** state["step"]
+                bc2 = 1 - self.beta2 ** state["step"]
+                m_hat = state["m_M"] / bc1
+                v_hat = state["v_M"] / bc2
+            else:
+                m_hat = state["m_M"]
+                v_hat = state["v_M"]
+            M_hat = m_hat / (v_hat.sqrt() + self.eps)
+
+            # Solve Sylvester with EMA-Adam'd core covector as RHS.
+            T_syl = QB.T @ M_hat @ QA
+            denom = evalB[:, None] + (gamma ** 2) * evalA[None, :]
+            K_hat = QB @ (T_syl / denom) @ QA.T
+
+            # Lift to (dA, dB) using K_hat (core-Adam'd) in place of raw K.
+            # Raw factor gradients still appear (the "outside the rotation" terms);
+            # only the K-rotation gets EMA-Adam.
+            termB = (gB + (1. / gamma) * B @ K_hat.to(dtype=B.dtype)).float()
+            precond_B = torch.cholesky_solve(termB.T, LA).T
+            termA = (gA + gamma * K_hat.to(dtype=A.dtype) @ A).float()
+            precond_A = torch.cholesky_solve(termA, LB)
+
+            dA = -lr * precond_A
+            dB = -self.lora_plus_multiplier * lr * precond_B
+
+            if self.log_diagnostics:
+                diag_records.append({
+                    "norm_M": float(M.norm()),
+                    "norm_M_hat": float(M_hat.norm()),
+                    "cos_M_Mhat": _frob_cos(M, M_hat),
+                    "norm_K_hat": float(K_hat.norm()),
+                    "norm_dA": float(dA.norm()),
+                    "norm_dB": float(dB.norm()),
+                    "norm_gA": float(gA.detach().to(torch.float32).norm()),
+                    "norm_gB": float(gB.detach().to(torch.float32).norm()),
+                    "norm_A": float(A.detach().to(torch.float32).norm()),
+                    "norm_B": float(B.detach().to(torch.float32).norm()),
+                })
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]["step"]
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
 
@@ -4128,6 +4287,21 @@ def build_optimizer(
         )
     if optimizer_type == "adam-lin-lora":
         return AdamLinLoRA(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            scaled_metric=scaled_metric,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+        )
+    if optimizer_type == "adam-lin-core-lora":
+        # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA
+        # on the core-space K matrix instead of factor preconditioned grads.
+        return AdamLinCoreLoRA(
             model,
             lr=lr,
             betas=(0.9, 0.999),

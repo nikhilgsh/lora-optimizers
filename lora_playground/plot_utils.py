@@ -41,6 +41,7 @@ OPTIM_COLORS = {
     # pre-Adam preconditioning (geometry → Adam)
     "adam-scaled-lora":            "#d62728",
     "adam-lin-lora":               "#9467bd",
+    "adam-lin-core-lora":          "#b48ad6",  # cross-check: core-space Adam in lin-LoRA solver
     # post-Adam preconditioning (Adam → geometry, falsified family)
     "adam-lin-lora-post":          "#aec7e8",
     "adam-scaled-lora-post":       "#ffbb78",
@@ -120,6 +121,7 @@ OPTIM_FAMILIES = {
     "pre_adam_lin_scaled": {
         "adamw",
         "adam-lin-lora",
+        "adam-lin-core-lora",
         "adam-scaled-lora",
     },
     # No-Adam family (raw momentum / NS / closed-form, no per-coord v̂).
