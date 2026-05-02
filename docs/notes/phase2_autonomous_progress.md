@@ -80,6 +80,32 @@ Pending QOS slot. Updates once started.
 
 ## Progress updates (most recent on top)
 
+### MAJOR UPDATE: state_rebal DONE, sign sweep RUNNING, wide-lr is COMPETITIVE at r=64
+
+**state_rebalanced_2k FINAL** (step 2000 all cells):
+- polar-rebal r=16 lr=3e-3: **0.8104** (+0.055 vs Picard, NO HELP)
+- polar-rebal r=64 lr=3e-3: **0.7686** (+0.030 vs Picard, PARTIAL)
+
+**polar_core_wide_lr_2k** (still running r=64; r=16 done):
+- lr=1e-2 r=16: 0.8090 (no help)
+- lr=3e-2 r=16: 0.8049 (no help)
+- lr=1e-2 r=64 step 1800: 0.7626 (within 0.025 of Picard, competitive)
+- **lr=3e-2 r=64 step 1800: 0.7521** (Δ vs Picard +0.014, **COMPETITIVE WITH AdamW 0.7550!**)
+
+**HYPOTHESIS (A) WAS WRONG TO RULE OUT AT r=64.** I declared (A) ruled
+out based on r=16 alone, but at r=64 the curve continues to improve up
+to lr=3e-2. This is a real **BIG WIN at r=64 from just lr-tuning vanilla
+variant 1.** Beats vanilla 0.7821 by 0.030 and matches AdamW.
+
+**polar_core_sign_2k just started** (6 min in):
+- lr=1e-3 r=16 step 200: 1.16 (bad start)
+- lr=3e-3 r=16 step 200: **6.93** (DIVERGING)
+
+Sign optimizer at higher lr is unstable. The smoke that showed eval=1.46
+at step 5 was at default lr=2e-4 (much smaller than sweep range). Sign
+sweep grid {1e-4, 3e-4, 1e-3, 3e-3} probably has its sweet spot at the
+lower end. Wait for full data before drawing conclusions.
+
 ### Update at 1:55 elapsed — state_rebal r=64 trending toward BIG WIN
 
 state_rebal r=64 lr=3e-3 trajectory continuing strongly:
