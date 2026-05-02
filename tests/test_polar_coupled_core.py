@@ -23,11 +23,13 @@ if str(ROOT) not in sys.path:
 
 from lora_playground.optim import (
     MuonCoupledCoreLoRA,
+    OPTIMIZER_CHOICES,
     PolarCoupledCoreLoRA,
     _build_active_core,
     _imbalance_gauge_shift,
     _polar_coupled_core_step,
     _rebalance_state,
+    build_optimizer,
 )
 
 
@@ -61,6 +63,39 @@ def _make(seed=0):
     x = torch.randn(3, 8)
     target = torch.randn(3, 8)
     return m, x, target
+
+
+# --- Integration: every polar-coupled-core variant builds + runs ------------
+
+@pytest.mark.parametrize("optimizer_name", [
+    name for name in sorted(OPTIMIZER_CHOICES)
+    if "polar-coupled-core" in name or "muon-coupled-core" in name
+])
+def test_registered_variant_runs_one_step(optimizer_name):
+    """Catches registration / wiring bugs: every coupled-core optimizer
+    variant should build via build_optimizer(), accept a single step, and
+    update parameters without NaN/Inf.
+    """
+    torch.manual_seed(101)
+    model = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    # Ensure B is non-zero so variants that need full-rank A,B don't all
+    # take the boundary path (which would be a less informative test).
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if "lora_B" in n:
+                p.copy_(torch.randn_like(p) * 0.05)
+    pre = [p.detach().clone() for p in model.parameters()]
+    opt = build_optimizer(model, optimizer_name, lr=1e-3)
+    x = torch.randn(3, 8)
+    target = torch.randn(3, 8)
+    ((model(x) - target) ** 2).mean().backward()
+    opt.step()
+    post = [p.detach().clone() for p in model.parameters()]
+    assert all(torch.isfinite(p).all() for p in post), \
+        f"{optimizer_name}: non-finite params after one step"
+    # At least one factor must have changed (the optimizer ran).
+    diffs = [float((a - b).abs().sum()) for a, b in zip(pre, post)]
+    assert max(diffs) > 0.0, f"{optimizer_name}: parameters unchanged"
 
 
 # --- Generic optimizer behavior --------------------------------------------
