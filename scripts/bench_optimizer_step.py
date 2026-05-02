@@ -61,7 +61,13 @@ GRAM_PRECOND_OPTIMIZERS = [
     "adam-polar-product-lora",
     "adamuon-polar-product-lora",
 ]
-DEFAULT_OPTIMIZERS = ["adamw"] + GRAM_PRECOND_OPTIMIZERS
+# Coupled-core solver variants (no precond_refresh; per-step QR + small SVDs).
+# Included in default bench list at K=1 only.
+COUPLED_CORE_OPTIMIZERS = [
+    "polar-coupled-core-lora",
+    "muon-coupled-core-lora",
+]
+DEFAULT_OPTIMIZERS = ["adamw"] + GRAM_PRECOND_OPTIMIZERS + COUPLED_CORE_OPTIMIZERS
 
 
 def build_model(model_name: str, lora_r: int, lora_alpha: int, target_modules: str,

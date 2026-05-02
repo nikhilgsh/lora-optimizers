@@ -51,6 +51,9 @@ OPTIM_COLORS = {
     "muon-adam-lora":              "#dbdb8d",
     "adam-polar-product-lora":     "#8c564b",
     "adam-polar-product-lora-coupled": "#5d342c",   # darker brown — coupled-pair variant of adam-polar
+    "adam-polar-product-lora-coupled-endrms": "#a04a3c",  # warm brown — coupled w/ end-of-loop RMS-align
+    "polar-coupled-core-lora":     "#7a3a2c",   # variant 1: projected quotient polar, raw factor grads
+    "muon-coupled-core-lora":      "#3a5a8a",   # variant 2: + transported core-space momentum
     "adamuon-polar-product-lora":  "#1f77b4",
     "adamuon-lora":                "#ff9896",
     # gauge-invariant variants
@@ -81,6 +84,9 @@ OPTIM_FAMILIES = {
         "adamw",
         "adam-polar-product-lora",
         "adam-polar-product-lora-coupled",
+        "adam-polar-product-lora-coupled-endrms",
+        "polar-coupled-core-lora",
+        "muon-coupled-core-lora",
         "adamuon-lora",
         "adamuon-polar-product-lora",
     },
@@ -177,6 +183,7 @@ OPTIM_MARKERS = {
     # Browns/oranges cluster
     "adam-polar-product-lora":     "o",
     "adam-polar-product-lora-coupled": "P",   # plus (darker brown)
+    "adam-polar-product-lora-coupled-endrms": "X",  # x-filled (warm brown)
     "polar-product-lora":          "d",   # thin diamond (light brown)
     "scaled-lora":                 ">",   # triangle-right (orange)
     "adam-scaled-lora-post":       "8",   # octagon (light orange)

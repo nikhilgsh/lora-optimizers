@@ -110,6 +110,8 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora",
     "adam-polar-product-lora-coupled",
     "adam-polar-product-lora-coupled-endrms",
+    "polar-coupled-core-lora",
+    "muon-coupled-core-lora",
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
@@ -235,7 +237,9 @@ class LinLoRA(Optimizer):
             gA = A.grad          # ∇_A ∈ ℝ^{r×d_in}
             gB = B.grad          # ∇_B ∈ ℝ^{d_out×r}
 
-            # Regularized Gram matrices: S_A = A A^T + δ I, S_B = B^T B + δ I
+            # δ is a numerical regularizer for near-singular grams, not the
+            # minimizer of a damped factor-space surrogate — see
+            # docs/notes/polar_coupled_problem.md (Case 1, "Damped surrogate").
             SB = spdify(B.T @ B, self.delta)       # S_B ∈ ℝ^{r×r}
             SA = spdify(A @ A.T, self.delta)       # S_A ∈ ℝ^{r×r}
             RHS = -lr * (gA @ A.T).float()         # RHS = -lr * (∇_A A^T) ∈ ℝ^{r×r}
@@ -273,6 +277,17 @@ class AdamLinLoRA(Optimizer):
             v_t = β₂ v_{t-1} + (1-β₂) v_t²
             Δθ = -lr * m̂_t / (√v̂_t + ε)
     where S_A = A A^T + δ I and S_B = B^T B + δ I.
+
+    NOTE — implementation does not match the principled "Adam version of LinLoRA".
+    The Sylvester step here runs on raw gradients (compatibility holds, RHS is
+    well-defined), but downstream Adam is applied independently to (v_A, v_B) as
+    factor tensors. Independent factor-Adam is gauge-dependent — the LoRA
+    variational problem is invariant under (ΔA, ΔB) → (ΔA + S A, ΔB - B S), but
+    independent (m_A, v_A, m_B, v_B) state is not. The principled "Adam of
+    LinLoRA" maintains momentum/RMS in core/tangent space (Frobenius restriction
+    of variant 2 in docs/notes/polar_coupled_core_solver.md §6) and solves the
+    Sylvester on the EMA core covector. This implementation is kept as an
+    empirical baseline; reinterpret leaderboard standing accordingly.
     """
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0, log_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
         pairs = collect_lora_pairs(model, adapter_name)
@@ -756,6 +771,18 @@ class AdamLinLoRAPost(Optimizer):
         ΔB = -(lr · u_B + (1/γ) B K) S_A⁻¹.
 
     Sylvester coupling is preserved on the Adam step rather than the gradient.
+
+    NOTE — implementation realizes its intent incoherently. The Sylvester RHS
+    `-γ·lr·(u_A A^T)` is one of two algebraically-equal forms under gradient
+    compatibility: ∇_A A^T = B^T ∇_B for raw gradients, so either RHS gives
+    the same K. Once Adam runs independently on each factor, u_A A^T ≠ B^T u_B
+    in general, and the Sylvester silently picks one side of an inconsistent
+    pair of normal equations. The principled "Adam version" maintains the core
+    covector Ĥ in tangent space, EMAs Ĥ across steps with basis transport, and
+    solves the Sylvester on the EMA — see variant 2 (Frobenius restriction) in
+    docs/notes/polar_coupled_core_solver.md §6. This implementation is kept as
+    an empirical baseline; results should be read as "factor-Adam-then-
+    Sylvester-on-one-side" rather than "Adam-preconditioned LinLoRA".
     """
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
@@ -1623,6 +1650,21 @@ class AdamPolarProductLoRA(Optimizer):
     survives Adam by construction. RMS-aligned step magnitude (cribbed from
     AdaMuon arxiv 2507.11005 and our H4 fix) prevents the σ_min(S)-driven
     magnitude drift that plagued unfixed *-Post variants.
+
+    NOTE — at picard_iters=1 (the uncoupled default) the polar-product
+    correction is per-factor and intent matches implementation. At
+    picard_iters≥2 (the `-coupled` and `-coupled-endrms` build_optimizer
+    entries) the cross-coupling step uses one of two compatibility-equivalent
+    expressions — (1/η)·B^T·dB_prev·A and (1/η)·B·dA_prev·A^T — that diverge
+    once Adam has run independently on each factor. The Picard fixed point is
+    therefore the KKT point of an incoherent objective, not a principled
+    approximation to the joint tangent operator-norm problem. The principled
+    "Adam-preconditioned hybrid Picard replacement" is core-momentum on the
+    forbidden-corner core Ĥ followed by projected quotient polar — variant 2
+    in docs/notes/polar_coupled_core_solver.md §6, with the variational
+    backdrop in docs/notes/polar_coupled_problem.md. Existing leaderboard
+    standing of -coupled / -coupled-endrms reflects which incoherent fixed
+    point lands well empirically, not which preconditioner is principled.
     """
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
@@ -2820,6 +2862,431 @@ class GaLoreAdamW(Optimizer):
         return loss
 
 
+# ---------------------------------------------------------------------------
+# Projected-quotient-polar core solver for joint operator-norm LoRA updates.
+# Implements docs/notes/polar_coupled_core_solver.md (variants 1 + 2 of the
+# Section 6 ladder). Variant 1 = pure projected polar on raw factor gradients;
+# variant 2 = adds transported core-space momentum (Muon-style LoRA tangent
+# optimizer). Factor-Adam is intentionally omitted — it breaks gradient
+# compatibility (Section 6 of that doc).
+# ---------------------------------------------------------------------------
+
+
+def _build_active_core(A, B, G_A, G_B, delta=1e-6, sv_tol=1e-5):
+    """Steps 1-5 of Section 7 of the core-solver doc.
+
+    Builds the active tangent-gradient core Ĥ = [[C, E], [F, 0]] of size
+    (r+t) × (r+s), together with the orthonormal bases (Q_L, U) and (Q_R, V)
+    needed to lift core updates back to (ΔA, ΔB).
+
+    Returns dict with Q_L, R_L, Q_R, R_R, U, V, C, E, F, H_hat, compat, s, t.
+    """
+    r = A.shape[0]
+    n = A.shape[1]
+    m = B.shape[0]
+
+    # Step 1: thin QRs.
+    Q_L, R_L = torch.linalg.qr(B, mode="reduced")          # (m, r), (r, r)
+    Q_R, R_R_T = torch.linalg.qr(A.T, mode="reduced")       # (n, r), (r, r)
+    R_R = R_R_T.T                                           # (r, r) lower triangular
+
+    # Step 2: triangular solves for the accessible gradient core.
+    L0 = torch.linalg.solve_triangular(R_L.T, G_A, upper=False)  # (r, n)
+    R0 = torch.linalg.solve_triangular(R_R, G_B.T, upper=False).T  # (m, r)
+
+    # Step 3: shared core block, averaged.
+    C_L = L0 @ Q_R       # (r, r)
+    C_R = Q_L.T @ R0     # (r, r)
+    C = 0.5 * (C_L + C_R)
+    compat_num = (C_L - C_R).norm().item()
+    compat_den = C_L.norm().item() + C_R.norm().item() + 1e-30
+    compat = compat_num / compat_den
+
+    # Step 4: residuals.  Math-equivalent under grad-compat:
+    #   L_perp = L0 - C Q_R^T = L0 (I - Q_R Q_R^T)
+    #   R_perp = R0 - Q_L C   = (I - Q_L Q_L^T) R0
+    # The right-hand forms don't depend on the (averaged) C, so they're
+    # numerically robust to float32 noise in C — avoiding spurious tiny
+    # singular components that would otherwise leak into the active rank.
+    L_perp = L0 - (L0 @ Q_R) @ Q_R.T   # (r, n), rows in Q_R^⊥ to roundoff
+    R_perp = R0 - Q_L @ (Q_L.T @ R0)   # (m, r), cols in Q_L^⊥ to roundoff
+
+    # Step 5: thin SVDs. Structural rank is bounded: L_perp has rows in Q_R^⊥
+    # (dim n - r) so rank(L_perp) ≤ min(r, n - r); similarly rank(R_perp) ≤
+    # min(r, m - r). SVDs of rank-deficient matrices return arbitrary
+    # singular vectors at noise-level singular values; those vectors are
+    # not constrained to lie in the orthogonal complement, which breaks
+    # the V^T Q_R = 0 / U^T Q_L = 0 identity that the lift-back gauge
+    # depends on. Cap the active rank at the structural maximum.
+    s_max = max(0, min(r, n - r))
+    t_max = max(0, min(r, m - r))
+    Ul, Sl, Vhl = torch.linalg.svd(L_perp, full_matrices=False)
+    sv_max_l = float(Sl.max().item()) if Sl.numel() > 0 else 0.0
+    s_raw = int((Sl > max(sv_tol * sv_max_l, sv_tol)).sum().item())
+    s = min(s_raw, s_max)
+    if s > 0:
+        E = Ul[:, :s] * Sl[:s].unsqueeze(0)   # (r, s)
+        V = Vhl[:s, :].T                       # (n, s)
+    else:
+        E = L_perp.new_zeros(r, 0)
+        V = L_perp.new_zeros(n, 0)
+
+    Ur, Sr, Vhr = torch.linalg.svd(R_perp, full_matrices=False)
+    sv_max_r = float(Sr.max().item()) if Sr.numel() > 0 else 0.0
+    t_raw = int((Sr > max(sv_tol * sv_max_r, sv_tol)).sum().item())
+    t = min(t_raw, t_max)
+    if t > 0:
+        U = Ur[:, :t]                          # (m, t)
+        F = Sr[:t].unsqueeze(1) * Vhr[:t, :]   # (t, r)
+    else:
+        U = R_perp.new_zeros(m, 0)
+        F = R_perp.new_zeros(0, r)
+
+    # Assemble Ĥ.
+    if s > 0:
+        top = torch.cat([C, E], dim=1)
+    else:
+        top = C
+    if t > 0:
+        if s > 0:
+            bot = torch.cat([F, F.new_zeros(t, s)], dim=1)
+        else:
+            bot = F
+        H_hat = torch.cat([top, bot], dim=0)
+    else:
+        H_hat = top
+
+    return {
+        "Q_L": Q_L, "R_L": R_L, "Q_R": Q_R, "R_R": R_R,
+        "U": U, "V": V, "C": C, "E": E, "F": F,
+        "H_hat": H_hat, "compat": compat, "s": s, "t": t,
+    }
+
+
+def _polar_via_svd(M, eps=1e-12, sv_tol=1e-5):
+    """Compact polar factor of M via SVD.
+
+    Returns (P, sv) where P = U_k @ Vh_k truncated at numerical rank
+    (singular values above max(sv_tol·σ_max, 1e-12)). The full-matrix
+    polar U @ Vh is arbitrary in the null-direction completions, which
+    leaks into the projected polar's (22) block when M is rank-deficient
+    (e.g. one-factor case where C=E=0). The compact polar avoids this
+    leakage and matches the doc's "if Ĥ = 0, return zero" robustness.
+    """
+    if M.numel() == 0 or M.norm().item() < eps:
+        return M.new_zeros(M.shape), M.new_zeros(0)
+    U, S, Vh = torch.linalg.svd(M, full_matrices=False)
+    sv_max = float(S.max().item())
+    keep = S > max(sv_tol * sv_max, 1e-12)
+    k = int(keep.sum().item())
+    if k == 0:
+        return M.new_zeros(M.shape), S
+    return U[:, :k] @ Vh[:k, :], S
+
+
+def _project_zero_22(M, r):
+    """Π: zero the (rows ≥ r, cols ≥ r) block on a clone."""
+    R = M.clone()
+    if R.shape[0] > r and R.shape[1] > r:
+        R[r:, r:] = 0.0
+    return R
+
+
+def _polar_coupled_core_lift(
+    core_obj, bases, lr, r, *,
+    core_scale="squared_penalty",
+    core_norm="operator",
+    delta=1e-6,
+    H_hat_for_align=None,
+):
+    """Sections 2 + 4: polar of `core_obj` (Ĥ for variant 1, M_hat for variant
+    2), project (22), renormalize, scale, lift back via Sylvester gauge.
+    Returns (dA, dB, certs).
+    """
+    Q_L, R_L = bases["Q_L"], bases["R_L"]
+    Q_R, R_R = bases["Q_R"], bases["R_R"]
+    U, V = bases["U"], bases["V"]
+    s, t = bases["s"], bases["t"]
+    n = Q_R.shape[0]
+    m = Q_L.shape[0]
+
+    nan = float("nan")
+    if core_obj.numel() == 0 or core_obj.norm().item() < 1e-20:
+        dA = R_L.new_zeros(r, n)
+        dB = R_L.new_zeros(m, r)
+        return dA, dB, {"gamma": nan, "nuc": 0.0, "LB": 0.0, "UB": 0.0,
+                        "relgap": nan, "align_inst": 0.0,
+                        "s_active": s, "t_active": t}
+
+    if core_norm == "operator":
+        P, sv = _polar_via_svd(core_obj)
+        nuc = float(sv.sum().item())
+        R = _project_zero_22(P, r)
+        gamma_t = torch.linalg.svdvals(R)
+        gamma = float(gamma_t[0].item()) if gamma_t.numel() > 0 else 0.0
+        if gamma < 1e-12:
+            dA = R_L.new_zeros(r, n)
+            dB = R_L.new_zeros(m, r)
+            return dA, dB, {"gamma": nan, "nuc": nuc, "LB": 0.0, "UB": nuc,
+                            "relgap": nan, "align_inst": 0.0,
+                            "s_active": s, "t_active": t}
+        Z_plus = R / gamma
+        if core_scale == "squared_penalty":
+            tau_hat = nuc / gamma
+            Z_upd = (-lr * tau_hat) * Z_plus
+        elif core_scale == "constrained":
+            Z_upd = (-lr) * Z_plus
+        else:
+            raise ValueError(f"Unknown core_scale '{core_scale}'.")
+        LB = nuc / gamma
+        UB = nuc
+        relgap = 1.0 - 1.0 / gamma
+        if H_hat_for_align is not None:
+            align_inst = float((H_hat_for_align * Z_plus).sum().item())
+        else:
+            align_inst = nan
+    elif core_norm == "frobenius":
+        Z_upd = (-lr) * core_obj
+        gamma = nan
+        nuc = float(torch.linalg.svdvals(core_obj).sum().item())
+        LB = nan
+        UB = nuc
+        relgap = nan
+        align_inst = nan
+    else:
+        raise ValueError(f"Unknown core_norm '{core_norm}'.")
+
+    # Steps 9-10: lift back.
+    X = Z_upd[:r, :r]
+    Y = Z_upd[:r, r:] if s > 0 else Z_upd.new_zeros(r, 0)
+    W = Z_upd[r:, :r] if t > 0 else Z_upd.new_zeros(0, r)
+
+    S_L = spdify(R_L.T @ R_L, delta)
+    S_R = spdify(R_R @ R_R.T, delta)
+
+    RHS_K = R_L.T @ X @ R_R.T
+    K = solve_sylvester(S_L, S_R, RHS_K)
+
+    RHS_A = (R_L.T @ X - K @ R_R) @ Q_R.T
+    if s > 0:
+        RHS_A = RHS_A + (R_L.T @ Y) @ V.T
+    dA = solve_spd(S_L, RHS_A)
+
+    RHS_B = Q_L @ (X @ R_R.T - R_L @ K)
+    if t > 0:
+        RHS_B = RHS_B + (U @ W) @ R_R.T
+    dB = solve_spd(S_R, RHS_B.T).T
+
+    certs = {
+        "gamma": float(gamma) if gamma == gamma else nan,
+        "nuc": nuc,
+        "LB": LB if LB == LB else nan,
+        "UB": UB,
+        "relgap": relgap if relgap == relgap else nan,
+        "align_inst": align_inst,
+        "s_active": s,
+        "t_active": t,
+    }
+    return dA, dB, certs
+
+
+def _polar_coupled_core_step(
+    A, B, G_A, G_B, lr, *,
+    delta=1e-6,
+    core_scale="squared_penalty",
+    core_norm="operator",
+    sv_tol=1e-5,
+):
+    """Variant 1 entry point: build active core, polar+lift on Ĥ.
+    Returns (dA, dB, certs, bases) — bases enables variant-2 reuse.
+    """
+    A_f = A.float()
+    B_f = B.float()
+    GA_f = G_A.float()
+    GB_f = G_B.float()
+    bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=delta, sv_tol=sv_tol)
+    H_hat = bases["H_hat"]
+    r = A_f.shape[0]
+    dA, dB, certs = _polar_coupled_core_lift(
+        H_hat, bases, lr, r,
+        core_scale=core_scale, core_norm=core_norm, delta=delta,
+        H_hat_for_align=H_hat,
+    )
+    certs["compat"] = bases["compat"]
+    return dA, dB, certs, bases
+
+
+class PolarCoupledCoreLoRA(Optimizer):
+    """Variant 1 of docs/notes/polar_coupled_core_solver.md Section 6 ladder.
+
+    Pure projected-quotient-polar update on raw factor gradients. No Adam,
+    no momentum: this is the clean variational baseline for the joint
+    operator-norm LoRA problem (Case 3 of polar_coupled_problem.md).
+
+    Certificates logged: γ ∈ [1, 2], ‖Ĥ‖_*, LB = ‖Ĥ‖_*/γ, UB = ‖Ĥ‖_*,
+    relgap = 1 − 1/γ ∈ [0, 0.5], compat (gradient-compatibility violation;
+    near machine epsilon for raw factor gradients).
+    """
+
+    def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
+                 core_scale="squared_penalty",
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.core_scale = core_scale
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+        self.pair_state = {i: {"step": 0} for i in range(len(pairs))}
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for PolarCoupledCoreLoRA update.")
+            state = self.pair_state[i]
+            state["step"] += 1
+
+            dA, dB, certs, _ = _polar_coupled_core_step(
+                A, B, A.grad, B.grad, lr,
+                delta=self.delta,
+                core_scale=self.core_scale,
+                core_norm="operator",
+            )
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+            if self.log_diagnostics:
+                rec = {k: float(v) for k, v in certs.items()}
+                rec["norm_dA"] = float(dA.norm().item())
+                rec["norm_dB"] = float(dB.norm().item())
+                diag_records.append(rec)
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]["step"]
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
+class MuonCoupledCoreLoRA(Optimizer):
+    """Variant 2 of the Section 6 ladder: variant 1 + transported core
+    momentum. The Muon-style LoRA tangent optimizer.
+
+    Maintains an EMA M_t of the core covector Ĥ_t in the (rotating) bases
+    [Q_L, U] / [Q_R, V]. Between steps, the previous EMA is parallel-
+    transported onto the new bases via small overlap matrices (Section 6),
+    then mixed with the new instantaneous core. The polar runs on the
+    bias-corrected EMA.
+    """
+
+    def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
+                 beta1=0.95, bias_correction=True,
+                 core_scale="squared_penalty",
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.beta1 = beta1
+        self.bias_correction = bias_correction
+        self.core_scale = core_scale
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+        self.pair_state = {i: {"step": 0,
+                               "M_prev": None,
+                               "U_prev": None,
+                               "V_prev": None}
+                           for i in range(len(pairs))}
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for MuonCoupledCoreLoRA update.")
+            state = self.pair_state[i]
+            state["step"] += 1
+            t_step = state["step"]
+
+            A_f = A.float()
+            B_f = B.float()
+            GA_f = A.grad.float()
+            GB_f = B.grad.float()
+            bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=self.delta)
+            H_hat = bases["H_hat"]
+            r = A_f.shape[0]
+            tt = bases["t"]
+            ss = bases["s"]
+            U_cur = torch.cat([bases["Q_L"], bases["U"]], dim=1) if tt > 0 else bases["Q_L"]
+            V_cur = torch.cat([bases["Q_R"], bases["V"]], dim=1) if ss > 0 else bases["Q_R"]
+
+            transport_residual = float("nan")
+            if state["M_prev"] is None or t_step == 1:
+                M_t = H_hat.clone()
+            else:
+                T_L = U_cur.T @ state["U_prev"]
+                T_R = V_cur.T @ state["V_prev"]
+                M_transported = T_L @ state["M_prev"] @ T_R.T
+                M_transported = _project_zero_22(M_transported, r)
+                M_t = self.beta1 * M_transported + (1.0 - self.beta1) * H_hat
+                den = M_transported.norm().item() + 1e-30
+                transport_residual = float((M_t - M_transported).norm().item() / den)
+
+            if self.bias_correction and self.beta1 < 1.0:
+                bc1 = 1.0 - self.beta1 ** t_step
+                M_hat = M_t / bc1
+            else:
+                M_hat = M_t
+
+            dA, dB, certs = _polar_coupled_core_lift(
+                M_hat, bases, lr, r,
+                core_scale=self.core_scale, core_norm="operator",
+                delta=self.delta, H_hat_for_align=H_hat,
+            )
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+            state["M_prev"] = M_t
+            state["U_prev"] = U_cur
+            state["V_prev"] = V_cur
+
+            if self.log_diagnostics:
+                rec = {k: float(v) for k, v in certs.items()}
+                rec["compat"] = bases["compat"]
+                rec["norm_dA"] = float(dA.norm().item())
+                rec["norm_dB"] = float(dB.norm().item())
+                rec["transport_residual"] = transport_residual
+                rec["align_mom"] = certs["LB"]
+                diag_records.append(rec)
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]["step"]
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
 def build_optimizer(
     model,
     optimizer_type: str,
@@ -3015,6 +3482,21 @@ def build_optimizer(
             higham_iters=higham_iters,
             picard_iters=2,
             end_rms_align=True,
+        )
+    if optimizer_type == "polar-coupled-core-lora":
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "muon-coupled-core-lora":
+        return MuonCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            beta1=0.95, bias_correction=True,
+            core_scale="squared_penalty",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adamuon-polar-product-lora":
         return AdamuonPolarProductLoRA(
