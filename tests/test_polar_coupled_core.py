@@ -401,6 +401,57 @@ def test_imbalance_gauge_helper_directly():
 
 # --- State-gauge rebalance tests ------------------------------------------
 
+# --- Per-step elementwise sign normalization (rung 5-lite) -----------------
+
+def test_sign_normalization_does_not_break_tangent_invariance():
+    """With pre_polar_normalize='sign', the lift still produces a valid
+    factor representative — gauge condition holds and tangent direction
+    is well-defined.
+    """
+    torch.manual_seed(31)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.3
+    G = torch.randn(m_, n)
+    G_A = B.T @ G
+    G_B = G @ A.T
+
+    dA, dB, certs, _ = _polar_coupled_core_step(
+        A, B, G_A, G_B, lr=1e-2, gauge="min-frobenius",
+        pre_polar_normalize="sign",
+    )
+    # Gauge condition (from min-Frob lift): B^T dB = dA A^T
+    lhs = B.T @ dB
+    rhs = dA @ A.T
+    rel = (lhs - rhs).norm() / (lhs.norm() + 1e-30)
+    assert rel < 1e-4, f"sign norm broke gauge (rel {rel})"
+    # No NaN/Inf
+    assert torch.isfinite(dA).all() and torch.isfinite(dB).all()
+
+
+def test_sign_optimizer_smoke():
+    """End-to-end: PolarCoupledCoreLoRA with pre_polar_normalize='sign'
+    runs cleanly and updates parameters.
+    """
+    torch.manual_seed(33)
+    m_model = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    # Force B nonzero to skip the bootstrap.
+    with torch.no_grad():
+        for n_, p in m_model.named_parameters():
+            if "lora_B" in n_:
+                p.copy_(torch.randn_like(p) * 0.1)
+    pre = [p.detach().clone() for p in m_model.parameters()]
+    opt = PolarCoupledCoreLoRA(m_model, lr=1e-2, pre_polar_normalize="sign")
+    x = torch.randn(3, 8)
+    target = torch.randn(3, 8)
+    ((m_model(x) - target) ** 2).mean().backward()
+    opt.step()
+    post = [p.detach().clone() for p in m_model.parameters()]
+    assert all(torch.isfinite(p).all() for p in post)
+    diffs = [float((a - b).abs().sum()) for a, b in zip(pre, post)]
+    assert max(diffs) > 0.0
+
+
 def test_state_rebalance_preserves_BA():
     """Post-step state rebalance (B, A) → (BR, R^{-1} A) preserves BA exactly,
     so the model's adapter is unchanged. This is the key safety property

@@ -116,6 +116,7 @@ OPTIMIZER_CHOICES = {
     "polar-coupled-core-imbalance-restore-lora",
     "polar-coupled-core-balanced-scalar-lora",
     "polar-coupled-core-state-rebalanced-lora",
+    "polar-coupled-core-sign-lora",
     "muon-coupled-core-lora",
     "muon-coupled-core-imbalance-scalar-lora",
     "muon-coupled-core-imbalance-lora",
@@ -3132,6 +3133,7 @@ def _polar_coupled_core_lift(
     A_for_gauge=None,
     B_for_gauge=None,
     rho=None,
+    pre_polar_normalize=None,
 ):
     """Sections 2 + 4: polar of `core_obj` (Ĥ for variant 1, M_hat for variant
     2), project (22), renormalize, scale, lift back via Sylvester gauge.
@@ -3151,6 +3153,16 @@ def _polar_coupled_core_lift(
         return dA, dB, {"gamma": nan, "nuc": 0.0, "LB": 0.0, "UB": 0.0,
                         "relgap": nan, "align_inst": 0.0,
                         "s_active": s, "t_active": t}
+
+    # Optional pre-polar elementwise normalization (rung 5-lite, no EMA).
+    # `pre_polar_normalize="sign"` divides core elementwise by |.|+ε before
+    # polar — gives Adam-like per-coord adaptivity in core space without
+    # the basis-rotation EMA-transport issue. See plan Phase 2 (B).
+    if pre_polar_normalize == "sign":
+        eps_norm = 1e-6 * float(core_obj.abs().max().clamp_min(1e-30).item())
+        core_obj = core_obj / (core_obj.abs() + eps_norm)
+    elif pre_polar_normalize is not None and pre_polar_normalize != "none":
+        raise ValueError(f"Unknown pre_polar_normalize '{pre_polar_normalize}'.")
 
     if core_norm == "operator":
         P, sv = _polar_via_svd(core_obj)
@@ -3415,6 +3427,7 @@ def _polar_coupled_core_step(
     sv_tol=1e-5,
     gauge="min-frobenius",
     rho=None,
+    pre_polar_normalize=None,
 ):
     """Variant 1 entry point: build active core, polar+lift on Ĥ.
     Returns (dA, dB, certs, bases) — bases enables variant-2 reuse.
@@ -3433,6 +3446,7 @@ def _polar_coupled_core_step(
         core_scale=core_scale, core_norm=core_norm, delta=delta,
         H_hat_for_align=H_hat,
         gauge=gauge, A_for_gauge=A_f, B_for_gauge=B_f, rho=rho,
+        pre_polar_normalize=pre_polar_normalize,
     )
     certs["compat"] = bases["compat"]
     _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB)
@@ -3506,6 +3520,7 @@ class PolarCoupledCoreLoRA(Optimizer):
                  core_scale="squared_penalty",
                  gauge="min-frobenius", rho=None,
                  state_rebalance=False, rebalance_every=1,
+                 pre_polar_normalize=None,
                  log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -3519,6 +3534,7 @@ class PolarCoupledCoreLoRA(Optimizer):
         self.rho = rho
         self.state_rebalance = state_rebalance
         self.rebalance_every = rebalance_every
+        self.pre_polar_normalize = pre_polar_normalize
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0} for i in range(len(pairs))}
@@ -3544,6 +3560,7 @@ class PolarCoupledCoreLoRA(Optimizer):
                 core_norm="operator",
                 gauge=self.gauge,
                 rho=self.rho,
+                pre_polar_normalize=self.pre_polar_normalize,
             )
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
@@ -4124,6 +4141,17 @@ def build_optimizer(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="min-frobenius",
             state_rebalance=True, rebalance_every=1,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "polar-coupled-core-sign-lora":
+        # Phase 2 (B): per-step elementwise sign normalization of the
+        # core covector before polar — Adam-like per-coord adaptivity in
+        # core space, no EMA, no basis-transport issue.
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            pre_polar_normalize="sign",
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
