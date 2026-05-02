@@ -114,9 +114,13 @@ OPTIMIZER_CHOICES = {
     "polar-coupled-core-imbalance-scalar-lora",
     "polar-coupled-core-imbalance-lora",
     "polar-coupled-core-imbalance-restore-lora",
+    "polar-coupled-core-balanced-scalar-lora",
+    "polar-coupled-core-state-rebalanced-lora",
     "muon-coupled-core-lora",
     "muon-coupled-core-imbalance-scalar-lora",
     "muon-coupled-core-imbalance-lora",
+    "muon-coupled-core-balanced-scalar-lora",
+    "muon-coupled-core-state-rebalanced-lora",
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
@@ -3057,6 +3061,36 @@ def _imbalance_gauge_shift(dA_0, dB_0, A, B, *, mode, rho=None, delta=1e-6):
         S = s_scalar * torch.eye(r, device=A.device, dtype=A.dtype)
         dA_new = dA_0 + s_scalar * A
         dB_new = dB_0 - s_scalar * B
+    elif mode == "balanced-scalar":
+        # S = s · I targeting ‖dA(s)‖_F = ‖dB(s)‖_F (matches AdamW / hybrid
+        # Picard empirical ratio of ~1, NOT iLoRA's √(m/r) — Picard wins at
+        # ratio 1, so balanced-Frobenius is the empirically-validated target).
+        # Solve f(s) = ‖dA_0 + sA‖² − ‖dB_0 − sB‖² = 0 for s. Quadratic:
+        # f(s) = (‖A‖² − ‖B‖²) s² + 2(⟨dA_0,A⟩ + ⟨dB_0,B⟩) s + (‖dA_0‖² − ‖dB_0‖²).
+        # Two roots; pick min |s| (smallest kernel motion).
+        nA2 = float((A * A).sum().item())
+        nB2 = float((B * B).sum().item())
+        ndA02 = float((dA_0 * dA_0).sum().item())
+        ndB02 = float((dB_0 * dB_0).sum().item())
+        cross = float((dA_0 * A).sum().item()) + float((dB_0 * B).sum().item())
+        a = nA2 - nB2
+        b = 2.0 * cross
+        c = ndA02 - ndB02
+        if abs(a) < 1e-30:
+            s_scalar = -c / (b + 1e-30) if abs(b) > 1e-30 else 0.0
+        else:
+            disc = b * b - 4.0 * a * c
+            if disc < 0:
+                # No real solution; fall back to s minimizing |f(s)| via vertex.
+                s_scalar = -b / (2.0 * a)
+            else:
+                sd = disc ** 0.5
+                s1 = (-b + sd) / (2.0 * a)
+                s2 = (-b - sd) / (2.0 * a)
+                s_scalar = s1 if abs(s1) < abs(s2) else s2
+        S = s_scalar * torch.eye(r, device=A.device, dtype=A.dtype)
+        dA_new = dA_0 + s_scalar * A
+        dB_new = dB_0 - s_scalar * B
     else:
         if mode == "preserve":
             target = -delta_I_0
@@ -3181,13 +3215,15 @@ def _polar_coupled_core_lift(
     # min-frobenius is the base lift above; imbalance modes shift through the
     # kernel of J_t to control the iLoRA imbalance functional.
     gauge_diag = {}
-    if gauge in ("imbalance-preserve", "imbalance-restore", "imbalance-preserve-scalar"):
+    if gauge in ("imbalance-preserve", "imbalance-restore",
+                 "imbalance-preserve-scalar", "balanced-scalar"):
         if A_for_gauge is None or B_for_gauge is None:
-            raise ValueError("imbalance gauge requires A_for_gauge and B_for_gauge.")
+            raise ValueError(f"gauge '{gauge}' requires A_for_gauge and B_for_gauge.")
         mode = {
             "imbalance-preserve": "preserve",
             "imbalance-restore": "restore",
             "imbalance-preserve-scalar": "preserve-scalar",
+            "balanced-scalar": "balanced-scalar",
         }[gauge]
         dA, dB, _S, gauge_diag = _imbalance_gauge_shift(
             dA, dB, A_for_gauge, B_for_gauge, mode=mode, rho=rho, delta=delta,
@@ -3208,6 +3244,76 @@ def _polar_coupled_core_lift(
     }
     certs.update(gauge_diag)
     return dA, dB, certs
+
+
+def _rebalance_state(A, B, rho=None, eps=1e-6):
+    """Post-step state-gauge reparameterization: choose R such that after
+        A ← R^{-1} A,   B ← B R
+    we have A A^T ≈ ρ B^T B (the iLoRA-stable invariant; ρ = r / d_out).
+
+    Crucially: B A is invariant under this transformation:
+        (B R)(R^{-1} A) = B A
+    so the model's adapter contribution is unchanged. Only the *coordinates*
+    of the factor representation change. This avoids inflating the dropped
+    second-order term Δ B Δ A (which an update-gauge kernel motion would).
+
+    Math: with S_A = A A^T, S_B = B^T B, want
+        R^{-1} S_A R^{-T} = ρ R^T S_B R.
+    Let P = R R^T (symmetric PSD). Then S_A = ρ P S_B P, with SPD solution
+        P = ρ^{-1/2} S_B^{-1/2} (S_B^{1/2} S_A S_B^{1/2})^{1/2} S_B^{-1/2}
+    and R = P^{1/2} (or any factor with R R^T = P).
+
+    Boundary case: if S_B is essentially singular (B ≈ 0), rebalancing is
+    not well-defined — the caller should ensure B has positive rank before
+    invoking. Returns (A_new, B_new) without mutating inputs.
+    """
+    r = A.shape[0]
+    m = B.shape[0]
+    if rho is None:
+        rho = r / max(m, 1)
+    A_f = A.float()
+    B_f = B.float()
+    # Skip if B is too small for rebalancing to be well-defined.
+    if _factor_essentially_zero(B_f):
+        return A, B  # unchanged
+    S_A = A_f @ A_f.T
+    S_B = B_f.T @ B_f
+    # Damp Grams for numerical safety. Scale ε to S_B's magnitude — for tiny
+    # B the absolute eps would dominate; scale-relative keeps the conditioning
+    # under control without becoming a tunable hyperparameter at the
+    # algorithm level (it's just float32 numerical safety).
+    sB_scale = float(S_B.diag().mean().clamp_min(1e-30).item())
+    eps_B = max(eps * sB_scale, 1e-12)
+    S_A_d = spdify(S_A, eps * float(S_A.diag().mean().clamp_min(1e-30).item()))
+    S_B_d = spdify(S_B, eps_B)
+    # S_B^{1/2} and S_B^{-1/2} via eigh.
+    evals_B, Q_B = torch.linalg.eigh(S_B_d)
+    evals_B = evals_B.clamp_min(eps_B)
+    SB_half = Q_B @ torch.diag(evals_B.sqrt()) @ Q_B.T
+    SB_neg_half = Q_B @ torch.diag(evals_B.rsqrt()) @ Q_B.T
+    # Inner: SB^{1/2} S_A SB^{1/2}, then square root.
+    inner = SB_half @ S_A_d @ SB_half
+    inner = 0.5 * (inner + inner.T)
+    evals_in, Q_in = torch.linalg.eigh(inner)
+    evals_in = evals_in.clamp_min(0.0)
+    inner_half = Q_in @ torch.diag(evals_in.sqrt()) @ Q_in.T
+    # P = ρ^{-1/2} · SB^{-1/2} · inner_half · SB^{-1/2}.
+    P = (rho ** -0.5) * (SB_neg_half @ inner_half @ SB_neg_half)
+    P = 0.5 * (P + P.T)  # symmetrize
+    # R = Cholesky factor of P (R R^T = P).
+    P_reg = P + (eps * float(P.diag().mean().clamp_min(1e-30).item())) * torch.eye(r, device=P.device, dtype=P.dtype)
+    try:
+        R = torch.linalg.cholesky(P_reg)
+    except torch._C._LinAlgError:
+        # Fallback: matrix square root via eigh.
+        evals_P, Q_P = torch.linalg.eigh(P_reg)
+        evals_P = evals_P.clamp_min(eps_B)
+        R = Q_P @ torch.diag(evals_P.sqrt()) @ Q_P.T
+    # Apply: B' = B R,  A' = R^{-1} A.
+    B_new = B_f @ R
+    A_new = torch.linalg.solve_triangular(R, A_f, upper=False) if R.is_contiguous() else torch.linalg.solve(R, A_f)
+    # Cast back to original dtypes / devices.
+    return A_new.to(dtype=A.dtype, device=A.device), B_new.to(dtype=B.dtype, device=B.device)
 
 
 def _factor_essentially_zero(X, eps=1e-12):
@@ -3399,6 +3505,7 @@ class PolarCoupledCoreLoRA(Optimizer):
     def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
                  core_scale="squared_penalty",
                  gauge="min-frobenius", rho=None,
+                 state_rebalance=False, rebalance_every=1,
                  log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -3410,6 +3517,8 @@ class PolarCoupledCoreLoRA(Optimizer):
         self.core_scale = core_scale
         self.gauge = gauge
         self.rho = rho
+        self.state_rebalance = state_rebalance
+        self.rebalance_every = rebalance_every
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0} for i in range(len(pairs))}
@@ -3440,6 +3549,17 @@ class PolarCoupledCoreLoRA(Optimizer):
             B.add_(dB.to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
             B.grad.zero_()
+
+            # Post-step state-gauge rebalance: (A, B) ← (R^{-1} A, B R) such
+            # that A A^T ≈ ρ B^T B. Preserves B A exactly. See
+            # docs/notes/polar_coupled_problem.md "Open sub-problem" section.
+            if (self.state_rebalance
+                    and state["step"] % self.rebalance_every == 0
+                    and not _factor_essentially_zero(B.detach().float())):
+                A_new, B_new = _rebalance_state(A.detach(), B.detach(),
+                                                 rho=self.rho, eps=self.delta)
+                A.data.copy_(A_new)
+                B.data.copy_(B_new)
 
             if self.log_diagnostics:
                 rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
@@ -3480,6 +3600,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                  beta1=0.95,
                  core_scale="squared_penalty",
                  gauge="min-frobenius", rho=None,
+                 state_rebalance=False, rebalance_every=1,
                  log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -3492,6 +3613,8 @@ class MuonCoupledCoreLoRA(Optimizer):
         self.core_scale = core_scale
         self.gauge = gauge
         self.rho = rho
+        self.state_rebalance = state_rebalance
+        self.rebalance_every = rebalance_every
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0,
@@ -3576,9 +3699,24 @@ class MuonCoupledCoreLoRA(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
+            # Save core EMA state for next-step transport. May be invalidated
+            # by post-step rebalance below.
             state["M_prev"] = M_t
             state["U_prev"] = U_cur
             state["V_prev"] = V_cur
+
+            # Post-step state-gauge rebalance (variant 2: bases change
+            # discontinuously, so reset transported core EMA after rebalance).
+            if (self.state_rebalance
+                    and state["step"] % self.rebalance_every == 0
+                    and not _factor_essentially_zero(B.detach().float())):
+                A_new, B_new = _rebalance_state(A.detach(), B.detach(),
+                                                 rho=self.rho, eps=self.delta)
+                A.data.copy_(A_new)
+                B.data.copy_(B_new)
+                state["M_prev"] = None
+                state["U_prev"] = None
+                state["V_prev"] = None
 
             if self.log_diagnostics:
                 rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
@@ -3974,6 +4112,21 @@ def build_optimizer(
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
+    if optimizer_type == "polar-coupled-core-balanced-scalar-lora":
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty", gauge="balanced-scalar",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "polar-coupled-core-state-rebalanced-lora":
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            state_rebalance=True, rebalance_every=1,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
     if optimizer_type == "muon-coupled-core-lora":
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
@@ -3992,6 +4145,21 @@ def build_optimizer(
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="imbalance-preserve",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "muon-coupled-core-balanced-scalar-lora":
+        return MuonCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6, beta1=0.95,
+            core_scale="squared_penalty", gauge="balanced-scalar",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "muon-coupled-core-state-rebalanced-lora":
+        return MuonCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6, beta1=0.95,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            state_rebalance=True, rebalance_every=1,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )

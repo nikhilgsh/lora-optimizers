@@ -27,6 +27,7 @@ from lora_playground.optim import (
     _build_active_core,
     _imbalance_gauge_shift,
     _polar_coupled_core_step,
+    _rebalance_state,
 )
 
 
@@ -396,6 +397,100 @@ def test_imbalance_gauge_helper_directly():
         f"restore mode post-residual {gd2['imbalance_residual_lin_post']:.4e} "
         f"should be ≪ ‖I_t‖_F = {I_t_norm:.4e}"
     )
+
+
+# --- State-gauge rebalance tests ------------------------------------------
+
+def test_state_rebalance_preserves_BA():
+    """Post-step state rebalance (B, A) → (BR, R^{-1} A) preserves BA exactly,
+    so the model's adapter is unchanged. This is the key safety property
+    that distinguishes state gauge from update gauge.
+    """
+    torch.manual_seed(101)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.1   # B small, A large — asymmetric regime
+
+    BA_before = B @ A
+    A_new, B_new = _rebalance_state(A, B)
+    BA_after = B_new @ A_new
+
+    rel_err = float((BA_after - BA_before).norm() / (BA_before.norm() + 1e-30))
+    assert rel_err < 1e-4, f"state rebalance changed BA by rel {rel_err}"
+
+
+def test_state_rebalance_drives_imbalance_to_zero():
+    """After rebalance, AA^T ≈ ρ B^T B (the iLoRA target), so the imbalance
+    residual should drop to ~0 immediately.
+    """
+    torch.manual_seed(103)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.randn(m_, r) * 0.1
+    rho = r / m_
+
+    def imb_residual(A, B):
+        AAT = A @ A.T
+        BTB = B.T @ B
+        I = AAT - rho * BTB
+        den = AAT.norm() + rho * BTB.norm() + 1e-30
+        return float(I.norm() / den)
+
+    res_before = imb_residual(A, B)
+    A_new, B_new = _rebalance_state(A, B)
+    res_after = imb_residual(A_new, B_new)
+
+    assert res_after < 1e-4, f"after rebalance, residual {res_after} should be ≈ 0 (was {res_before})"
+
+
+def test_state_rebalance_skipped_when_B_zero():
+    """At PEFT init B = 0, S_B is singular and rebalance is undefined.
+    Should return inputs unchanged (caller / boundary case handles step 1).
+    """
+    torch.manual_seed(107)
+    r, m_, n = 4, 12, 8
+    A = torch.randn(r, n) * 0.5
+    B = torch.zeros(m_, r)
+
+    A_new, B_new = _rebalance_state(A, B)
+    assert torch.equal(A, A_new)
+    assert torch.equal(B, B_new)
+
+
+def test_state_rebalance_optimizer_path():
+    """End-to-end: PolarCoupledCoreLoRA with state_rebalance=True should
+    drive ‖A‖²/(ρ ‖B‖²) toward 1 over a few non-fallback steps.
+    """
+    import torch.nn as nn
+    torch.manual_seed(109)
+    m1 = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    # Force B off-zero to skip the bootstrap.
+    with torch.no_grad():
+        for n_, p in m1.named_parameters():
+            if "lora_B" in n_:
+                p.copy_(torch.randn_like(p) * 0.05)
+
+    opt = PolarCoupledCoreLoRA(m1, lr=1e-2, state_rebalance=True)
+    x = torch.randn(3, 8)
+    target = torch.randn(3, 8)
+
+    # Two steps to let rebalance settle.
+    for _ in range(2):
+        m1.zero_grad()
+        ((m1(x) - target) ** 2).mean().backward()
+        opt.step()
+
+    for layer_name, sub in [("l0", m1.l0), ("l1", m1.l1)]:
+        A = sub.lora_A["default"].weight
+        B = sub.lora_B["default"].weight
+        # ρ depends on this pair's d_out (= B.shape[0])
+        rho = A.shape[0] / B.shape[0]
+        AAT = A @ A.T
+        BTB = B.T @ B
+        I = AAT - rho * BTB
+        den = AAT.norm() + rho * BTB.norm() + 1e-30
+        res = float(I.norm() / den)
+        assert res < 0.05, f"{layer_name}: post-rebalance residual = {res}"
 
 
 def test_imbalance_restore_drives_to_iLoRA_stable_point():
