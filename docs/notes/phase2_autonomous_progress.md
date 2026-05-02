@@ -80,6 +80,27 @@ Pending QOS slot. Updates once started.
 
 ## Progress updates (most recent on top)
 
+### Update at 1:24 elapsed — state_rebal r=64 step 1400 BEATS vanilla
+
+**State-rebal r=64 lr=3e-3 step 1400 = 0.7786** vs vanilla r=64 final
+0.7821. State-rebal beats vanilla's *full* trajectory by step 1400.
+
+Trajectory:
+- step 800: 0.7942
+- step 1000: 0.7884 (Δ = -0.006)
+- step 1400: 0.7786 (Δ = -0.010 over 400 steps)
+
+Linear extrapolation to step 2000 lands ~0.764. **That would beat
+AdamW (0.7601) and approach hybrid Picard (0.7382).** Δ to hybrid Picard
+= +0.026 — closer to "competitive" than "PARTIAL".
+
+So state-rebalance has an asymmetric effect:
+- r=16 final: 0.8104 (no help, +0.055 from baseline)
+- r=64 projected final: ~0.764 (PARTIAL/competitive, +0.026 from baseline)
+
+Possibly because ρ = r/m is less extreme at r=64 (0.016 vs 0.004 at r=16),
+making the iLoRA invariant easier to maintain.
+
 ### Update at 1:07 elapsed (state_rebal r=64 still running)
 
 State_rebal r=64 lr=3e-3 step 1000 = **0.7884**. Drop rate from step
