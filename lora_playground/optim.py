@@ -117,11 +117,14 @@ OPTIMIZER_CHOICES = {
     "polar-coupled-core-balanced-scalar-lora",
     "polar-coupled-core-state-rebalanced-lora",
     "polar-coupled-core-sign-lora",
+    "polar-coupled-core-sign-rebalanced-lora",
     "muon-coupled-core-lora",
     "muon-coupled-core-imbalance-scalar-lora",
     "muon-coupled-core-imbalance-lora",
     "muon-coupled-core-balanced-scalar-lora",
     "muon-coupled-core-state-rebalanced-lora",
+    "muon-coupled-core-sign-lora",
+    "muon-coupled-core-sign-rebalanced-lora",
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
@@ -3618,6 +3621,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                  core_scale="squared_penalty",
                  gauge="min-frobenius", rho=None,
                  state_rebalance=False, rebalance_every=1,
+                 pre_polar_normalize=None,
                  log_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -3632,6 +3636,7 @@ class MuonCoupledCoreLoRA(Optimizer):
         self.rho = rho
         self.state_rebalance = state_rebalance
         self.rebalance_every = rebalance_every
+        self.pre_polar_normalize = pre_polar_normalize
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0,
@@ -3708,6 +3713,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                 core_scale=self.core_scale, core_norm="operator",
                 delta=self.delta, H_hat_for_align=H_hat,
                 gauge=self.gauge, A_for_gauge=A_f, B_for_gauge=B_f, rho=self.rho,
+                pre_polar_normalize=self.pre_polar_normalize,
             )
             certs["compat"] = bases["compat"]
             _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB)
@@ -4155,6 +4161,17 @@ def build_optimizer(
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
+    if optimizer_type == "polar-coupled-core-sign-rebalanced-lora":
+        # variant 1 + sign + state rebalance (compound: per-coord adaptivity
+        # AND iLoRA-target factor geometry).
+        return PolarCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            pre_polar_normalize="sign",
+            state_rebalance=True, rebalance_every=1,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
     if optimizer_type == "muon-coupled-core-lora":
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
@@ -4187,6 +4204,25 @@ def build_optimizer(
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="min-frobenius",
+            state_rebalance=True, rebalance_every=1,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "muon-coupled-core-sign-lora":
+        # variant 2 + sign norm: momentum AND per-coord adaptivity in core.
+        return MuonCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6, beta1=0.95,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            pre_polar_normalize="sign",
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "muon-coupled-core-sign-rebalanced-lora":
+        # variant 2 + sign norm + state rebalance: full stack.
+        return MuonCoupledCoreLoRA(
+            model, lr=lr, delta=1e-6, beta1=0.95,
+            core_scale="squared_penalty", gauge="min-frobenius",
+            pre_polar_normalize="sign",
             state_rebalance=True, rebalance_every=1,
             log_diagnostics=log_optim_diagnostics,
             diagnostics_every=optim_diagnostics_every,

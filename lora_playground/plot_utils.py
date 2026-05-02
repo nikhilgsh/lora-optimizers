@@ -58,10 +58,13 @@ OPTIM_COLORS = {
     "polar-coupled-core-imbalance-restore-lora": "#d8a070",  # + iLoRA imbalance-restoring gauge (aggressive; experimental)
     "polar-coupled-core-state-rebalanced-lora":  "#5a2018",  # + post-step state-gauge rebalance (recommended)
     "polar-coupled-core-sign-lora":              "#9a4030",  # + per-step elementwise core sign normalization (rung 5-lite)
+    "polar-coupled-core-sign-rebalanced-lora":   "#bb6048",  # + sign + state rebalance (compound)
     "muon-coupled-core-lora":      "#3a5a8a",   # variant 2: + transported core-space momentum
     "muon-coupled-core-imbalance-scalar-lora":   "#4a6aa8",  # variant 2 + scalar imbalance gauge
     "muon-coupled-core-imbalance-lora":          "#5a8ac8",  # variant 2 + full imbalance gauge
     "muon-coupled-core-state-rebalanced-lora":   "#1a3a6a",  # variant 2 + state-gauge rebalance
+    "muon-coupled-core-sign-lora":               "#5a7ab8",  # variant 2 + sign norm
+    "muon-coupled-core-sign-rebalanced-lora":    "#7a9ae0",  # variant 2 + sign + state rebalance (full stack)
     "adamuon-polar-product-lora":  "#1f77b4",
     "adamuon-lora":                "#ff9896",
     # gauge-invariant variants
@@ -99,10 +102,13 @@ OPTIM_FAMILIES = {
         "polar-coupled-core-imbalance-restore-lora",
         "polar-coupled-core-state-rebalanced-lora",
         "polar-coupled-core-sign-lora",
+        "polar-coupled-core-sign-rebalanced-lora",
         "muon-coupled-core-lora",
         "muon-coupled-core-imbalance-scalar-lora",
         "muon-coupled-core-imbalance-lora",
         "muon-coupled-core-state-rebalanced-lora",
+        "muon-coupled-core-sign-lora",
+        "muon-coupled-core-sign-rebalanced-lora",
         "adamuon-lora",
         "adamuon-polar-product-lora",
     },
