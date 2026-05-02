@@ -336,3 +336,156 @@ polar with clip in each block is the minimal fix that makes hybrid
 Picard's iteration converge to the KKT point of its own implicit
 objective. Recorded as a note; not a priority for this project — Case
 3 (joint tangent spectral) is the target.
+
+## Open sub-problem: gauge choice under asymmetric LoRA initialization
+
+The variational problem $(\star)$ is invariant under the kernel of
+$J_t$, so the optimal $(\Delta A, \Delta B)$ is non-unique in factor
+coordinates. Section "Setup and notation" picks the **min-Frobenius**
+representative ($B_t^\top \Delta B = \Delta A\, A_t^\top$). This is
+mathematically minimal but interacts pathologically with PEFT's
+default LoRA initialization.
+
+### Empirical observation
+
+PEFT default: $A_0$ random/full-rank, $B_0 = 0$. Under the joint
+operator-norm solver (variant 1 of the Section 6 ladder of
+`polar_coupled_core_solver.md`), the lift formulas of Section 4
+produce
+
+$$\frac{\|\Delta A\|_F}{\|\Delta B\|_F} \;\approx\; 50\text{–}100$$
+
+throughout 2k-step training of LoRA on a 1B base model
+($r \in \{16, 64\}$). The ratio decays only weakly with training
+(measured 96 → 47 over 2k steps at $r=16$, $\eta=3 \times 10^{-3}$).
+Update magnitude is concentrated almost entirely in $\Delta A$; $B$
+grows from zero very slowly because $\|\Delta B\|_F$ stays near
+$10^{-3}$ regardless of the training stage.
+
+By contrast, AdamW (each factor independently Adam-normalized) gives
+$\|\Delta A\|_F / \|\Delta B\|_F \approx 1$ since both factors have
+the same parameter count and the same per-coordinate step magnitude.
+Hybrid Picard inherits the same ratio because Adam runs upstream of
+the polar pipeline.
+
+### Mechanism
+
+The min-Frobenius gauge is the KKT condition of
+$\min \|\Delta A\|_F^2 + \|\Delta B\|_F^2$ s.t. $J_t[\Delta A, \Delta B] = Z$
+for the optimal tangent $Z$. With $S_L := B_t^\top B_t$ and
+$S_R := A_t A_t^\top$, the lift solves the Sylvester equation
+$S_L K + K S_R = R_L^\top X R_R^\top$ for the gauge variable $K$,
+and then
+
+$$\Delta A = S_L^{-1}\,[\,\cdots\,], \qquad \Delta B = [\,\cdots\,]\, S_R^{-1}.$$
+
+When $\|B_t\|_2 \to 0$ (PEFT init), $S_L \to 0$ and $S_L^{-1} \to \infty$,
+amplifying $\Delta A$. The Sylvester is dominated by $K S_R \approx
+R_L^\top X R_R^\top$ (since $S_L \ll S_R$), which gives small $K$,
+small $\Delta A A_t^\top$, and hence small $\Delta B$ via the gauge
+condition $B_t^\top \Delta B = K$. The combination concentrates effort
+in $\Delta A$ regardless of the loss landscape's actual sensitivity to
+$A$ vs $B$.
+
+This is not a bug in the algorithm — it is a property of the
+min-Frobenius gauge interacting with $\|B_t\| \ll \|A_t\|$. The doc's
+Section "Setup and notation" already flags that "candidates may
+justify a different gauge"; the empirical evidence above suggests
+this latitude is more than cosmetic.
+
+### Candidate alternative gauges
+
+Each minimizes a different functional subject to the same tangent
+constraint $B_t \Delta A + \Delta B\, A_t = Z^\star$. Listed by what
+they prioritize.
+
+1. **Min-Frobenius (current default).** Minimizes
+   $\|\Delta A\|_F^2 + \|\Delta B\|_F^2$. Variationally minimal in
+   factor space. Pathological when $\|B_t\| \ll \|A_t\|$, as above.
+
+2. **Scale-aware Frobenius.** Minimizes
+   $\|\Delta A\|_F^2 / \|A_t\|_F^2 + \|\Delta B\|_F^2 / \|B_t\|_F^2$.
+   KKT gives $\Delta A = (\|A\|^2/2) B_t^\top \Lambda$,
+   $\Delta B = (\|B\|^2/2) \Lambda A_t^\top$ for a Lagrangian
+   $\Lambda$ solving
+   $(\|A\|^2/2) B_t B_t^\top \Lambda + (\|B\|^2/2) \Lambda A_t A_t^\top = Z^\star$.
+   When $\|B\| \to 0$ this still produces $\Delta B \to 0$ (the weighting
+   amplifies $\Delta A$, doesn't fix the imbalance) — see the analysis
+   below — so this option is included for completeness; it is **not**
+   expected to resolve the pathology.
+
+3. **Min-second-order.** Minimizes the dropped second-order term
+   $\|\Delta B\, \Delta A\|_F^2$. Most variationally honest in the
+   sense that it makes the linearization of the LoRA product most
+   accurate. Convex in $(\Delta A, \Delta B)$ on the constrained
+   set; lift is a small QP with quadratic objective and linear
+   constraints, so still $O(r^3)$.
+
+4. **Balanced-Frobenius.** Minimizes $\|\Delta A\|_F^2 + \|\Delta B\|_F^2$
+   subject to $\|\Delta A\|_F = \|\Delta B\|_F$ AND tangent constraint.
+   Parameterize via the kernel: starting from the min-Frobenius
+   $(\Delta A_0, \Delta B_0)$, find $S$ s.t.
+   $(\Delta A_0 + S A_t, \Delta B_0 - B_t S)$ has equal F-norms.
+   This is a single scalar condition on $r^2$ unknowns; many solutions
+   exist. The MIN-norm solution among them gives a clean specialization.
+
+5. **Eigenvalue-balance gauge.** Minimizes
+   $\|S_L^{1/2} \Delta B\|_F^2 + \|\Delta A\, S_R^{1/2}\|_F^2$
+   (whitens both factor updates by the corresponding Gram).
+   Equivalent to minimizing $\|J_t[\Delta A, \Delta B]\|_F^2$ over the
+   gauge kernel — i.e., picks the kernel direction that makes the
+   tangent "look most isotropic." Lift is an unconstrained least-
+   squares in $S$.
+
+### Open questions
+
+1. **Which alternative gauge correlates best with downstream eval
+   loss?** Empirical question; needs comparison sweeps at fixed $\eta$
+   on the canonical 2k-step LoRA workload.
+
+2. **Does the min-second-order gauge actually reduce the dropped
+   $\Delta B\, \Delta A$ term enough to matter for finite-step
+   stability?** The $\Delta B\, \Delta A$ term is $O(\Delta^2)$ in step
+   size; its impact relative to first-order linear terms scales with
+   $\eta$. At small $\eta$ this is a measurable but probably small
+   correction; at large $\eta$ it could be dominant.
+
+3. **Is there a gauge whose lift formulas reduce to AdamW's per-factor
+   step in the $B \to 0$, $A$ random limit?** AdamW-on-factors gives
+   $\|\Delta A\|_F = \|\Delta B\|_F$ regardless of $\|B\|$ via Adam's
+   per-coord normalization. No gauge of the form "minimize a quadratic
+   in $(\Delta A, \Delta B)$" that depends only on $A_t, B_t$ achieves
+   this — the dependence on the gradient magnitude per coord is
+   essential to Adam's behavior. This suggests the gauge fix alone
+   cannot match AdamW's factor balance; a gradient-conditional gauge
+   (or post-lift per-factor lr scaling) is likely needed.
+
+4. **Is the right move to abandon factor-space gauges entirely?** The
+   variational problem is on $J_t[\Delta A, \Delta B]$; the optimal
+   tangent is unique. Factor representatives are bookkeeping. An
+   implementation that maintains the tangent representation
+   directly (and reconstructs factor updates only at apply-time, with
+   a per-step gauge re-derivation that respects current $\|A\|, \|B\|$)
+   may be cleaner than picking a fixed gauge up front.
+
+### Empirical anchor for any gauge candidate
+
+Any candidate gauge should report:
+
+- $\|\Delta A\|_F / \|\Delta B\|_F$ ratio at step 200, 1000, 2000 of a
+  2k-step LoRA run. Target: $\in [0.5, 5]$ (matches AdamW / hybrid
+  Picard). Min-Frobenius default produces 50–100.
+- Final eval loss at the canonical 2k-step horizon vs the existing
+  hybrid-Picard baseline (`adam-polar-product-lora-coupled`) at
+  matched $r$ and matched best-$\eta$. Target: closes the observed
+  $\Delta \approx 0.05$–$0.06$ gap, or at least narrows it.
+- $\sigma_{\min}(B_t)$ and $\|B_t\|_F$ trajectories. The current min-
+  Frobenius gauge has $\|B_t\|_F$ growing very slowly (random walk
+  with $\sim 10^{-3}$ steps over 2k iterations). A working gauge
+  should let $B$ grow at a comparable rate to $A$'s update magnitude.
+
+These three are the cheapest signals to read off any gauge variant's
+2k-step run. If the ratio doesn't drop below ~5 and the eval gap
+doesn't narrow, the gauge change isn't the answer — the gap is
+elsewhere (e.g., need per-coord adaptivity à la rung 5 of the Section 6
+ladder, not a gauge fix).

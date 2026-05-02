@@ -3174,6 +3174,10 @@ def _zero_B_fallback(A, B, G_A, G_B, lr, *, delta=1e-6, core_scale="squared_pena
              "LB": nan, "UB": nan, "relgap": nan,
              "align_inst": nan, "s_active": 0, "t_active": 0,
              "compat": nan, "fallback": 1.0}
+    # Attach factor diagnostics in fallback path too — the gauge-imbalance
+    # story starts at step 0, and tracking ‖B‖_F's bootstrap from zero is
+    # important for the open gauge sub-problem.
+    _attach_factor_diagnostics(certs, A_f, B_f, None, dA, dB)
     return dA, dB, certs, None
 
 
@@ -3208,7 +3212,46 @@ def _polar_coupled_core_step(
         H_hat_for_align=H_hat,
     )
     certs["compat"] = bases["compat"]
+    _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB)
     return dA, dB, certs, bases
+
+
+def _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB):
+    """Add factor-shape diagnostics to certs dict for gauge-imbalance analysis.
+
+    See docs/notes/polar_coupled_problem.md "Open sub-problem: gauge choice
+    under asymmetric LoRA initialization" — the empirical anchor for any
+    gauge candidate is the dA/dB ratio + B-growth trajectory.
+    """
+    try:
+        sv_A = torch.linalg.svdvals(A_f)
+        sv_B = torch.linalg.svdvals(B_f)
+        nA = float(A_f.norm().item())
+        nB = float(B_f.norm().item())
+        sigmin_A = float(sv_A.min().item()) if sv_A.numel() > 0 else float('nan')
+        sigmin_B = float(sv_B.min().item()) if sv_B.numel() > 0 else float('nan')
+        sigmax_A = float(sv_A.max().item()) if sv_A.numel() > 0 else float('nan')
+        sigmax_B = float(sv_B.max().item()) if sv_B.numel() > 0 else float('nan')
+        certs["norm_A"] = nA
+        certs["norm_B"] = nB
+        certs["sigmin_A"] = sigmin_A
+        certs["sigmin_B"] = sigmin_B
+        # Gauge asymmetry driver: σ_min²(B) / σ_min²(A) ≈ S_L_min / S_R_min.
+        # Drives the dA/dB imbalance through the lift's S_L^{-1} and S_R^{-1}.
+        certs["sigmin_BA_ratio"] = (sigmin_B / sigmin_A) if sigmin_A > 1e-30 else float('nan')
+        certs["sigmax_BA_ratio"] = (sigmax_B / sigmax_A) if sigmax_A > 1e-30 else float('nan')
+        # Cond numbers (factor-Gram): σ_max/σ_min squared.
+        certs["cond_A"] = (sigmax_A / sigmin_A) if sigmin_A > 1e-30 else float('nan')
+        certs["cond_B"] = (sigmax_B / sigmin_B) if sigmin_B > 1e-30 else float('nan')
+        # Update-magnitude ratio (the key empirical anchor for the gauge problem).
+        nda = float(dA.norm().item())
+        ndb = float(dB.norm().item())
+        certs["ratio_dA_dB"] = (nda / ndb) if ndb > 1e-30 else float('nan')
+    except (torch._C._LinAlgError, RuntimeError):
+        for k in ("norm_A", "norm_B", "sigmin_A", "sigmin_B",
+                  "sigmin_BA_ratio", "sigmax_BA_ratio", "cond_A", "cond_B",
+                  "ratio_dA_dB"):
+            certs[k] = float('nan')
 
 
 class PolarCoupledCoreLoRA(Optimizer):
@@ -3387,6 +3430,160 @@ class MuonCoupledCoreLoRA(Optimizer):
                 core_scale=self.core_scale, core_norm="operator",
                 delta=self.delta, H_hat_for_align=H_hat,
             )
+            certs["compat"] = bases["compat"]
+            _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB)
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+            state["M_prev"] = M_t
+            state["U_prev"] = U_cur
+            state["V_prev"] = V_cur
+
+            if self.log_diagnostics:
+                rec = {k: float(v) for k, v in certs.items()}
+                rec["norm_dA"] = float(dA.norm().item())
+                rec["norm_dB"] = float(dB.norm().item())
+                rec["transport_residual"] = transport_residual
+                rec["align_mom"] = certs["LB"]
+                diag_records.append(rec)
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]["step"]
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
+class MuonRMSCoupledCoreLoRA(Optimizer):
+    """Variant 3 of the Section 6 ladder: variant 2 + scalar RMS magnitude
+    normalization. Adam-style "step magnitude ≈ lr regardless of grad state"
+    behavior, without the per-coordinate diagonal that breaks gradient
+    compatibility.
+
+    Per-pair scalar second moment of τ̂ (= ‖core_obj‖_*/γ — the achieved
+    primal value, equivalent to ‖Ĥ_t‖_F² up to a constant per the doc):
+        s_t = β₂ · s_{t-1} + (1 − β₂) · τ̂_t²
+        s_hat = s_t / (1 − β₂^t)               (Adam-style bias correction)
+        Z_upd = −(lr / (√s_hat + ε)) · τ̂_t · Z_+
+    At equilibrium with `s_hat ≈ τ̂_t²`, the spectral norm of Z_upd is ≈ lr,
+    matching AdamW's per-coordinate-magnitude invariance to grad scale.
+
+    This addresses the magnitude collapse observed in variant 2: when
+    momentum averages out the core covector, ‖M_step‖_* shrinks but s_t
+    tracks it, so the outer scale grows to compensate.
+
+    Built on top of variant 2's transported core EMA + Nesterov lookahead
+    (canonical Muon, no bc on the EMA itself — bias correction is only on
+    the scalar RMS, mirroring Adam's β₂ branch).
+    """
+
+    def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
+                 beta1=0.95, beta2=0.999, eps=1e-8,
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+        self.pair_state = {i: {"step": 0,
+                               "M_prev": None,
+                               "U_prev": None,
+                               "V_prev": None,
+                               "s": 0.0}
+                           for i in range(len(pairs))}
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for MuonRMSCoupledCoreLoRA update.")
+            state = self.pair_state[i]
+            state["step"] += 1
+            t_step = state["step"]
+
+            A_f = A.float()
+            B_f = B.float()
+            GA_f = A.grad.float()
+            GB_f = B.grad.float()
+            # Initialization-zero boundary case (Section 1 standing assumption).
+            if _factor_essentially_zero(B_f) or _factor_essentially_zero(A_f):
+                dA_fb, dB_fb, certs_fb, _ = _zero_B_fallback(
+                    A, B, A.grad, B.grad, lr, delta=self.delta,
+                    core_scale="constrained",  # boundary case has no τ̂ history yet
+                )
+                A.add_(dA_fb.to(dtype=A.dtype, device=A.device))
+                B.add_(dB_fb.to(dtype=B.dtype, device=B.device))
+                A.grad.zero_()
+                B.grad.zero_()
+                if self.log_diagnostics:
+                    rec = {k: float(v) for k, v in certs_fb.items()}
+                    rec["norm_dA"] = float(dA_fb.norm().item())
+                    rec["norm_dB"] = float(dB_fb.norm().item())
+                    rec["s_rms"] = float(state["s"])
+                    rec["lr_eff"] = lr
+                    diag_records.append(rec)
+                continue
+
+            bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=self.delta)
+            H_hat = bases["H_hat"]
+            r = A_f.shape[0]
+            tt, ss = bases["t"], bases["s"]
+            U_cur = torch.cat([bases["Q_L"], bases["U"]], dim=1) if tt > 0 else bases["Q_L"]
+            V_cur = torch.cat([bases["Q_R"], bases["V"]], dim=1) if ss > 0 else bases["Q_R"]
+
+            # Variant 2's EMA + Nesterov (canonical Muon, no bc on the EMA).
+            transport_residual = float("nan")
+            if state["M_prev"] is None or t_step == 1:
+                M_t = (1.0 - self.beta1) * H_hat
+            else:
+                T_L = U_cur.T @ state["U_prev"]
+                T_R = V_cur.T @ state["V_prev"]
+                M_transported = T_L @ state["M_prev"] @ T_R.T
+                M_transported = _project_zero_22(M_transported, r)
+                M_t = self.beta1 * M_transported + (1.0 - self.beta1) * H_hat
+                den = M_transported.norm().item() + 1e-30
+                transport_residual = float((M_t - M_transported).norm().item() / den)
+            M_step = (1.0 - self.beta1) * H_hat + self.beta1 * M_t
+
+            # Compute τ̂ for THIS step's M_step (used both as the polar magnitude
+            # and as the s_t accumulator input).
+            P, sv = _polar_via_svd(M_step)
+            nuc = float(sv.sum().item())
+            R_proj = _project_zero_22(P, r)
+            gamma_sv = torch.linalg.svdvals(R_proj)
+            gamma = float(gamma_sv[0].item()) if gamma_sv.numel() > 0 else 0.0
+            tau_hat = (nuc / gamma) if gamma > 1e-12 else 0.0
+
+            # Scalar RMS update (Adam-style bias correction on β₂).
+            state["s"] = self.beta2 * state["s"] + (1.0 - self.beta2) * (tau_hat * tau_hat)
+            bc2 = 1.0 - self.beta2 ** t_step
+            s_hat = state["s"] / bc2
+            lr_eff = lr / (s_hat ** 0.5 + self.eps)
+
+            # Apply step. Use the lift via _polar_coupled_core_lift with
+            # the effective lr; squared-penalty form gives Z_upd = -lr_eff·τ̂·Z_+
+            # whose spectral norm at equilibrium is ≈ lr (since lr_eff·τ̂ → lr).
+            dA, dB, certs = _polar_coupled_core_lift(
+                M_step, bases, lr_eff, r,
+                core_scale="squared_penalty", core_norm="operator",
+                delta=self.delta, H_hat_for_align=H_hat,
+            )
+            certs["compat"] = bases["compat"]
+            _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB)
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
             A.grad.zero_()
@@ -3403,6 +3600,9 @@ class MuonCoupledCoreLoRA(Optimizer):
                 rec["norm_dB"] = float(dB.norm().item())
                 rec["transport_residual"] = transport_residual
                 rec["align_mom"] = certs["LB"]
+                rec["s_rms"] = float(state["s"])
+                rec["lr_eff"] = lr_eff
+                rec["tau_step"] = tau_hat
                 diag_records.append(rec)
 
         if self.log_diagnostics and diag_records:
