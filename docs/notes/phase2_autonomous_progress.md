@@ -80,6 +80,26 @@ Pending QOS slot. Updates once started.
 
 ## Progress updates (most recent on top)
 
+### state_rebalanced_2k r=64 mid-trajectory (step 800)
+
+Pulled r=64 cells specifically (slower per step than r=16):
+
+| lr | optimizer | step 800 eval |
+|---|---|---|
+| 1e-4 | polar-rebal | 0.8803 |
+| 3e-4 | polar-rebal | 0.8479 |
+| 1e-3 | polar-rebal | 0.8161 |
+| **3e-3** | **polar-rebal** | **0.7942** ⭐ |
+
+**This looks much more promising than r=16!**
+- Vanilla r=64 lr=3e-3 step 2000 final = 0.7821.
+- State-rebal r=64 lr=3e-3 step 800 = 0.7942 — already close.
+- If trajectory continues at the same rate to step 2000, lands maybe
+  0.76-0.77, BEATING vanilla and getting close to hybrid Picard 0.7382.
+
+This is a candidate for state-rebalance being a clear win at r=64
+(asymmetric d_in vs d_out matters more there).
+
 ### Compound optimizer GPU smoke (3 steps, OLMo-1B r=4)
 
 Tested the 3 new compound optimizers (registered for if sign-alone wins
