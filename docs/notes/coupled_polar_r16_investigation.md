@@ -149,6 +149,37 @@ the divergence at r=128 is small. But the data does NOT establish
 causation: that the rank concentration *causes* the loss gap, vs. being
 a side effect of some other axis the optimizers differ on.
 
+## Dispersion of S_B predicts the sign of Δ at every existing cell
+
+Pulled all (r, η=3e-4) cells where both coupled and uncoupled were
+recorded. Computed κ_B_median = median across pairs of σ_max(S_B) /
+σ_min(S_B), late-window (step 1000–2000) of the uncoupled run.
+
+| r   | Δ (cou − unc) | κ_B median (uncoupled, late) |
+|-----|---------------|------------------------------|
+| 16  | +0.0069 (lose) | 2.45                        |
+| 64  | −0.0077 (win)  | 10.96                       |
+| 128 | −0.0100 (win)  | 35.85                       |
+| 256 | −0.0107 (win)  | 159.87                      |
+
+κ(S_B) is monotone in r and the sign of Δ flips between r=16 (κ ≈ 2.5,
+near-flat spectrum) and r=64 (κ ≈ 11). At r=16, the polar pipeline's
+S_B^{-1/2} factor is close to a scalar — it doesn't reshape directions
+meaningfully; coupled's iter-2 refinement on top has nothing to refine
+and the cross-term destabilizes. At r ≥ 64, S_B is peaky enough for the
+preconditioner to do meaningful directional work; coupled refines
+usefully.
+
+Mechanism details (whether the failure mode at low κ is best described
+as "polar near-identity → cross-term is perturbation on Adam direction"
+or as "bilinear cross-term concentrates col(B)") may be different
+framings of the same phenomenon. Both predict κ-as-predictor.
+
+The α-sweep currently in flight will say whether the loss-vs-α curve
+is monotone-in-α at low-κ cells (consistent with both hypotheses) or
+has interior structure (would discriminate). Either way, κ(S_B)
+appears to be the right variable to characterize regimes.
+
 ## What we have NOT pinned down
 
 - **Causation.** Correlation of sr_B drift with loss gap is consistent
