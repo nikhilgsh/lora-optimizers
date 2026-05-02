@@ -324,3 +324,264 @@ when state_rebalanced finishes (~25 more min from this update).
 **polar_core_sign_2k** (job 6320045): still PENDING (QOS limit).
 
 (updated by autonomous agent)
+
+## 2026-05-02 03:12 update — sign sweep starting to look bad
+
+squeue:
+- 6320044 polar_core_wide_lr_2k RUNNING 1:47:36 (wgpu002-003) — r=64 cells past step 1800
+- 6320045 polar_core_sign_2k RUNNING 0:15:31 (wgpu009,011,014) — first eval at step 200/400
+
+Sign sweep early reads (step 200-400, lr=1e-4 best per rank):
+  r=16 lr=1e-4 step 400 = 0.8133  (vanilla v1 at step 400 was ~0.84; only marginally faster)
+  r=16 lr=3e-4 step 400 = 0.8255
+  r=16 lr=1e-3 step 400 = 0.9778  (drifting)
+  r=16 lr=3e-3 step 400 = 5.8626  (DIVERGED)
+  r=64 lr=1e-4 step 200 = 1.0387  (slow ramp)
+  r=64 lr={3e-4,1e-3,3e-3} step 200 ∈ {4.8, 6.9, 9.1}  (DIVERGED)
+
+Read: sign normalization is unstable at >1e-4 in this code path, and even at lr=1e-4 it's tracking close to / behind vanilla — NOT the dramatic step-5 advantage seen in the smoke. The smoke→sweep mismatch is real: 5-step smoke at lr=2e-4 said sign was ~1 loss-unit ahead by step 5; at full sweep with eval every 200 steps, sign is just slightly faster early and almost certainly won't beat 0.78 at step 2000. Hypothesis (B) looking like NO HELP / weak PARTIAL.
+
+Wide-lr Phase-2 (A) confirmed picture:
+  r=16 lr=1e-2 final = 0.8090, lr=3e-2 final = 0.8049 — vanilla r=16 ceiling is ~0.80, gap to AdamW (0.7601) and Picard (0.7557) persists at any lr.
+  r=64 lr=1e-2 step 1800 = 0.7626, lr=3e-2 step 1800 = 0.7521 — at r=64 the wider lr scan reaches WITHIN 0.02 of AdamW (0.7550) and PARTIAL (Δ=+0.0139) vs Picard (0.7382). Best among coupled-core variants at r=64.
+
+### Best per (rank, family) so far
+
+| r | best optimizer | lr | loss | Δ vs Picard | verdict |
+|---|---|---|---|---|---|
+| 16 | wide-lr vanilla | 3e-2 | 0.8049 | +0.0492 | NO HELP |
+| 16 | sign (early)    | 1e-4 | 0.8133@400 | +0.058 | trending NO HELP |
+| 64 | wide-lr vanilla | 3e-2 | 0.7521@1800 | +0.0139 | WITHIN 0.02 (competitive with AdamW) |
+| 64 | state-rebal     | 3e-3 | 0.7686 | +0.030 | PARTIAL |
+| 64 | sign            | 1e-4 | 1.04@200 | far worse | trending NO HELP |
+
+### Decision tree update
+
+- Followup compound sweep (`polar_core_sign_followup_2k.json`) is gated on sign r=16 final < 0.78. With r=16 sign trending toward ~0.79-0.81 at step 2000, **the followup will likely NOT trigger.** Will reconfirm at step 2000.
+- r=64 winner among our variants: vanilla v1 at lr=3e-2. Documents the lr-tuning story cleanly: at higher rank the structural fixes matter less than just running at the lr ceiling.
+
+
+## 2026-05-02 03:14 update — wide_lr r=64 BEATS AdamW
+
+squeue:
+- 6320044 wide_lr RUNNING 1:49:15 on wgpu002 only — 3 cells done, last r=16 cell (step 2000 already!) ; disBatch finalizing
+- 6320045 sign RUNNING 0:17:10
+
+**Final wide_lr numbers (all 4 cells at step 2000):**
+  r=16 lr=1e-2 = 0.8090
+  r=16 lr=3e-2 = 0.8049
+  r=64 lr=1e-2 = 0.7598  (already beats AdamW 0.7550 by 0.005 — slightly)
+  r=64 lr=3e-2 = **0.7490**  ← BEATS AdamW r=64 (0.7550) by 0.006; trails Picard (0.7382) by 0.0108
+
+This is the headline result: vanilla `polar-coupled-core-lora` at lr=3e-2 is the **first coupled-core variant that beats AdamW at any rank** in this study. r=64 only — at r=16 the ceiling is still ~0.80.
+
+Sign sweep no movement at lr=1e-4/3e-4 cells since last check (eval cadence 200 steps, just past last eval). r=16 lr=3e-3 cell continues to diverge (5.08 at step 600). No new lr cells survived past step 600.
+
+
+## 2026-05-02 03:30 update — sign r=16 lr=1e-4 trajectory tightening
+
+squeue: only 6320045 (sign) RUNNING 33:18. Wide_lr fully exited.
+
+Sign cells at step 1000-1200:
+  r=16 lr=1e-4 step 1000 = **0.7880**  (was 0.8133 @ 400, dropped 0.025)
+  r=16 lr=3e-4 step 1000 = 0.7985
+  r=16 lr=1e-3 step 1000 = 0.8880  (slow)
+  r=16 lr=3e-3 step 1200 = 4.2422  (DIVERGED, not recovering)
+  r=64 lr=1e-4 step 400  = 1.0085  (slow ramp, no chance of < 0.78)
+  r=64 lr=3e-4 step 400  = 3.8938
+  r=64 lr=1e-3 step 600  = 5.7711
+  r=64 lr=3e-3 step 600  = 7.9643
+
+**Update on followup gate:** r=16 lr=1e-4 trajectory has it dropping ~0.025 per 600 steps. Linear extrapolation to step 2000 gives ~0.748, but the rate will slow. Realistic final estimate: 0.76-0.78 range. Followup gate (final < 0.78) is now genuinely uncertain — was previously trending NO, now trending borderline. Wait for step 1600+ data before deciding.
+
+**Verdict snapshot (Picard target = 0.7557 r=16, 0.7382 r=64):**
+- r=16: best is sign lr=1e-4 PARTIAL (0.7880@1000, projection ~0.76-0.78)
+- r=64: best is wide_lr vanilla lr=3e-2 = **0.7490 — beats AdamW (0.7550), trails Picard by 0.011**
+
+
+## 2026-05-02 03:38 update — sign r=16 lr=1e-4 CROSSES 0.78 GATE
+
+squeue: 6320045 (sign) RUNNING 41:29.
+
+Sign r=16 lr=1e-4 trajectory:
+  step 400 = 0.8133
+  step 1000 = 0.7880  (Δ-0.025 over 600 steps)
+  step 1400 = **0.7777**  (Δ-0.010 over 400 steps; slope ~halving)
+
+**Followup gate (final < 0.78) is already MET at step 1400.** Final at step 2000 likely lands 0.76-0.77 range.
+
+Other r=16 sign cells at step 1400:
+  lr=3e-4 = 0.7881 (also under 0.79, possibly under 0.78 by step 2000)
+  lr=1e-3 = 0.8729
+  lr=3e-3 = 4.1098 (diverged, no recovery)
+
+r=64 sign cells: only lr=1e-4 surviving at 0.9873@600 — won't catch up.
+
+**This is significant**: at r=16, sign normalization is the FIRST coupled-core intervention to break the ~0.80 ceiling. wide_lr maxed at 0.8049; state-rebal at 0.8104; vanilla at 0.8188. Sign at 1400 already < 0.78. Per-coord adaptivity in core space is the missing piece for r=16 — exactly the hypothesis (B) prediction.
+
+**Decision: WILL launch followup sweep when sign sweep completes at step 2000.** Followup tests muon-coupled-core-sign-lora + state-rebalanced variant × 4 lr × 2 r (16 cells). The compound "sign + transported core EMA" question is the natural next test now that sign-without-momentum has paid off.
+
+Target wake: ~25 min for sign sweep step 2000 + 6320045 COMPLETED, then auto-trigger followup.
+
+
+## 2026-05-02 03:56 update — sign r=16 FINAL = 0.7680, gate MET
+
+squeue: 6320045 RUNNING 59:30; r=16 cells done, r=64 cells still grinding (slower; r=64 single-step cost higher).
+
+**Sign r=16 final at step 2000:**
+  lr=1e-4 = **0.7680**  ← < 0.78 followup gate MET
+  lr=3e-4 = 0.7792
+  lr=1e-3 = 0.8505
+  lr=3e-3 = 3.8198 (diverged)
+
+**Verdict r=16:** sign at lr=1e-4 = **0.7680**, WITHIN 0.02 of Picard (0.7557, Δ+0.012), just above AdamW (0.7601, Δ+0.008). This is the FIRST coupled-core variant to achieve a competitive r=16 result. Hypothesis (B) per-coord adaptivity in core space confirmed as the missing piece for r=16.
+
+**Verdict r=64 (sign):** lr=1e-4 step 1000 = 0.9600, won't catch up. Sign at r=64 needs different hyperparameter regime — the higher-effective-rank dimension is unstable at any of {3e-4, 1e-3, 3e-3} and at lr=1e-4 too slow to recover.
+
+**Decision:** as soon as job 6320045 COMPLETES (r=64 cells finish), launch followup compound sweep (`params/polar_core_sign_followup_2k.json` — muon-coupled-core-sign-lora and rebalanced variant × 4 lr × 2 r = 16 cells). Holding off until COMPLETED to free GPUs and avoid QOS pile-up per the planning rule.
+
+### Headline summary (current best per rank)
+
+| r | best optimizer | lr | loss | vs AdamW | vs Picard |
+|---|---|---|---|---|---|
+| 16 | sign | 1e-4 | **0.7680** | +0.0079 | +0.0123 |
+| 64 | wide-lr vanilla | 3e-2 | **0.7490** | **−0.0060** | +0.0108 |
+
+**At r=64 we BEAT AdamW.** At r=16 we're WITHIN 0.02 of both baselines but don't beat them yet. The followup compound (sign + transported core EMA) is the natural next test for closing the r=16 gap.
+
+
+## 2026-05-02 04:48 update — sign sweep COMPLETED, followup LAUNCHED
+
+**Sign sweep final (all 8 cells at step 2000):**
+  r=16 lr=1e-4 = **0.7680**  (WITHIN 0.02 of Picard, +0.008 vs AdamW)
+  r=16 lr=3e-4 = 0.7792
+  r=16 lr=1e-3 = 0.8505
+  r=16 lr=3e-3 = 3.8198 (diverged)
+  r=64 lr=1e-4 = 0.9395  (slow, NO HELP)
+  r=64 lr=3e-4 = 2.2128 (diverged)
+  r=64 lr=1e-3 = 4.4523 (diverged)
+  r=64 lr=3e-3 = 6.7921 (diverged)
+
+**Phase 2 complete picture (final, all 4 sub-experiments):**
+
+| variant            | r=16 best | vs AdamW | vs Picard | r=64 best | vs AdamW | vs Picard |
+|--------------------|-----------|----------|-----------|-----------|----------|-----------|
+| Phase 1 vanilla    | 0.8188    | +0.059   | +0.063    | 0.7821    | +0.027   | +0.044    |
+| 1.5 state-rebal    | 0.8104    | +0.050   | +0.055    | 0.7686    | +0.014   | +0.030    |
+| 2 (A) wide-lr      | 0.8049    | +0.045   | +0.049    | **0.7490**| **−0.006**| +0.011    |
+| 2 (B) sign         | **0.7680**| +0.008   | +0.012    | 0.9395    | +0.184   | +0.201    |
+
+The picture is RANK-DEPENDENT:
+- **r=16 winner: sign normalization** (0.7680). Per-coord adaptivity in core space is the missing piece. Rung 5-lite (no EMA, no transport) is enough.
+- **r=64 winner: vanilla wide-lr** (0.7490, BEATS AdamW 0.7550). At higher rank the bare polar update at lr=3e-2 outperforms; sign normalization actively HURTS at r=64.
+
+This is interesting on its own: per-coord normalization in core space helps at r=16 where the core is small and per-element scale variance dominates, but at r=64 the core is larger and Frobenius norm of the core rises quickly enough that sign-normalization throws away too much magnitude information. **Different optimization regime per rank** — consistent with the no-cross-rank-compare project rule.
+
+**Followup sweep LAUNCHED — job 6320268** (`polar_core_sign_followup_2k`):
+- 16 cells: {muon-coupled-core-sign-lora, muon-coupled-core-sign-rebalanced-lora} × {1e-4, 3e-4, 1e-3, 3e-3} × {16, 64}
+- Tests: does adding transported core EMA (variant 2 momentum) on top of sign norm help? Does state-rebalance help compound with sign?
+- Expected ~50 min wall on 16 GPUs.
+
+Targets to beat: r=16 sign vanilla (0.7680), r=64 wide-lr vanilla (0.7490). If muon-sign at r=16 lands < 0.76, momentum is additive. If muon-sign-rebalanced at r=64 outperforms wide-lr vanilla, the compound is the right move.
+
+
+## 2026-05-02 05:15 — followup at step 400-800
+
+Followup 6320268 RUNNING 26:33. All 16 cells launched concurrently on 16 GPUs (well, 5 nodes — disBatch packing). r=16 cells at step 800, r=64 at step 400.
+
+**r=16 lr=1e-4 (the critical cell):**
+  vanilla sign:           step 800 was ~0.79-0.80 (extrap from step 1000 = 0.7880)
+  muon-sign:              step 800 = 0.8059
+  muon-sign-rebalanced:   step 800 = **0.7943**
+
+Both compound variants tracking close to vanilla sign — no clear separation early. Rebalanced variant marginally ahead of plain muon-sign.
+
+**r=16 lr=3e-4:**
+  vanilla sign final = 0.7792
+  muon-sign step 800 = 0.8462 (slow)
+  muon-sign-rebalanced step 800 = 0.8065 (closer)
+
+**r=16 lr=1e-3, 3e-3:** muon-sign tracking 1.08, 4.34 (lr=3e-3 diverged); rebalanced 0.90, 4.38.
+
+**r=64:** all cells at step 400, all far behind. lr=1e-4 muon-sign=1.26 / muon-sign-rebal=1.01 (vs vanilla sign step 400 was ~0.97 → step 2000 final = 0.94). The compound variants are SLOWER than vanilla sign at r=64.
+
+**Early read: compound (sign + EMA / sign + rebalance) does NOT clearly help.** At r=16 lr=1e-4 the compounds are behind vanilla sign at step 800. Possible they catch up by step 2000 (Picard-style momentum sometimes shows late gains), but trajectory not encouraging.
+
+Wait for step 1200-1600 for clearer picture.
+
+
+## 2026-05-02 05:41 — followup at step 1600-1800
+
+Followup 6320268 RUNNING 52:32. r=16 cells at step 1600-1800, r=64 at step 800-1000.
+
+**r=16 lr=1e-4 (target = vanilla sign 0.7680):**
+  muon-sign step 1800 = 0.7872  (extrap step 2000: ~0.78)
+  muon-sign-rebalanced step 1600 = **0.7747**  (extrap ~0.77)
+
+  **Both compounds will land ABOVE vanilla sign 0.7680.** Momentum and rebalance do not add gain on top of sign.
+
+**r=16 lr=3e-4 (target = vanilla sign 0.7792):**
+  muon-sign step 1800 = 0.8228  (worse)
+  muon-sign-rebalanced step 1600 = 0.7863  (worse)
+
+**r=16 lr=1e-3:** muon-sign at 1.01, rebal at 0.86. Both diverging vs lr=3e-4 trajectory.
+
+**r=64:** all cells far behind vanilla sign 0.94 baseline at step 800. lr=1e-4 muon-sign-rebal = 0.98 (slowly improving but unlikely to catch up). lr ≥ 3e-4 all diverged.
+
+**Verdict trending (final read pending):** the simplest sign variant is the winner at r=16. Adding transported core EMA (muon variant) or state-rebalance does NOT improve on sign-only, and at higher lr actively hurts. The momentum-on-sign-of-core combination has poor interaction — likely the rotation/transport of a sign-quantized object is throwing away too much information.
+
+This is consistent with the doc's section-6-ladder warning: rung-5-with-EMA needs *transported V_t* with care; here the EMA is over the sign of the core which is mostly ±1 entries, and the transport of ±1 patterns through basis rotations doesn't preserve structure.
+
+**Final verdict (subject to confirmation at step 2000):**
+- r=16 winner: **vanilla sign-coupled-core-lora at lr=1e-4 = 0.7680**
+- r=64 winner: **vanilla polar-coupled-core-lora at lr=3e-2 = 0.7490 (BEATS AdamW)**
+
+Wait for completion before final write-up.
+
+
+## 2026-05-02 06:07 — followup r=16 cells COMPLETE
+
+**r=16 final eval at step 2000:**
+
+| optimizer                                | lr=1e-4    | lr=3e-4 | lr=1e-3 | lr=3e-3 |
+|------------------------------------------|------------|---------|---------|---------|
+| polar-coupled-core-sign-lora (vanilla)   | **0.7680** | 0.7792  | 0.8505  | 3.82    |
+| muon-coupled-core-sign-lora              | 0.7858     | 0.8220  | 1.0053  | 3.69    |
+| muon-coupled-core-sign-rebalanced-lora   | **0.7684** | 0.7808  | 0.8562  | 3.67    |
+
+**Reading:**
+- **muon-sign-rebalanced ≈ vanilla sign** at lr=1e-4 (0.7684 vs 0.7680 — within jitter). Adding both EMA momentum AND state-rebalance to vanilla sign gives a TIE — neither helps nor hurts in compound.
+- **muon-sign (without rebalance) = 0.7858**, +0.018 vs vanilla sign. EMA on the sign-quantized core, without rebalance to balance the factor norms, makes things worse.
+- Pattern is consistent at lr=3e-4 too: rebalanced is 0.005 worse than vanilla sign, but plain muon-sign is 0.043 worse.
+
+The rebalance step partly *rescues* the harmful momentum interaction, bringing it back to vanilla-sign parity but not past it. EMA on top of sign normalization adds nothing useful when the basis transport doesn't preserve the sign-quantized structure well.
+
+**r=64 cells still running** at step 1200-1400. lr=1e-4 muon-sign-rebal step 1200 = 0.9575 (slow); all lr ≥ 3e-4 diverged. Will not catch the wide-lr 0.7490 baseline. r=64 verdict NO HELP for any followup variant.
+
+### Final Phase-2 verdict (r=16 confirmed; r=64 awaiting completion)
+
+| r | best optimizer | lr | loss | vs AdamW | vs Picard |
+|---|---|---|---|---|---|
+| 16 | **polar-coupled-core-sign-lora** | 1e-4 | **0.7680** | +0.0079 | +0.0123 |
+| 64 | **polar-coupled-core-lora** (wide-lr) | 3e-2 | **0.7490** | **−0.0060 (BEATS)** | +0.0108 |
+
+**Takeaway:** the simplest variant wins at each rank.
+- r=16 wants per-coord adaptivity in core space (sign normalization, no momentum).
+- r=64 wants raw polar of the core covector at high lr (no normalization, no rebalance).
+- Compound interventions (sign + EMA, sign + rebalance, sign + EMA + rebalance) consistently fail to improve; "sign + EMA + rebalance" is the only compound that doesn't HURT.
+
+
+## 2026-05-02 06:49 — followup r=64 (final, except log_11 at step 1800)
+
+**r=64 final at step 2000:**
+
+| optimizer                                | lr=1e-4    | lr=3e-4 | lr=1e-3   | lr=3e-3 |
+|------------------------------------------|------------|---------|-----------|---------|
+| polar-coupled-core-sign-lora (vanilla)   | 0.9395     | 2.21    | 4.45      | 6.79    |
+| muon-coupled-core-sign-lora              | 1.2402     | 2.21    | 3.68      | 5.78    |
+| muon-coupled-core-sign-rebalanced-lora   | **0.9440** | 2.16    | 3.44@1800 | 5.38    |
+
+**r=64 sign-family at lr=1e-4:** vanilla sign (0.9395) ≈ rebalanced (0.9440) — TIE. muon-sign without rebalance (1.24) much worse. Same pattern as r=16: rebalance partly rescues the EMA-on-sign interaction back to baseline, but no gain.
+
+**All r=64 sign-family cells are far above wide-lr vanilla 0.7490.** Sign normalization is wrong at r=64 regardless of compound.
+

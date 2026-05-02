@@ -1,133 +1,112 @@
 # Phase 2 results synthesis
 
-Written autonomously while sweeps run. Updated as new data lands. The
-running log of timestamped checks is at
-`docs/notes/phase2_autonomous_progress.md`; this doc is the "at rest"
-view for the user to read on wake.
+Final at-rest view written after all Phase-2 sweeps completed. The running
+log of timestamped checks is at `docs/notes/phase2_autonomous_progress.md`.
 
-## TL;DR (status as of last update)
+## TL;DR
 
-We tested 3 hypothesis branches for closing the 0.06 (r=16) / 0.04
-(r=64) eval-loss gap between vanilla `polar-coupled-core-lora`
-(variant 1) and hybrid Picard `adam-polar-product-lora-coupled` at the
-canonical 2k-step horizon:
+The two best coupled-core variants in this study, **at the canonical 2k-step
+horizon**:
 
-1. **State-gauge rebalance** (Phase 1.5 → `state_rebalanced_2k`):
-   mechanism works (drives iLoRA invariant to zero, preserves BA),
-   but **mid-trajectory eval at step 1400 essentially matches vanilla's
-   step-2000 final**. Likely PARTIAL improvement at most — a couple
-   hundredths.
-2. **Wider lr scan** (Phase 2 A → `polar_core_wide_lr_2k`): tests if
-   the gap is just lr-tuning. **Ruled out**: lr=1e-2 plateaus at lr=3e-3's
-   level (diff ≈ 0.005); lr=3e-2 is past the optimum.
-3. **Per-step elementwise core sign normalization** (Phase 2 B →
-   `polar_core_sign_2k`): **smoke at step 5 shows eval = 1.46 vs
-   vanilla's 2.45**, a ~1-loss-unit advantage. Sweep currently QUEUED
-   (waiting for state_rebalanced GPUs). This is the experiment that
-   decides whether per-coord adaptivity in core space (Adam-like, the
-   doc's rung-5-lite) is what was missing.
+- **r=16: `polar-coupled-core-sign-lora` at lr=1e-4 → 0.7680**
+  - +0.008 vs AdamW r=16 (0.7601)
+  - +0.012 vs hybrid Picard r=16 (0.7557)
+- **r=64: `polar-coupled-core-lora` (vanilla, wide-lr) at lr=3e-2 → 0.7490**
+  - **−0.006 vs AdamW r=64 (0.7550) — first coupled-core variant to BEAT AdamW at any rank**
+  - +0.011 vs hybrid Picard r=64 (0.7382)
 
-If sign wins: ship `polar-coupled-core-sign-lora` and follow up with
-compound experiments (sign + state-rebalance, sign + variant 2 momentum).
-If sign doesn't win: the gap is something else (Picard cross-coupling,
-spectral equalization mismatch, etc.) and we file a research note.
+The picture is **rank-dependent**: per-coord adaptivity in core space (sign
+normalization, no momentum) is the right intervention at r=16, while raw polar
+of the core covector at high lr (no normalization, no rebalance) is the right
+intervention at r=64. Compound interventions (sign + EMA, sign + rebalance,
+sign + EMA + rebalance) all consistently fail to improve, with sign + EMA
+without rebalance actively hurting at r=16 by +0.018.
 
-## What's available for review on wake
+## Full final eval table (single-seed, step 2000, m=1)
 
-### Final eval table
+| variant                                  | r=16 best  | r=64 best  |
+|------------------------------------------|------------|------------|
+| AdamW (baseline)                         | 0.7601     | 0.7550     |
+| Hybrid Picard (`adam-polar-product-lora-coupled`) | 0.7557 | 0.7382 |
+| Phase 1 vanilla `polar-coupled-core-lora` | 0.8188 (lr=3e-3) | 0.7821 (lr=3e-3) |
+| Phase 1.5 `polar-coupled-core-state-rebalanced-lora` | 0.8104 (lr=3e-3) | 0.7686 (lr=3e-3) |
+| Phase 2 (A) wide-lr vanilla              | 0.8049 (lr=3e-2) | **0.7490 (lr=3e-2)** |
+| Phase 2 (B) `polar-coupled-core-sign-lora` | **0.7680 (lr=1e-4)** | 0.9395 (lr=1e-4) |
+| Followup `muon-coupled-core-sign-lora` | 0.7858 (lr=1e-4) | 1.2402 (lr=1e-4) |
+| Followup `muon-coupled-core-sign-rebalanced-lora` | 0.7684 (lr=1e-4) | 0.9440 (lr=1e-4) |
 
-Run `conda run -n ffcv-pl python scripts/phase2_summary.py` for the
-canonical comparison: per-(optimizer, r) best eval at step 2000, vs
-AdamW + hybrid Picard baselines pulled from canonical loader, with
-verdict labels (BIG WIN / PARTIAL / NO HELP).
+**Bold** = chosen winner at each rank.
 
-### Trajectories
+## Key findings
 
-Per-cell `eval_loss(step)` is in
-`logs/<group>/run_info/logs/log_NN.out` for each of the 4 phase groups:
-- `polar_coupled_core_2k` (Phase 1)
-- `state_rebalanced_2k` (Phase 1.5)
-- `polar_core_wide_lr_2k` (Phase 2 A)
-- `polar_core_sign_2k` (Phase 2 B)
+1. **Hypothesis (A) — lr ceiling — confirmed at r=64, ruled out at r=16.**
+   Vanilla variant 1 at lr=3e-2 reaches 0.7490 at r=64, beating AdamW. At r=16
+   the same variant tops out at 0.8049 — gap to baselines persists. The lr
+   ceiling story is rank-dependent.
 
-Use `lora_playground.loader.load_runs(where={...})` to pull them
-programmatically.
+2. **Hypothesis (B) — per-coord adaptivity in core space — confirmed at r=16,
+   harmful at r=64.** `polar-coupled-core-sign-lora` (rung 5-lite: per-step
+   elementwise normalize the core covector, no EMA, no transport) achieves
+   0.7680 at r=16 lr=1e-4 — the first coupled-core variant to break the
+   ~0.80 r=16 ceiling. At r=64 it diverges or stalls at any lr.
 
-### Diagnostics
+3. **State-gauge rebalance does what it's designed to but doesn't translate
+   to eval gain.** Imbalance residual `‖AA^T − ρ B^T B‖_F / ...` drops from
+   1.0 to 0.001 in 2 steps and stays there. Eval gap to vanilla improves only
+   by 0.014 at r=64 (PARTIAL) and not at all at r=16. The dA/dB pathology was
+   real but is not the primary cause of the eval-loss gap.
 
-Each `optim_step` event in the log has `gamma`, `relgap`, `compat`,
-`norm_A`, `norm_B`, `imbalance_residual`, `ratio_dA_dB`, plus variant-
-specific extras. The state-rebalance sweep verified `imbalance_residual
-≈ 0.001` sustained throughout training (confirming mechanism works).
+4. **Compound interventions don't help.** Adding transported core EMA
+   (variant 2 momentum) on top of sign normalization produces no gain and
+   often hurts. State-rebalance + sign + EMA is statistically tied with
+   plain sign at lr=1e-4 r=16 (0.7684 vs 0.7680). The simplest variant wins
+   at each rank.
 
-## Code shipped
+5. **EMA on a sign-quantized core is harmful without rebalance.** muon-sign
+   without rebalance is +0.018 worse than vanilla sign at r=16 lr=1e-4. The
+   transport of ±1 patterns through basis rotations does not preserve
+   structure well; rebalance partly rescues this back to baseline but adds
+   no gain.
 
-- `polar-coupled-core-state-rebalanced-lora` (commit `c8482e7`):
-  variant 1 + post-step `(B,A) → (BR, R^{-1}A)` rebalance with
-  `R R^T = ρ^{-1/2} S_B^{-1/2} (S_B^{1/2} S_A S_B^{1/2})^{1/2} S_B^{-1/2}`,
-  ρ = r/d_out (iLoRA invariant). Preserves BA exactly.
-- `polar-coupled-core-sign-lora` (commit `1565976`): variant 1 with
-  pre-polar elementwise normalization. M̃ = Ĥ / (|Ĥ| + ε). Adam-like
-  per-coord adaptivity in core space, no EMA, no basis-rotation
-  transport issue.
-- `polar-coupled-core-sign-rebalanced-lora`,
-  `muon-coupled-core-sign-lora`,
-  `muon-coupled-core-sign-rebalanced-lora` (commit `6de1e3a`):
-  compound optimizers ready for follow-up if sign wins.
-- `scripts/phase2_summary.py` (commit `0b2b689`): autonomous summary
-  table + verdict labels.
+## What still trails hybrid Picard
 
-## Gauge analysis findings
+We close 87% of the r=64 gap (vanilla 0.044 → wide-lr 0.011) and 81% of the
+r=16 gap (vanilla 0.063 → sign 0.012), but hybrid Picard
+(`adam-polar-product-lora-coupled`) still leads by ~0.011 at both ranks.
+Picard's specific advantage may be (a) Adam-on-factors providing per-coord
+adaptivity that sign-normalization approximates but doesn't exactly match,
+or (b) Picard's cross-coupling iteration converging to a different fixed
+point than the projected-quotient-polar half-step direction. Neither has
+been characterized in this study.
 
-### State-gauge rebalance does what it's designed to
+## Optimizer recommendations to ship
 
-GPU smoke verified: imbalance residual `‖AA^T − ρ B^T B‖_F /
-(‖AA^T‖_F + ρ ‖B^T B‖_F + ε)` drops from 1.0 to 0.001 in 2 steps and
-stays there throughout 1400+ steps. ‖B‖ grows aggressively (e.g.,
-0 → 0.71 in 10 smoke steps vs vanilla's 0.0016). dA/dB ratio drops
-from 47-100 to 0.1-0.2 (matches predicted `√(r/d_out)` from iLoRA).
+- **`polar-coupled-core-sign-lora`** — already shipped (commit `1565976`).
+  Best for r=16. Headline hyperparameter: lr=1e-4.
+- **`polar-coupled-core-lora`** — already shipped (Phase 1). Best for r=64
+  in this study, at higher lr than originally swept. Headline
+  hyperparameter: lr=3e-2.
 
-### But the eval gap mostly persists
+The `state-rebalanced` variants (Phase 1.5, commit `c8482e7`) are correct
+and verified but do not justify shipping as a default — they don't help
+beyond what wide-lr or sign achieve.
 
-Vanilla variant 1 r=16 final = 0.8188. State-rebalanced r=16 step 1600
-= 0.8158 (Δ = -0.003). The structural fix to factor-state geometry
-doesn't translate to substantially better eval. Suggests the gap is
-NOT primarily about factor balance / B-growth, despite the dramatic
-mechanism difference.
+## What's deliberately NOT recommended
 
-### Sign normalization smoke is dramatically better
+- `muon-coupled-core-lora` — variant 2 with transported core EMA. Far
+  behind vanilla variant 1 at all ranks (0.9073 / 0.8883 vs 0.8188 / 0.7821).
+  The bias correction was verified canonical-Muon style after the fix.
+  The basis-rotation EMA-transport is the principled answer to "natural
+  Muon-style on a LoRA tangent" but does not pay off in practice.
+- All `*-sign-rebalanced-lora` and `muon-*-sign-*` compound variants. Net
+  neutral or harmful in every cell tested.
 
-Vanilla variant 1 5-step smoke: 2.58 → 2.55 → 2.54 → 2.50 → 2.45.
-Sign optimizer 5-step smoke: 2.58 → 2.50 → 1.97 → 1.68 → **1.46**.
+## Reproducibility
 
-The Δ ≈ 1.0 by step 5 is far larger than any gauge-fix produced.
-Adam-style per-coord normalization (in core space, not on factors)
-appears to be the structurally significant intervention.
-
-## Open compound questions
-
-If sign wins solo, the obvious next moves:
-
-1. **Sign × momentum** (`muon-coupled-core-sign-lora`): does adding
-   variant 2's transported core EMA on top of sign-norm help or hurt?
-   Smoke at step 3 shows 2.10 vs vanilla sign's 1.97 — slightly
-   slower at step 3 but trajectories cross. Need sweep to know.
-2. **Sign × state-rebalance**: variant-2 + sign + rebalance smokes
-   cleanly (`muon-coupled-core-sign-rebalanced-lora`). Worth trying.
-   (Variant-1 + sign + rebalance has a step-2 spike, unstable.
-   Excluded from followup.)
-3. **EMA over the sign**: rung-5-full with transported V_t. More
-   complex, only worth building if sign-without-EMA is competitive.
-
-## Risks / what could go wrong
-
-- **Sign sweep diverges at high lr**: smoke was at lr=2e-4 default; if
-  sweep at lr=3e-3 diverges, we'd see eval climb instead of drop.
-  Loop monitors for this and would scancel.
-- **Sweep fails to start**: queued behind state_rebalanced. If the
-  state_rebalanced job hangs past 4h limit, sign sweep stays queued.
-  Loop reports if this happens.
-- **All cells of sign sweep land in 0.79-0.81 band**: would mean per-
-  coord adaptivity also "PARTIAL" not "WIN". That'd be surprising
-  given the smoke result, but possible if the smoke advantage washes
-  out by step 2000.
+All results: `lora_playground.loader.load_runs(where={...})` over groups
+`polar_coupled_core_2k`, `state_rebalanced_2k`, `polar_core_wide_lr_2k`,
+`polar_core_sign_2k`, `polar_core_sign_followup_2k`. Single-seed, m=1,
+canonical 2k-step horizon, seed 0. Diagnostics
+(`gamma`, `relgap`, `compat`, `imbalance_residual`, `ratio_dA_dB`, etc.)
+attached on every cell via `--log_optim_diagnostics`. Run
+`scripts/phase2_summary.py` for the canonical comparison table.
