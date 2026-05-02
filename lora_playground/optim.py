@@ -3090,12 +3090,54 @@ def _polar_coupled_core_lift(
     return dA, dB, certs
 
 
+def _factor_rank_deficient(X, rank_tol=1e-4):
+    """Check if X (shape (a, b)) has full row-or-col rank. Uses svdvals and
+    asks whether σ_min / σ_max < rank_tol. Returns True if rank-deficient.
+    """
+    if X.numel() == 0:
+        return True
+    sv = torch.linalg.svdvals(X)
+    if sv.numel() == 0:
+        return True
+    sv_max = float(sv.max().item())
+    sv_min = float(sv.min().item())
+    if sv_max < 1e-30:
+        return True
+    return (sv_min / sv_max) < rank_tol
+
+
+def _zero_B_fallback(A, B, G_A, G_B, lr, *, delta=1e-6, ns_steps=5):
+    """Bootstrap fallback when B is (near-)zero / rank-deficient: PEFT's
+    default LoRA init zeros B, which makes the joint-solver QRs degenerate.
+    The standing assumption (full-rank A, B) is violated, so apply a Muon
+    step on B alone (equalize singular values of G_B) and leave A unchanged.
+    Once B becomes full-rank after a step or two, the joint solver takes
+    over.
+    """
+    A_f = A.float()
+    B_f = B.float()
+    GB_f = G_B.float()
+    # Muon-style polar step on G_B; equalize spectrum, no scale.
+    P_B = _newton_schulz(GB_f, nsteps=ns_steps)
+    # Match magnitude to a unit-RMS step so it has a sensible scale early on.
+    rms = (P_B.numel() ** 0.5)
+    dB = -lr * P_B / max(P_B.norm().item(), 1e-30) * rms
+    dA = A_f.new_zeros(A_f.shape)
+    nan = float("nan")
+    certs = {"gamma": nan, "nuc": float(GB_f.norm().item()),
+             "LB": nan, "UB": nan, "relgap": nan,
+             "align_inst": nan, "s_active": 0, "t_active": 0,
+             "compat": nan, "fallback": 1.0}
+    return dA, dB, certs, None
+
+
 def _polar_coupled_core_step(
     A, B, G_A, G_B, lr, *,
     delta=1e-6,
     core_scale="squared_penalty",
     core_norm="operator",
     sv_tol=1e-5,
+    rank_tol=1e-4,
 ):
     """Variant 1 entry point: build active core, polar+lift on Ĥ.
     Returns (dA, dB, certs, bases) — bases enables variant-2 reuse.
@@ -3104,6 +3146,11 @@ def _polar_coupled_core_step(
     B_f = B.float()
     GA_f = G_A.float()
     GB_f = G_B.float()
+    # Standing assumption (Section 1 of the doc): A, B full rank. PEFT's
+    # default zero-init violates this on B; fall back to a Muon-on-B
+    # bootstrap step that gets B off zero.
+    if _factor_rank_deficient(B_f, rank_tol) or _factor_rank_deficient(A_f, rank_tol):
+        return _zero_B_fallback(A, B, G_A, G_B, lr, delta=delta)
     bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=delta, sv_tol=sv_tol)
     H_hat = bases["H_hat"]
     r = A_f.shape[0]
@@ -3232,6 +3279,24 @@ class MuonCoupledCoreLoRA(Optimizer):
             B_f = B.float()
             GA_f = A.grad.float()
             GB_f = B.grad.float()
+            # Zero-init B fallback (Section 1 standing assumption); see
+            # _polar_coupled_core_step for context.
+            if _factor_rank_deficient(B_f) or _factor_rank_deficient(A_f):
+                dA_fb, dB_fb, certs_fb, _ = _zero_B_fallback(
+                    A, B, A.grad, B.grad, lr, delta=self.delta,
+                )
+                A.add_(dA_fb.to(dtype=A.dtype, device=A.device))
+                B.add_(dB_fb.to(dtype=B.dtype, device=B.device))
+                A.grad.zero_()
+                B.grad.zero_()
+                if self.log_diagnostics:
+                    rec = {k: float(v) for k, v in certs_fb.items()}
+                    rec["norm_dA"] = float(dA_fb.norm().item())
+                    rec["norm_dB"] = float(dB_fb.norm().item())
+                    rec["transport_residual"] = float("nan")
+                    rec["align_mom"] = float("nan")
+                    diag_records.append(rec)
+                continue
             bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=self.delta)
             H_hat = bases["H_hat"]
             r = A_f.shape[0]
