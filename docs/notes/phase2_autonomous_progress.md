@@ -80,6 +80,26 @@ Pending QOS slot. Updates once started.
 
 ## Progress updates (most recent on top)
 
+### Update at job-elapsed 58 min (state_rebalanced) + 32 min (wide_lr)
+
+Summary script output:
+
+**State-rebalance r=16 step 1800: 0.8130** (vanilla final 0.8188).
+Drop rate ~0.003/200 steps → projected step-2000 final ~0.811. Still
+firmly in "PARTIAL" or "NO HELP" band, NOT a big win at r=16.
+
+**State-rebalance r=64 step 800: 0.7942** (still mid-trajectory).
+Linear extrapolation to step 2000 lands ~0.76-0.77. **Could match or
+beat AdamW (0.7550) and approach hybrid Picard (0.7382)** at r=64.
+Worth watching to step 2000.
+
+**Wide-lr** r=16 lr=1e-2 step 1000 = 0.8268 (slightly better than
+vanilla's same-step trajectory but trending toward 0.80-0.82 final).
+r=64 lr=3e-2 step 400 = 0.8093 (similar). **Hypothesis (A) ruled out**:
+no lr in {1e-2, 3e-2} closes the baseline gap.
+
+**Sign sweep**: still PENDING. state_rebalanced needs to finish.
+
 ### state_rebalanced_2k r=64 mid-trajectory (step 800)
 
 Pulled r=64 cells specifically (slower per step than r=16):
