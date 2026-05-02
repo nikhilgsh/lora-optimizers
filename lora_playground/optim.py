@@ -3090,20 +3090,20 @@ def _polar_coupled_core_lift(
     return dA, dB, certs
 
 
-def _factor_rank_deficient(X, rank_tol=1e-4):
-    """Check if X (shape (a, b)) has full row-or-col rank. Uses svdvals and
-    asks whether σ_min / σ_max < rank_tol. Returns True if rank-deficient.
+def _factor_essentially_zero(X, eps=1e-12):
+    """Detect the *initialization-zero* boundary case (PEFT default zeros B).
+
+    NOT a general "poorly-conditioned" check — that is what the small δI
+    regularization in `spdify` already handles inside the joint solver. We
+    only branch out of the joint solver at the genuine boundary: a factor
+    that is literally zero (or near machine epsilon thereof). Mid-training
+    spectral collapse, where a real singular value drifts toward zero, is
+    NOT this case — the ½-approximation guarantee for the joint Case 3
+    problem still holds for those steps; only the QR for B = 0 is undefined.
     """
     if X.numel() == 0:
         return True
-    sv = torch.linalg.svdvals(X)
-    if sv.numel() == 0:
-        return True
-    sv_max = float(sv.max().item())
-    sv_min = float(sv.min().item())
-    if sv_max < 1e-30:
-        return True
-    return (sv_min / sv_max) < rank_tol
+    return float(X.norm().item()) < eps * (X.numel() ** 0.5)
 
 
 def _zero_B_fallback(A, B, G_A, G_B, lr, *, delta=1e-6, core_scale="squared_penalty"):
@@ -3128,9 +3128,9 @@ def _zero_B_fallback(A, B, G_A, G_B, lr, *, delta=1e-6, core_scale="squared_pena
     GA_f = G_A.float()
     GB_f = G_B.float()
     nan = float("nan")
-    # Pick which side is degenerate.
-    A_def = _factor_rank_deficient(A_f)
-    B_def = _factor_rank_deficient(B_f)
+    # Pick which side is the boundary case.
+    A_def = _factor_essentially_zero(A_f)
+    B_def = _factor_essentially_zero(B_f)
 
     if B_def and not A_def:
         # B = 0, A full-rank: Case 2 on B.  A = U_R Σ_R V_R^T (compact SVD).
@@ -3183,7 +3183,6 @@ def _polar_coupled_core_step(
     core_scale="squared_penalty",
     core_norm="operator",
     sv_tol=1e-5,
-    rank_tol=1e-4,
 ):
     """Variant 1 entry point: build active core, polar+lift on Ĥ.
     Returns (dA, dB, certs, bases) — bases enables variant-2 reuse.
@@ -3192,10 +3191,13 @@ def _polar_coupled_core_step(
     B_f = B.float()
     GA_f = G_A.float()
     GB_f = G_B.float()
-    # Standing assumption (Section 1 of the doc): A, B full rank. PEFT's
-    # default zero-init violates this on B; fall back to a Muon-on-B
-    # bootstrap step that gets B off zero.
-    if _factor_rank_deficient(B_f, rank_tol) or _factor_rank_deficient(A_f, rank_tol):
+    # Boundary case (Section 1 standing assumption): PEFT's default LoRA
+    # init zeros B, making the joint-solver QR of B undefined. The joint
+    # problem at B = 0 reduces *exactly* to Case 2, so we use that closed
+    # form for this step. NOT triggered by mere poor conditioning mid-
+    # training (which the spdify δI inside the joint solver handles as
+    # a numerical regularizer); only by initialization-zero factors.
+    if _factor_essentially_zero(B_f) or _factor_essentially_zero(A_f):
         return _zero_B_fallback(A, B, G_A, G_B, lr, delta=delta, core_scale=core_scale)
     bases = _build_active_core(A_f, B_f, GA_f, GB_f, delta=delta, sv_tol=sv_tol)
     H_hat = bases["H_hat"]
@@ -3325,9 +3327,9 @@ class MuonCoupledCoreLoRA(Optimizer):
             B_f = B.float()
             GA_f = A.grad.float()
             GB_f = B.grad.float()
-            # Zero-init B fallback (Section 1 standing assumption); see
-            # _polar_coupled_core_step for context.
-            if _factor_rank_deficient(B_f) or _factor_rank_deficient(A_f):
+            # Initialization-zero boundary case (Section 1 standing
+            # assumption); see _polar_coupled_core_step for context.
+            if _factor_essentially_zero(B_f) or _factor_essentially_zero(A_f):
                 dA_fb, dB_fb, certs_fb, _ = _zero_B_fallback(
                     A, B, A.grad, B.grad, lr, delta=self.delta,
                     core_scale=self.core_scale,
