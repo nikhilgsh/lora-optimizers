@@ -3220,8 +3220,12 @@ def _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB):
     """Add factor-shape diagnostics to certs dict for gauge-imbalance analysis.
 
     See docs/notes/polar_coupled_problem.md "Open sub-problem: gauge choice
-    under asymmetric LoRA initialization" — the empirical anchor for any
-    gauge candidate is the dA/dB ratio + B-growth trajectory.
+    under asymmetric LoRA initialization" — the empirical anchors for any
+    gauge candidate are:
+      - imbalance residual ‖AA^T − ρ B^T B‖_F / (‖AA^T‖_F + ρ‖B^T B‖_F + ε)
+        with ρ = r/m (iLoRA's invariant; primary metric)
+      - ratio_dA_dB = ‖dA‖_F / ‖dB‖_F (secondary; min-Frobenius gives 50-100)
+      - σ_min(A), σ_min(B), ‖A‖_F, ‖B‖_F trajectories (B-growth check)
     """
     try:
         sv_A = torch.linalg.svdvals(A_f)
@@ -3236,21 +3240,30 @@ def _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB):
         certs["norm_B"] = nB
         certs["sigmin_A"] = sigmin_A
         certs["sigmin_B"] = sigmin_B
-        # Gauge asymmetry driver: σ_min²(B) / σ_min²(A) ≈ S_L_min / S_R_min.
-        # Drives the dA/dB imbalance through the lift's S_L^{-1} and S_R^{-1}.
         certs["sigmin_BA_ratio"] = (sigmin_B / sigmin_A) if sigmin_A > 1e-30 else float('nan')
         certs["sigmax_BA_ratio"] = (sigmax_B / sigmax_A) if sigmax_A > 1e-30 else float('nan')
-        # Cond numbers (factor-Gram): σ_max/σ_min squared.
         certs["cond_A"] = (sigmax_A / sigmin_A) if sigmin_A > 1e-30 else float('nan')
         certs["cond_B"] = (sigmax_B / sigmin_B) if sigmin_B > 1e-30 else float('nan')
-        # Update-magnitude ratio (the key empirical anchor for the gauge problem).
         nda = float(dA.norm().item())
         ndb = float(dB.norm().item())
         certs["ratio_dA_dB"] = (nda / ndb) if ndb > 1e-30 else float('nan')
+        # iLoRA imbalance residual (primary diagnostic; Gu et al. NeurIPS 2024,
+        # Corollary 1: μ_1 = O(r/m) where m = d_out).
+        # I = AA^T - ρ B^T B, ρ = r/m.
+        r, n = A_f.shape
+        m = B_f.shape[0]
+        rho = r / m if m > 0 else 1.0
+        AAT = A_f @ A_f.T          # (r, r)
+        BTB = B_f.T @ B_f          # (r, r)
+        I = AAT - rho * BTB
+        num = float(I.norm().item())
+        den = float(AAT.norm().item()) + rho * float(BTB.norm().item()) + 1e-30
+        certs["imbalance_residual"] = num / den
+        certs["rho_target"] = rho
     except (torch._C._LinAlgError, RuntimeError):
         for k in ("norm_A", "norm_B", "sigmin_A", "sigmin_B",
                   "sigmin_BA_ratio", "sigmax_BA_ratio", "cond_A", "cond_B",
-                  "ratio_dA_dB"):
+                  "ratio_dA_dB", "imbalance_residual", "rho_target"):
             certs[k] = float('nan')
 
 

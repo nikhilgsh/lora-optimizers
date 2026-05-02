@@ -393,49 +393,125 @@ Section "Setup and notation" already flags that "candidates may
 justify a different gauge"; the empirical evidence above suggests
 this latitude is more than cosmetic.
 
-### Candidate alternative gauges
+### Recommended gauge: imbalance-preserving (iLoRA-style)
 
-Each minimizes a different functional subject to the same tangent
-constraint $B_t \Delta A + \Delta B\, A_t = Z^\star$. Listed by what
-they prioritize.
+Why balanced-Frobenius (`‖ΔA‖_F = ‖ΔB‖_F`) is **not** the right
+target: it encodes AdamW's per-coordinate equal-step intuition, not
+LoRA's intrinsic asymmetric geometry. Imbalance-Regularized LoRA
+(Gu et al., NeurIPS 2024 — `docs/papers/ilora_hQfJ7nyDeK.pdf`)
+proves the structurally meaningful invariant under forward-variance
+preservation is
 
-1. **Min-Frobenius (current default).** Minimizes
-   $\|\Delta A\|_F^2 + \|\Delta B\|_F^2$. Variationally minimal in
-   factor space. Pathological when $\|B_t\| \ll \|A_t\|$, as above.
+$$A_t A_t^\top \;\approx\; \rho\, B_t^\top B_t, \qquad \rho := r/m, \ \ m = d_\text{out},$$
 
-2. **Scale-aware Frobenius.** Minimizes
-   $\|\Delta A\|_F^2 / \|A_t\|_F^2 + \|\Delta B\|_F^2 / \|B_t\|_F^2$.
-   KKT gives $\Delta A = (\|A\|^2/2) B_t^\top \Lambda$,
-   $\Delta B = (\|B\|^2/2) \Lambda A_t^\top$ for a Lagrangian
-   $\Lambda$ solving
-   $(\|A\|^2/2) B_t B_t^\top \Lambda + (\|B\|^2/2) \Lambda A_t A_t^\top = Z^\star$.
-   When $\|B\| \to 0$ this still produces $\Delta B \to 0$ (the weighting
-   amplifies $\Delta A$, doesn't fix the imbalance) — see the analysis
-   below — so this option is included for completeness; it is **not**
-   expected to resolve the pathology.
+(Theorem 1 + Corollary 1 of the paper). Standard SGD breaks this
+relation in the backward pass (Theorem 2: $\mu_2 \approx 1$, not
+$r/m$); preconditioned variants restore it (Theorem 3). The paper's
+algorithmic intervention is a **regularizer** added on top of AdamW
+(Algorithm 1, Eqs 4–5 of the paper) — a post-step weight-decay-style
+modification of the parameter dynamics. The same invariant can also
+drive a **gauge choice** for our joint solver, with no change to the
+loss or the variational problem itself: pick the kernel direction $S$
+that best preserves the imbalance.
 
-3. **Min-second-order.** Minimizes the dropped second-order term
-   $\|\Delta B\, \Delta A\|_F^2$. Most variationally honest in the
-   sense that it makes the linearization of the LoRA product most
-   accurate. Convex in $(\Delta A, \Delta B)$ on the constrained
-   set; lift is a small QP with quadratic objective and linear
-   constraints, so still $O(r^3)$.
+**Construction.** Given a base lift $(\Delta A_0, \Delta B_0)$ from
+any tangent-equivalent gauge, every other lift is
 
-4. **Balanced-Frobenius.** Minimizes $\|\Delta A\|_F^2 + \|\Delta B\|_F^2$
-   subject to $\|\Delta A\|_F = \|\Delta B\|_F$ AND tangent constraint.
-   Parameterize via the kernel: starting from the min-Frobenius
-   $(\Delta A_0, \Delta B_0)$, find $S$ s.t.
-   $(\Delta A_0 + S A_t, \Delta B_0 - B_t S)$ has equal F-norms.
-   This is a single scalar condition on $r^2$ unknowns; many solutions
-   exist. The MIN-norm solution among them gives a clean specialization.
+$$\Delta A(S) = \Delta A_0 + S A_t, \qquad \Delta B(S) = \Delta B_0 - B_t S, \qquad S \in \mathbb{R}^{r \times r}.$$
 
-5. **Eigenvalue-balance gauge.** Minimizes
-   $\|S_L^{1/2} \Delta B\|_F^2 + \|\Delta A\, S_R^{1/2}\|_F^2$
-   (whitens both factor updates by the corresponding Gram).
-   Equivalent to minimizing $\|J_t[\Delta A, \Delta B]\|_F^2$ over the
-   gauge kernel — i.e., picks the kernel direction that makes the
-   tangent "look most isotropic." Lift is an unconstrained least-
-   squares in $S$.
+Define the imbalance functional
+
+$$I(A, B) := A A^\top - \rho\, B^\top B \in \mathbb{R}^{r \times r}.$$
+
+The gauge $S$ is chosen to drive the post-step imbalance toward zero.
+Linearizing in the lifted update,
+
+$$I(A_t + \Delta A, B_t + \Delta B) \approx I_t + \delta I_0 + \mathcal L(S),$$
+
+with
+
+$$\delta I_0 = \Delta A_0 A_t^\top + A_t \Delta A_0^\top - \rho(\Delta B_0^\top B_t + B_t^\top \Delta B_0),$$
+
+$$\mathcal L(S) = S S_R + S_R S^\top + \rho(S^\top S_L + S_L S),$$
+
+where $S_R := A_t A_t^\top$ and $S_L := B_t^\top B_t$ (consistent
+with the lift's notation in Section 4 of `polar_coupled_core_solver.md`).
+The recommended gauge solves the small $r^2$-dim linear least-squares
+
+$$S^\star = \arg\min_S \bigl\| I_t + \delta I_0 + \mathcal L(S) \bigr\|_F^2.$$
+
+If multiple minimizers exist (which happens when $\mathcal L(\cdot)$
+is rank-deficient — e.g., $S_L$ near singular at PEFT init), break
+ties via the kernel-motion-magnitude criterion
+
+$$\min \|S A_t\|_F^2 + \|B_t S\|_F^2,$$
+
+i.e., pick the smallest gauge motion among imbalance-equivalent
+solutions. Min-Frobenius then plays a *secondary* role as a
+tie-breaker, not as the primary gauge.
+
+**Cost.** $S$ has $r^2$ entries; $\mathcal L(\cdot)$ is a linear map
+on $\mathbb{R}^{r \times r} \to \mathbb{R}^{r \times r}$ representable
+as an $r^2 \times r^2$ matrix. For symmetric $S_R, S_L$, eigendecompose
+both once and solve elementwise in the joint eigenbasis ($O(r^3)$
+total, negligible at $r \le 256$).
+
+**Boundary case.** At PEFT init $B_0 = 0$, $S_L = 0$ identically and
+$\mathcal L(\cdot)$ collapses to $S S_R + S_R S^\top$ — only the
+symmetric part of $S S_R$ is reachable. The imbalance $I_0 = A_0 A_0^\top$
+cannot be cancelled by any choice of $S$. Use the doc's existing
+$B = 0$ Case-2 closed form for the first step (which gives
+$\Delta A_0 = 0$, $\Delta B_0 = -\lambda \,\mathrm{polar}(G_B R_R^{-\top}) R_R^{-1}$);
+the imbalance gauge becomes meaningful once $B$ has nonzero rank.
+
+**Why this is more principled than min-Frobenius:** the gauge freedom
+is non-physical (different factor representatives of the same
+tangent). Using it to maintain a structurally-stable factorization
+geometry is more justifiable than minimizing an arbitrary functional
+of the factor coordinates.
+
+**Why this is more principled than scale-aware:** scale-aware
+weighted-Frobenius still produces $\Delta B \to 0$ as $\|B\| \to 0$
+(the weighting amplifies $\Delta A$, doesn't fix the imbalance).
+Imbalance-preserving uses the gauge to grow $B$ when the imbalance
+relation calls for it.
+
+**Separation from regularization.** The iLoRA paper modifies
+parameter dynamics via $R(A,B) = \lambda \|A A^\top - (r/m) B^\top B\|_F^2$
+treated as weight-decay-like (Algorithm 1, lines 4–5: applied
+after the AdamW step). That is a different intervention than the
+gauge change here: it changes the problem the optimizer is solving,
+not just the factor representative. The clean first experiment is
+**gauge change only** — that isolates whether min-Frobenius lift was
+the reason the joint operator-norm solver underperformed. If the
+gauge change moves the eval-loss but not all the way to baselines,
+layer in the regularizer as a second test.
+
+### Other gauges (kept for ablation)
+
+These are not recommended as the primary choice but are useful
+ablations.
+
+- **Min-Frobenius (current default; baseline ablation).** Minimizes
+  $\|\Delta A\|_F^2 + \|\Delta B\|_F^2$. Variationally minimal in
+  factor space; pathological under PEFT init, as documented above.
+  Useful as the "no gauge fix" control.
+
+- **Min-second-order** ($\min \|\Delta B \Delta A\|_F^2$). Minimizes
+  the dropped second-order term in the LoRA tangent linearization.
+  Variationally honest in the truncation-error sense. Plausibly a
+  small effect at small $\eta$, larger at large $\eta$. Useful as a
+  finite-step-stability ablation, or as a tie-breaker among
+  imbalance-equivalent solutions.
+
+- **Balanced-Frobenius** ($\|\Delta A\|_F = \|\Delta B\|_F$). Encodes
+  AdamW's per-coord intuition. Useful as a "match AdamW factor
+  balance" ablation, but the iLoRA argument suggests this is not the
+  right structural target.
+
+- **Eigenvalue-balance** ($\min \|S_L^{1/2} \Delta B\|_F^2 + \|\Delta A S_R^{1/2}\|_F^2$).
+  Whitens factor updates by the current Grams. Less directly tied
+  to LoRA's asymmetric stability geometry; included for completeness.
 
 ### Open questions
 
@@ -472,9 +548,20 @@ they prioritize.
 
 Any candidate gauge should report:
 
-- $\|\Delta A\|_F / \|\Delta B\|_F$ ratio at step 200, 1000, 2000 of a
-  2k-step LoRA run. Target: $\in [0.5, 5]$ (matches AdamW / hybrid
-  Picard). Min-Frobenius default produces 50–100.
+- **Imbalance residual**:
+  $\|A A^\top - \rho B^\top B\|_F / (\|A A^\top\|_F + \rho \|B^\top B\|_F + \varepsilon)$
+  at step 200, 1000, 2000. **This is the primary metric** under the
+  imbalance-preserving recommendation — the iLoRA paper's argument
+  is about preserving this geometry, not about update-norm equality.
+  Imbalance-preserving gauge target: residual stays small ($\lesssim 0.1$)
+  across training. Min-Frobenius default: expected to drift large.
+- $\|\Delta A\|_F / \|\Delta B\|_F$ ratio at step 200, 1000, 2000.
+  Min-Frobenius default produces 50–100. AdamW / hybrid Picard sit
+  near 1. The imbalance-preserving gauge will naturally produce a
+  ratio close to $\sqrt{\rho^{-1}} = \sqrt{m/r}$ at steady state
+  (e.g.\ $\sqrt{2000/16} \approx 11$ at typical sizes), NOT 1 — that's
+  a feature, not a bug, since AdamW's ratio of 1 reflects a different
+  invariance.
 - Final eval loss at the canonical 2k-step horizon vs the existing
   hybrid-Picard baseline (`adam-polar-product-lora-coupled`) at
   matched $r$ and matched best-$\eta$. Target: closes the observed
@@ -484,8 +571,9 @@ Any candidate gauge should report:
   with $\sim 10^{-3}$ steps over 2k iterations). A working gauge
   should let $B$ grow at a comparable rate to $A$'s update magnitude.
 
-These three are the cheapest signals to read off any gauge variant's
-2k-step run. If the ratio doesn't drop below ~5 and the eval gap
-doesn't narrow, the gauge change isn't the answer — the gap is
-elsewhere (e.g., need per-coord adaptivity à la rung 5 of the Section 6
-ladder, not a gauge fix).
+These signals are the cheapest reads off any gauge variant's 2k-step
+run. If the imbalance residual stays small and the eval gap narrows,
+the gauge fix is the answer. If the residual drops but eval doesn't
+move, the gap lies elsewhere (e.g.\ per-coord adaptivity via rung 4 or
+5 of the Section 6 ladder of `polar_coupled_core_solver.md`, or the
+iLoRA-style regularizer on top of the gauge).
