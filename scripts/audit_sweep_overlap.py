@@ -32,6 +32,16 @@ KEY_ALIASES = {
     "picard_iters_override": "picard_iters",   # config records the actual value
 }
 
+# Semantic defaults for fields that postdate older runs. If a sweep cell
+# specifies one of these at the listed default value, an older run that
+# lacks the field entirely is still a semantic match (the disabled/no-op
+# value is what the older code path implicitly produced). Keep this list
+# narrow — only fields whose default is a true no-op.
+FIELD_DEFAULTS = {
+    "anderson_m": 0,        # m=0 disables Anderson; older runs predate the path
+    "anderson_reg": 1e-10,  # regularizer is a no-op when m=0
+}
+
 
 def load_params(p: Path) -> dict:
     return json.loads(p.read_text())
@@ -136,6 +146,12 @@ def cell_matches_cfg(cell: dict, cfg: dict) -> bool:
             cfg_key = KEY_ALIASES.get(k, k)
             cfg_val = cfg_field_or_command(cfg, cfg_key, command)
             if cfg_val is None:
+                # Field doesn't exist in older run. If the cell value equals
+                # the field's semantic default, treat as match (older code
+                # path implicitly produced the same behavior).
+                default = FIELD_DEFAULTS.get(cfg_key, "__SENTINEL_NO_DEFAULT__")
+                if coerce(v) == default:
+                    continue
                 ok = False
                 break
             if coerce(cfg_val) != coerce(v):

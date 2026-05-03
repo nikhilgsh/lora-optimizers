@@ -1,0 +1,8 @@
+{
+  "lr": ["3e-4"],
+  "lora_plus_multiplier": ["1.0"],
+  "seed": ["0"],
+  "lora_r": ["16"],
+  "picard_iters_override": ["16", "8", "4", "2"],
+  "anderson_m": ["0", "4"]
+}

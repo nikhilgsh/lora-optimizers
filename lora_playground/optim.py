@@ -76,6 +76,84 @@ def _gram_eig_extremes_from_factor(X):
     return float(sv[-1] ** 2), float(sv[0] ** 2)
 
 
+def _svd_col_basis(X, rel_tol=1e-6):
+    try:
+        U, S, _ = torch.linalg.svd(X.to(torch.float32), full_matrices=False)
+    except torch._C._LinAlgError:
+        return None
+    if S.numel() == 0:
+        return U[:, :0]
+    threshold = rel_tol * float(S[0])
+    keep = S > threshold
+    return U[:, keep]
+
+
+def _finite_step_product_diagnostics(A_f, B_f, dA, dB, eps=1e-30):
+    """Rank-r diagnostics for the finite LoRA product dB @ dA.
+
+    All norms are computed from skinny factors and r x r cores; this avoids
+    materializing a dense d_out x d_in update.
+    """
+    A_f = A_f.detach().to(torch.float32)
+    B_f = B_f.detach().to(torch.float32)
+    dA = dA.detach().to(torch.float32)
+    dB = dB.detach().to(torch.float32)
+
+    dA_gram = dA @ dA.T
+    dB_gram = dB.T @ dB
+    A_gram = A_f @ A_f.T
+    B_gram = B_f.T @ B_f
+
+    second_sq = torch.sum(dB_gram * dA_gram).clamp_min(0.0)
+    second_norm = second_sq.sqrt()
+
+    bdA_sq = torch.sum(B_gram * dA_gram).clamp_min(0.0)
+    dBA_sq = torch.sum(dB_gram * A_gram).clamp_min(0.0)
+    cross = torch.trace((B_f.T @ dB) @ (A_f @ dA.T))
+    tangent_sq = (bdA_sq + dBA_sq + 2.0 * cross).clamp_min(0.0)
+    tangent_norm = tangent_sq.sqrt()
+
+    out = {
+        "finite_step_norm": float(second_norm),
+        "tangent_step_norm": float(tangent_norm),
+        "finite_step_to_tangent": float(second_norm / (tangent_norm + eps)),
+    }
+
+    try:
+        _, rB = torch.linalg.qr(dB, mode="reduced")
+        _, rA = torch.linalg.qr(dA.T, mode="reduced")
+        sv = torch.linalg.svdvals(rB @ rA.T)
+        if sv.numel() == 0 or float(sv[0]) <= eps:
+            out["finite_step_spectral_norm"] = 0.0
+            out["finite_step_stable_rank"] = 0.0
+        else:
+            out["finite_step_spectral_norm"] = float(sv[0])
+            out["finite_step_stable_rank"] = float((sv * sv).sum() / (sv[0] * sv[0] + eps))
+    except torch._C._LinAlgError:
+        out["finite_step_spectral_norm"] = float("nan")
+        out["finite_step_stable_rank"] = float("nan")
+
+    qB = _svd_col_basis(B_f)
+    qA = _svd_col_basis(A_f.T)
+    if qB is None or qA is None:
+        out["finite_step_new_new_frac"] = float("nan")
+    else:
+        if qB.numel() == 0:
+            dB_perp_gram = dB_gram
+        else:
+            proj_dB = qB.T @ dB
+            dB_perp_gram = dB_gram - proj_dB.T @ proj_dB
+        if qA.numel() == 0:
+            dA_perp_gram = dA_gram
+        else:
+            proj_dA = dA @ qA
+            dA_perp_gram = dA_gram - proj_dA @ proj_dA.T
+        new_new_sq = torch.sum(dB_perp_gram * dA_perp_gram).clamp_min(0.0)
+        new_new_frac = (new_new_sq / (second_sq + eps)).clamp(0.0, 1.0)
+        out["finite_step_new_new_frac"] = float(new_new_frac)
+    return out
+
+
 def _emit_optim_diagnostics(step_count, per_pair_records):
     """Aggregate per-pair diagnostic records and emit one JSONL `optim_step` event.
 
@@ -98,6 +176,7 @@ def _emit_optim_diagnostics(step_count, per_pair_records):
 
 OPTIMIZER_CHOICES = {
     "adamw",
+    "adafactor",
     "lin-lora",
     "scaled-lora",
     "adam-scaled-lora",
@@ -111,6 +190,16 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora",
     "adam-polar-product-lora-coupled",
     "adam-polar-product-lora-coupled-endrms",
+    "adam-soap-polar-product-lora",
+    "adafactor-polar-product-lora",
+    "sign-momentum-polar-product-lora",
+    "adam-clip-product-lora",
+    "adam-clip-product-lora-coupled",
+    "adam-clip-product-lora-coupled-endrms",
+    "adam-polar-product-lora-gauge",
+    "adam-polar-product-lora-gauge-coupled",
+    "adam-polar-product-lora-clip-gauge",
+    "adam-polar-product-lora-clip-gauge-coupled",
     "polar-coupled-core-lora",
     "polar-coupled-core-imbalance-scalar-lora",
     "polar-coupled-core-imbalance-lora",
@@ -255,7 +344,7 @@ class LinLoRA(Optimizer):
 
             # δ is a numerical regularizer for near-singular grams, not the
             # minimizer of a damped factor-space surrogate — see
-            # docs/notes/polar_coupled_problem.md (Case 1, "Damped surrogate").
+            # docs/notes/polar_product/theory.md (Case 1, "Damped surrogate").
             SB = spdify(B.T @ B, self.delta)       # S_B ∈ ℝ^{r×r}
             SA = spdify(A @ A.T, self.delta)       # S_A ∈ ℝ^{r×r}
             RHS = -lr * (gA @ A.T).float()         # RHS = -lr * (∇_A A^T) ∈ ℝ^{r×r}
@@ -301,7 +390,7 @@ class AdamLinLoRA(Optimizer):
     variational problem is invariant under (ΔA, ΔB) → (ΔA + S A, ΔB - B S), but
     independent (m_A, v_A, m_B, v_B) state is not. The principled "Adam of
     LinLoRA" maintains momentum/RMS in core/tangent space (Frobenius restriction
-    of variant 2 in docs/notes/polar_coupled_core_solver.md §6) and solves the
+    of variant 2 in docs/notes/polar_product/theory.md §6) and solves the
     Sylvester on the EMA core covector. This implementation is kept as an
     empirical baseline; reinterpret leaderboard standing accordingly.
     """
@@ -954,7 +1043,7 @@ class AdamLinLoRAPost(Optimizer):
     pair of normal equations. The principled "Adam version" maintains the core
     covector Ĥ in tangent space, EMAs Ĥ across steps with basis transport, and
     solves the Sylvester on the EMA — see variant 2 (Frobenius restriction) in
-    docs/notes/polar_coupled_core_solver.md §6. This implementation is kept as
+    docs/notes/polar_product/theory.md §6. This implementation is kept as
     an empirical baseline; results should be read as "factor-Adam-then-
     Sylvester-on-one-side" rather than "Adam-preconditioned LinLoRA".
     """
@@ -1268,6 +1357,52 @@ class LoRAPlusAdamW(AdamW):
             param_groups.append({"params": other_params, "lr": lr})
         
         super().__init__(param_groups, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+
+
+def _build_lora_adafactor(model, lr, lora_plus_multiplier, weight_decay):
+    """HuggingFace transformers.optimization.Adafactor restricted to LoRA
+    params (mirrors LoRAPlusAdamW layout). Pure baseline — no polar pipeline.
+    Compares head-to-head with AdamW on plain LoRA.
+
+    HuggingFace's Adafactor is the de-facto reference impl (T5 default). We
+    configure it to consume an explicit ``lr`` (``relative_step=False,
+    scale_parameter=False, warmup_init=False``) so the sweep grid mirrors
+    Adam's — otherwise Adafactor would compute its own intrinsic step size
+    and ignore ``lr``. ``beta1=0.9`` enables Adam-style momentum (HF
+    supports it as an optional knob); set to None for the canonical
+    no-momentum Adafactor.
+    """
+    from transformers.optimization import Adafactor as HFAdafactor
+
+    lora_A_params, lora_B_params, other_params = [], [], []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "lora_A" in name:
+            lora_A_params.append(param)
+        elif "lora_B" in name:
+            lora_B_params.append(param)
+        else:
+            other_params.append(param)
+    param_groups = []
+    if lora_A_params:
+        param_groups.append({"params": lora_A_params, "lr": lr})
+    if lora_B_params:
+        param_groups.append({"params": lora_B_params, "lr": lr * lora_plus_multiplier})
+    if other_params:
+        param_groups.append({"params": other_params, "lr": lr})
+    return HFAdafactor(
+        param_groups,
+        lr=lr,
+        scale_parameter=False,
+        relative_step=False,
+        warmup_init=False,
+        beta1=0.9,                  # Adam-style momentum on top of rank-1 v
+        weight_decay=weight_decay,
+        eps=(1e-30, 1e-3),          # paper defaults (eps1, eps2)
+        clip_threshold=1.0,         # paper default ``d``
+        decay_rate=-0.8,            # paper β₂ schedule exponent
+    )
 
 
 class SVDStepAdamW(AdamW):
@@ -1835,8 +1970,8 @@ class AdamPolarProductLoRA(Optimizer):
     approximation to the joint tangent operator-norm problem. The principled
     "Adam-preconditioned hybrid Picard replacement" is core-momentum on the
     forbidden-corner core Ĥ followed by projected quotient polar — variant 2
-    in docs/notes/polar_coupled_core_solver.md §6, with the variational
-    backdrop in docs/notes/polar_coupled_problem.md. Existing leaderboard
+    in docs/notes/polar_product/theory.md §6, with the variational
+    backdrop in docs/notes/polar_product/theory.md. Existing leaderboard
     standing of -coupled / -coupled-endrms reflects which incoherent fixed
     point lands well empirically, not which preconditioner is principled.
     """
@@ -1847,7 +1982,11 @@ class AdamPolarProductLoRA(Optimizer):
                  log_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=1,
                  precond_method="eigh", higham_iters=10,
-                 picard_iters=1, end_rms_align=False, picard_alpha=1.0):
+                 picard_iters=1, end_rms_align=False, picard_alpha=1.0,
+                 operator_type="polar",
+                 polar_norm_dir="frob",
+                 polar_sigma_power=None,
+                 anderson_m=0, anderson_reg=1e-10):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1870,6 +2009,27 @@ class AdamPolarProductLoRA(Optimizer):
         # except in passing through the diagnostic instrumentation). Continuous
         # probe of cross-term magnitude.
         self.picard_alpha = picard_alpha
+        # Muon+ (arXiv:2602.21545) — replace Frobenius RMS-align with per-row
+        # or per-column ℓ₂ normalization of the orthogonalized output, then
+        # rescale to the original ‖u‖_F. "frob" = current behavior. "row" /
+        # "col" / "row_col" / "col_row" = Muon+ Norm_(d) directions applied
+        # to geo_A and geo_B. The rescale-to-‖u‖_F preserves overall step
+        # magnitude regardless of direction; the only effect is per-row /
+        # per-column homogenization of update sizes.
+        if polar_norm_dir not in {"frob", "row", "col", "row_col", "col_row"}:
+            raise ValueError(f"polar_norm_dir must be one of frob/row/col/row_col/col_row, got {polar_norm_dir!r}")
+        self.polar_norm_dir = polar_norm_dir
+        # HTMuon (arXiv:2603.10067) — replace NS polar (σ → 1) with SVD-based
+        # σ → σ^p generalization. None = use NS (default Muon-polar). 0 =
+        # exact polar via SVD (σ → 1, equivalent to NS at high iter count).
+        # p ∈ (0, 1) = HT-SR-motivated heavier-tailed update. 1 = no
+        # orthogonalization (σ → σ, identity-on-input). The HTMuon paper
+        # default is p=0.125. Trade-off: σ^p with p>0 preserves more of the
+        # gradient's natural heavy-tailedness, at the cost of NS's
+        # implicit dead-zone suppression of noise directions.
+        if polar_sigma_power is not None and not (0.0 <= polar_sigma_power <= 1.0):
+            raise ValueError(f"polar_sigma_power must be in [0,1] or None, got {polar_sigma_power!r}")
+        self.polar_sigma_power = polar_sigma_power
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
         # (Adam direction norms before any cross-term correction). The
@@ -1879,6 +2039,20 @@ class AdamPolarProductLoRA(Optimizer):
         self.end_rms_align = end_rms_align
         if picard_iters < 1:
             raise ValueError("picard_iters must be >= 1")
+        if operator_type not in {"polar", "clip"}:
+            raise ValueError(f"operator_type must be 'polar' or 'clip', got {operator_type!r}")
+        self.operator_type = operator_type
+        # Anderson(m) acceleration of the picard fixed-point iteration on (dA, dB).
+        # m=0 disables; m>=1 keeps the last m (input, output) pairs and mixes
+        # the next iterate as G(x_k) - ΔG · γ where γ = argmin ‖r_k - ΔR γ‖².
+        # Damped-oscillation regime (osc_cos ≈ -0.85 at r=16) is Anderson's
+        # sweet spot; per closeout doc, expect 3-5 effective iters to converge
+        # vs 16 for plain Picard. anderson_reg adds Tikhonov to the LSQ solve
+        # for numerical stability.
+        if anderson_m < 0:
+            raise ValueError("anderson_m must be >= 0")
+        self.anderson_m = int(anderson_m)
+        self.anderson_reg = float(anderson_reg)
 
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
@@ -1890,28 +2064,115 @@ class AdamPolarProductLoRA(Optimizer):
                 'step': 0,
             }
 
+    @staticmethod
+    def _sigma_power_polar(M, p, eps=1e-30):
+        """HTMuon (arXiv:2603.10067) generalized polar: SVD-based σ → σ^p.
+
+        p=0 ⇒ exact polar (UV^T, all σ collapsed to 1). p=1 ⇒ identity on M
+        (σ unchanged). p ∈ (0, 1) ⇒ heavier-tailed than polar but still
+        compresses range. SVD cost is O(min(m,n)² · max(m,n)) which is
+        manageable when one side is r (~16-64).
+        """
+        # SVD on float32 for stability; cast back to input dtype.
+        in_dtype = M.dtype
+        Mf = M.float()
+        U, S, Vh = torch.linalg.svd(Mf, full_matrices=False)
+        S_pow = S.clamp_min(eps).pow(p)
+        out = (U * S_pow.unsqueeze(0)) @ Vh
+        return out.to(in_dtype)
+
+    @staticmethod
+    def _muon_plus_norm(M, direction, eps=1e-30):
+        """Muon+ Norm_(d) operator (arXiv:2602.21545 §3, Eq. 3-8). Divides
+        each row/col by its ℓ₂ norm (or both, composed). For direction='frob'
+        returns the input unchanged. Caller is expected to rescale to a
+        target Frobenius norm afterwards."""
+        if direction == "frob":
+            return M
+        if direction == "row":
+            denom = M.pow(2).sum(dim=-1, keepdim=True).sqrt().clamp_min(eps)
+            return M / denom
+        if direction == "col":
+            denom = M.pow(2).sum(dim=-2, keepdim=True).sqrt().clamp_min(eps)
+            return M / denom
+        if direction == "row_col":
+            return AdamPolarProductLoRA._muon_plus_norm(
+                AdamPolarProductLoRA._muon_plus_norm(M, "row", eps), "col", eps)
+        if direction == "col_row":
+            return AdamPolarProductLoRA._muon_plus_norm(
+                AdamPolarProductLoRA._muon_plus_norm(M, "col", eps), "row", eps)
+        raise ValueError(direction)
+
     def _polar_pipeline(self, u_A, u_B, SA_half_inv, SB_half_inv, lr):
         """One pass of the polar-product update + RMS-align.
 
         Returns (dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm,
         P_A, P_B). P_A, P_B are the polar (Newton-Schulz) outputs used
         for the H3 polar-sensitivity diagnostic.
+
+        operator_type='polar' (default): Newton-Schulz polar, saturates all
+        singular values to 1. Direction-only.
+        operator_type='clip': singular-value clip with R-equal τ rule
+        (τ = ‖X‖_F/√r). Preserves sub-bulk spectrum, caps top modes.
+        Variationally exact prox of per-block constrained Frobenius
+        program; tested as the missing fourth quadrant (clip without
+        gauge) — the gauge would absorb cross-coupling, which we don't
+        want here.
         """
+        op = getattr(self, "operator_type", "polar")
+        psp = getattr(self, "polar_sigma_power", None)
         X_B = u_B @ SA_half_inv
-        P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
+        if op == "clip":
+            P_B = _clip_R_equal(X_B)
+        elif psp is not None:
+            P_B = self._sigma_power_polar(X_B, psp)
+        else:
+            P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
         geo_B = P_B @ SA_half_inv
 
         X_A = SB_half_inv @ u_A
-        P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
+        if op == "clip":
+            P_A = _clip_R_equal(X_A)
+        elif psp is not None:
+            P_A = self._sigma_power_polar(X_A, psp)
+        else:
+            P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
         geo_A = SB_half_inv @ P_A
 
         uA_norm = u_A.norm()
         uB_norm = u_B.norm()
-        gA_norm = geo_A.norm() + 1e-30
-        gB_norm = geo_B.norm() + 1e-30
-        dA = -lr * (uA_norm / gA_norm) * geo_A
-        dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
+        # Muon+ row/col normalization on the orthogonalized geo_{A,B} BEFORE
+        # the Frobenius rescale. polar_norm_dir='frob' = original behavior
+        # (no row/col reshaping); other values normalize rows/cols of geo to
+        # unit ℓ₂ then rescale to ‖u‖_F so the total step magnitude is the
+        # same. The only effect is per-row/per-col homogenization.
+        geo_A_n = self._muon_plus_norm(geo_A, self.polar_norm_dir)
+        geo_B_n = self._muon_plus_norm(geo_B, self.polar_norm_dir)
+        gA_norm = geo_A_n.norm() + 1e-30
+        gB_norm = geo_B_n.norm() + 1e-30
+        dA = -lr * (uA_norm / gA_norm) * geo_A_n
+        dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B_n
         return dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, P_A, P_B
+
+    def _adam_direction(self, state, gA, gB):
+        """Per-coord Adam on raw (gA, gB) → (u_A, u_B) for the polar pipeline.
+
+        Hook point: subclasses may override to run Adam in a different basis
+        (e.g. SOAP rotates by data-derived eigenbases of gA gA^T and gB^T gB
+        before applying per-coord Adam, then rotates back). State for momentum
+        and variance lives in self.pair_state[i] under keys the override
+        controls; the parent contract is just that this returns Adam-style
+        denoised directions of the same shape as gA, gB.
+        """
+        state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+        state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+        state['v_A'].mul_(self.beta2).addcmul_(gA, gA, value=1.0 - self.beta2)
+        state['v_B'].mul_(self.beta2).addcmul_(gB, gB, value=1.0 - self.beta2)
+        bc1 = 1.0 - self.beta1 ** state['step']
+        bc2 = 1.0 - self.beta2 ** state['step']
+        u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
+        u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+        return u_A, u_B
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -1930,16 +2191,11 @@ class AdamPolarProductLoRA(Optimizer):
             gA = A.grad.float()
             gB = B.grad.float()
 
-            # Adam state on the RAW gradient.
-            state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
-            state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
-            state['v_A'].mul_(self.beta2).addcmul_(gA, gA, value=1.0 - self.beta2)
-            state['v_B'].mul_(self.beta2).addcmul_(gB, gB, value=1.0 - self.beta2)
-
-            bc1 = 1.0 - self.beta1 ** state['step']
-            bc2 = 1.0 - self.beta2 ** state['step']
-            u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
-            u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+            # Adam direction in the polar pipeline's input frame. The default
+            # implementation runs per-coord Adam on raw (gA, gB); subclasses
+            # (e.g. AdamSOAPPolarProductLoRA) may override this hook to run
+            # Adam in a data-derived eigenbasis.
+            u_A, u_B = self._adam_direction(state, gA, gB)
 
             # Spectral square-root preconditioners. Refresh every K steps; reuse
             # cached value otherwise. K=1 ⇒ refresh every step (original behavior).
@@ -1973,6 +2229,13 @@ class AdamPolarProductLoRA(Optimizer):
             # in end_rms_align mode (vs ‖u_A_eff‖ in the original mode).
             uA_norm_orig = u_A.norm()
             uB_norm_orig = u_B.norm()
+            # Anderson history: list of (x_flat, g_flat) where x is the input
+            # to G and g = G(x) is the output. Only used when anderson_m > 0.
+            and_xs = [] if self.anderson_m > 0 else None
+            and_gs = [] if self.anderson_m > 0 else None
+            shapeA = A_f.shape
+            shapeB = B_f.shape
+            nA_el = A_f.numel()
             for k in range(self.picard_iters):
                 if k == 0:
                     u_A_eff = u_A
@@ -1994,6 +2257,42 @@ class AdamPolarProductLoRA(Optimizer):
                     uB_norm = uB_norm_orig
                     dA = -lr * (uA_norm / gA_norm) * geo_A
                     dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B
+                if self.anderson_m > 0:
+                    # Type-II Anderson on the (dA, dB) joint iterate.
+                    # x_curr is the input to G this iter; g_curr is G(x_curr).
+                    x_curr = torch.cat([dA_prev.reshape(-1), dB_prev.reshape(-1)])
+                    g_curr = torch.cat([dA.reshape(-1), dB.reshape(-1)])
+                    r_curr = g_curr - x_curr
+                    m_use = min(self.anderson_m, len(and_xs))
+                    if m_use >= 1:
+                        # ΔR[:, j] = r_curr - r_{k-1-j}; ΔG[:, j] = g_curr - g_{k-1-j}
+                        DR_cols = []
+                        DG_cols = []
+                        for j in range(m_use):
+                            x_old = and_xs[-1 - j]
+                            g_old = and_gs[-1 - j]
+                            r_old = g_old - x_old
+                            DR_cols.append(r_curr - r_old)
+                            DG_cols.append(g_curr - g_old)
+                        DR = torch.stack(DR_cols, dim=1)
+                        DG = torch.stack(DG_cols, dim=1)
+                        gram = DR.T @ DR
+                        rhs = DR.T @ r_curr
+                        reg = self.anderson_reg * gram.diagonal().mean().clamp_min(1e-30)
+                        gram_reg = gram + reg * torch.eye(
+                            m_use, dtype=gram.dtype, device=gram.device)
+                        try:
+                            gamma = torch.linalg.solve(gram_reg, rhs)
+                            g_mixed = g_curr - DG @ gamma
+                            dA = g_mixed[:nA_el].reshape(shapeA)
+                            dB = g_mixed[nA_el:].reshape(shapeB)
+                        except torch._C._LinAlgError:
+                            pass  # fall through to plain Picard iterate
+                    and_xs.append(x_curr)
+                    and_gs.append(g_curr)
+                    if len(and_xs) > self.anderson_m + 1:
+                        and_xs.pop(0)
+                        and_gs.pop(0)
                 dA_prev = dA
                 dB_prev = dB
 
@@ -2018,6 +2317,29 @@ class AdamPolarProductLoRA(Optimizer):
                     "rms_scale_A": float(uA_norm / gA_norm),
                     "rms_scale_B": float(uB_norm / gB_norm),
                 }
+
+                # Muon+ premise probe (arXiv:2602.21545 §2): after orthogonal-
+                # ization, per-row/per-col ℓ₂ norms of geo_{A,B} have high
+                # variance even though the matrix is well-conditioned σ-wise.
+                # Logged from the PRE-normalization geo_A so the std reflects
+                # what the Muon+ normalization step is actually correcting.
+                # std/mean ratio ≫ 0 ⇒ Muon+ has something to fix; ≈ 0 ⇒ rows
+                # are already balanced and Muon+ is a no-op.
+                with torch.no_grad():
+                    geo_A_f = geo_A.float()
+                    geo_B_f = geo_B.float()
+                    rows_A = geo_A_f.pow(2).sum(dim=-1).sqrt()
+                    cols_A = geo_A_f.pow(2).sum(dim=-2).sqrt()
+                    rows_B = geo_B_f.pow(2).sum(dim=-1).sqrt()
+                    cols_B = geo_B_f.pow(2).sum(dim=-2).sqrt()
+                    rec["geoA_row_norm_cv"] = float(
+                        rows_A.std() / rows_A.mean().clamp_min(1e-30))
+                    rec["geoA_col_norm_cv"] = float(
+                        cols_A.std() / cols_A.mean().clamp_min(1e-30))
+                    rec["geoB_row_norm_cv"] = float(
+                        rows_B.std() / rows_B.mean().clamp_min(1e-30))
+                    rec["geoB_col_norm_cv"] = float(
+                        cols_B.std() / cols_B.mean().clamp_min(1e-30))
 
                 # H1 — cross-term ratios γ_A, γ_B. Always cheap; uses the
                 # APPLIED step (dA, dB) as the dB_prev/dA_prev surrogate for
@@ -2044,6 +2366,74 @@ class AdamPolarProductLoRA(Optimizer):
                     rec["nrank_B_1e2"] = int((eigB > 1e-2 * smax_B).sum())
                     rec["stable_rank_A"] = float(eigA.sum() / (smax_A + 1e-30))
                     rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
+
+                    # X_unc spectrum probe (Step 3 prep — clip τ-rule
+                    # design). The spectrum of the whitened Adam direction
+                    # X_unc = S_B^{-1/2} u_A is the input to the per-block
+                    # operator (polar in this baseline; clip in the
+                    # candidate). Its singular values determine whether
+                    # clip would do real work. SVD is r×n / m×r with r
+                    # small — cheap.
+                    Xunc_A = SB_half_inv @ u_A           # (r, n)
+                    Xunc_B = u_B @ SA_half_inv           # (m, r)
+                    sv_A = torch.linalg.svdvals(Xunc_A.float())
+                    sv_B = torch.linalg.svdvals(Xunc_B.float())
+                    sv_A_sorted, _ = torch.sort(sv_A, descending=True)
+                    sv_B_sorted, _ = torch.sort(sv_B, descending=True)
+                    sv_A_max = float(sv_A_sorted[0])
+                    sv_B_max = float(sv_B_sorted[0])
+                    sv_A_min = float(sv_A_sorted[-1])
+                    sv_B_min = float(sv_B_sorted[-1])
+                    sv_A_med = float(sv_A_sorted[len(sv_A_sorted) // 2])
+                    sv_B_med = float(sv_B_sorted[len(sv_B_sorted) // 2])
+                    # p90 (= clip-threshold candidate)
+                    p90_idx_A = max(0, int(0.1 * len(sv_A_sorted)) - 1)
+                    p90_idx_B = max(0, int(0.1 * len(sv_B_sorted)) - 1)
+                    sv_A_p90 = float(sv_A_sorted[p90_idx_A])
+                    sv_B_p90 = float(sv_B_sorted[p90_idx_B])
+                    rec["xunc_A_smax"] = sv_A_max
+                    rec["xunc_A_smin"] = sv_A_min
+                    rec["xunc_A_smedian"] = sv_A_med
+                    rec["xunc_A_sp90"] = sv_A_p90
+                    rec["xunc_A_frob"] = float(sv_A.pow(2).sum().sqrt())
+                    rec["xunc_A_stable_rank"] = float(
+                        sv_A.pow(2).sum() / (sv_A_max ** 2 + 1e-30))
+                    rec["xunc_A_participation"] = float(
+                        sv_A.sum().pow(2) / (sv_A.pow(2).sum() + 1e-30))
+                    rec["xunc_B_smax"] = sv_B_max
+                    rec["xunc_B_smin"] = sv_B_min
+                    rec["xunc_B_smedian"] = sv_B_med
+                    rec["xunc_B_sp90"] = sv_B_p90
+                    rec["xunc_B_frob"] = float(sv_B.pow(2).sum().sqrt())
+                    rec["xunc_B_stable_rank"] = float(
+                        sv_B.pow(2).sum() / (sv_B_max ** 2 + 1e-30))
+                    rec["xunc_B_participation"] = float(
+                        sv_B.sum().pow(2) / (sv_B.pow(2).sum() + 1e-30))
+                    # Reference magnitude: would-be clip-τ from R-equal rule.
+                    # τ_R-equal = ‖X_unc‖_F / √r so ratio (smax / τ_R-equal)
+                    # = smax · √r / ‖X_unc‖_F tells us how peaky vs flat
+                    # the spectrum is in the units that matter for clip.
+                    r = u_A.shape[0]
+                    rec["xunc_A_smax_over_tau_equal"] = sv_A_max * (r ** 0.5) / (rec["xunc_A_frob"] + 1e-30)
+
+                    # cos(polar, clip) diagnostic — measures how much the
+                    # operator choice affects step direction. Both operators
+                    # preserve U, V; only the singular values differ. Compute
+                    # cos analytically without re-doing SVDs.
+                    # polar: σ → 1; clip: σ → min(σ, τ_R-equal).
+                    # cos(polar, clip) = Σ min(σ, τ) / (√r · √Σ min(σ, τ)²)
+                    tau_A = float(rec["xunc_A_frob"]) / max(1.0, r ** 0.5)
+                    tau_B = float(rec["xunc_B_frob"]) / max(1.0, r ** 0.5)
+                    sv_A_clipped = sv_A.clamp_max(tau_A)
+                    sv_B_clipped = sv_B.clamp_max(tau_B)
+                    sumA = float(sv_A_clipped.sum())
+                    fnA = float(sv_A_clipped.pow(2).sum().sqrt() + 1e-30)
+                    sumB = float(sv_B_clipped.sum())
+                    fnB = float(sv_B_clipped.pow(2).sum().sqrt() + 1e-30)
+                    sqrt_r = max(1.0, r ** 0.5)
+                    rec["cos_polar_clip_A"] = sumA / (sqrt_r * fnA)
+                    rec["cos_polar_clip_B"] = sumB / (sqrt_r * fnB)
+                    rec["xunc_B_smax_over_tau_equal"] = sv_B_max * (r ** 0.5) / (rec["xunc_B_frob"] + 1e-30)
                 except torch._C._LinAlgError:
                     for k in ("nrank_A_1e3", "nrank_A_1e2", "nrank_B_1e3",
                               "nrank_B_1e2", "stable_rank_A", "stable_rank_B"):
@@ -2088,6 +2478,7 @@ class AdamPolarProductLoRA(Optimizer):
                     delta_B_1 = dB3 - dB2
                     rec["picard_osc_cos_A"] = _frob_cos(delta_A_1, delta_A_0)
                     rec["picard_osc_cos_B"] = _frob_cos(delta_B_1, delta_B_0)
+                    rec.update(_finite_step_product_diagnostics(A_f, B_f, dA, dB))
                     # Cross-term direction probe — does the iter-1→iter-2
                     # displacement (the part the cross-term injects) point
                     # along the gradient direction (-u_A)? Positive ⇒ cross-
@@ -2134,7 +2525,935 @@ class AdamPolarProductLoRA(Optimizer):
                     rec["cautious_iter1_A_count_frac"] = float(iter1_mask_A.float().mean())
                     rec["cautious_iter1_B_count_frac"] = float(iter1_mask_B.float().mean())
 
+                    # Descent alignment + tangent magnitude per iter (mechanism
+                    # diagnostic — k=2's r=64 benefit comes from JOINT NE
+                    # convergence, not col(B) refinement).
+                    # descent_iter = ⟨G_A, dA⟩ + ⟨G_B, dB⟩ (negative ⇒
+                    # descent direction). If iter 2 < iter 1, k=2 buys
+                    # more linear descent per step.
+                    # frob_J_iter = ‖B dA + dB A‖_F (joint tangent norm).
+                    for tag, dA_var, dB_var in [
+                        ("iter1", dA1, dB1),
+                        ("iter2", dA2, dB2),
+                    ]:
+                        dA32 = dA_var.float(); dB32 = dB_var.float()
+                        rec[f"descent_{tag}"] = float(
+                            (gA * dA32).sum() + (gB * dB32).sum()
+                        )
+                        Jt = B_f @ dA32 + dB32 @ A_f
+                        rec[f"frob_J_{tag}"] = float(Jt.norm())
+
+                    # col(B) decomposition of dB at iter 1 vs iter 2
+                    # (mechanism diagnostic for r=64 cross-coupling).
+                    # Hypothesis: at r=64 with k=2, baseline polar's win
+                    # comes from iter 2 GROWING the col(B) component of
+                    # dB (refining the existing preconditioner). Gauge
+                    # k=2 should NOT show this growth (extension-forced).
+                    # P_col(B) = Q_B Q_B^T (projector onto col(B)).
+                    # Decompose: dB_iter = P_col(B) · dB_iter + (I − P_col(B)) · dB_iter.
+                    Q_B_proj, _ = torch.linalg.qr(B_f, mode='reduced')  # (m, r)
+                    for tag, dB_var in [("iter1", dB1), ("iter2", dB2)]:
+                        dB32 = dB_var.float()
+                        proj = Q_B_proj @ (Q_B_proj.T @ dB32)
+                        perp = dB32 - proj
+                        rec[f"colB_frac_{tag}"] = float(
+                            (proj.norm() / (dB32.norm() + 1e-30)).pow(2)
+                        )
+                        rec[f"colB_norm_{tag}"] = float(proj.norm())
+                        rec[f"perp_norm_{tag}"] = float(perp.norm())
+
+                    # Local-model variational score for k=1 and k=2 candidates
+                    # (see plan i-read-all-three-quizzical-plum, Step 1).
+                    # score(ΔA, ΔB) = ⟨u_A, ΔA⟩ + ⟨u_B, ΔB⟩
+                    #                 + (1/(2·lr))·‖B·ΔA + ΔB·A‖_F²
+                    # Negative (k2 − k1) ⇒ the per-step variational program
+                    # prefers k=2 over k=1 on this pair. If the sign of
+                    # (k2 − k1) consistently matches the empirical winner per
+                    # rank, a deterministic local-model selector is a no-HP
+                    # rule that picks k from local geometry.
+                    def _local_score(dA_, dB_):
+                        dA32 = dA_.float()
+                        dB32 = dB_.float()
+                        lin = float((u_A * dA32).sum() + (u_B * dB32).sum())
+                        J = B_f @ dA32 + dB32 @ A_f
+                        coupling = 0.5 * float((J * J).sum()) / lr
+                        return lin + coupling
+                    rec["local_score_k1"] = _local_score(dA1, dB1)
+                    rec["local_score_k2"] = _local_score(dA2, dB2)
+                    rec["local_score_k2_minus_k1"] = (
+                        rec["local_score_k2"] - rec["local_score_k1"]
+                    )
+
                 diag_records.append(rec)
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
+class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
+    """SOAP-style preconditioning of (u_A, u_B) before the polar pipeline.
+
+    Motivated by docs/notes/polar_product/closeout_2026_05_02.md §3 candidate 1:
+    at r=16, full per-coord Adam on raw G beats no-Adam by +0.04 and matrix-Adam
+    sits at +0.02, so well-conditioned polar inputs are doing real work. SOAP
+    runs Adam in a data-derived eigenbasis (rather than the coordinate basis),
+    which captures correlated-direction structure per-coord Adam misses.
+
+    For LoRA factor gradients gA: (r, d_in), gB: (d_out, r) only the r-side is
+    small enough to admit a cheap r×r preconditioner — so we maintain
+        L_A: (r,r) ≈ EMA[gA gA^T]   (left covariance of A-grad)
+        R_B: (r,r) ≈ EMA[gB^T gB]   (right covariance of B-grad)
+    and refresh eigenbases Q_A, Q_B every soap_refresh_every steps. Per step:
+        gA_rot = Q_A^T @ gA;     gB_rot = gB @ Q_B
+        run per-coord Adam on (gA_rot, gB_rot)  → (û_A_rot, û_B_rot)
+        u_A = Q_A @ û_A_rot;     u_B = û_B_rot @ Q_B^T
+    The downstream polar pipeline (Newton-Schulz with S^{-1/2} preconditioners
+    on the Gram side, RMS-align, Picard if enabled, diagnostics) is unchanged.
+
+    Until the first refresh, Q_A = Q_B = I and this reduces exactly to
+    AdamPolarProductLoRA. The L_A/R_B EMAs use no bias correction (Muon-canonical
+    convention; SOAP paper consistent). Adam on the rotated grads keeps standard
+    bias correction on m, v.
+
+    Implementation notes (v2, faithful to Vyas et al. arXiv:2409.11321 Alg 3):
+      * Momentum M is stored in the COORDINATE basis (line 3 of Alg 3) and
+        rotated into the current eigenbasis EACH STEP for the Adam computation
+        (line 4). The variance V is stored in the rotated basis (line 7); its
+        bounded staleness across refreshes is the standard SOAP tradeoff.
+      * Eigenvectors are refreshed via one step of power iteration + QR seeded
+        with the previous Q (Algorithm 4: ``Q_new = qr(L @ Q_old).Q``). This
+        is cheaper than full eigh and, more importantly, makes Q evolve
+        smoothly across refreshes — full eigh has arbitrary sign/permutation
+        per eigenvector and would discontinuously flip Q between adjacent
+        refreshes (especially harmful at soap_refresh_every=1).
+    """
+
+    def __init__(self, model, *, soap_beta=0.95, soap_refresh_every=1, **kwargs):
+        super().__init__(model, **kwargs)
+        if soap_refresh_every < 1:
+            raise ValueError("soap_refresh_every must be >= 1")
+        if not (0.0 <= soap_beta < 1.0):
+            raise ValueError("soap_beta must be in [0, 1)")
+        self.soap_beta = float(soap_beta)
+        self.soap_refresh_every = int(soap_refresh_every)
+        for i, (A, B) in enumerate(self.pairs):
+            r = A.shape[0]
+            assert B.shape[1] == r, "LoRA factor convention: A is (r, d_in), B is (d_out, r)"
+            dev = A.device
+            eye = torch.eye(r, dtype=torch.float32, device=dev)
+            st = self.pair_state[i]
+            st['L_A'] = torch.zeros((r, r), dtype=torch.float32, device=dev)
+            st['R_B'] = torch.zeros((r, r), dtype=torch.float32, device=dev)
+            # Q_A, Q_B initialize to identity so the first soap_refresh_every-1
+            # steps are exactly equivalent to AdamPolarProductLoRA.
+            st['Q_A'] = eye.clone()
+            st['Q_B'] = eye.clone()
+
+    def _adam_direction(self, state, gA, gB):
+        # Use the PRIOR eigenbasis to project this step's gradient (paper Alg 3
+        # line 2: G_t' = Q_L^T G_t Q_R, where Q is the basis from step t-1).
+        Q_A = state['Q_A']
+        Q_B = state['Q_B']
+
+        # Momentum in COORD basis (paper Alg 3 line 3); rotated into the prior
+        # eigenbasis EACH STEP for the Adam computation (line 4). Keeping M in
+        # coord basis is what makes a basis change cheap — only V picks up the
+        # bounded staleness, not M.
+        state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+        state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+        m_A_rot = Q_A.T @ state['m_A']
+        m_B_rot = state['m_B'] @ Q_B
+
+        # Variance in ROTATED basis (paper Alg 3 line 7).
+        gA_rot = Q_A.T @ gA
+        gB_rot = gB @ Q_B
+        state['v_A'].mul_(self.beta2).addcmul_(gA_rot, gA_rot, value=1.0 - self.beta2)
+        state['v_B'].mul_(self.beta2).addcmul_(gB_rot, gB_rot, value=1.0 - self.beta2)
+
+        bc1 = 1.0 - self.beta1 ** state['step']
+        bc2 = 1.0 - self.beta2 ** state['step']
+        uA_rot = (m_A_rot / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
+        uB_rot = (m_B_rot / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+
+        # Rotate back into the coordinate frame the polar pipeline expects.
+        u_A = Q_A @ uA_rot
+        u_B = uB_rot @ Q_B.T
+
+        # AFTER computing the update, advance the preconditioner state for
+        # step t+1 (paper Alg 3 lines 13-17).
+        beta_p = self.soap_beta
+        state['L_A'].mul_(beta_p).add_(gA @ gA.T, alpha=1.0 - beta_p)
+        state['R_B'].mul_(beta_p).add_(gB.T @ gB, alpha=1.0 - beta_p)
+
+        # Refresh eigenbasis via Algorithm 4 (power iteration + QR seeded with
+        # prior Q). Before the QR step, sort prior Q's columns by descending
+        # estimated eigenvalue and permute V's rotated axis accordingly so V's
+        # per-slot index continues to track Q's column index across refreshes.
+        # Matches official SOAP (https://github.com/nikhilvyas/SOAP) function
+        # ``get_orthogonal_matrix_QR``: QR seeding alone makes Q evolve smoothly
+        # but eigenvalue rank can swap between refreshes, and without this
+        # permutation V's slots silently de-align from Q's columns.
+        if state['step'] % self.soap_refresh_every == 0:
+            try:
+                est_eig_A = torch.diag(state['Q_A'].T @ state['L_A'] @ state['Q_A'])
+                sort_A = torch.argsort(est_eig_A, descending=True)
+                state['Q_A'] = state['Q_A'][:, sort_A].contiguous()
+                state['v_A'] = state['v_A'].index_select(0, sort_A).contiguous()
+                Q_A_new, _ = torch.linalg.qr(state['L_A'] @ state['Q_A'])
+                state['Q_A'] = Q_A_new
+
+                est_eig_B = torch.diag(state['Q_B'].T @ state['R_B'] @ state['Q_B'])
+                sort_B = torch.argsort(est_eig_B, descending=True)
+                state['Q_B'] = state['Q_B'][:, sort_B].contiguous()
+                state['v_B'] = state['v_B'].index_select(1, sort_B).contiguous()
+                Q_B_new, _ = torch.linalg.qr(state['R_B'] @ state['Q_B'])
+                state['Q_B'] = Q_B_new
+            except torch._C._LinAlgError:
+                # Degenerate covariance (zero grad streak) — keep prior basis.
+                pass
+
+        # Per-pair SOAP spectrum probe — answers "is L_A actually isotropic?"
+        # Computed at the diagnostics cadence (cheap: r×r eigh, r=16).
+        if self.log_diagnostics and state['step'] % self.diagnostics_every == 0:
+            with torch.no_grad():
+                try:
+                    eA = torch.linalg.eigvalsh(state['L_A']).clamp_min(0.0)
+                    eB = torch.linalg.eigvalsh(state['R_B']).clamp_min(0.0)
+                    state['_soap_spectrum'] = {
+                        'L_A_cond': float(eA[-1] / (eA[0] + 1e-30)),
+                        'L_A_top_frac': float(eA[-1] / (eA.sum() + 1e-30)),
+                        'L_A_pr': float(eA.sum().pow(2) / (eA.pow(2).sum() + 1e-30)),
+                        'R_B_cond': float(eB[-1] / (eB[0] + 1e-30)),
+                        'R_B_top_frac': float(eB[-1] / (eB.sum() + 1e-30)),
+                        'R_B_pr': float(eB.sum().pow(2) / (eB.pow(2).sum() + 1e-30)),
+                    }
+                except Exception:
+                    state['_soap_spectrum'] = None
+        return u_A, u_B
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        out = super().step(closure)
+        if self.log_diagnostics:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                recs = [
+                    s['_soap_spectrum'] for s in self.pair_state.values()
+                    if s.get('_soap_spectrum')
+                ]
+                if recs:
+                    payload = {
+                        'event': 'optim_soap_step',
+                        'step': int(step_count),
+                        'n_pairs': len(recs),
+                    }
+                    for k in recs[0].keys():
+                        vals = [r[k] for r in recs if r[k] == r[k]]
+                        if vals:
+                            payload[k + '_median'] = statistics.median(vals)
+                            payload[k + '_min'] = min(vals)
+                            payload[k + '_max'] = max(vals)
+                    print(json.dumps(payload, sort_keys=True), flush=True)
+        return out
+
+
+class AdaFactorPolarProductLoRA(AdamPolarProductLoRA):
+    """Adafactor-style rank-1 v factorization fed into the polar pipeline.
+
+    Designed as a probe for "how much preconditioning precision the polar
+    pipeline actually needs." Identical to AdamPolarProductLoRA except the
+    second-moment EMA v ∈ ℝ^{m×n} is replaced by its rank-1 outer-product
+    approximation: row sums R ∈ ℝ^m and column sums C ∈ ℝ^n, with
+    ``v_approx[i, j] = R[i] · C[j] / sum(R)`` (Shazeer & Stern 2018,
+    arXiv:1804.04235 Algorithm 2). Momentum, bias correction, eps, and the
+    full polar pipeline are unchanged. This isolates the diagonal-precision
+    axis from every other design choice — SOAP, basis rotation, RMS-align,
+    polar — so the comparison vs AdamPolarProductLoRA cleanly answers
+    whether full per-coord ``v`` is load-bearing for our setup.
+
+    Three-way reading with SOAP:
+      * Adafactor ≈ Adam: per-coord ``v`` is overkill; preconditioning is
+        saturated by even rank-1 estimates. SOAP/low-rank d-side dead.
+      * Adafactor < Adam by ~SOAP gap: full v is real but rotation isn't.
+        SOAP ≈ Adam means rotation specifically adds nothing.
+      * Adafactor << Adam: per-coord v is load-bearing, SOAP fails for
+        another reason (polar saturation specific to rotation, etc.).
+    """
+
+    def __init__(self, model, **kwargs):
+        super().__init__(model, **kwargs)
+        # Replace v_A, v_B (full element-wise) with row/col sums.
+        for i, (A, B) in enumerate(self.pairs):
+            r, d_in = A.shape
+            d_out, _ = B.shape
+            dev = A.device
+            st = self.pair_state[i]
+            # v_A: (r, d_in) → R_A: (r,), C_A: (d_in,)
+            st['R_A'] = torch.zeros(r, dtype=torch.float32, device=dev)
+            st['C_A'] = torch.zeros(d_in, dtype=torch.float32, device=dev)
+            # v_B: (d_out, r) → R_B_af: (d_out,), C_B_af: (r,)
+            st['R_B_af'] = torch.zeros(d_out, dtype=torch.float32, device=dev)
+            st['C_B_af'] = torch.zeros(r, dtype=torch.float32, device=dev)
+            # The parent's v_A, v_B slots are unused in this variant; we leave
+            # them allocated to keep state shape compatible with diagnostics.
+
+    def _adam_direction(self, state, gA, gB):
+        # Adam-style momentum (unchanged from parent).
+        state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+        state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+
+        # Rank-1 second-moment factorization.
+        gA_sq = gA * gA
+        gB_sq = gB * gB
+        state['R_A'].mul_(self.beta2).add_(gA_sq.sum(dim=1), alpha=1.0 - self.beta2)
+        state['C_A'].mul_(self.beta2).add_(gA_sq.sum(dim=0), alpha=1.0 - self.beta2)
+        state['R_B_af'].mul_(self.beta2).add_(gB_sq.sum(dim=1), alpha=1.0 - self.beta2)
+        state['C_B_af'].mul_(self.beta2).add_(gB_sq.sum(dim=0), alpha=1.0 - self.beta2)
+
+        bc1 = 1.0 - self.beta1 ** state['step']
+        bc2 = 1.0 - self.beta2 ** state['step']
+
+        # Adafactor reconstruction: v_approx[i, j] = R[i] · C[j] / sum(R).
+        # Note sum(R) == sum(C) in expectation (both sum the same gradient²).
+        sumR_A = state['R_A'].sum().clamp_min(1e-30)
+        v_A_approx = state['R_A'].unsqueeze(1) * state['C_A'].unsqueeze(0) / sumR_A
+        sumR_B = state['R_B_af'].sum().clamp_min(1e-30)
+        v_B_approx = state['R_B_af'].unsqueeze(1) * state['C_B_af'].unsqueeze(0) / sumR_B
+
+        u_A = (state['m_A'] / bc1) / ((v_A_approx / bc2).sqrt() + self.eps)
+        u_B = (state['m_B'] / bc1) / ((v_B_approx / bc2).sqrt() + self.eps)
+
+        # Stable-rank-of-g² probe: predicts whether the rank-1 approximation
+        # is exact (stable_rank=1 ⇔ g² is rank-1 ⇔ Adafactor = Adam) or lossy
+        # (stable_rank ≫ 1 ⇔ rank-1 throws away real info). Cheap: 2 power-
+        # iter steps for top singular value, no full SVD.
+        if self.log_diagnostics and state['step'] % self.diagnostics_every == 0:
+            with torch.no_grad():
+                def _stable_rank(M_sq):
+                    fro_sq = (M_sq * M_sq).sum()
+                    m, n = M_sq.shape
+                    v = torch.randn(n, device=M_sq.device, dtype=M_sq.dtype)
+                    for _ in range(2):
+                        v = M_sq.T @ (M_sq @ v)
+                        v = v / v.norm().clamp_min(1e-30)
+                    top_sq = (M_sq @ v).pow(2).sum()
+                    return float(fro_sq / top_sq.clamp_min(1e-30))
+                try:
+                    state['_adafactor_diag'] = {
+                        'stable_rank_gA_sq': _stable_rank(gA_sq),
+                        'stable_rank_gB_sq': _stable_rank(gB_sq),
+                        'gA_sq_min_fullrank': float(min(gA_sq.shape)),
+                        'gB_sq_min_fullrank': float(min(gB_sq.shape)),
+                    }
+                except Exception:
+                    state['_adafactor_diag'] = None
+        return u_A, u_B
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        out = AdamPolarProductLoRA.step(self, closure)
+        if self.log_diagnostics:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                recs = [
+                    s['_adafactor_diag'] for s in self.pair_state.values()
+                    if s.get('_adafactor_diag')
+                ]
+                if recs:
+                    payload = {
+                        'event': 'optim_adafactor_step',
+                        'step': int(step_count),
+                        'n_pairs': len(recs),
+                    }
+                    for k in recs[0].keys():
+                        vals = [r[k] for r in recs if r[k] == r[k]]
+                        if vals:
+                            payload[k + '_median'] = statistics.median(vals)
+                            payload[k + '_min'] = min(vals)
+                            payload[k + '_max'] = max(vals)
+                    print(json.dumps(payload, sort_keys=True), flush=True)
+        return out
+
+
+class SignMomentumPolarProductLoRA(AdamPolarProductLoRA):
+    """sign(m) fed into polar pipeline. No v tracking at all.
+
+    Cleanest test of "do we need v?" without the m/|g| magnitude instability
+    that breaks naive instant-Adam (β₂=0). sign(m) has unit-magnitude entries
+    by construction, so the polar pipeline's RMS-align downstream sees a
+    well-behaved input regardless of gradient magnitudes.
+
+    Connection to effective-rank lifting: sign(m) is FULL RANK generically
+    (every entry is ±1), while Adam's m/√v has effective rank ≈ 1/(1−β₁) ≈
+    10 due to LoRA's per-example rank-1 gradient structure. So sign(m)
+    feeds polar a higher-rank input. Polar then orthogonalizes more
+    directions — IF those directions carry signal, this helps; if they're
+    noise, it hurts.
+
+    Inspired by LION (Chen et al. 2023, arXiv:2302.06675), which uses
+    sign(m) for the parameter update directly.
+    """
+
+    def _adam_direction(self, state, gA, gB):
+        # Momentum EMA (β₁) — same as parent.
+        state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+        state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+        # No v EMA, no bias correction (sign is invariant to positive scaling).
+        # state['v_A'], state['v_B'] are allocated by the parent constructor
+        # but unused here — kept for state-shape compatibility with the
+        # parent's diagnostic block that reads v.
+        u_A = state['m_A'].sign()
+        u_B = state['m_B'].sign()
+        return u_A, u_B
+
+
+class AdamPolarProductLoRAGauge(Optimizer):
+    """Per-block polar + Sylvester min-Frob gauge lift, no postscale.
+
+    The ``adam-polar-product-lora`` baseline produces an update pair that does
+    not satisfy the min-Frobenius gauge ``B^T ΔB = ΔA A^T`` because each factor
+    is independently RMS-aligned to its own Adam-direction Frobenius norm. The
+    proposal in ``docs/notes/polar_product/proposal.md`` adds a Sylvester lift
+    to project onto the gauge surface, then applies separate per-factor RMS
+    scalars — which destroys the gauge it just enforced.
+
+    This optimizer takes the clean stance (option 1 in the plan): enforce the
+    gauge via the lift, apply NO postscale. Magnitude is whatever the lift
+    produces times ``lr``. Tests whether the gauge alone — with no magnitude
+    band-aid — does useful work under the polar operator, before any
+    consideration of the variationally-correct clip operator (which is gated
+    on the unresolved ``τ``-rule blocker, Q2 of the proposal).
+
+    Per pair (A ∈ R^{r×n}, B ∈ R^{m×r}) per step:
+      1. Adam EMA on raw factor gradients → (u_A, u_B).
+      2. Thin QR: B = Q_B R_B, A^T = Q_A R_AT (so A = R_AT^T Q_A^T;
+         define R_A := R_AT^T so A = R_A Q_A^T per proposal §0.3).
+      3. Whitening: ũ_A = R_B^{-T} u_A, ũ_B = u_B R_AT^{-1} = u_B R_A^{-T}.
+      4. Per-block polar via Newton–Schulz: P_A = polar(ũ_A) ∈ R^{r×n},
+         P_B = polar(ũ_B) ∈ R^{m×r}.
+      5. Joint tangent target J_target = -lr · (Q_B P_A + P_B Q_A^T).
+         This sits in col(B) + row(A) by construction.
+      6. Min-Frob lift via Sylvester (theory.md §"Sylvester gauge lift"):
+            S_B K + K S_A = B^T J_target A^T,    K ∈ R^{r×r}
+            ΔA = S_B^{-1} (B^T J_target − K A)
+            ΔB = (J_target A^T − B K) S_A^{-1}
+         With S_A = A A^T + δ I, S_B = B^T B + δ I.
+         The lift solves min ‖ΔA‖_F² + ‖ΔB‖_F² s.t. B ΔA + ΔB A = J_target,
+         which automatically gives B^T ΔB = ΔA A^T = K (KKT condition).
+      7. Apply ΔA, ΔB. No RMS-align; no separate per-factor scalar.
+
+    PEFT init B=0 fallback. At step 1, B is exactly zero and the QR + lift
+    is ill-conditioned (Q_B undefined; ΔA = 0 forced by the gauge since J
+    can only depend on B-induced contributions). Match the existing
+    AdamPolarProductLoRA fallback: at step 1 (or whenever ‖B‖_F is below a
+    tiny threshold), do a per-block whitened polar without the lift, with
+    SB_half_inv = δ^{-1/2} I — equivalent to a plain Adam-direction Muon
+    step on each factor independently. From step 2 onward the full lift
+    runs unchanged.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, ns_steps=5, adapter_name=None,
+                 lora_plus_multiplier=1.0,
+                 picard_iters=1,
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.ns_steps = ns_steps
+        self.lora_plus_multiplier = lora_plus_multiplier
+        self.picard_iters = int(picard_iters)
+        if self.picard_iters < 1:
+            raise ValueError("picard_iters must be >= 1")
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'v_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                'step': 0,
+            }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamPolarProductLoRAGauge update.")
+            state = self.pair_state[i]
+            state['step'] += 1
+
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+            state['v_A'].mul_(self.beta2).addcmul_(gA, gA, value=1.0 - self.beta2)
+            state['v_B'].mul_(self.beta2).addcmul_(gB, gB, value=1.0 - self.beta2)
+
+            bc1 = 1.0 - self.beta1 ** state['step']
+            bc2 = 1.0 - self.beta2 ** state['step']
+            u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
+            u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+
+            A_f = A.float()
+            B_f = B.float()
+            r = A_f.shape[0]
+
+            b_norm = float(B_f.norm())
+            use_fallback = b_norm < 1e-8
+
+            if use_fallback:
+                # Per-block whitened polar without lift (matches the
+                # adam-polar-product-lora step-1 path; at B=0 only ΔB carries
+                # signal, but we update both for symmetry — A's update is
+                # tiny and goes through the well-conditioned S_A^{-1/2}).
+                S_A = spdify(A_f @ A_f.T, self.delta)
+                SA_half_inv = _spd_inv_half(S_A, eps=self.delta, method="eigh")
+                if b_norm < 1e-8:
+                    SB_half_inv = (self.delta ** -0.5) * torch.eye(
+                        r, dtype=torch.float32, device=A_f.device,
+                    )
+                else:
+                    S_B = spdify(B_f.T @ B_f, self.delta)
+                    SB_half_inv = _spd_inv_half(S_B, eps=self.delta, method="eigh")
+                X_B = u_B @ SA_half_inv
+                P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
+                geo_B = P_B @ SA_half_inv
+                X_A = SB_half_inv @ u_A
+                P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
+                geo_A = SB_half_inv @ P_A
+                dA = -lr * geo_A
+                dB = -self.lora_plus_multiplier * lr * geo_B
+            else:
+                # Thin QR. torch.linalg.qr(M, mode='reduced') returns Q (cols
+                # orthonormal) and R upper-triangular with M = QR.
+                Q_B, R_B = torch.linalg.qr(B_f, mode='reduced')   # (m,r), (r,r)
+                Q_A, R_AT = torch.linalg.qr(A_f.T, mode='reduced')  # (n,r), (r,r)
+                # A^T = Q_A R_AT, so A = R_AT^T Q_A^T = R_A Q_A^T with R_A = R_AT^T.
+
+                S_B = spdify(B_f.T @ B_f, self.delta)              # (r,r)
+                S_A = spdify(A_f @ A_f.T, self.delta)              # (r,r)
+
+                # Picard inner iteration. At iter 0 use raw u; at iter k≥1
+                # add cross-coupling correction to u via the standard
+                # AdamPolarProductLoRA-coupled pattern:
+                #   u_A_eff = u_A + (B^T · ΔB_prev · A) / lr
+                #   u_B_eff = u_B + (B  · ΔA_prev · A^T) / lr
+                # This is algebraically equivalent to the proposal §0.3
+                # T_A formulation (X_unc = T_A − lr·R_B^{-T}·u_A) but
+                # leaves polar's "wipe magnitude, restore via -lr factor"
+                # convention intact at each iter.
+                dA = torch.zeros_like(A_f)
+                dB = torch.zeros_like(B_f)
+                for k in range(self.picard_iters):
+                    if k == 0:
+                        u_A_eff = u_A
+                        u_B_eff = u_B
+                    else:
+                        u_A_eff = u_A + (B_f.T @ dB @ A_f) / lr
+                        u_B_eff = u_B + (B_f @ dA @ A_f.T) / lr
+
+                    # Whitening via triangular solves.
+                    u_A_white = torch.linalg.solve_triangular(R_B.T, u_A_eff, upper=False)
+                    u_B_white = torch.linalg.solve_triangular(R_AT.T, u_B_eff.T, upper=False).T
+
+                    # Per-block polar (NS); unit singular values; sign comes
+                    # from the -lr factor in J_target below.
+                    P_A = _newton_schulz(u_A_white, nsteps=self.ns_steps)  # (r,n)
+                    P_B = _newton_schulz(u_B_white, nsteps=self.ns_steps)  # (m,r)
+
+                    # Min-Frob lift on J_target = -lr (Q_B P_A + P_B Q_A^T).
+                    core_11 = P_A @ Q_A + Q_B.T @ P_B                # (r,r)
+                    RHS_K = -lr * (R_B.T @ core_11 @ R_AT)           # (r,r)
+                    K = solve_sylvester(S_B, S_A, RHS_K)             # (r,r)
+
+                    BTJ = -lr * (R_B.T @ (P_A + Q_B.T @ P_B @ Q_A.T))  # (r,n)
+                    rhs_dA = BTJ - K @ A_f                              # (r,n)
+                    dA = solve_spd(S_B, rhs_dA)                         # (r,n)
+
+                    JAT = -lr * (Q_B @ P_A @ Q_A @ R_AT + P_B @ R_AT)  # (m,r)
+                    rhs_dB = JAT - B_f @ K                              # (m,r)
+                    dB = solve_spd(S_A, rhs_dB.T).T                     # (m,r)
+
+                # LoRA+ multiplier on ΔB only (post-picard).
+                dB = self.lora_plus_multiplier * dB
+
+            if self.log_diagnostics:
+                step_count_local = state['step']
+                if step_count_local % self.diagnostics_every == 0:
+                    rec = {
+                        "norm_dA": float(dA.detach().norm()),
+                        "norm_dB": float(dB.detach().norm()),
+                        "norm_A": float(A_f.norm()),
+                        "norm_B": float(B_f.norm()),
+                        "fallback": int(use_fallback),
+                    }
+                    # Gauge-deviation invariant: should be ≈ 0 in the lift path,
+                    # nonzero in the fallback path.
+                    BTdB = B_f.T @ dB.float()
+                    dAAT = dA.float() @ A_f.T
+                    gauge_resid = float((BTdB - dAAT).norm())
+                    gauge_denom = float(dAAT.norm()) + 1e-30
+                    rec["gauge_residual_abs"] = gauge_resid
+                    rec["gauge_residual_rel"] = gauge_resid / gauge_denom
+
+                    # B-spectrum trajectory diagnostic (stable rank, condition).
+                    # Mirrors the diag in baseline AdamPolarProductLoRA so we
+                    # can compare longitudinal B-evolution across variants.
+                    try:
+                        eigB = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
+                        smax_B = float(eigB.max())
+                        rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
+                        rec["nrank_B_1e2"] = int((eigB > 1e-2 * smax_B).sum())
+                        # Frob norm of K (the gauge variable from the lift).
+                        # Under min-Frob KKT: K = B^T dB = dA A^T. Predicted
+                        # to be small when the gauge constraint absorbs the
+                        # cross-coupling input.
+                        rec["K_frob"] = float(BTdB.norm())
+                    except torch._C._LinAlgError:
+                        rec["stable_rank_B"] = float("nan")
+                        rec["nrank_B_1e2"] = -1
+                        rec["K_frob"] = float("nan")
+
+                    diag_records.append(rec)
+
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
+
+        if self.log_diagnostics and diag_records:
+            step_count = self.pair_state[0]['step']
+            if step_count % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count, diag_records)
+
+
+def _clip_R_equal(X):
+    """Clip the singular values of X at τ = ‖X‖_F / √r_act.
+
+    R-equal τ rule (LEGACY — failed at startup; see _clip_adamw_capped).
+    Inherits ‖X‖_F as the magnitude, which is unbounded at startup when
+    R_B^{-T} blows up (B small). Kept for diagnostic comparison only.
+    """
+    Xf = X.float()
+    U, S, Vh = torch.linalg.svd(Xf, full_matrices=False)
+    r_act = S.numel()
+    tau = float(S.pow(2).sum().sqrt()) / max(1.0, r_act ** 0.5)
+    S_clipped = S.clamp_max(tau)
+    return (U * S_clipped.unsqueeze(0)) @ Vh
+
+
+def _clip_adamw_capped(X, M_cap):
+    """Clip X's singular values so ‖clip(X)‖_F ≤ M_cap (R-AdamW-cap rule).
+
+    If ‖X‖_F ≤ M_cap, return X unchanged (natural prox already under
+    the AdamW magnitude budget). Otherwise water-fill τ so that
+        Σ min(σ_i, τ)² = M_cap².
+    M_cap = lr · ‖u_A‖_F (or ‖u_B‖_F) supplies the validated AdamW
+    magnitude convention as a CAP; clip's role is spectrum reshape
+    within that budget, not magnitude-from-spectrum-shape.
+
+    Algorithm: for each k = 1 .. r, hypothesize that the top k singular
+    values are clipped to a common τ_k = √((M² − Σ_{i>k} σ_i²) / k).
+    The valid k is the smallest one for which τ_k ≤ σ_k (= the k-th
+    largest singular value), at which point the result is consistent.
+    """
+    Xf = X.float()
+    U, S, Vh = torch.linalg.svd(Xf, full_matrices=False)
+    norm_sq = float(S.pow(2).sum().item())
+    M2 = float(M_cap) ** 2
+    if norm_sq <= M2 or M2 <= 0.0:
+        return Xf
+    S_sorted, _ = torch.sort(S, descending=True)
+    n = S_sorted.numel()
+    # cum_sq_below[k] = sum of σ_i² for i > k (1-indexed).
+    cum_sq_top = torch.cumsum(S_sorted.pow(2), 0)
+    total_sq = float(cum_sq_top[-1].item())
+    tau = None
+    for k in range(1, n + 1):
+        sum_below = total_sq - float(cum_sq_top[k - 1].item())
+        target_sq = (M2 - sum_below) / k
+        if target_sq < 0.0:
+            continue
+        tau_k = target_sq ** 0.5
+        sigma_k = float(S_sorted[k - 1].item())
+        # τ_k must lie in (σ_{k+1}, σ_k] for the "exactly top k modes
+        # clipped" decomposition to be self-consistent. Without the lower
+        # bound check, S.clamp_max(τ_k) clips MORE modes than k accounts
+        # for and the resulting Frob norm is below M_cap (over-clip bug).
+        sigma_k_plus_1 = float(S_sorted[k].item()) if k < n else 0.0
+        if sigma_k_plus_1 <= tau_k <= sigma_k:
+            tau = tau_k
+            break
+    if tau is None:
+        return Xf  # degenerate; should not happen if norm_sq > M²
+    S_clipped = S.clamp_max(tau)
+    return (U * S_clipped.unsqueeze(0)) @ Vh
+
+
+class AdamPolarProductLoRAClipGauge(Optimizer):
+    """Per-block singular-value CLIP + Sylvester min-Frob gauge lift.
+
+    Variationally clean implementation of theory.md's adjacent formulation:
+        min ⟨u_A,ΔA⟩ + ⟨u_B,ΔB⟩ + (1/(2η))‖J‖_F²
+        s.t.  ‖B ΔA‖_op ≤ τ_A,  ‖ΔB A‖_op ≤ τ_B
+    Clip is the EXACT proximal map of each per-block subproblem (Frobenius
+    projection onto the spectral-norm ball), unlike polar (which is the
+    op-norm-only direction maximizer with magnitude wiped). The gauge
+    lift recovers (ΔA, ΔB) from per-block (X^star, Y^star) on the
+    min-Frob surface B^T ΔB = ΔA A^T.
+
+    τ rule: R-equal — τ_A = ‖X_unc,A‖_F / √r per pair per step (no swept
+    hyperparameter, no external reference). Spectrum probe at r=16/r=64
+    shows σ_max / τ_R-equal ≈ 1.8–3.7 across pairs (peaky enough that
+    clip does real work, with r=64 noticeably peakier).
+
+    Skeleton (per pair, per step):
+      1. Adam EMA on raw factor gradients → (u_A, u_B).
+      2. Thin QR: B = Q_B R_B, A^T = Q_A R_AT.
+      3. Whitening: ũ_A = R_B^{-T} u_A, ũ_B = u_B R_AT^{-1}.
+      4. Per-block clip with R-equal τ:
+            P_A = clip(ũ_A; τ_A), τ_A = ‖ũ_A‖_F / √r
+            P_B = clip(ũ_B; τ_B), τ_B = ‖ũ_B‖_F / √r
+      5. J_target = -lr · (Q_B P_A + P_B Q_A^T)
+      6. Min-Frob lift via solve_sylvester (same as gauge variant):
+            S_B K + K S_A = B^T J_target A^T
+            ΔA = S_B^{-1} (B^T J_target − K A)
+            ΔB = (J_target A^T − B K) S_A^{-1}
+      7. Apply ΔA, ΔB. NO RMS-align — clip's τ supplies magnitude
+         internally through ‖X_unc‖_F.
+
+    PEFT init B=0 fallback. Same as AdamPolarProductLoRAGauge: at step 1
+    or B near zero, do per-block independent whitened polar (with
+    SB_half_inv = δ^{-1/2} I), no lift. From step 2 onward, full clip+lift.
+    """
+
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
+                 eps=1e-8, ns_steps=5, adapter_name=None,
+                 lora_plus_multiplier=1.0,
+                 picard_iters=1,
+                 log_diagnostics=False, diagnostics_every=20):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.ns_steps = ns_steps  # only used in the B≈0 fallback
+        self.lora_plus_multiplier = lora_plus_multiplier
+        self.picard_iters = int(picard_iters)
+        if self.picard_iters < 1:
+            raise ValueError("picard_iters must be >= 1")
+        self.log_diagnostics = log_diagnostics
+        self.diagnostics_every = diagnostics_every
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'v_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                'step': 0,
+            }
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        diag_records = [] if self.log_diagnostics else None
+
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for AdamPolarProductLoRAClipGauge.")
+            state = self.pair_state[i]
+            state['step'] += 1
+
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            state['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+            state['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+            state['v_A'].mul_(self.beta2).addcmul_(gA, gA, value=1.0 - self.beta2)
+            state['v_B'].mul_(self.beta2).addcmul_(gB, gB, value=1.0 - self.beta2)
+
+            bc1 = 1.0 - self.beta1 ** state['step']
+            bc2 = 1.0 - self.beta2 ** state['step']
+            u_A = (state['m_A'] / bc1) / ((state['v_A'] / bc2).sqrt() + self.eps)
+            u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
+
+            A_f = A.float()
+            B_f = B.float()
+            r = A_f.shape[0]
+
+            b_norm = float(B_f.norm())
+            use_fallback = b_norm < 1e-8
+
+            if use_fallback:
+                # Per-block independent whitened polar — same as the
+                # AdamPolarProductLoRAGauge fallback. Picard iteration
+                # is skipped at fallback (cross-coupling target undefined
+                # when B≈0).
+                S_A = spdify(A_f @ A_f.T, self.delta)
+                SA_half_inv = _spd_inv_half(S_A, eps=self.delta, method="eigh")
+                if b_norm < 1e-8:
+                    SB_half_inv = (self.delta ** -0.5) * torch.eye(
+                        r, dtype=torch.float32, device=A_f.device,
+                    )
+                else:
+                    S_B = spdify(B_f.T @ B_f, self.delta)
+                    SB_half_inv = _spd_inv_half(S_B, eps=self.delta, method="eigh")
+                X_B = u_B @ SA_half_inv
+                P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
+                geo_B = P_B @ SA_half_inv
+                X_A = SB_half_inv @ u_A
+                P_A = _newton_schulz(X_A, nsteps=self.ns_steps)
+                geo_A = SB_half_inv @ P_A
+                dA = -lr * geo_A
+                dB = -lr * geo_B
+                tau_A_log = float("nan")
+                tau_B_log = float("nan")
+            else:
+                Q_B, R_B = torch.linalg.qr(B_f, mode='reduced')   # (m,r), (r,r)
+                Q_A, R_AT = torch.linalg.qr(A_f.T, mode='reduced')  # (n,r), (r,r)
+
+                # Whitened linear cost (constant across picard iters).
+                # ũ_A = R_B^{-T} u_A; ũ_B = u_B R_AT^{-1} = u_B R_A^{-T}.
+                L0_A = torch.linalg.solve_triangular(R_B.T, u_A, upper=False)         # (r, n)
+                L0_B = torch.linalg.solve_triangular(R_AT.T, u_B.T, upper=False).T    # (m, r)
+
+                S_B = spdify(B_f.T @ B_f, self.delta)
+                S_A = spdify(A_f @ A_f.T, self.delta)
+
+                # Picard inner iteration on the per-block prox + lift.
+                # iter 0: T_A = T_B = 0 (no cross-coupling target).
+                # iter k ≥ 1: T_A = -Q_B^T · ΔB_prev · A; T_B = -B · ΔA_prev · Q_A.
+                # X_unc has sign and magnitude (lr factor) baked in via -lr·L0.
+                # clip is sign-equivariant (clip(-X) = -clip(X)), so X^star
+                # also carries sign and magnitude — the lift's J_target uses
+                # X^star directly with NO additional -lr factor (contrast with
+                # the polar variant where polar wipes magnitude).
+                dA = torch.zeros_like(A_f)
+                dB = torch.zeros_like(B_f)
+                for k in range(self.picard_iters):
+                    if k == 0:
+                        T_A = torch.zeros_like(L0_A)
+                        T_B = torch.zeros_like(L0_B)
+                    else:
+                        T_A = -Q_B.T @ dB @ A_f          # (r, n)
+                        T_B = -B_f @ dA @ Q_A             # (m, r)
+
+                    X_unc = T_A - lr * L0_A               # (r, n) — sign + mag inside
+                    Y_unc = T_B - lr * L0_B               # (m, r)
+
+                    # R-polar-equivalent cap: M = lr · √r (matches polar's
+                    # natural step magnitude in the QR-whitened basis).
+                    # The earlier R-AdamW-cap (M = lr·‖u_A‖_F) was ~√d_in
+                    # times bigger than polar's effective magnitude,
+                    # producing apparently "blowing up" steps at high lr.
+                    # With M = lr·√r, clip's magnitude matches polar's and
+                    # the only difference is spectrum shape (clip preserves
+                    # sub-bulk modes; polar flattens to 1).
+                    sqrt_r = float(r) ** 0.5
+                    M_A = lr * sqrt_r
+                    M_B = lr * sqrt_r
+                    P_A = _clip_adamw_capped(X_unc, M_A)  # (r, n)
+                    P_B = _clip_adamw_capped(Y_unc, M_B)  # (m, r)
+
+                    # Lift: J_target = Q_B P_A + P_B Q_A^T (no -lr; sign in P).
+                    # core_11 = (1,1) block of J_target in (Q_B, Q_A) basis
+                    #         = P_A Q_A + Q_B^T P_B
+                    core_11 = P_A @ Q_A + Q_B.T @ P_B    # (r, r)
+                    RHS_K = R_B.T @ core_11 @ R_AT        # (r, r)
+                    K = solve_sylvester(S_B, S_A, RHS_K)  # (r, r)
+
+                    # ΔA = S_B^{-1} (B^T J_target − K A);
+                    # B^T J_target = R_B^T (P_A + Q_B^T P_B Q_A^T)
+                    BTJ = R_B.T @ (P_A + Q_B.T @ P_B @ Q_A.T)  # (r, n)
+                    rhs_dA = BTJ - K @ A_f                      # (r, n)
+                    dA = solve_spd(S_B, rhs_dA)                 # (r, n)
+
+                    # ΔB = (J_target A^T − B K) S_A^{-1};
+                    # J_target A^T = Q_B P_A Q_A R_AT + P_B R_AT
+                    JAT = Q_B @ P_A @ Q_A @ R_AT + P_B @ R_AT  # (m, r)
+                    rhs_dB = JAT - B_f @ K                      # (m, r)
+                    dB = solve_spd(S_A, rhs_dB.T).T             # (m, r)
+
+                # LoRA+ multiplier on ΔB only (post-picard).
+                dB = self.lora_plus_multiplier * dB
+
+                # Log τ_A, τ_B from the LAST picard iter for diagnostics.
+                with torch.no_grad():
+                    sv_A = torch.linalg.svdvals(X_unc.float())
+                    sv_B = torch.linalg.svdvals(Y_unc.float())
+                    tau_A_log = float(sv_A.pow(2).sum().sqrt() / max(1.0, sv_A.numel() ** 0.5))
+                    tau_B_log = float(sv_B.pow(2).sum().sqrt() / max(1.0, sv_B.numel() ** 0.5))
+
+            if self.log_diagnostics:
+                if state['step'] % self.diagnostics_every == 0:
+                    rec = {
+                        "norm_dA": float(dA.detach().norm()),
+                        "norm_dB": float(dB.detach().norm()),
+                        "norm_A": float(A_f.norm()),
+                        "norm_B": float(B_f.norm()),
+                        "fallback": int(use_fallback),
+                        "tau_A": tau_A_log,
+                        "tau_B": tau_B_log,
+                    }
+                    BTdB = B_f.T @ dB.float()
+                    dAAT = dA.float() @ A_f.T
+                    gauge_resid = float((BTdB - dAAT).norm())
+                    gauge_denom = float(dAAT.norm()) + 1e-30
+                    rec["gauge_residual_abs"] = gauge_resid
+                    rec["gauge_residual_rel"] = gauge_resid / gauge_denom
+
+                    # B-spectrum trajectory diagnostic (stable rank, condition).
+                    # Mirrors the diag in baseline AdamPolarProductLoRA so we
+                    # can compare longitudinal B-evolution across variants.
+                    try:
+                        eigB = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
+                        smax_B = float(eigB.max())
+                        rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
+                        rec["nrank_B_1e2"] = int((eigB > 1e-2 * smax_B).sum())
+                        # Frob norm of K (the gauge variable from the lift).
+                        # Under min-Frob KKT: K = B^T dB = dA A^T. Predicted
+                        # to be small when the gauge constraint absorbs the
+                        # cross-coupling input.
+                        rec["K_frob"] = float(BTdB.norm())
+                    except torch._C._LinAlgError:
+                        rec["stable_rank_B"] = float("nan")
+                        rec["nrank_B_1e2"] = -1
+                        rec["K_frob"] = float("nan")
+
+                    diag_records.append(rec)
 
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
@@ -3038,7 +4357,7 @@ class GaLoreAdamW(Optimizer):
 
 # ---------------------------------------------------------------------------
 # Projected-quotient-polar core solver for joint operator-norm LoRA updates.
-# Implements docs/notes/polar_coupled_core_solver.md (variants 1 + 2 of the
+# Implements docs/notes/polar_product/theory.md (variants 1 + 2 of the
 # Section 6 ladder). Variant 1 = pure projected polar on raw factor gradients;
 # variant 2 = adds transported core-space momentum (Muon-style LoRA tangent
 # optimizer). Factor-Adam is intentionally omitted — it breaks gradient
@@ -3168,7 +4487,7 @@ def _project_zero_22(M, r):
 
 def _imbalance_gauge_shift(dA_0, dB_0, A, B, *, mode, rho=None, delta=1e-6):
     """Compute kernel-direction shift S that adjusts (ΔA_0, ΔB_0) toward an
-    iLoRA-style imbalance target. See docs/notes/polar_coupled_problem.md
+    iLoRA-style imbalance target. See docs/notes/polar_product/theory.md
     "Recommended gauge: imbalance-preserving (iLoRA-style)".
 
     The kernel of J_t is {(SA, -BS) : S ∈ R^(r×r)}, so the lifts
@@ -3387,7 +4706,7 @@ def _polar_coupled_core_lift(
         RHS_B = RHS_B + (U @ W) @ R_R.T
     dB = solve_spd(S_R, RHS_B.T).T
 
-    # Gauge shift (Section "Open sub-problem" of polar_coupled_problem.md).
+    # Gauge shift (Section "Open sub-problem" of polar_product/theory.md).
     # min-frobenius is the base lift above; imbalance modes shift through the
     # kernel of J_t to control the iLoRA imbalance functional.
     gauge_diag = {}
@@ -3515,7 +4834,7 @@ def _zero_B_fallback(A, B, G_A, G_B, lr, *, delta=1e-6, core_scale="squared_pena
     At B = 0: the tangent constraint ‖B ΔA + ΔB A‖_2 ≤ λ collapses to
     ‖ΔB A‖_2 ≤ λ, and the linear cost reduces to ⟨G_B, ΔB⟩ (since
     G_A = B^T (·) = 0). This is exactly Case 2 (one-factor restriction)
-    of polar_coupled_problem.md, with closed-form
+    of polar_product/theory.md, with closed-form
         ΔB = -λ · polar(G_B U_R Σ_R^{-1}) · Σ_R^{-1} U_R^T,
     where A = U_R Σ_R V_R^T (compact SVD). Plain Muon polar(G_B) misses
     the A-spectrum preconditioner; this form preserves it.
@@ -3620,7 +4939,7 @@ def _polar_coupled_core_step(
 def _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB):
     """Add factor-shape diagnostics to certs dict for gauge-imbalance analysis.
 
-    See docs/notes/polar_coupled_problem.md "Open sub-problem: gauge choice
+    See docs/notes/polar_product/theory.md "Open sub-problem: gauge choice
     under asymmetric LoRA initialization" — the empirical anchors for any
     gauge candidate are:
       - imbalance residual ‖AA^T − ρ B^T B‖_F / (‖AA^T‖_F + ρ‖B^T B‖_F + ε)
@@ -3669,11 +4988,11 @@ def _attach_factor_diagnostics(certs, A_f, B_f, bases, dA, dB):
 
 
 class PolarCoupledCoreLoRA(Optimizer):
-    """Variant 1 of docs/notes/polar_coupled_core_solver.md Section 6 ladder.
+    """Variant 1 of docs/notes/polar_product/theory.md Section 6 ladder.
 
     Pure projected-quotient-polar update on raw factor gradients. No Adam,
     no momentum: this is the clean variational baseline for the joint
-    operator-norm LoRA problem (Case 3 of polar_coupled_problem.md).
+    operator-norm LoRA problem (Case 3 of polar_product/theory.md).
 
     Certificates logged: γ ∈ [1, 2], ‖Ĥ‖_*, LB = ‖Ĥ‖_*/γ, UB = ‖Ĥ‖_*,
     relgap = 1 − 1/γ ∈ [0, 0.5], compat (gradient-compatibility violation;
@@ -3733,7 +5052,7 @@ class PolarCoupledCoreLoRA(Optimizer):
 
             # Post-step state-gauge rebalance: (A, B) ← (R^{-1} A, B R) such
             # that A A^T ≈ ρ B^T B. Preserves B A exactly. See
-            # docs/notes/polar_coupled_problem.md "Open sub-problem" section.
+            # docs/notes/polar_product/theory.md "Open sub-problem" section.
             if (self.state_rebalance
                     and state["step"] % self.rebalance_every == 0
                     and not _factor_essentially_zero(B.detach().float())):
@@ -3769,7 +5088,7 @@ class PolarCoupledCoreFactorAdamLoRA(Optimizer):
     B^T G_B = G_A A^T (u_A and u_B are normalized in different feature frames).
     The core construction's (C_L + C_R)/2 averaging projects back to the
     compatible subspace; cost shows up as compat > 0 in diagnostics. Per
-    docs/notes/polar_coupled_core_solver.md Section 6 this is "ablation only";
+    docs/notes/polar_product/theory.md Section 6 this is "ablation only";
     we run the ablation because Picard's empirical win contradicts the doc's
     a priori reasoning.
     """
@@ -4222,6 +5541,14 @@ def build_optimizer(
     higham_iters: int = 10,
     picard_alpha: float = 1.0,
     picard_iters_override: int | None = None,
+    anderson_m: int = 0,
+    anderson_reg: float = 1e-10,
+    soap_beta: float = 0.95,
+    soap_refresh_every: int = 1,
+    polar_norm_dir: str = "frob",
+    polar_sigma_power: float | None = None,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -4268,6 +5595,13 @@ def build_optimizer(
             lora_plus_multiplier=lora_plus_multiplier,
             betas=(0.9, 0.999),
             eps=1e-8,
+            weight_decay=weight_decay,
+        )
+    if optimizer_type == "adafactor":
+        return _build_lora_adafactor(
+            model,
+            lr=lr,
+            lora_plus_multiplier=lora_plus_multiplier,
             weight_decay=weight_decay,
         )
     if optimizer_type == "lin-lora":
@@ -4360,7 +5694,7 @@ def build_optimizer(
     if optimizer_type == "adam-polar-product-lora":
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -4371,6 +5705,8 @@ def build_optimizer(
             precond_method=precond_method,
             higham_iters=higham_iters,
             picard_iters=1,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
         )
     if optimizer_type == "adam-polar-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -4385,8 +5721,57 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
-            picard_iters=picard_iters_override if picard_iters_override is not None else 2,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
             picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+        )
+    if optimizer_type == "adam-soap-polar-product-lora":
+        return AdamSOAPPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=1,
+            soap_beta=soap_beta,
+            soap_refresh_every=soap_refresh_every,
+        )
+    if optimizer_type == "adafactor-polar-product-lora":
+        return AdaFactorPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=1,
+        )
+    if optimizer_type == "sign-momentum-polar-product-lora":
+        return SignMomentumPolarProductLoRA(
+            model, lr=lr,
+            betas=(beta1, beta2),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=1,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
@@ -4403,6 +5788,95 @@ def build_optimizer(
             higham_iters=higham_iters,
             picard_iters=2,
             end_rms_align=True,
+        )
+    if optimizer_type == "adam-clip-product-lora":
+        # Clip operator + RMS-align (no gauge/lift). Mirrors baseline
+        # adam-polar-product-lora but uses clip instead of polar — tests
+        # whether spectrum-preservation helps when cross-coupling is NOT
+        # absorbed by a gauge constraint.
+        return AdamPolarProductLoRA(
+            model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method, higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            operator_type="clip",
+        )
+    if optimizer_type == "adam-clip-product-lora-coupled":
+        return AdamPolarProductLoRA(
+            model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method, higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 2,
+            picard_alpha=picard_alpha,
+            operator_type="clip",
+        )
+    if optimizer_type == "adam-clip-product-lora-coupled-endrms":
+        return AdamPolarProductLoRA(
+            model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method, higham_iters=higham_iters,
+            picard_iters=2, end_rms_align=True,
+            operator_type="clip",
+        )
+    if optimizer_type == "adam-polar-product-lora-gauge":
+        return AdamPolarProductLoRAGauge(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "adam-polar-product-lora-gauge-coupled":
+        return AdamPolarProductLoRAGauge(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 2,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "adam-polar-product-lora-clip-gauge":
+        return AdamPolarProductLoRAClipGauge(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+        )
+    if optimizer_type == "adam-polar-product-lora-clip-gauge-coupled":
+        return AdamPolarProductLoRAClipGauge(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 2,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-lora":
         return PolarCoupledCoreLoRA(

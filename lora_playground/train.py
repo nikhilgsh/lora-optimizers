@@ -258,7 +258,44 @@ def make_parser():
     parser.add_argument("--picard_iters_override", type=int, default=None,
                         help="Override picard_iters for AdamPolarProductLoRA "
                              "(adam-polar-product-lora-coupled). Default uses the "
-                             "factory's hardcoded value (2 for coupled).")
+                             "factory's hardcoded value (3 for coupled).")
+    parser.add_argument("--anderson_m", type=int, default=0,
+                        help="Anderson(m) acceleration depth for the Picard inner "
+                             "loop in adam-polar-product-lora-coupled. m=0 disables "
+                             "(plain Picard, default). m>=1 keeps the last m (input, "
+                             "output) iterates and mixes via Type-II Anderson; "
+                             "expect 3-5 effective iters to converge in regimes "
+                             "where plain Picard needs 16.")
+    parser.add_argument("--anderson_reg", type=float, default=1e-10,
+                        help="Tikhonov regularizer on the Anderson LSQ Gram matrix.")
+    parser.add_argument("--soap_beta", type=float, default=0.95,
+                        help="EMA factor for the r×r covariance matrices L_A=EMA(gA gA^T), "
+                             "R_B=EMA(gB^T gB) used by adam-soap-polar-product-lora. "
+                             "0.95 is the SOAP-paper default.")
+    parser.add_argument("--soap_refresh_every", type=int, default=1,
+                        help="Cadence (in steps) for re-eigendecomposing L_A, R_B to refresh "
+                             "the SOAP eigenbases Q_A, Q_B in adam-soap-polar-product-lora. "
+                             "Q stays at identity until the first refresh, so the first "
+                             "soap_refresh_every-1 steps reduce exactly to "
+                             "adam-polar-product-lora.")
+    parser.add_argument("--beta1", type=float, default=0.9,
+                        help="Adam β₁ (momentum). Default 0.9.")
+    parser.add_argument("--beta2", type=float, default=0.999,
+                        help="Adam β₂ (variance EMA). Default 0.999. β₂=0 disables EMA "
+                             "(instant per-step variance — tests whether EMA of v matters "
+                             "for polar-pipeline upstream).")
+    parser.add_argument("--polar_sigma_power", type=float, default=None,
+                        help="HTMuon (arXiv:2603.10067) σ → σ^p generalized polar. "
+                             "None = use Newton-Schulz (default Muon polar). "
+                             "0 = exact polar via SVD. p ∈ (0,1) = heavier-tailed update. "
+                             "1 = no orthogonalization. HTMuon paper default p=0.125.")
+    parser.add_argument("--polar_norm_dir", type=str, default="frob",
+                        choices=["frob", "row", "col", "row_col", "col_row"],
+                        help="Muon+ (arXiv:2602.21545) post-orthogonalization normalization "
+                             "direction applied in adam-polar-product-lora's _polar_pipeline. "
+                             "'frob' = original Frobenius RMS-align (default, no change). "
+                             "'row'/'col' = unit-ℓ₂ per row/col of the orthogonalized output, "
+                             "then rescale to ‖u‖_F. 'row_col'/'col_row' = composed.")
     parser.add_argument("--wandb_project", default=None, help="W&B project name. Omit to disable W&B.")
     parser.add_argument("--wandb_run_name", default=None, help="W&B run name. Auto-generated from key params if omitted.")
     return parser
@@ -394,6 +431,14 @@ def main():
         higham_iters=args.higham_iters,
         picard_alpha=args.picard_alpha,
         picard_iters_override=args.picard_iters_override,
+        anderson_m=args.anderson_m,
+        anderson_reg=args.anderson_reg,
+        soap_beta=args.soap_beta,
+        soap_refresh_every=args.soap_refresh_every,
+        polar_norm_dir=args.polar_norm_dir,
+        polar_sigma_power=args.polar_sigma_power,
+        beta1=args.beta1,
+        beta2=args.beta2,
     )
     scheduler = get_scheduler(
         name=args.lr_scheduler_type,
@@ -451,6 +496,14 @@ def main():
             "profile_steps": args.profile_steps,
             "picard_alpha": args.picard_alpha,
             "picard_iters_override": args.picard_iters_override,
+            "anderson_m": args.anderson_m,
+            "anderson_reg": args.anderson_reg,
+            "soap_beta": args.soap_beta,
+            "soap_refresh_every": args.soap_refresh_every,
+            "polar_norm_dir": args.polar_norm_dir,
+            "polar_sigma_power": args.polar_sigma_power,
+            "beta1": args.beta1,
+            "beta2": args.beta2,
         }
     )
 
