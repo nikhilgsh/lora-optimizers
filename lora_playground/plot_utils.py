@@ -33,6 +33,7 @@ OPTIM_COLORS = {
     # 22 distinct colors — verified no-collision (see test_plot_utils.py).
     # Grouped by family for readability; assignment is unique across the map.
     "adamw":                       "#000000",  # baseline — pure black overlay
+    "adafactor":                   "#555555",  # grey baseline — Adafactor (rank-1 v factorization)
     # no-Adam family
     "scaled-lora":                 "#ff7f0e",
     "lin-lora":                    "#2ca02c",
@@ -53,6 +54,16 @@ OPTIM_COLORS = {
     "adam-polar-product-lora":     "#8c564b",
     "adam-polar-product-lora-coupled": "#5d342c",   # darker brown — coupled-pair variant of adam-polar
     "adam-polar-product-lora-coupled-endrms": "#a04a3c",  # warm brown — coupled w/ end-of-loop RMS-align
+    "adam-soap-polar-product-lora": "#c97a3a",  # amber — SOAP eigenbasis Adam before polar
+    "adafactor-polar-product-lora": "#d4a04c",  # gold — Adafactor rank-1 v before polar
+    "sign-momentum-polar-product-lora": "#7c3aed",  # violet — LION-style sign(m) before polar
+    "adam-clip-product-lora":                 "#1f6f8c",  # blue — clip + RMS-align (no gauge), k=1
+    "adam-clip-product-lora-coupled":         "#0f4f6f",  # dark blue — clip + RMS-align (no gauge), k=2
+    "adam-clip-product-lora-coupled-endrms":  "#3a8fb5",  # light blue — clip + RMS-align k=2 endrms
+    "adam-polar-product-lora-gauge":          "#7e3a85",  # purple — Sylvester min-Frob gauge lift, no postscale
+    "adam-polar-product-lora-gauge-coupled":  "#5a2d63",  # dark purple — gauge + picard cross-coupling
+    "adam-polar-product-lora-clip-gauge":     "#3a857e",  # teal — clip + gauge lift (R-equal τ rule)
+    "adam-polar-product-lora-clip-gauge-coupled": "#1e6e63",  # dark teal — clip+gauge with picard cross-coupling
     "polar-coupled-core-lora":     "#7a3a2c",   # variant 1: projected quotient polar, raw factor grads
     "polar-coupled-core-imbalance-scalar-lora":  "#a05030",  # + scalar imbalance-preserving gauge S=sI (recommended primary)
     "polar-coupled-core-imbalance-lora":         "#b86a48",  # + full r×r imbalance-preserving gauge
@@ -96,9 +107,20 @@ OPTIM_FAMILIES = {
     # Headline polar/muon spectral family (post-Adam direction-shaping).
     "headline_polar": {
         "adamw",
+        "adafactor",
         "adam-polar-product-lora",
         "adam-polar-product-lora-coupled",
         "adam-polar-product-lora-coupled-endrms",
+        "adam-soap-polar-product-lora",
+        "adafactor-polar-product-lora",
+        "sign-momentum-polar-product-lora",
+        "adam-clip-product-lora",
+        "adam-clip-product-lora-coupled",
+        "adam-clip-product-lora-coupled-endrms",
+        "adam-polar-product-lora-gauge",
+        "adam-polar-product-lora-gauge-coupled",
+        "adam-polar-product-lora-clip-gauge",
+        "adam-polar-product-lora-clip-gauge-coupled",
         "polar-coupled-core-lora",
         "polar-coupled-core-imbalance-scalar-lora",
         "polar-coupled-core-imbalance-lora",
@@ -212,6 +234,11 @@ OPTIM_MARKERS = {
     "adam-polar-product-lora":     "o",
     "adam-polar-product-lora-coupled": "P",   # plus (darker brown)
     "adam-polar-product-lora-coupled-endrms": "X",  # x-filled (warm brown)
+    "adam-soap-polar-product-lora": "*",   # star (amber) — SOAP eigenbasis preconditioning
+    "adam-polar-product-lora-gauge":          "D",  # diamond (purple) — Sylvester gauge variant
+    "adam-polar-product-lora-gauge-coupled":  "d",  # thin diamond (dark purple) — gauge + picard
+    "adam-polar-product-lora-clip-gauge":     "v",  # down-triangle (teal) — clip + gauge variant
+    "adam-polar-product-lora-clip-gauge-coupled": "^",  # up-triangle (dark teal) — clip+gauge + picard
     "polar-product-lora":          "d",   # thin diamond (light brown)
     "scaled-lora":                 ">",   # triangle-right (orange)
     "adam-scaled-lora-post":       "8",   # octagon (light orange)

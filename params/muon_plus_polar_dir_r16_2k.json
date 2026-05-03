@@ -1,0 +1,1 @@
+{"lr": ["3e-4"], "optimizer": ["adam-polar-product-lora"], "lora_plus_multiplier": ["1.0"], "seed": ["0"], "lora_r": ["16"], "polar_norm_dir": ["row", "col", "row_col", "col_row"]}

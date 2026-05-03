@@ -124,7 +124,9 @@ Before writing any numerical claim to `docs/notes/*.md` (final losses, Δ vs bas
 
 **NEVER** a hand-typed list of group names. Hand-typed lists drift from the manifest and silently miss data, producing phantom "pinned at boundary" / "missing data" claims. If you find yourself writing `groups = ['foo_2k', 'bar_2k', ...]`, stop — call the loader.
 
-All numbers in `docs/notes/*.md` are single-seed at the canonical 2k-step horizon unless explicitly multi-seed. Do NOT annotate Δ values with significance qualifiers — no "within jitter", no "above noise", no "≈ noise", no "trajectory jitter", no arbitrary thresholds (0.5%/1%/etc). Multi-seed verification is deferred project-wide; until then, single-seed Δ values are reported as raw numbers and described in plain language ("X is below AdamW by 0.0097", not "X strictly wins"). If the user later asks for significance claims, that's the cue to plan a multi-seed run.
+All numbers in `docs/notes/*.md` are single-seed at the canonical 2k-step horizon unless explicitly multi-seed. Do NOT use vague significance qualifiers — no "within jitter", no "≈ noise", no arbitrary thresholds (0.5%/1%/etc).
+
+**Use multi-seed AdamW as the workload's σ.** `logs/adamw_multiseed/` (params: `adamw_multiseed.json`, seeds 1-4 at η=3e-4) is the project's noise floor at the canonical 2k-step horizon: **r=16 std ≈ 0.0006 (2σ ≈ 0.0012), r=64 std ≈ 0.0007 (2σ ≈ 0.0014)**. When characterizing optimizer Δ values, compute Δ / σ_AdamW and state σ-units explicitly ("X is 2.3σ above Adam-polar"). Reserve "within noise" for |Δ| < 1σ. Do NOT claim "near-equivalent", "matches", or "saturated" without checking the σ-units. Multi-seed verification of variant optimizers themselves is still deferred — but AdamW's σ is the right anchor for characterizing single-seed variant Δ values.
 
 Workflow for `docs/notes/*.md` data-derived edits: pull data via canonical loader → propose concrete diff in chat → user confirms → edit. Never write multi-paragraph data-derived sections in a single unsupervised pass.
 
