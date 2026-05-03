@@ -284,6 +284,12 @@ def make_parser():
                         help="Adam β₂ (variance EMA). Default 0.999. β₂=0 disables EMA "
                              "(instant per-step variance — tests whether EMA of v matters "
                              "for polar-pipeline upstream).")
+    parser.add_argument("--polar_method", type=str, default="ns",
+                        choices=["ns", "ns_hybrid", "polar_express"],
+                        help="Polar approximation method in adam-polar-product-lora's _polar_pipeline. "
+                             "'ns' = standard degree-3 Newton-Schulz (default). "
+                             "'ns_hybrid' = DeepSeek-V4 §2.4 two-stage degree-5 (8 aggressive + 2 refine). "
+                             "'polar_express' = Amsel et al. arXiv:2505.16932 per-iteration optimal degree-5.")
     parser.add_argument("--polar_sigma_power", type=float, default=None,
                         help="HTMuon (arXiv:2603.10067) σ → σ^p generalized polar. "
                              "None = use Newton-Schulz (default Muon polar). "
@@ -437,6 +443,7 @@ def main():
         soap_refresh_every=args.soap_refresh_every,
         polar_norm_dir=args.polar_norm_dir,
         polar_sigma_power=args.polar_sigma_power,
+        polar_method=args.polar_method,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -502,6 +509,7 @@ def main():
             "soap_refresh_every": args.soap_refresh_every,
             "polar_norm_dir": args.polar_norm_dir,
             "polar_sigma_power": args.polar_sigma_power,
+            "polar_method": args.polar_method,
             "beta1": args.beta1,
             "beta2": args.beta2,
         }

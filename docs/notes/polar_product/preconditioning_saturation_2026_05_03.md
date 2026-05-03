@@ -1,5 +1,24 @@
 # Preconditioning saturation investigation (2026-05-03)
 
+## CRITICAL CAVEAT — k=1 baseline confounder
+
+All within-matrix variant sweeps below were run with the `adam-polar-product-lora` (`picard_iters=1`) baseline. The project's current best at r=64 is `adam-polar-product-lora-coupled` with `picard_iters=3` (commit dadea5d, landed 2026-05-03 12:57, ~13σ improvement at r=64: 0.7453 → 0.7364). The investigation below was running in parallel and did not re-baseline.
+
+**What still holds:**
+- Mechanistic claims about within-matrix saturation at k=1 (SOAP ≈ AdaFactor ≈ Adam at k=1 polar pipeline).
+- The HTMuon SVD-vs-NS 4σ comparison at r=64 (kept k=1 fixed across both arms).
+- The σ-spread argument (r=16 σ_max/σ_min ≈ 2 vs r=64 ≈ 7).
+
+**What does NOT transfer to k=3:**
+- "Saturated" framing — variants need re-test with k=3 since Picard cross-coupling iteration changes the input each iter, and our variants modify what gets cross-coupled.
+- Any "this variant is the leaderboard ceiling" framing.
+
+**Pending re-test sweeps** (queued 2026-05-03 ~13:30):
+- 6328288 — HTMuon σ^p × {0, 0.125, 0.25} at k=3 r=64
+- 6328289 — `polar_method` ∈ {ns_hybrid, polar_express} at k=3 r=64
+
+The HTMuon-r=64 finding is the headline test for k=3 stacking. If SVD-exact polar's 4σ k=1 win stacks on top of k=3's ~13σ improvement, real new state of the art. If it doesn't (because k=3's iteration absorbs the NS approximation residue), HTMuon was a k=1 phenomenon and the new best stays at k=3 NS-polar.
+
 ## TL;DR — corrected after r=16 vs r=64 spectrum check
 
 **Within-matrix preconditioning upstream of polar appears saturated at both
