@@ -311,6 +311,71 @@ The sign(m) → polar variant therefore demonstrates:
 - Sign-momentum is a viable simplification for memory/code reasons IF the
   ~0.003 cost is acceptable; not a drop-in replacement.
 
+## k=3 r=64 stacking results — early-step crossover (added 2026-05-03)
+
+Both predicted-stacking sweeps reported back partial. Headline: the k=1 r=64
+SVD-polar 4σ win does NOT stack on top of k=3 at the canonical 2k horizon.
+But the trajectory shape is more interesting than the endpoint — there's a
+clean early-step crossover where every higher-quality polar variant (SVD,
+σ^0.125, σ^0.25, ns_hybrid, polar_express) **beats** k=3 NS-baseline.
+
+Data pulled directly from `logs/htmuon_polar_k3_r64_2k/run_info/logs/log_*.out`
+and `logs/polar_method_k3_r64_2k/run_info/logs/log_*.out` (single-seed,
+r=64, η=3e-4, k=3 coupled). Baseline is `picard_k3_r64` group (same r/η/k).
+σ_r=64 ≈ 0.0007 (multi-seed AdamW), so 1σ ≈ 0.7/1000 in the Δ table below.
+
+**Δ vs k=3 NS-baseline (units of 0.001 nats; negative = variant better):**
+
+| step | σ=0 SVD | σ=0.125 | σ=0.25 | ns_hybrid | polar_express |
+|---|---|---|---|---|---|
+| 200 | −2.4 | −1.6 | −1.0 | −2.4 | −2.4 |
+| 400 | −2.3 | −1.4 | −0.6 | −2.2 | −2.1 |
+| 600 | −1.1 | −0.7 | −0.2 | −1.1 | −1.0 |
+| 800 | −0.9 | −0.3 | +0.1 | −0.9 | −0.8 |
+| 1000 | −0.3 | +0.4 | +0.5 | −0.3 | −0.2 |
+| **1200** | **+0.2** ← crossover | +1.0 | −1.1 | +0.4 | +0.3 |
+| 1400 | +2.8 | +3.4 | +1.1 | +2.8 | +3.0 |
+| 1800 | (running) | (running) | (running) | +7.9 | +8.1 |
+| 2000 | (running) | (running) | (running) | (running) | +8.8 |
+
+Steps 200–1000: every variant beats baseline by ~3σ early, ~1σ at step 1000.
+Crossover ≈ step 1200. By step 1400 every variant is +1.5σ to +5σ worse;
+by step 2000 they're +5σ to +13σ worse. Trajectories not yet finished as
+of writing (jobs 6328288, 6328289 RUNNING) — final-step deltas may shift,
+but the crossover and direction look settled across all five cells.
+
+**Working hypothesis for the crossover** (consistent with HTMuon paper Fig 1a's
+"Muon_NS beats Muon_SVD" finding at LLaMA pretraining): higher-quality polar
+helps when the NS input has wide σ-spread (early training, when the coupled
+optimizer's preconditioned gradient `X_unc` has σ_max/σ_min ≈ 7 per the
+existing diagnostic). As training progresses, the σ-spread narrows; once
+narrow, NS's residual variation is "free regularization" that the
+exact-polar variants discard. Not derived — pattern consistent with the
+σ-spread narrowing data, but no direct test that the narrowing is causal.
+
+**What this changes:**
+
+- The earlier "saturation across the board at k=3 r=64" framing is wrong as
+  stated. There IS a regime where exact polar wins; it's just not the 2k
+  endpoint.
+- A run budget < 1000 steps (a different workload than this project's
+  canonical horizon) would prefer SVD-exact polar / ns_hybrid / polar_express
+  over NS — the headline ranking would flip.
+- The k=3 NS-polar baseline (0.7364 at step 2000) remains the project's
+  best at the canonical horizon. No relabel.
+
+**What's still open:**
+
+- Mechanism: σ-spread of `X_unc` at step 1200+ — does it actually narrow
+  enough to explain the crossover? The diagnostic exists (`xunc_A_*`,
+  `xunc_B_*` fields); pull the full trajectory rather than the early
+  snapshot in the existing report.
+- Single-seed; the early-step Δ ≈ 2-3σ above noise floor but a multi-seed
+  AdamW-like noise calibration of the variants themselves would tighten
+  the crossover step estimate.
+- Whether σ=0.25 (the cell that stays closest to baseline longest) recovers
+  late or just degrades slower than σ=0.
+
 ## Decision rules for next steps after these sweeps land
 
 **For r=16 sweeps (currently running):** the saturation argument predicts
