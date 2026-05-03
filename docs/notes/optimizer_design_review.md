@@ -1,286 +1,47 @@
-# Critical design review: failing optimizer variants
-
-Triggered by user's question on whether the failures look like bugs or
-fundamental flaws. This doc enumerates the suspicious variants, diagnoses
-the most likely cause for each, and proposes a falsifiable fix.
-
-## Status of each "failure"
-
-| optimizer                    | status     | best loss | gap vs AdamW | suspicion level |
-|------------------------------|------------|-----------|--------------|------------------|
-| adam-lin-lora-post           | losing     | 0.79+ (in flight, η=1e-3) | +0.03 | **High — likely magnitude bug** |
-| adam-scaled-lora-post        | losing     | 0.84+ (in flight, η=1e-3) | +0.06 | **High — likely magnitude bug** |
-| adam-lin-lora-matrix         | resubmitted with v_pair=mean fix; pending | tbd | tbd | medium — initial submission was a different bug, fix needs validation |
-| adam-scaled-lora-matrix      | resubmitted; pending      | tbd | tbd | medium |
-| muon-adam-lora               | losing     | 0.80 at η=1e-3 step 600 | +0.02 trending | **High — three known divergences from AdaMuon paper** |
-| product-muon-lora            | losing     | ~0.81 at step 500 (extrapolated) | +0.05 | medium — geometry might be right but magnitude is off |
-| original adam-{lin,scaled}-lora | tied with AdamW | 0.756 / 0.757 | ≈ 0 | not a bug — H1 explains why |
-
-The first two are the highest-suspicion items because they were *meant* to
-fix the H1 mechanism but lost worse than the unfixed originals — that's
-inconsistent with the simple narrative "Adam → geometry preserves geometric
-information that Adam → no-geometry doesn't."
-
-## Diagnosis 1 — H4 *-Post: step magnitude varies by 100× over training
-
-### Symptom
-
-`adam-{lin,scaled}-lora-post` at η=1e-3 (the best η for the original
-adam-lin-lora) at step 1400: lin-post 0.79, scaled-post 0.84. Both worse
-than plain AdamW (0.78 at the same step). At smaller η no different — at
-η=3e-4 step 1600 lin-post is 0.83, scaled-post 0.86.
-
-### Root cause
-
-In *-Post, the geometric step is `S_B⁻¹ · u_A` where `u_A = m̂_A /
-(√v̂_A + ε)` is Adam's sign-like direction with ‖u_A‖_F ≈ √(r·d_in) ≈ 256
-for r=16, d_in=4096.
-
-- `‖S_B⁻¹ u_A‖_F = ‖u_A‖_F / σ_min(S_B)` (worst case).
-- From H1 trajectory: σ_min(S_B) climbs **0.011 → 1.08 over 2000 steps**,
-  driven by ‖B‖² growth.
-- So `‖step‖_F = lr · ‖S_B⁻¹ u_A‖_F` varies by ~**100×** over training at
-  fixed lr.
-
-**Effective lr drifts:** the same lr=1e-3 produces a step of ‖_F ≈ 23000
-(*lr·256/0.011*) at step 20 and ‖_F ≈ 240 (*lr·256/1.08*) at step 1500.
-Either we're badly overshooting early (causing bad early dynamics that the
-optimizer never recovers from), or the η we picked is sized for late
-training but is gigantic early, or the η is sized for early training but
-is tiny late. Any way it's cut, lr means different things at different
-steps.
-
-This is a classic problem solved in the Muon literature by **RMS-aligned
-rescaling** — see AdaMuon (arxiv 2507.11005) Algorithm 1 line: γ_t =
-0.2·√(mn) / ‖Õ‖_F. Idea: rescale the geometric direction so its Frobenius
-norm equals a target (the bare Adam step's ‖_F). Decouples geometry from
-magnitude.
-
-### Fix (implemented as commit pending — see below)
-
-For both `AdamScaledLoRAPost` and `AdamLinLoRAPost`, replace the bare
-geometric step with an RMS-aligned variant:
-
-```python
-# Compute lr-free geometric direction
-geo_A = solve_spd(SB, u_A)           # for Scaled
-# or, for Lin: geo_A = -S_B^{-1}(u_A + γ K' A) with K' lr-factored
-
-# Rescale: ‖ΔA‖_F = lr · ‖u_A‖_F
-dA = lr * (‖u_A‖_F / ‖geo_A‖_F) * geo_A
-```
-
-With this, `‖ΔA‖_F = lr · ‖u_A‖_F` regardless of S_B's conditioning.
-Geometry only contributes *direction*; magnitude is set by lr.
-
-### Falsifiable predictions
-
-If the magnitude drift was the dominant issue:
-1. **Best η for *-Post should now be similar to AdamW's best** (≈ 3e-4)
-   instead of 1e-3.
-2. **Eval at the new best η should be ≤ 0.7579 ± 0.005** (tying or
-   beating plain AdamW).
-3. **Trajectory should match plain AdamW closely early in training**
-   (because S_B⁻¹ on a sign vector is approximately a rotation when σ_min
-   is tiny — the geometric correction shouldn't kick in meaningfully
-   until S_B has structure).
-4. If after rescale the loss is still ≥ 0.005 above AdamW: the geometric
-   direction itself is uninformative on a sign-input, *not* a magnitude
-   issue.
-
-These give clean pass/fail criteria.
-
-### How to test
-
-Smoke at η=3e-4 for 100 steps on the canonical fixture: should drop train
-loss from ~3.5 to ~1.0 in line with what plain AdamW does. If the rescaled
-optimizer crashes / NaNs / fails to learn, fix is wrong. Then a 4-run mini
-sweep (η ∈ {1e-4, 3e-4, 1e-3} × {scaled-post, lin-post}, 500 steps) on the
-cluster decides whether the fix transfers to scale.
-
-## Diagnosis 2 — muon-adam-lora: missing AdaMuon's three innovations
-
-### Symptom
-
-`muon-adam-lora` (NS → Adam) at η=1e-3 m=1 step 600: 0.80 (worse than
-AdamW 0.78). At η=3e-3 m=4: 1.5045 (diverging).
-
-### Root cause
-
-Our implementation is "naïve NS-then-Adam":
-- NS the raw gradient
-- Run full Adam (m, v, bias correction, m̂/√v̂) on the NS output
-
-AdaMuon (arxiv 2507.11005) does this composition successfully and
-identifies three details that matter:
-
-1. **Sign-stabilize before NS:** O_t = NS(sign(M_t), T), not NS(M_t).
-   sign() bounds the input magnitude per-coord so NS sees a stationary
-   distribution and produces a more consistent O_t.
-2. **Don't run Adam's first moment on NS output:** AdaMuon only tracks v
-   on O_t, not m. The "first momentum" is just gradient momentum (M_t) on
-   raw G; that's what feeds NS. Running an additional m̂ EMA on the NS
-   output is *double smoothing* — slows response without adding signal.
-3. **RMS-align the step:** γ_t = 0.2·√(mn)/‖Õ_t‖_F, again for magnitude
-   stability.
-
-We do none of these. Each one alone could plausibly explain the gap.
-
-### Proposed fix
-
-Implement a faithful AdaMuon port: `AdaMuonLoRA`. Per-factor independently
-(matching the rest of our LoRA-mode optimizers):
-- M_t = β·M_{t-1} + G_t  (gradient momentum)
-- O_t = NewtonSchulz(sign(M_t), T)
-- V_t = β·V_{t-1} + (1−β)·O_t ⊙ O_t
-- Õ_t = O_t ⊘ (√V_t + ε)
-- γ_t = 0.2·√(mn) / ‖Õ_t‖_F
-- ΔW = -η·γ_t·Õ_t
-
-Reuse `_newton_schulz` from the existing MuonLoRA impl.
-
-### Falsifiable predictions
-
-If the failures of muon-adam-lora are due to the three missing pieces:
-1. AdaMuon-style port should beat muon-adam-lora at every η.
-2. Best η for AdaMuon should match AdamW's best (3e-4) due to RMS-align.
-3. Final eval should be ≤ adam-muon-lora's 0.7557 (because AdaMuon is
-   essentially adam-muon-lora's reverse-order with better stabilization,
-   so we expect comparable performance).
-
-If AdaMuon-style still loses to AdamW: something specific to the NS-on-
-sign-of-momentum composition doesn't transfer to the LoRA fine-tune
-regime.
-
-## Diagnosis 3 — pre-style adam-{lin,scaled}-lora-matrix
-
-### Symptom
-
-First submission (sum-of-squares v_pair): didn't learn at all
-(eval=1.187 throughout = random init).
-
-### Root cause
-
-v_pair tracked Σ g² (sum) instead of mean. √v̂ ≈ √N · RMS(g), effective lr
-= lr/√N ≈ lr/700 for r=16 LoRA shapes. Step magnitude was ~1/700 of what
-the η suggested → near-zero updates.
-
-### Fix (already shipped: commit ac81bba)
-
-Track mean square: v_pair = β·v_pair + (1-β)·(Σ g² / N_total).
-
-### Validation
-
-Verified: η=1e-3 step 50 → eval 0.886 (was 1.187 broken). Resubmitted as
-job 6312759 — pending in queue.
-
-### Outstanding question
-
-Even with the magnitude fix, matrix-Adam's *direction* is the
-geometrically preconditioned EMA m̂_A scaled by per-pair magnitude. Per
-H1, m̂_A on `precond_A = S_B⁻¹ ∇A` should preserve the geometric
-direction (unlike per-coord v̂ which would normalize it away). So
-matrix-Adam should produce a *different* step than plain Adam. Whether
-that step is *better* is what the sweep will show.
-
-## What to actually run next
-
-In priority order:
-
-1. **Smoke RMS-aligned *-Post on local A6000.** Pass: training loss drops
-   from random init to ≤ 1.5 in 50 steps at η=3e-4 (expected for any
-   reasonable optimizer at this scale). Cost ~ 2 minutes wall.
-
-2. **If smoke passes, queue a 500-step pilot** at η ∈ {1e-4, 3e-4, 1e-3}
-   × {lin-post, scaled-post}, 6 runs. Decision criterion: **best final
-   eval < 0.78**. If yes → resubmit full 2k sweep at the winning η. If no
-   → conclude the geometric direction is uninformative on a sign-input and
-   close H4.
-
-3. **Implement AdaMuonLoRA** (Diagnosis 2). 1-class addition. Smoke + 500-
-   step pilot in parallel with (1)-(2). Comparable cost.
-
-4. **Wait for matrix-Adam (H5 resubmitted)** — already running fix; not
-   actionable until results land. ~2h.
-
-5. **Park the original H4 sweep (job 6312277).** It's still running with
-   the unfixed *-Post code. Either let it finish (deterministic
-   falsification at the unfixed parameter values, useful for the doc) or
-   cancel to free GPUs. **Recommendation: let it finish** — it's mostly
-   done, the data point "unfixed *-Post loses at every η" is publishable
-   evidence that the magnitude drift is the dominant failure mode.
-
-## Diagnosis 4 — adam-polar-product-lora: only one ordering tested
-
-### Symptom
-
-`adam-polar-product-lora` (Adam → polar-product geometry) is the lowest
-single-seed loss at r=64 (0.7453 vs AdamW r=64 0.7550; multi-seed deferred).
-The docstring in
-`optim.py` justifies the Adam-then-polar ordering on the H1 result that
-"plain pre-Adam preconditioning is erased by Adam's per-coord √v̂ on a
-sign-like input. Here the geometric correction is polar (matrix-structural
-— invariant to per-coord rescaling), so it survives Adam by construction."
-
-This is a defensible argument for *one* of the two orderings. AdaMuon
-(arxiv 2507.11005, §3.1) argues the *reverse*: variance estimation should
-be done on the polar output Oₜ, not on raw G or momentum M, "because the
-raw gradient Gₜ carries ill-conditioned scaling and directional noise that
-Muon's polar decomposition is specifically designed to eliminate, making
-it unsuitable for stable variance tracking." Their published recipe at
-1.1B-pretrain scale claims +40% efficiency over Adam.
-
-The H1 finding does NOT decide between these orderings. H1 ruled out *Gram-
-inverse* preconditioners (S_A⁻¹ᐟ², S_B⁻¹ᐟ²) running before Adam, because
-those are scalar-magnitude-only rescalings on per-coordinate axes that v̂
-straightforwardly undoes. Polar is qualitatively different: it sets all
-singular values to 1, producing a sign-like matrix on which Adam's per-
-coordinate v̂ is meaningful normalization (this is exactly AdaMuon's design
-argument). So "polar-then-Adam" and "Adam-then-polar" are both consistent
-with H1; only one has been tested in this project.
-
-### Earlier evidence is not against this
-
-Earlier `muon-adam-lora` (NS → full Adam(m, v) on the NS output) failed
-at 2k (best η=1e-3 m=1 → ~0.78). Per `muon_beat_adamw_investigation.md`
-H4-reverse, that failure mode looks like NS without sign-stabilization
-producing high step-to-step variance, which inflates v̂ and makes m̂/√v̂
-chaotic. AdaMuon avoids exactly this with (i) sign(M) before NS, (ii)
-*only* second-momentum on the NS output (no first momentum), (iii) RMS-
-align. The naive port did none of the three. So `muon-adam-lora`'s
-failure is not evidence that the "polar-first" composition family fails —
-it's evidence that the naive instance fails.
-
-### Falsifiable next experiment
-
-Implement `AdamuonPolarProductLoRA` (working name): apply polar-product
-geometry first (same as AdamPolarProductLoRA's polar step but on the
-*momentum* of the raw gradients, not on Adam's denoised direction), then
-accumulate Vₜ ← βVₜ₋₁ + (1−β)·Pₜ⊙Pₜ on the polar output Pₜ, then
-elementwise normalize, then RMS-align. Compare at the same (r=16, r=64,
-seed=0, 2k step, η-sweep) configuration as AdamPolarProductLoRA.
-
-Predictions:
-1. If AdaMuon's design argument transfers to LoRA fine-tune scale at
-   r=64: AdamuonPolarProductLoRA ≤ 0.7453 at η ≈ 3e-4.
-2. If H1's "v̂ erases matrix-structural information" reasoning extends
-   to polar (contradicting AdaMuon's argument): AdamuonPolarProductLoRA
-   loses to AdamPolarProductLoRA. Would mean AdaMuon's pretraining-scale
-   gain doesn't transfer here, or that the spectral-product geometry
-   specifically prefers Adam-first.
-3. If both compositions land at similar single-seed losses: ordering is
-   plausibly immaterial at this scale, and the spectral-product geometry
-   is the load-bearing piece in both. Multi-seed would harden the claim.
-
-This is a clean experiment because the *only* difference is variance-
-accumulation source (raw ∇ vs polar output) and m̂ inclusion (yes vs no).
-Everything else — polar-product structure, Newton-Schulz iteration count,
-δI regularization, RMS-align — held identical.
-
-## Provisional acceptance criteria for "fix succeeded"
-
-Single-seed at the canonical 2k-step horizon; multi-seed deferred.
-
-- *-Post (after RMS-align): final eval below AdamW's 0.7579.
-- AdaMuonLoRA (after implementation): final eval below AdamW's 0.7579.
-- matrix-Adam (after fix): final eval below AdamW's 0.7579.
+# Critical design review — resolved snapshot
+
+This doc was a mid-investigation triage of failing optimizer variants. All
+four diagnoses below have since resolved (validated, ported, or closed).
+Current standings, leaderboard numbers, and live mechanism questions live
+in `docs/notes/optimizer_synthesis.md`. Term definitions (Hybrid Picard,
+RMS-align, Adam covector, polar block solve, etc.) are in
+`docs/notes/glossary.md`.
+
+## Diagnoses — outcomes
+
+- **Diagnosis 1 — `*-Post` step-magnitude drift (`adam-{lin,scaled}-lora-post`).**
+  Validated. Without RMS-align, σ_min(S_B) climbed 0.011→1.08 over training,
+  varying the step magnitude ~100× at fixed lr. The RMS-align fix shipped;
+  `adam-scaled-lora-post` at η=3e-4 reaches 0.7570 (within 0.0009 of AdamW
+  at r=16). See `optimizer_synthesis.md` Bucket 1 entry "H4 RMS-aligned
+  *-Post".
+
+- **Diagnosis 2 — `muon-adam-lora` missing AdaMuon stabilizers
+  (sign(M) before NS, V on NS-output only, RMS-align).** Validated. The
+  AdaMuon-faithful port `adamuon-lora` is registered in `optim.py`. At
+  r=64 it reaches 0.7515 (Δ=−0.0035 vs AdamW); at r=16 it ties AdamW at
+  0.7603. The polar-first family is no longer falsified, but in this
+  project Adam-then-polar wins among orderings. See
+  `optimizer_synthesis.md`:H1 narrative and the Bucket 2 entries.
+
+- **Diagnosis 3 — matrix-Adam (`adam-{lin,scaled}-lora-matrix`).** Closed
+  as not productive. After the v_pair=mean fix, r=16 best is 0.7744 and
+  r=64 best is 0.7723 — both decisively worse than the corresponding
+  per-coord Adam variants. Trading per-coord Adam for direction
+  preservation costs more than it buys.
+
+- **Diagnosis 4 — polar-product ordering (`adam-polar-product-lora` vs
+  `adamuon-polar-product-lora`).** Tested. Adam-then-polar beats
+  polar-then-V at every measured (r, η): at r=64 single-seed, 0.7453 vs
+  0.7486; at r=16, 0.7546 vs 0.7653. AdaMuon's pretraining-scale design
+  argument does not transfer to LoRA fine-tune scale on this benchmark.
+  Spectral-product geometry is the load-bearing piece across both
+  orderings; Adam-first is the headline.
+
+## Pointers
+
+- Current leaderboard, buckets, and live mechanism questions:
+  `docs/notes/optimizer_synthesis.md`.
+- Term definitions: `docs/notes/glossary.md`.
+- Coupled polar (the family that contains the current single-seed
+  leaders): `docs/notes/polar_product/investigations.md`.

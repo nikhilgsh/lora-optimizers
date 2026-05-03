@@ -204,7 +204,7 @@ These produce a small per-step shrinkage of weights when the gram is rank-defici
 
 | optimizer        | best η | eval loss | gap-to-AdamW | status |
 |------------------|--------|-----------|--------------|--------|
-| adam-lin-lora    | 1e-3   | **0.7564**| -0.2%        | interior peak |
+| adam-lin-lora    | 1e-3   | **0.7581**| +0.0%        | interior peak |
 | adam-scaled-lora | 1e-3   | 0.7572    | -0.1%        | interior peak |
 | adamw            | 3e-4   | 0.7579    | (baseline)   | baseline |
 | muon-lora        | 3e-3   | 0.7675    | +1.3%        | interior peak (post-NS-fix) |
