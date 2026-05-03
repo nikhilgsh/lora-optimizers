@@ -6,22 +6,236 @@ optimizers, lr-pinning) for a notebook audit cell.
 
 Scope tags on manifests are metadata only — they don't drive loading. To
 remove an old sweep, delete its log dir.
+
+Enrichment: every run returned by ``load_runs`` carries a ``cfg["_derived"]``
+namespace with fields answering "what optimizer math actually ran", regardless
+of how old the run is or how complete its raw cfg was. See ``_enrich_cfg``.
 """
 from __future__ import annotations
 
+import subprocess
+import warnings
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
 from .manifest import live_manifests_newest_first, load_manifests, warn_untagged
 from .plot_utils import (
     DIVERGE_THRESHOLD, OPTIM_COLORS, has_runs, load_sweep, max_loss, merge_runs,
+    parse_flag,
 )
 
 
 def _default_logs_root() -> str:
     """Repo-anchored ``logs/`` path, independent of caller cwd."""
     return str(Path(__file__).resolve().parent.parent / "logs")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+# ─── commit-aware default resolution ──────────────────────────────────────────
+#
+# The motivating case: ``build_optimizer`` for ``adam-polar-product-lora-coupled``
+# hardcoded its default ``picard_iters`` as 2 until commit ``dadea5d`` (May 3
+# 2026), when it flipped to 3. Runs from before that commit that didn't pass
+# ``--picard_iters_override`` actually ran with k=2, even though the *current*
+# code's default is k=3. Backfilling with the current default would silently
+# mislabel those runs.
+#
+# Each entry: (optimizer_type, kwarg_name) → list of (commit_sha, value, date)
+# sorted oldest-first. The sentinel ``"<initial>"`` means "the value before any
+# of the listed commits"; it always resolves to True for ``_is_ancestor`` so
+# the chronologically-earliest entry is the fallback.
+#
+# The table is **manually curated** — we add entries as we discover historical
+# default changes that affect interpretation. Defaults we don't know changed
+# will be backfilled with the current value; the cross-commit warning in
+# ``load_runs`` is the safety net for "you're comparing across commits, check
+# whether anything changed".
+HARDCODED_DEFAULT_HISTORY: dict[tuple[str, str], list[tuple[str, Any, str]]] = {
+    ("adam-polar-product-lora-coupled", "picard_iters"): [
+        ("<initial>", 2, "<original>"),
+        ("dadea5d",   3, "2026-05-03"),
+    ],
+}
+
+
+@lru_cache(maxsize=4096)
+def _is_ancestor(commit: str, descendant: str = "HEAD") -> bool:
+    """True iff ``commit`` is an ancestor of ``descendant`` in the repo at
+    ``_repo_root()``. Sentinel ``"<initial>"`` is treated as an ancestor of
+    everything (the chronologically-earliest registry entry).
+
+    Cached because we query the same (commit, HEAD) pairs repeatedly when
+    enriching many runs. Failures (commit not in repo, git not available)
+    are caught and treated as "not an ancestor" so enrichment never crashes
+    a load — at worst, a registry entry is skipped and we fall back to the
+    next.
+    """
+    if commit == "<initial>":
+        return True
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, descendant],
+            cwd=str(_repo_root()),
+            capture_output=True,
+            check=False,
+            timeout=2.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _resolve_default_at_commit(optimizer_type: str, kwarg: str,
+                                run_commit: str | None) -> tuple[Any, bool]:
+    """Look up the hardcoded default for ``(optimizer_type, kwarg)`` that was
+    in effect at ``run_commit``. Returns (value, resolved_with_certainty).
+
+    ``resolved_with_certainty=False`` when:
+      - ``run_commit`` is missing or unparseable
+      - the registry has no entry for this (optimizer_type, kwarg)
+      - none of the registry's commit entries are ancestors of run_commit
+        (only happens with rebased/orphan history)
+    """
+    history = HARDCODED_DEFAULT_HISTORY.get((optimizer_type, kwarg))
+    if history is None:
+        return (None, False)
+    if not run_commit:
+        # No commit info — return the latest entry, mark as uncertain.
+        return (history[-1][1], False)
+    # Walk newest-first; first ancestor wins.
+    for commit, value, _date in reversed(history):
+        if _is_ancestor(commit, run_commit):
+            return (value, True)
+    # No ancestor found — fall back to the latest entry, mark as uncertain.
+    return (history[-1][1], False)
+
+
+# ─── enrichment ───────────────────────────────────────────────────────────────
+
+
+def _backfill_optimizer_config(cfg: dict) -> dict:
+    """Reconstruct the equivalent of ``optimizer_config_dict(opt)`` for runs
+    whose cfg lacks it (pre-b0baa4d, May 3 2026).
+
+    Source priority for each kwarg, highest first:
+      1. ``cfg[kwarg]`` if a top-level field exists (older runs put many
+         kwargs at the top level alongside event="config" keys).
+      2. ``parse_flag(cfg["command"], f"--{kwarg}")`` if the user passed it.
+      3. Empty (the caller's derivations layer fills with class defaults).
+
+    Always tagged ``_backfilled=True`` so downstream can tell.
+    """
+    cmd = cfg.get("command", "") or ""
+    backfilled: dict[str, Any] = {"_backfilled": True}
+    # All CLI flags currently surfaced by ``train.py`` that affect the
+    # ``adam-polar-product-lora{,-coupled}`` algorithmic path. Other optimizers'
+    # CLI flags are extracted opportunistically — same pattern, just unused.
+    cli_kwargs = (
+        "muon_ns_steps", "polar_method", "polar_sigma_power", "polar_norm_dir",
+        "picard_iters_override", "picard_alpha", "anderson_m", "anderson_reg",
+        "soap_beta", "soap_refresh_every", "beta1", "beta2",
+        "lora_plus_multiplier", "precond_refresh_every", "precond_method",
+        "higham_iters",
+    )
+    for kw in cli_kwargs:
+        if kw in cfg and cfg[kw] is not None:
+            backfilled[kw] = cfg[kw]
+            continue
+        flag_val = parse_flag(cmd, f"--{kw}")
+        if flag_val is not None:
+            backfilled[kw] = flag_val
+    return backfilled
+
+
+def _coerce(v, kind):
+    """Best-effort cast for backfilled string CLI values. Returns ``v`` on
+    failure rather than raising — derivations should not crash a load."""
+    if v is None:
+        return None
+    if kind is float:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return v
+    if kind is int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return v
+    return v
+
+
+def _derive_effective_inner_polar(cfg: dict, opt_cfg: dict) -> str | None:
+    """Single derived field answering "what polar approximation actually ran".
+
+    Precedence mirrors the short-circuit order in
+    ``optim.py:_polar_pipeline``:
+      ``polar_sigma_power == 0.0``       → "svd_exact"
+      ``polar_sigma_power not None != 0`` → f"sigma_power(p={value})"
+      ``polar_method``                    → that string ("ns" / "ns_hybrid" /
+                                            "polar_express")
+      polar-product family pre-feature   → "ns"  (the implicit pre-4b047f5
+                                                   default — _polar_pipeline
+                                                   unconditionally called
+                                                   ``_newton_schulz`` before
+                                                   ``polar_method`` existed)
+      else (non-polar optimizer)          → None
+    """
+    psp_raw = opt_cfg.get("polar_sigma_power")
+    psp = _coerce(psp_raw, float) if psp_raw not in (None, "None") else None
+    if psp is not None:
+        return "svd_exact" if psp == 0.0 else f"sigma_power(p={psp})"
+    pm = opt_cfg.get("polar_method")
+    if pm in {"ns", "ns_hybrid", "polar_express"}:
+        return pm
+    # Fallback for runs from before the polar_method param existed: any
+    # optimizer whose name contains "polar-product" used ``_newton_schulz``
+    # unconditionally inside ``_polar_pipeline``. The CLI flag wasn't
+    # plumbed yet, so neither the cfg nor the command line carries it.
+    optimizer = cfg.get("optimizer", "") or ""
+    if "polar-product" in optimizer:
+        return "ns"
+    return None
+
+
+def _derive_effective_picard_iters(cfg: dict, opt_cfg: dict) -> tuple[Any, bool]:
+    """Returns (k_value, resolved_with_certainty)."""
+    override = opt_cfg.get("picard_iters_override")
+    if override not in (None, "None"):
+        return (_coerce(override, int), True)
+    # Fall through to commit-aware default lookup.
+    optimizer_type = cfg.get("optimizer", "")
+    return _resolve_default_at_commit(
+        optimizer_type, "picard_iters", cfg.get("git_commit"),
+    )
+
+
+def _enrich_cfg(cfg: dict) -> dict:
+    """Add a ``_derived`` namespace and (if missing) a backfilled
+    ``optimizer_config`` to ``cfg``. Mutates and returns ``cfg``.
+
+    ``_derived`` is the analysis surface; raw fields are never overwritten.
+    For run-comparison code, prefer ``cfg["_derived"][...]`` over the raw
+    ``cfg["polar_method"]`` / ``cfg["picard_iters_override"]`` / etc.,
+    because the raw fields can lie (``polar_method="ns"`` next to
+    ``polar_sigma_power=0.0`` is the canonical example — the effective
+    inner polar is "svd_exact", not "ns").
+    """
+    if cfg.get("optimizer_config") is None:
+        cfg["optimizer_config"] = _backfill_optimizer_config(cfg)
+    opt_cfg = cfg["optimizer_config"]
+    derived: dict[str, Any] = {}
+    derived["effective_inner_polar"] = _derive_effective_inner_polar(cfg, opt_cfg)
+    k, k_certain = _derive_effective_picard_iters(cfg, opt_cfg)
+    derived["effective_picard_iters"] = k
+    derived["effective_picard_iters_certain"] = k_certain
+    cfg["_derived"] = derived
+    return cfg
 
 # Runtime / metadata fields that vary between otherwise-identical runs and
 # MUST NOT participate in the dedup key. The default dedup model is deny-list:
@@ -127,6 +341,7 @@ def load_runs(
     runtime_fields: frozenset[str] = RUNTIME_FIELDS,
     cfg_postprocess: Callable[[dict, str], None] | None = None,
     logs_root: str | None = None,
+    warn_cross_commit: bool = True,
 ) -> list[tuple[dict, list[dict]]]:
     """Load all runs whose cfg matches every predicate in ``where``.
 
@@ -166,13 +381,42 @@ def load_runs(
         def key_fn(cfg: dict) -> tuple:
             return tuple(cfg.get(a) for a in key_axes)
 
-    return merge_runs(
+    runs = merge_runs(
         groups,
         key_fn=key_fn,
         filter_fn=filter_fn,
         cfg_postprocess=cfg_postprocess,
         logs_root=logs_root,
     )
+
+    # Enrichment: every cfg gains a `_derived` namespace and (if missing) a
+    # backfilled `optimizer_config`. Done after merge_runs so dedup operates
+    # on raw cfg fields (no risk of `_derived` differences hiding a
+    # collision); analysis code reads enriched cfgs.
+    for cfg, _ in runs:
+        _enrich_cfg(cfg)
+
+    if warn_cross_commit and runs:
+        commits: dict[str, int] = {}
+        for cfg, _ in runs:
+            c = cfg.get("git_commit") or "<missing>"
+            commits[c] = commits.get(c, 0) + 1
+        if len(commits) > 1:
+            summary = ", ".join(
+                f"{c[:7]} ({n} run{'s' if n != 1 else ''})"
+                for c, n in sorted(commits.items(), key=lambda kv: -kv[1])
+            )
+            warnings.warn(
+                f"load_runs returned runs from {len(commits)} commits: "
+                f"{summary}. Behavior at default settings can differ across "
+                f"commits; if comparing absolute losses, verify the relevant "
+                f"defaults in HARDCODED_DEFAULT_HISTORY or pin the comparison "
+                f"to a single commit. Pass warn_cross_commit=False to silence.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    return runs
 
 
 # ─── inventory ────────────────────────────────────────────────────────────────
