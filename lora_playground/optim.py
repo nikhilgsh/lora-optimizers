@@ -1,3 +1,4 @@
+import inspect
 import json
 import statistics
 
@@ -15,6 +16,91 @@ from .utils import (
     spdify,
     truncated_svd,
 )
+
+
+# Init parameters that are construction inputs, not algorithmic state — the
+# model itself, parameter collections, adapter selectors. Excluded from
+# optimizer_config_dict because they don't distinguish algorithmic behavior
+# across runs. Add a name here only if it's a constructor wiring input, not
+# a hyperparameter.
+_CONFIG_DICT_SKIP = frozenset({
+    "self", "model", "targets", "pairs", "lora_modules",
+    "params", "param_groups", "adapter_name",
+})
+
+# Aliases for params whose attribute is stored under a different name (e.g.
+# `betas` tuple stored as separate `beta1, beta2` attrs). Each entry maps
+# the __init__ param name to a callable extracting the value from `self`.
+def _extract_lr(opt):
+    """torch.optim.Optimizer stores lr inside param_groups, not as self.lr."""
+    groups = getattr(opt, "param_groups", None)
+    if groups:
+        return groups[0].get("lr")
+    return getattr(opt, "lr", None)
+
+
+_CONFIG_DICT_ALIASES = {
+    "betas": lambda opt: (
+        getattr(opt, "beta1", None),
+        getattr(opt, "beta2", None),
+    ),
+    "lr": _extract_lr,
+}
+
+
+def _is_json_safe(v) -> bool:
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return True
+    if isinstance(v, (list, tuple)):
+        return all(_is_json_safe(x) for x in v)
+    return False
+
+
+def optimizer_config_dict(opt) -> dict:
+    """Resolved-hyperparameter snapshot of `opt` via __init__ introspection.
+
+    Walks `inspect.signature(type(opt).__init__)`; for each parameter not in
+    `_CONFIG_DICT_SKIP`, looks up the matching attribute on `opt` (with
+    `_CONFIG_DICT_ALIASES` overriding for split-storage cases). Returns a flat
+    dict of JSON-safe values plus `_optim_class` for traceability.
+
+    Convention enforcement: every optimizer in OPTIMIZER_CHOICES must store
+    each non-skipped __init__ param as an attribute of the same name (or via
+    an alias). The unit test in `tests/test_optimizer_config_dict.py` walks
+    OPTIMIZER_CHOICES and fails if any param is unrecorded — that's how we
+    keep this from going stale as new optimizers ship.
+    """
+    out = {"_optim_class": type(opt).__name__}
+    sig = inspect.signature(type(opt).__init__)
+    for name, param in sig.parameters.items():
+        if name in _CONFIG_DICT_SKIP:
+            continue
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        if name in _CONFIG_DICT_ALIASES:
+            value = _CONFIG_DICT_ALIASES[name](opt)
+        elif hasattr(opt, name):
+            value = getattr(opt, name)
+        else:
+            # Fallback for torch/HF optimizer wrappers (LoRAPlusAdamW, the HF
+            # Adafactor wrapper, plain SGD) that store kwargs in param_groups
+            # rather than as instance attrs. param_groups[0] holds the default
+            # values for that group; defaults dict on the base Optimizer also
+            # mirrors them.
+            groups = getattr(opt, "param_groups", None)
+            defaults = getattr(opt, "defaults", None)
+            if groups and name in groups[0]:
+                value = groups[0][name]
+            elif defaults and name in defaults:
+                value = defaults[name]
+            else:
+                # Surface as missing rather than silently dropping. The CI test
+                # asserts no value lands here for any optimizer in
+                # OPTIMIZER_CHOICES.
+                value = "<unrecorded>"
+        if _is_json_safe(value) or value == "<unrecorded>":
+            out[name] = value
+    return out
 
 
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
@@ -404,6 +490,7 @@ class AdamLinLoRA(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
+        self.scaled_metric = scaled_metric
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
@@ -621,6 +708,7 @@ class AdamLinCoreLoRA(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
+        self.scaled_metric = scaled_metric
         self.bias_correction = bias_correction
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_diagnostics = log_diagnostics
@@ -1060,6 +1148,7 @@ class AdamLinLoRAPost(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
+        self.scaled_metric = scaled_metric
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_diagnostics = log_diagnostics
         self.diagnostics_every = diagnostics_every
@@ -1270,6 +1359,7 @@ class AdamLinLoRAMatrix(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
+        self.scaled_metric = scaled_metric
         self.lora_plus_multiplier = lora_plus_multiplier
 
         self.pair_state = {}
@@ -1332,8 +1422,9 @@ class LoRAPlusAdamW(AdamW):
     
     Applies lora_plus_multiplier to lora_B learning rate. Reduces to standard AdamW when multiplier=1.0.
     """
-    def __init__(self, model, lr=2e-4, lora_plus_multiplier=1.0, betas=(0.9, 0.999), 
+    def __init__(self, model, lr=2e-4, lora_plus_multiplier=1.0, betas=(0.9, 0.999),
                  eps=1e-8, weight_decay=0.0, adapter_name=None):
+        self.lora_plus_multiplier = lora_plus_multiplier
         lora_A_params = []
         lora_B_params = []
         other_params = []
@@ -1742,6 +1833,8 @@ class ProductMuonLoRA(Optimizer):
         self.pairs = pairs
         self.beta = beta
         self.ns_steps = ns_steps
+        self.alpha = alpha
+        self.rank = rank
         self.scale = alpha / rank
         self.delta = delta
         self.lr_b_multiplier = lr_b_multiplier
@@ -1918,6 +2011,8 @@ class AdamProductMuonLoRA(Optimizer):
         self.beta1, self.beta2 = betas
         self.eps = eps
         self.ns_steps = ns_steps
+        self.alpha = alpha
+        self.rank = rank
         self.scale = alpha / rank
         self.delta = delta
         self.lr_b_multiplier = lr_b_multiplier
@@ -4234,6 +4329,7 @@ class PSILoRA(_HookLoRAOptimizer):
         self.momentum = momentum
         self.inner_iters = inner_iters
         self.proximal_rho = proximal_rho
+        self.momentum_rank = momentum_rank
 
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):

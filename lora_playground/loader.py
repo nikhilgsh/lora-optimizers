@@ -23,11 +23,65 @@ def _default_logs_root() -> str:
     """Repo-anchored ``logs/`` path, independent of caller cwd."""
     return str(Path(__file__).resolve().parent.parent / "logs")
 
-# Default dedup axes used by 95% of notebook cells. Override per-cell when
-# specialty axes (e.g. training_mode for the SVD oracle) matter.
+# Runtime / metadata fields that vary between otherwise-identical runs and
+# MUST NOT participate in the dedup key. The default dedup model is deny-list:
+# two runs are "the same" iff their cfg fields are equal except for these.
+# That way any new behavioral hyperparameter automatically becomes a dedup
+# axis without the loader needing to know about it (the staleness mode that
+# silently dropped the rsweep / picard_iters_sweep_2x2 collision in 2026-05).
+#
+# Add a name here only if it's runtime/instrumentation metadata that doesn't
+# affect algorithm behavior. When in doubt, leave it out — false-positive
+# collisions (two runs flagged as different when they're identical) are
+# loud and recoverable; false-negative collisions (two different algorithms
+# treated as the same run) silently corrupt analysis.
+RUNTIME_FIELDS: frozenset[str] = frozenset({
+    # Provenance / submit-time metadata
+    "git_commit", "command", "log_group",
+    "wandb_project", "wandb_run_name",
+    # Compute-environment knobs (don't change algorithm)
+    "device", "tf32",
+    # Diagnostic emission knobs (don't change algorithm)
+    "log_optim_diagnostics", "optim_diagnostics_every",
+    "profile_steps",
+    # Local file path resolution (the dataset_name field still pins identity)
+    "train_file", "eval_file",
+})
+
+# Allow-list dedup axes — preserved for callers that intentionally collapse
+# across some axis (e.g. seed averaging). New code should prefer the
+# deny-list default.
 DEFAULT_KEY_AXES: tuple[str, ...] = (
     "optimizer", "lr", "lora_r", "lora_plus_multiplier", "seed",
 )
+
+
+def _hashable(v):
+    """Recursive conversion to a hashable form for dedup keys.
+
+    Dicts → frozenset of items; lists → tuples; everything else → as-is.
+    Values that already are not hashable through this transform (custom
+    objects, tensors) raise TypeError on first hash() call — that's the
+    correct failure mode; the cfg should only contain JSON-serializable values
+    by virtue of being read back from JSONL.
+    """
+    if isinstance(v, dict):
+        return frozenset((k, _hashable(vv)) for k, vv in v.items())
+    if isinstance(v, list):
+        return tuple(_hashable(x) for x in v)
+    return v
+
+
+def _denylist_key(cfg: dict, runtime_fields: frozenset[str]) -> frozenset:
+    """Dedup key = frozenset of (k, hashable(v)) for all non-runtime cfg fields.
+
+    Two cfgs hashing to equal values means they specify the same algorithm
+    on the same data with the same hyperparameters — modulo the explicitly
+    excluded runtime/metadata. New behavioral fields automatically participate.
+    """
+    return frozenset(
+        (k, _hashable(v)) for k, v in cfg.items() if k not in runtime_fields
+    )
 
 # Pinning categories returned in CoverageRow.pinning.
 PINNING_INTERIOR = "interior"
@@ -69,7 +123,8 @@ def _build_filter(where: dict[str, Any] | None) -> Callable[[dict], bool] | None
 def load_runs(
     where: dict[str, Any] | None = None,
     *,
-    key_axes: tuple[str, ...] = DEFAULT_KEY_AXES,
+    key_axes: tuple[str, ...] | None = None,
+    runtime_fields: frozenset[str] = RUNTIME_FIELDS,
     cfg_postprocess: Callable[[dict, str], None] | None = None,
     logs_root: str | None = None,
 ) -> list[tuple[dict, list[dict]]]:
@@ -83,10 +138,20 @@ def load_runs(
     Omitted fields impose no constraint. A run missing a field referenced in
     ``where`` is excluded (treat absence as non-match).
 
-    Dedup: ``key_fn(cfg) = tuple(cfg[a] for a in key_axes)``. ``merge_runs``
-    keeps newest-trajectory-wins; group priority is newest-first (by
-    ``submitted_at``). The hidden-axis collision check still fires if two
-    runs share the dedup key but differ on another cfg axis.
+    Dedup model:
+      - ``key_axes=None`` (default, recommended): **deny-list** dedup. Two
+        runs collapse iff their cfg fields are equal except for fields in
+        ``runtime_fields`` (git_commit, command, log_group, etc.). New
+        behavioral hyperparameters automatically become dedup axes.
+      - ``key_axes=tuple(...)``: **allow-list** dedup. Used to intentionally
+        collapse across some axis (e.g. seed averaging). Older mode; prefer
+        the deny-list default for general analysis.
+
+    ``merge_runs`` keeps longest-trajectory-wins; group priority is
+    newest-first (by ``submitted_at``). The hidden-axis collision check
+    still fires if two runs share the dedup key but differ on another cfg
+    axis (most useful in allow-list mode; under deny-list it almost never
+    fires by construction).
     """
     if logs_root is None:
         logs_root = _default_logs_root()
@@ -94,8 +159,12 @@ def load_runs(
     groups = [m["group"] for m in live_manifests_newest_first(manifests)]
     filter_fn = _build_filter(where)
 
-    def key_fn(cfg: dict) -> tuple:
-        return tuple(cfg.get(a) for a in key_axes)
+    if key_axes is None:
+        def key_fn(cfg: dict) -> frozenset:
+            return _denylist_key(cfg, runtime_fields)
+    else:
+        def key_fn(cfg: dict) -> tuple:
+            return tuple(cfg.get(a) for a in key_axes)
 
     return merge_runs(
         groups,

@@ -18,7 +18,7 @@ from transformers import (
     set_seed,
 )
 
-from .optim import OPTIMIZER_CHOICES, build_optimizer
+from .optim import OPTIMIZER_CHOICES, build_optimizer, optimizer_config_dict
 from .utils import collect_dense_target_weights, freeze_all_except_targets
 
 
@@ -512,6 +512,7 @@ def main():
             "polar_method": args.polar_method,
             "beta1": args.beta1,
             "beta2": args.beta2,
+            "optimizer_config": optimizer_config_dict(optimizer),
         }
     )
 

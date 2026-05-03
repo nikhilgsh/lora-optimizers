@@ -66,6 +66,7 @@ OPTIM_COLORS = {
     "adam-polar-product-lora-clip-gauge-coupled": "#1e6e63",  # dark teal — clip+gauge with picard cross-coupling
     "polar-coupled-core-lora":     "#7a3a2c",   # variant 1: projected quotient polar, raw factor grads
     "polar-coupled-core-imbalance-scalar-lora":  "#a05030",  # + scalar imbalance-preserving gauge S=sI (recommended primary)
+    "polar-coupled-core-balanced-scalar-lora":   "#c87858",  # + scalar balanced gauge (drives imbalance → 0)
     "polar-coupled-core-imbalance-lora":         "#b86a48",  # + full r×r imbalance-preserving gauge
     "polar-coupled-core-imbalance-restore-lora": "#d8a070",  # + iLoRA imbalance-restoring gauge (aggressive; experimental)
     "polar-coupled-core-state-rebalanced-lora":  "#5a2018",  # + post-step state-gauge rebalance (recommended)
@@ -75,6 +76,7 @@ OPTIM_COLORS = {
     "polar-coupled-core-factor-adam-rebalanced-lora": "#e0a060",  # + state rebalance compound
     "muon-coupled-core-lora":      "#3a5a8a",   # variant 2: + transported core-space momentum
     "muon-coupled-core-imbalance-scalar-lora":   "#4a6aa8",  # variant 2 + scalar imbalance gauge
+    "muon-coupled-core-balanced-scalar-lora":    "#7090c8",  # variant 2 + scalar balanced gauge
     "muon-coupled-core-imbalance-lora":          "#5a8ac8",  # variant 2 + full imbalance gauge
     "muon-coupled-core-state-rebalanced-lora":   "#1a3a6a",  # variant 2 + state-gauge rebalance
     "muon-coupled-core-sign-lora":               "#5a7ab8",  # variant 2 + sign norm
@@ -123,6 +125,7 @@ OPTIM_FAMILIES = {
         "adam-polar-product-lora-clip-gauge-coupled",
         "polar-coupled-core-lora",
         "polar-coupled-core-imbalance-scalar-lora",
+        "polar-coupled-core-balanced-scalar-lora",
         "polar-coupled-core-imbalance-lora",
         "polar-coupled-core-imbalance-restore-lora",
         "polar-coupled-core-state-rebalanced-lora",
@@ -132,6 +135,7 @@ OPTIM_FAMILIES = {
         "polar-coupled-core-factor-adam-rebalanced-lora",
         "muon-coupled-core-lora",
         "muon-coupled-core-imbalance-scalar-lora",
+        "muon-coupled-core-balanced-scalar-lora",
         "muon-coupled-core-imbalance-lora",
         "muon-coupled-core-state-rebalanced-lora",
         "muon-coupled-core-sign-lora",
@@ -349,15 +353,49 @@ def has_runs(group: str, logs_root: str = "../logs") -> bool:
     return any(f.stat().st_size > 0 for f in log_dir.glob("*.out"))
 
 
-def _hidden_axis_fingerprint(cfg: dict) -> tuple:
-    """Tuple of cfg fields that commonly vary across cells but are easy to
-    forget in dedup keys. If two cfgs share key_fn(cfg) but DIFFER on this
-    fingerprint, that's a missing-axis bug — merge_runs raises rather than
-    silently dropping one.
+# Cfg fields that legitimately differ between otherwise-identical runs (run
+# provenance, instrumentation knobs, file paths). Mirror of
+# ``loader.RUNTIME_FIELDS`` — kept here as a literal to avoid creating an
+# import cycle (loader imports from plot_utils). Add a name in BOTH places
+# when introducing a new runtime field.
+_HIDDEN_AXIS_RUNTIME_FIELDS: frozenset[str] = frozenset({
+    "git_commit", "command", "log_group",
+    "wandb_project", "wandb_run_name",
+    "device", "tf32",
+    "log_optim_diagnostics", "optim_diagnostics_every",
+    "profile_steps",
+    "train_file", "eval_file",
+})
+
+
+def _hidden_axis_diffs(cfg_a: dict, cfg_b: dict) -> list[tuple]:
+    """Non-runtime cfg fields where ``cfg_a`` and ``cfg_b`` disagree.
+
+    Treats missing-vs-present as a difference — this is the asymmetric
+    failure mode that previously hid collisions. An older cfg without a
+    field (e.g. ``picard_iters_override``) coexisting with a newer cfg
+    that has it would not trigger the prior fingerprint check, because
+    that check only compared a fixed allow-list of axes and silently
+    skipped fields outside it.
+
+    Returns a list of ``(field, value_in_a, value_in_b)`` tuples; missing
+    values surface as the literal string ``"<missing>"``.
     """
-    axes = ("lora_plus_multiplier", "lora_r", "muon_ns_steps",
-            "training_mode", "svd_rank", "seed")
-    return tuple((a, cfg.get(a)) for a in axes if a in cfg)
+    _MISSING = object()
+    keys = (set(cfg_a) | set(cfg_b)) - _HIDDEN_AXIS_RUNTIME_FIELDS
+    diffs = []
+    for k in sorted(keys):
+        va = cfg_a.get(k, _MISSING)
+        vb = cfg_b.get(k, _MISSING)
+        if va is _MISSING and vb is _MISSING:
+            continue
+        if va != vb:
+            diffs.append((
+                k,
+                "<missing>" if va is _MISSING else va,
+                "<missing>" if vb is _MISSING else vb,
+            ))
+    return diffs
 
 
 def merge_runs(group_priority: Iterable[str],
@@ -386,8 +424,8 @@ def merge_runs(group_priority: Iterable[str],
     """
     # priority index for tie-breaking (lower = higher priority)
     prio = {g: i for i, g in enumerate(group_priority)}
-    # key → (final_step, group_priority_idx, cfg, evs, fingerprint)
-    best: dict[tuple, tuple[int, int, dict, list[dict], tuple]] = {}
+    # key → (final_step, group_priority_idx, cfg, evs)
+    best: dict[tuple, tuple[int, int, dict, list[dict]]] = {}
     for group, idx in sorted(prio.items(), key=lambda kv: kv[1]):
         if not has_runs(group, logs_root):
             continue
@@ -398,29 +436,38 @@ def merge_runs(group_priority: Iterable[str],
             if filter_fn is not None and not filter_fn(cfg):
                 continue
             k = key_fn(cfg)
-            fp = _hidden_axis_fingerprint(cfg)
             final_step = evs[-1]["step"] if evs else 0
             existing = best.get(k)
             if existing is None:
-                best[k] = (final_step, idx, cfg, evs, fp)
+                best[k] = (final_step, idx, cfg, evs)
                 continue
-            ex_step, ex_idx, ex_cfg, ex_evs, ex_fp = existing
+            ex_step, ex_idx, ex_cfg, ex_evs = existing
             # Hidden-axis robustness: if cfgs share key_fn(cfg) but DIFFER on
-            # any common cfg axis, that's a missing-axis bug — raise loudly
-            # so the caller adds the missing axis to key_fn.
-            if strict_hidden_axes and ex_fp != fp:
-                differing = [a for (a, v_old), (_, v_new) in zip(ex_fp, fp) if v_old != v_new]
-                raise ValueError(
-                    f"merge_runs: dedup key collision on {k!r} between cfgs that "
-                    f"differ on hidden axes {differing!r}. The dedup key_fn does "
-                    f"not include {differing!r}, so two distinct runs would be "
-                    f"silently collapsed. Either include the axis in key_fn, or "
-                    f"pass strict_hidden_axes=False if collapsing is intended."
-                )
+            # ANY non-runtime cfg field (including missing-vs-present), that's
+            # a missing-axis bug. Raise loudly so the caller adds the field
+            # to key_fn — silent collapse is how the rsweep / picard_2x2
+            # collision was hidden in 2026-05.
+            if strict_hidden_axes:
+                diffs = _hidden_axis_diffs(ex_cfg, cfg)
+                if diffs:
+                    field_summary = ", ".join(
+                        f"{f}={va!r}↔{vb!r}" for f, va, vb in diffs[:5]
+                    )
+                    if len(diffs) > 5:
+                        field_summary += f", … (+{len(diffs)-5} more)"
+                    raise ValueError(
+                        f"merge_runs: dedup key collision on {k!r} between cfgs "
+                        f"that differ on non-runtime field(s): {field_summary}. "
+                        f"Two distinct runs would be silently collapsed. Either "
+                        f"include these fields in key_fn (or use the deny-list "
+                        f"default in load_runs), or pass strict_hidden_axes=False "
+                        f"if collapsing is intended. "
+                        f"Groups: {ex_cfg.get('log_group')!r} vs {cfg.get('log_group')!r}."
+                    )
             # Replace iff strictly more steps, OR equal steps but stricter group priority
             if final_step > ex_step or (final_step == ex_step and idx < ex_idx):
-                best[k] = (final_step, idx, cfg, evs, fp)
-    return [(cfg, evs) for _, _, cfg, evs, _ in best.values()]
+                best[k] = (final_step, idx, cfg, evs)
+    return [(cfg, evs) for _, _, cfg, evs in best.values()]
 
 
 # ─── diverged-run filtering ───────────────────────────────────────────────────
