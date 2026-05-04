@@ -7,6 +7,7 @@ from torch.optim import AdamW, Optimizer, SGD
 
 from .utils import (
     collect_lora_pairs,
+    collect_ucv_triples,
     f_lorsum,
     lorsum,
     solve_spd,
@@ -318,6 +319,7 @@ OPTIMIZER_CHOICES = {
     "sgd-m",
     "svd-step-adamw",
     "svd-cumulative-adamw",
+    "adam-ucv-core-lora",
 }
 
 class ScaledLoRA(Optimizer):
@@ -1617,6 +1619,30 @@ def _newton_schulz(X, nsteps=5, eps=1e-7):
     return X.T if tall else X
 
 
+def _polar_retract(X, nsteps=5, eps=1e-7):
+    """Polar retraction for near-orthonormal X (singular values already ≈ 1).
+
+    Unlike `_newton_schulz`, does NOT pre-normalize by ‖X‖_F. The Frobenius
+    normalization there divides σ by √min(d, r), which for tall (d≫r) inputs
+    pushes σ far below NS's basin of attraction near 1 — five iterations only
+    recover σ ≈ 0.97, leaving 3% orthogonality error.
+
+    For Stiefel retraction U ← polar(U + dU) where dU is a small Stiefel-tangent
+    perturbation, σ(U + dU) ≈ √(1 + ε) with ε ≈ ‖dU‖_F² / r ≪ 1 — already in
+    NS's basin. Five quintic iterations drive the error to fp32 precision.
+
+    Caller must guarantee σ(X) is in (0, √3]. For arbitrary X (Adam direction,
+    raw gradient), use `_newton_schulz` instead.
+    """
+    X = X.float()
+    tall = X.shape[0] > X.shape[1]
+    if tall:
+        X = X.T
+    for _ in range(nsteps):
+        X = 1.5 * X - 0.5 * X @ X.T @ X
+    return X.T if tall else X
+
+
 def _newton_schulz_hybrid_deepseek(X, total_steps=10, eps=1e-7):
     """
     DeepSeek-V4 hybrid Newton-Schulz (DeepSeek-V4 §2.4 Algorithm 1).
@@ -1979,6 +2005,128 @@ class AdamMuonLoRA(Optimizer):
             B.grad.zero_()
 
 
+class AdamOrthogonalCoreLoRA(Optimizer):
+    """
+    Orthogonal-core LoRA optimizer (UCV^T).
+
+    Spec: docs/notes/polar_product/orthogonal_core_lora_2026_05_03.md.
+
+    Per training step on triples (U, C, V):
+      1. Project subspace gradients to the Stiefel tangent at U, V:
+             gU ← (I - U U^T) gU,   gV ← (I - V V^T) gV.
+      2. Adam EMA on (m_U, v_U), (m_C, v_C), (m_V, v_V) with bias correction;
+         get u_U, u_C, u_V.
+      3. Polar (Newton-Schulz) on u_U, u_V; RMS-match scaling
+             dU = -lr * (||u_U||_F / (||P_U||_F + eps)) * P_U.
+         Plain Adam step on the core: dC = -lr * u_C.
+      4. Retract via NS polar: U ← polar(U + dU), V ← polar(V + dV);
+         additive on core: C ← C + dC.
+
+    No Picard loop, no k hyperparameter, no core remix coefficient.
+
+    Weight decay (decoupled, AdamW-style) applied to C only — U, V live on
+    the Stiefel manifold and shouldn't be shrunk.
+    """
+
+    def __init__(self, model, lr=3e-4, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0.0, ns_steps=5):
+        triples = collect_ucv_triples(model)
+        if not triples:
+            raise ValueError(
+                "No UCV (U, C, V) triples found on model. Did you call "
+                "inject_ucv_adapters() before building the optimizer?"
+            )
+        params = [p for U, C, V in triples for p in (U, C, V)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.triples = triples
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.ns_steps = ns_steps
+        self.weight_decay = weight_decay
+        self.pair_state = {
+            i: {
+                "m_U": torch.zeros_like(U, dtype=torch.float32),
+                "v_U": torch.zeros_like(U, dtype=torch.float32),
+                "m_C": torch.zeros_like(C, dtype=torch.float32),
+                "v_C": torch.zeros_like(C, dtype=torch.float32),
+                "m_V": torch.zeros_like(V, dtype=torch.float32),
+                "v_V": torch.zeros_like(V, dtype=torch.float32),
+                "step": 0,
+            }
+            for i, (U, C, V) in enumerate(triples)
+        }
+
+    @staticmethod
+    def _adam_dir(grad, m, v, beta1, beta2, t, eps):
+        m.mul_(beta1).add_(grad, alpha=1 - beta1)
+        v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+        bc1 = 1 - beta1 ** t
+        bc2 = 1 - beta2 ** t
+        return (m / bc1) / ((v / bc2).sqrt() + eps)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        for i, (U, C, V) in enumerate(self.triples):
+            if U.grad is None or C.grad is None or V.grad is None:
+                raise ValueError(
+                    "AdamOrthogonalCoreLoRA requires gradients on U, C, and V."
+                )
+            state = self.pair_state[i]
+            state["step"] += 1
+            t = state["step"]
+
+            U32 = U.float()
+            V32 = V.float()
+            gU = U.grad.float()
+            gC = C.grad.float()
+            gV = V.grad.float()
+
+            # 1. Stiefel-tangent projection on U, V grads.
+            gU = gU - U32 @ (U32.T @ gU)
+            gV = gV - V32 @ (V32.T @ gV)
+
+            # 2. Adam directions for all three.
+            uU = self._adam_dir(gU, state["m_U"], state["v_U"], self.beta1, self.beta2, t, self.eps)
+            uC = self._adam_dir(gC, state["m_C"], state["v_C"], self.beta1, self.beta2, t, self.eps)
+            uV = self._adam_dir(gV, state["m_V"], state["v_V"], self.beta1, self.beta2, t, self.eps)
+
+            # 3. Polar / RMS-match on U, V; plain Adam on C.
+            if self.ns_steps > 0:
+                P_U = _newton_schulz(uU, self.ns_steps)
+                P_V = _newton_schulz(uV, self.ns_steps)
+            else:
+                P_U, P_V = uU, uV
+            scale_U = uU.norm() / (P_U.norm() + self.eps)
+            scale_V = uV.norm() / (P_V.norm() + self.eps)
+            dU = -lr * scale_U * P_U
+            dV = -lr * scale_V * P_V
+            dC = -lr * uC
+
+            # Decoupled weight decay on C only.
+            if self.weight_decay != 0.0:
+                dC = dC - lr * self.weight_decay * C.float()
+
+            # 4. Retract subspaces; additive on core.
+            # Use _polar_retract (not _newton_schulz) for the retraction step.
+            # _newton_schulz pre-normalizes by ‖X‖_F, which divides σ by √r for
+            # tall X — five iterations only reach σ ≈ 0.97 (3% error). For
+            # near-orthonormal U+dU, _polar_retract skips the normalization and
+            # quintic-converges to fp32 precision in 5 iters.
+            U_new = _polar_retract(U32 + dU, self.ns_steps) if self.ns_steps > 0 else (U32 + dU)
+            V_new = _polar_retract(V32 + dV, self.ns_steps) if self.ns_steps > 0 else (V32 + dV)
+            U.copy_(U_new.to(dtype=U.dtype, device=U.device))
+            V.copy_(V_new.to(dtype=V.dtype, device=V.device))
+            C.add_(dC.to(dtype=C.dtype, device=C.device))
+
+            U.grad.zero_()
+            C.grad.zero_()
+            V.grad.zero_()
+
+
 class AdamProductMuonLoRA(Optimizer):
     """
     H2 ⊗ H4 hybrid: ProductMuonLoRA's gauge-invariant geometry + Adam EMA on
@@ -2194,7 +2342,8 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_norm_dir="frob",
                  polar_sigma_power=None,
                  polar_method="ns",
-                 anderson_m=0, anderson_reg=1e-10):
+                 anderson_m=0, anderson_reg=1e-10,
+                 core_remix_alpha=0.0):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2217,6 +2366,17 @@ class AdamPolarProductLoRA(Optimizer):
         # except in passing through the diagnostic instrumentation). Continuous
         # probe of cross-term magnitude.
         self.picard_alpha = picard_alpha
+        # Core-signal remix coefficient. α ∈ [0, 1]. 0 = no remix (baseline);
+        # 1/4 = the completed-core metric prediction (attenuates the agreed
+        # mode S_+ by half, preserves the disagreement mode S_-). Applied
+        # before the Picard loop / polar pipeline:
+        #   tilde_H_A = (1-α) H_A - α H_B,   H_A = u_A A^T  (r × r)
+        # then the projections of (u_A, u_B) onto row(A) / col(B) are
+        # replaced by the projections of the remixed core signals.
+        # See agreement_weighted_core_coupling_2026_05_03.md.
+        if not (0.0 <= core_remix_alpha <= 1.0):
+            raise ValueError(f"core_remix_alpha must be in [0, 1], got {core_remix_alpha!r}")
+        self.core_remix_alpha = core_remix_alpha
         # Muon+ (arXiv:2602.21545) — replace Frobenius RMS-align with per-row
         # or per-column ℓ₂ normalization of the orthogonalized output, then
         # rescale to the original ‖u‖_F. "frob" = current behavior. "row" /
@@ -2432,6 +2592,27 @@ class AdamPolarProductLoRA(Optimizer):
                 )
             SA_half_inv = state['SA_half_inv']
             SB_half_inv = state['SB_half_inv']
+
+            # Core-signal remix: replace the projections of (u_A, u_B) onto
+            # row(A) / col(B) with their disagreement-weighted versions. The
+            # exclusive (orthogonal) parts of (u_A, u_B) are unchanged.
+            # α=0: no-op (baseline). α=1/4: completed-core metric prediction.
+            if self.core_remix_alpha > 0:
+                A_f_remix = A.float()
+                B_f_remix = B.float()
+                alpha = self.core_remix_alpha
+                H_A = u_A @ A_f_remix.T            # (r, r)
+                H_B = B_f_remix.T @ u_B            # (r, r)
+                tilde_H_A = (1.0 - alpha) * H_A - alpha * H_B
+                tilde_H_B = (1.0 - alpha) * H_B - alpha * H_A
+                GA_inv = SA_half_inv @ SA_half_inv  # (r, r) ≈ (A A^T + δI)^{-1}
+                GB_inv = SB_half_inv @ SB_half_inv  # (r, r) ≈ (B^T B + δI)^{-1}
+                u_A_core_old = (H_A @ GA_inv) @ A_f_remix
+                u_B_core_old = B_f_remix @ (GB_inv @ H_B)
+                u_A_core_new = (tilde_H_A @ GA_inv) @ A_f_remix
+                u_B_core_new = B_f_remix @ (GB_inv @ tilde_H_B)
+                u_A = u_A - u_A_core_old + u_A_core_new
+                u_B = u_B - u_B_core_old + u_B_core_new
 
             # Picard fixed-point iteration on the joint natural-gradient
             # equations. picard_iters=1 ⇒ block-diagonal (Adam direction fed
@@ -2659,6 +2840,44 @@ class AdamPolarProductLoRA(Optimizer):
                               "nrank_B_1e2", "stable_rank_A", "stable_rank_B"):
                         rec[k] = float("nan")
 
+                # AWC — Agreement-weighted core diagnostics. The two whitened
+                # core views S_A_aw = SB^{-1/2} (u_A A^T) SA^{-1/2} and
+                # S_B_aw = SB^{-1/2} (B^T u_B) SA^{-1/2} are both r×r. They
+                # are the two factor-side projections of the "shared dense
+                # update" the Adam directions imply. In a noise-free
+                # linearization S_A_aw = S_B_aw; disagreement measures
+                # asymmetric Adam-preconditioning + batch noise corrupting
+                # the shared signal. AWC hypothesis (mechanism for the
+                # rank-dependent k-flip): rank 64 should agree more than
+                # rank 16. See agreement_weighted_core_coupling_2026_05_03.md.
+                # Cost: 2 r×r matmuls + norms per pair per step.
+                H_A = u_A @ A_f.T                                   # (r, r)
+                H_B = B_f.T @ u_B                                   # (r, r)
+                S_A_aw = SB_half_inv @ H_A @ SA_half_inv            # (r, r)
+                S_B_aw = SB_half_inv @ H_B @ SA_half_inv            # (r, r)
+                fA = float(S_A_aw.norm())
+                fB = float(S_B_aw.norm())
+                fdiff = float((S_A_aw - S_B_aw).norm())
+                fsum = float((S_A_aw + S_B_aw).norm())
+                fdot = float((S_A_aw * S_B_aw).sum())
+                rec["awc_SA_frob"] = fA
+                rec["awc_SB_frob"] = fB
+                rec["awc_diff_frob"] = fdiff
+                rec["awc_sum_frob"] = fsum
+                rec["awc_cos_AB"] = fdot / (fA * fB + 1e-30)
+                # q_agree = E+/(E++E-) with E+ = ||S+||²/4, E- = ||S-||²/4.
+                e_plus = (fsum ** 2) / 4.0
+                e_minus = (fdiff ** 2) / 4.0
+                rec["awc_q_agree"] = e_plus / (e_plus + e_minus + 1e-30)
+                # Disagreement-coupling coefficient (revised AWC v3, scalar
+                # per pair):
+                #   λ_core = ||S_A - S_B||² / (2 (||S_A||² + ||S_B||²) + ε)
+                # In [0, 1]: 0 when S_A ≡ S_B (full agreement, "do not couple
+                # / would shrink useful agreed signal"); 1 when S_A ≡ −S_B
+                # (full disagreement). Predicts λ_core(r=16) < λ_core(r=64)
+                # under the revised mechanism story.
+                rec["awc_lambda_core"] = (fdiff ** 2) / (2.0 * (fA ** 2 + fB ** 2) + 1e-30)
+
                 # H2/H3 — Picard contraction + polar sensitivity.
                 # Probe-step only (every diagnostics_every) since it costs 3
                 # extra polar-pipeline calls per pair. Independent of the
@@ -2800,9 +3019,158 @@ class AdamPolarProductLoRA(Optimizer):
                         return lin + coupling
                     rec["local_score_k1"] = _local_score(dA1, dB1)
                     rec["local_score_k2"] = _local_score(dA2, dB2)
+                    rec["local_score_k3"] = _local_score(dA3, dB3)
                     rec["local_score_k2_minus_k1"] = (
                         rec["local_score_k2"] - rec["local_score_k1"]
                     )
+                    rec["local_score_k3_minus_k1"] = (
+                        rec["local_score_k3"] - rec["local_score_k1"]
+                    )
+
+                    # Revised-AWC diagnostic. Tests the "Picard de-duplicates
+                    # agreed shared-core signal" hypothesis (see
+                    # agreement_weighted_core_coupling_2026_05_03.md and the
+                    # revised reading after the first AWC sweep).
+                    # Decompose each iterate's (dA, dB) into A-side and B-side
+                    # core drives:
+                    #   C_A^(k) = dA^(k) A^T G_A^{-1}     (r × r)
+                    #   C_B^(k) = G_B^{-1} B^T dB^(k)     (r × r)
+                    # Then sum/diff modes:
+                    #   X_C^(k) = C_A + C_B  (agreed core)
+                    #   X_D^(k) = C_A - C_B  (ownership)
+                    # Track magnitude evolution and direction preservation
+                    # across iterates k = 1, 2, 3. Cost: cheap r × r ops.
+                    GA_inv = SA_half_inv @ SA_half_inv     # (r, r)
+                    GB_inv = SB_half_inv @ SB_half_inv     # (r, r)
+                    def _core_drives(dA_var, dB_var):
+                        dA32 = dA_var.float(); dB32 = dB_var.float()
+                        C_A = (dA32 @ A_f.T) @ GA_inv      # (r, r)
+                        C_B = GB_inv @ (B_f.T @ dB32)      # (r, r)
+                        return C_A + C_B, C_A - C_B
+                    XC1, XD1 = _core_drives(dA1, dB1)
+                    XC2, XD2 = _core_drives(dA2, dB2)
+                    XC3, XD3 = _core_drives(dA3, dB3)
+                    # Joint tangent norm at iter 3 (extends existing iter1/iter2)
+                    J3_full = B_f @ dA3.float() + dB3.float() @ A_f
+                    rec["frob_J_iter3"] = float(J3_full.norm())
+                    # Magnitudes
+                    nC1 = float(XC1.norm()) + 1e-30
+                    nC2 = float(XC2.norm()) + 1e-30
+                    nC3 = float(XC3.norm()) + 1e-30
+                    nD1 = float(XD1.norm()) + 1e-30
+                    nD2 = float(XD2.norm()) + 1e-30
+                    nD3 = float(XD3.norm()) + 1e-30
+                    rec["XC_iter1_frob"] = nC1
+                    rec["XC_iter2_frob"] = nC2
+                    rec["XC_iter3_frob"] = nC3
+                    rec["XD_iter1_frob"] = nD1
+                    rec["XD_iter2_frob"] = nD2
+                    rec["XD_iter3_frob"] = nD3
+                    # Shrink ratios (1 - ratio): positive ⇒ Picard shrunk it
+                    rec["XC_shrink_2v1"] = 1.0 - nC2 / nC1
+                    rec["XC_shrink_3v1"] = 1.0 - nC3 / nC1
+                    rec["XD_shrink_2v1"] = 1.0 - nD2 / nD1
+                    rec["XD_shrink_3v1"] = 1.0 - nD3 / nD1
+                    # Direction preservation
+                    rec["XC_cos_2v1"] = float((XC2 * XC1).sum()) / (nC1 * nC2)
+                    rec["XC_cos_3v1"] = float((XC3 * XC1).sum()) / (nC1 * nC3)
+                    rec["XD_cos_2v1"] = float((XD2 * XD1).sum()) / (nD1 * nD2)
+                    rec["XD_cos_3v1"] = float((XD3 * XD1).sum()) / (nD1 * nD3)
+                    # Energy split: what fraction of the total core energy is
+                    # in the agreed (C) vs ownership (D) mode at each iterate?
+                    rec["XC_frac_iter1"] = (nC1 ** 2) / (nC1 ** 2 + nD1 ** 2)
+                    rec["XC_frac_iter2"] = (nC2 ** 2) / (nC2 ** 2 + nD2 ** 2)
+                    rec["XC_frac_iter3"] = (nC3 ** 2) / (nC3 ** 2 + nD3 ** 2)
+
+                    # k=1→k=3 dense update difference: what fraction lives in
+                    # the rank-r shared-core subspace (i.e. is attributable to
+                    # ΔX_C = X_C^(3) - X_C^(1))?
+                    # ΔJ_total = B (dA3 - dA1) + (dB3 - dB1) A    (dense)
+                    # ΔJ_core  = B ΔX_C A                          (rank ≤ r)
+                    # Use trace identity ||B X A||² = tr(G_B X G_A X^T) for the
+                    # core norm; compute ΔJ_total dense (cheap matmul).
+                    GA_full = A_f @ A_f.T               # (r, r)
+                    GB_full = B_f.T @ B_f               # (r, r)
+                    dXC = XC3 - XC1                     # (r, r)
+                    sq_core_dJ = float(((GB_full @ dXC @ GA_full) * dXC).sum())
+                    dJ_full = B_f @ (dA3.float() - dA1.float()) + (dB3.float() - dB1.float()) @ A_f
+                    sq_dJ = float(dJ_full.pow(2).sum())
+                    rec["dJ_3v1_total_frob"] = sq_dJ ** 0.5
+                    rec["dJ_3v1_core_frob"] = max(sq_core_dJ, 0.0) ** 0.5
+                    rec["dJ_3v1_core_frac"] = max(sq_core_dJ, 0.0) / (sq_dJ + 1e-30)
+
+                    # Base-rate diagnostic: what fraction of J^(k) itself
+                    # (not just the k-difference) lives in the rank-r shared-
+                    # core subspace P_U J P_V where P_U = projector onto
+                    # col(B), P_V = projector onto row(A)? Compares against
+                    # dJ_3v1_core_frac to determine whether Picard's action is
+                    # specifically targeting the core (R_I = dJ_core_frac /
+                    # J_core_frac >> 1) or just inheriting the base rate
+                    # (R_I ≈ 1 means everything is in the core anyway).
+                    # Trace identity: ||P_U J P_V||² ≈ tr(M G_A^{-1} M^T G_B^{-1})
+                    # where M = B^T J A^T = G_B dA A^T + B^T dB G_A (r×r).
+                    def _core_frac(dA_var, dB_var):
+                        dA32 = dA_var.float(); dB32 = dB_var.float()
+                        M = GB_full @ (dA32 @ A_f.T) + (B_f.T @ dB32) @ GA_full
+                        sq_core = float(((M @ GA_inv) * (GB_inv @ M)).sum())
+                        Jt = B_f @ dA32 + dB32 @ A_f
+                        sq_full = float(Jt.pow(2).sum())
+                        return max(sq_core, 0.0) / (sq_full + 1e-30)
+                    rec["J_core_frac_iter1"] = _core_frac(dA1, dB1)
+                    rec["J_core_frac_iter2"] = _core_frac(dA2, dB2)
+                    rec["J_core_frac_iter3"] = _core_frac(dA3, dB3)
+
+                    # Scalar gain fit. Tests whether Picard's effect on X_C
+                    # and X_D is literally a scalar attenuation / amplification:
+                    #   X_C^(3) ≈ a_C · X_C^(1),   X_D^(3) ≈ a_D · X_D^(1).
+                    # Residuals r_C, r_D measure how well the scalar fit holds.
+                    aC_3v1 = float((XC3 * XC1).sum()) / (nC1 ** 2)
+                    aD_3v1 = float((XD3 * XD1).sum()) / (nD1 ** 2)
+                    rec["aC_3v1"] = aC_3v1
+                    rec["aD_3v1"] = aD_3v1
+                    rec["rC_3v1"] = float((XC3 - aC_3v1 * XC1).norm()) / nC3
+                    rec["rD_3v1"] = float((XD3 - aD_3v1 * XD1).norm()) / nD3
+
+                    # Hidden-motion ratio: how much core energy lives in the
+                    # first-order-invisible ownership mode X_D vs the
+                    # identifiable mode X_C, at each iterate.
+                    rec["h_iter1"] = (nD1 ** 2) / (nC1 ** 2)
+                    rec["h_iter2"] = (nD2 ** 2) / (nC2 ** 2)
+                    rec["h_iter3"] = (nD3 ** 2) / (nC3 ** 2)
+
+                    # Second-order pollution: finite-update second-order term
+                    # ΔB · ΔA (which is invisible to first-order J but real in
+                    # the actual factor update) relative to J magnitude.
+                    # Predicts: q grows more under Picard at low rank if X_D
+                    # amplification feeds a larger second-order interaction.
+                    def _q(dA_var, dB_var, J_norm):
+                        so = dB_var.float() @ dA_var.float()
+                        return float(so.norm()) / (J_norm + 1e-30)
+                    rec["q_iter1"] = _q(dA1, dB1, rec["frob_J_iter1"])
+                    rec["q_iter2"] = _q(dA2, dB2, rec["frob_J_iter2"])
+                    rec["q_iter3"] = _q(dA3, dB3, rec["frob_J_iter3"])
+
+                    # Gram drift: relative change in (A+ΔA)(A+ΔA)^T vs AA^T,
+                    # per iterate. Tests whether X_D growth at low rank feeds
+                    # downstream preconditioner instability.
+                    nGA = float(GA_full.norm()) + 1e-30
+                    nGB = float(GB_full.norm()) + 1e-30
+                    def _gram_drift(dA_var, dB_var):
+                        dA32 = dA_var.float(); dB32 = dB_var.float()
+                        A_new = A_f + dA32
+                        B_new = B_f + dB32
+                        gA = float((A_new @ A_new.T - GA_full).norm()) / nGA
+                        gB = float((B_new.T @ B_new - GB_full).norm()) / nGB
+                        return gA, gB
+                    gA1, gB1 = _gram_drift(dA1, dB1)
+                    gA2, gB2 = _gram_drift(dA2, dB2)
+                    gA3, gB3 = _gram_drift(dA3, dB3)
+                    rec["gA_iter1"] = gA1
+                    rec["gA_iter2"] = gA2
+                    rec["gA_iter3"] = gA3
+                    rec["gB_iter1"] = gB1
+                    rec["gB_iter2"] = gB2
+                    rec["gB_iter3"] = gB3
 
                 diag_records.append(rec)
 
@@ -5769,6 +6137,7 @@ def build_optimizer(
     polar_norm_dir: str = "frob",
     polar_sigma_power: float | None = None,
     polar_method: str = "ns",
+    polar_core_remix_alpha: float = 0.0,
     beta1: float = 0.9,
     beta2: float = 0.999,
 ):
@@ -5930,6 +6299,7 @@ def build_optimizer(
             polar_norm_dir=polar_norm_dir,
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
+            core_remix_alpha=polar_core_remix_alpha,
         )
     if optimizer_type == "adam-polar-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -6301,6 +6671,13 @@ def build_optimizer(
             model, lr=lr, ns_steps=muon_ns_steps,
             alpha=muon_alpha, rank=muon_rank,
             lr_b_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "adam-ucv-core-lora":
+        return AdamOrthogonalCoreLoRA(
+            model, lr=lr,
+            betas=(beta1, beta2),
+            weight_decay=weight_decay,
+            ns_steps=muon_ns_steps,
         )
     if optimizer_type == "muon-adam-lora":
         return MuonAdamLoRA(

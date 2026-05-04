@@ -27,9 +27,10 @@ from lora_playground.optim import (
 )
 
 
-# Optimizer types that need dense `targets` (full-finetune SVD oracle, GaLore).
-# build_optimizer raises without them; tested separately or skipped here.
+# Optimizer types that need dense `targets` (full-finetune SVD oracle, GaLore)
+# or a non-BA model layout. Tested separately or skipped here.
 _NEEDS_TARGETS = {"galore-adamw", "svd-step-adamw", "svd-cumulative-adamw"}
+_NEEDS_UCV = {"adam-ucv-core-lora"}
 
 class _FakeLoRALinear(nn.Module):
     def __init__(self, d_in, d_out, r):
@@ -47,13 +48,31 @@ class TinyLoRAModel(nn.Module):
         self.layer1 = _FakeLoRALinear(d_out, d_in, r)
 
 
+class _TinyUCVModel(nn.Module):
+    """Plain Linear stack; UCV adapters are injected by the test fixture."""
+
+    def __init__(self, d_in=8, d_out=6, r=2):
+        super().__init__()
+        self.layer0 = nn.Linear(d_in, d_out, bias=False)
+        self.layer1 = nn.Linear(d_out, d_in, bias=False)
+
+
+def _build_model_for(optimizer_type: str):
+    if optimizer_type in _NEEDS_UCV:
+        from lora_playground.ucv_layer import inject_ucv_adapters
+        m = _TinyUCVModel()
+        inject_ucv_adapters(m, target_modules="all-linear", r=2, alpha=2)
+        return m
+    return TinyLoRAModel()
+
+
 _TESTABLE = sorted(OPTIMIZER_CHOICES - _NEEDS_TARGETS)
 
 
 @pytest.mark.parametrize("optimizer_type", _TESTABLE)
 def test_config_dict_records_all_init_params(optimizer_type):
     """Every __init__ param (sans construction-input skips) must be recorded."""
-    model = TinyLoRAModel()
+    model = _build_model_for(optimizer_type)
     opt = build_optimizer(
         model,
         optimizer_type=optimizer_type,

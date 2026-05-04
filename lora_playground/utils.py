@@ -384,6 +384,28 @@ def freeze_all_except_targets(model, targets):
     for target in targets:
         target.weight.requires_grad_(True)
 
+def collect_ucv_triples(model):
+    """
+    Collect orthogonal-core LoRA (U, C, V) parameter triples from model.
+
+    Walks named_modules() looking for the `ucv_U`, `ucv_C`, `ucv_V`
+    attributes set by `lora_playground.ucv_layer.UCVLinear`.
+
+    Each triple:
+        U: (d_out, r), orthonormal columns
+        C: (r, r)
+        V: (d_in,  r), orthonormal columns
+
+    Returns:
+        List[Tuple[Tensor, Tensor, Tensor]]
+    """
+    triples = []
+    for _, mod in model.named_modules():
+        if hasattr(mod, "ucv_U") and hasattr(mod, "ucv_C") and hasattr(mod, "ucv_V"):
+            triples.append((mod.ucv_U, mod.ucv_C, mod.ucv_V))
+    return triples
+
+
 def collect_lora_pairs(model, adapter_name=None):
     """
     Collect LoRA (A, B) pairs from model.

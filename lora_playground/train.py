@@ -19,10 +19,11 @@ from transformers import (
 )
 
 from .optim import OPTIMIZER_CHOICES, build_optimizer, optimizer_config_dict
+from .ucv_layer import inject_ucv_adapters
 from .utils import collect_dense_target_weights, freeze_all_except_targets
 
 
-TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore")
+TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore", "ucv")
 
 
 def format_example(example):
@@ -368,6 +369,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
     model.config.use_cache = False
     dense_targets = []
+    ucv_target_names: list[str] = []
     if args.training_mode == "lora":
         peft_config = LoraConfig(
             r=args.lora_r,
@@ -379,6 +381,15 @@ def main():
         )
         model = get_peft_model(model, peft_config)
         model.to(device)
+    elif args.training_mode == "ucv":
+        model.to(device)
+        ucv_injected = inject_ucv_adapters(
+            model,
+            target_modules=parsed_target_modules,
+            r=args.lora_r,
+            alpha=args.lora_alpha,
+        )
+        ucv_target_names = [name for name, _ in ucv_injected]
     else:
         model.to(device)
         dense_targets = collect_dense_target_weights(model, parsed_target_modules)
@@ -394,10 +405,15 @@ def main():
         model = torch.compile(model, **compile_kwargs)
 
     if args.training_mode == "lora":
-        if args.optimizer in {"svd-step-adamw", "svd-cumulative-adamw", "galore-adamw"}:
+        if args.optimizer in {"svd-step-adamw", "svd-cumulative-adamw", "galore-adamw", "adam-ucv-core-lora"}:
             raise ValueError(f"{args.optimizer} requires a non-lora training_mode.")
         effective_optimizer = args.optimizer
         rank_constraint = None
+    elif args.training_mode == "ucv":
+        if args.optimizer != "adam-ucv-core-lora":
+            raise ValueError("ucv training_mode requires --optimizer adam-ucv-core-lora.")
+        effective_optimizer = "adam-ucv-core-lora"
+        rank_constraint = "ucv_orthogonal_core"
     elif args.training_mode == "svd_step_oracle":
         if args.optimizer not in {"adamw", "svd-step-adamw"}:
             raise ValueError("svd_step_oracle currently supports AdamW only.")
@@ -495,10 +511,15 @@ def main():
             "lora_r": args.lora_r,
             "svd_rank": svd_rank if dense_targets else None,
             "rank_constraint": rank_constraint,
-            "target_module_count": len(dense_targets),
-            "target_module_names": [target.name for target in dense_targets],
+            "target_module_count": len(dense_targets) if dense_targets else len(ucv_target_names),
+            "target_module_names": (
+                [target.name for target in dense_targets] if dense_targets else ucv_target_names
+            ),
             "svd_projection": ("exact" if svd_niter is None else f"randomized_niter{svd_niter}") if dense_targets else None,
-            "exclude_lm_head_from_all_linear": bool(dense_targets and parsed_target_modules == "all-linear"),
+            "exclude_lm_head_from_all_linear": (
+                bool(dense_targets and parsed_target_modules == "all-linear")
+                or bool(ucv_target_names and parsed_target_modules == "all-linear")
+            ),
             "lr": args.lr,
             "lora_plus_multiplier": args.lora_plus_multiplier,
             "max_steps": args.max_steps,

@@ -91,6 +91,8 @@ OPTIM_COLORS = {
     "kron-grad-lora":              "#bcbd22",
     "psi-lora":                    "#7f7f7f",
     "galore-adamw":                "#a55194",
+    # orthogonal-core LoRA (UCV^T parameterization)
+    "adam-ucv-core-lora":          "#2b8c4d",
 }
 
 
@@ -166,6 +168,12 @@ OPTIM_FAMILIES = {
         "adam-lin-lora-matrix",
         "adam-scaled-lora-matrix",
         "muon-adam-lora",
+    },
+    # Orthogonal-core LoRA (UCV^T parameterization, separate from BA).
+    "ucv_family": {
+        "adamw",
+        "adam-polar-product-lora",
+        "adam-ucv-core-lora",
     },
     # Bucket-3: theoretically promising, empirically weak.
     "bucket3_weak": {
