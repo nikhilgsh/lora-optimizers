@@ -206,26 +206,30 @@ def parse_launcher_fixed_args(launcher_path: Path) -> dict:
     """
     if not launcher_path.exists():
         return {}
+    import re
     fixed: dict[str, str] = {}
     text = launcher_path.read_text()
-    # Tokenize on whitespace; skip line continuations.
-    for token_idx, tok in enumerate(text.replace("\\\n", " ").split()):
+    tokens = text.replace("\\\n", " ").split()
+    for token_idx, tok in enumerate(tokens):
         if not tok.startswith("--"):
             continue
-        # peek next token in original whitespace-split
-        tokens = text.replace("\\\n", " ").split()
         if token_idx + 1 >= len(tokens):
             continue
         key = tok[2:]
         val = tokens[token_idx + 1]
-        # Skip flags (next token is another --flag)
         if val.startswith("--"):
             continue
-        # Skip variable substitutions
         stripped = val.strip('"').strip("'")
+        # Bash default-substitution: ${KEY:-DEFAULT} → DEFAULT.
+        # Also handle plain ${KEY:-DEFAULT} embedded with surrounding chars.
+        m = re.fullmatch(r"\$\{[^:}]+:-([^}]*)\}", stripped)
+        if m:
+            stripped = m.group(1)
+        # Any remaining variable substitution / positional arg / param expansion → skip.
         if "$" in stripped:
             continue
-        # Skip if key looks like a bash arg (e.g. "${1:-...}")
+        if not stripped:
+            continue
         fixed[key] = stripped
     return fixed
 
