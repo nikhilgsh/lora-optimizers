@@ -44,7 +44,7 @@ SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
 # is equivalent to picard_iters=1 / uncoupled). See
 # scripts/audit_sweep_overlap.py.
 if [[ -z "${FORCE_OVERLAP:-}" ]]; then
-    if ! python "${REPO_DIR}/scripts/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${REPO_DIR}/logs"; then
+    if ! python "${REPO_DIR}/scripts/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${REPO_DIR}/logs" --sweep-script "${REPO_DIR}/${SWEEP_SCRIPT}"; then
         echo "" >&2
         echo "ERROR: sweep overlaps with existing logs (see ✓ rows above)." >&2
         echo "Drop the duplicate cells from ${PARAM_FILE}, or set FORCE_OVERLAP=1" >&2

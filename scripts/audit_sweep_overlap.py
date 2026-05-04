@@ -191,15 +191,70 @@ def find_match(cell: dict, logs_root: Path) -> str | None:
     return None
 
 
+def parse_launcher_fixed_args(launcher_path: Path) -> dict:
+    """Extract hardcoded `--key value` pairs from a launcher shell script.
+
+    Many launchers hardcode fields that are NOT swept (e.g.
+    `--optimizer adam-ucv-core-lora`, `--training_mode ucv`). Without these,
+    the audit only matches on keys present in the JSON, so it conflates two
+    sweeps that share (lr, seed, lora_r, ...) but use different optimizers.
+
+    Returns a dict of {key: value} for every line of the form
+        --<key> <literal>
+    where <literal> is NOT a bash variable (`$x` or `"$x"`). Variable
+    substitutions are sweep parameters or env vars and don't pin the value.
+    """
+    if not launcher_path.exists():
+        return {}
+    fixed: dict[str, str] = {}
+    text = launcher_path.read_text()
+    # Tokenize on whitespace; skip line continuations.
+    for token_idx, tok in enumerate(text.replace("\\\n", " ").split()):
+        if not tok.startswith("--"):
+            continue
+        # peek next token in original whitespace-split
+        tokens = text.replace("\\\n", " ").split()
+        if token_idx + 1 >= len(tokens):
+            continue
+        key = tok[2:]
+        val = tokens[token_idx + 1]
+        # Skip flags (next token is another --flag)
+        if val.startswith("--"):
+            continue
+        # Skip variable substitutions
+        stripped = val.strip('"').strip("'")
+        if "$" in stripped:
+            continue
+        # Skip if key looks like a bash arg (e.g. "${1:-...}")
+        fixed[key] = stripped
+    return fixed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("params_file")
     ap.add_argument("--logs-root", default="logs")
+    ap.add_argument("--sweep-script", default=None,
+                    help="Path to the launcher script. Hardcoded `--key value` "
+                         "pairs (literal, not $vars) are added to every cell's "
+                         "match criteria — so a launcher that hardcodes "
+                         "--optimizer X disambiguates from sweeps that use a "
+                         "different optimizer at the same (lr, seed, ...) tuple.")
     args = ap.parse_args()
 
     params = load_params(Path(args.params_file))
     cells = cartesian(params)
     logs_root = Path(args.logs_root)
+
+    # Augment every cell with launcher-hardcoded fields not already in JSON.
+    if args.sweep_script:
+        fixed = parse_launcher_fixed_args(Path(args.sweep_script))
+        if fixed:
+            print(f"Launcher fixes: {fixed}")
+            for cell in cells:
+                for k, v in fixed.items():
+                    if k not in cell:
+                        cell[k] = v
 
     print(f"Sweep params: {args.params_file}")
     print(f"Cartesian product size: {len(cells)} cells")
