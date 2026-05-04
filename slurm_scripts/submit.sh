@@ -37,6 +37,15 @@ N_GPUS="$3"
 SWEEP_SCRIPT="${4:-scripts/sweep.sh}"
 SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
 
+# Resolve to repo-relative form. If the caller passes an absolute path, strip
+# the REPO_DIR prefix; otherwise prepending REPO_DIR below would produce
+# `/REPO_DIR//absolute/path` which silently breaks downstream tooling
+# (notably audit_sweep_overlap.py's --sweep-script, which reads launcher
+# fixed-args; a missing file there causes spurious cross-horizon overlaps).
+case "$PARAM_FILE" in /*) PARAM_FILE="${PARAM_FILE#${REPO_DIR}/}";; esac
+case "$SWEEP_SCRIPT" in /*) SWEEP_SCRIPT="${SWEEP_SCRIPT#${REPO_DIR}/}";; esac
+case "$SBATCH_SCRIPT" in /*) SBATCH_SCRIPT="${SBATCH_SCRIPT#${REPO_DIR}/}";; esac
+
 # ── Reuse-existing-data refusal ──────────────────────────────────────────────
 # Refuse to submit if any cell in the cartesian product of PARAM_FILE already
 # exists in logs/. Override with FORCE_OVERLAP=1 (and document the reason in

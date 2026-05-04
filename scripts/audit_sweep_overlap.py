@@ -195,17 +195,29 @@ def parse_launcher_fixed_args(launcher_path: Path) -> dict:
     """Extract hardcoded `--key value` pairs from a launcher shell script.
 
     Many launchers hardcode fields that are NOT swept (e.g.
-    `--optimizer adam-ucv-core-lora`, `--training_mode ucv`). Without these,
-    the audit only matches on keys present in the JSON, so it conflates two
-    sweeps that share (lr, seed, lora_r, ...) but use different optimizers.
+    `--optimizer adam-ucv-core-lora`, `--training_mode ucv`,
+    `--max_steps 8000`). Without these, the audit only matches on keys
+    present in the JSON, so it conflates two sweeps that share
+    (lr, seed, lora_r, ...) but differ in optimizer or horizon.
 
     Returns a dict of {key: value} for every line of the form
         --<key> <literal>
     where <literal> is NOT a bash variable (`$x` or `"$x"`). Variable
     substitutions are sweep parameters or env vars and don't pin the value.
+
+    Raises FileNotFoundError if the launcher path doesn't exist. The caller
+    asked for disambiguation; silently returning {} would let cross-horizon
+    sweeps look like overlap (e.g. an 8k sweep flagged as duplicating a 2k
+    sweep because `max_steps` got dropped from the cell).
     """
     if not launcher_path.exists():
-        return {}
+        raise FileNotFoundError(
+            f"--sweep-script does not exist: {launcher_path}. "
+            "Without the launcher, the audit cannot pick up hardcoded fields "
+            "(optimizer, max_steps, etc.) and may report spurious overlaps "
+            "with sweeps that differ only in those fields. Pass a correct "
+            "path or omit --sweep-script."
+        )
     import re
     fixed: dict[str, str] = {}
     text = launcher_path.read_text()
