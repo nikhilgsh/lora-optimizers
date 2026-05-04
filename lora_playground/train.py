@@ -259,6 +259,13 @@ def make_parser():
                         help="Override picard_iters for AdamPolarProductLoRA "
                              "(adam-polar-product-lora-coupled). Default uses the "
                              "factory's hardcoded value (3 for coupled).")
+    parser.add_argument("--polar_core_remix_alpha", type=float, default=0.0,
+                        help="Core-signal remix coefficient. α=0 (default): no "
+                             "remix. α=1/4: completed-core metric prediction "
+                             "(attenuates agreed mode S_+ by half, preserves "
+                             "disagreement mode S_-). Applied before Picard / "
+                             "polar pipeline; replaces row(A) / col(B) "
+                             "projections of (u_A, u_B) with remixed versions.")
     parser.add_argument("--anderson_m", type=int, default=0,
                         help="Anderson(m) acceleration depth for the Picard inner "
                              "loop in adam-polar-product-lora-coupled. m=0 disables "
@@ -444,6 +451,7 @@ def main():
         polar_norm_dir=args.polar_norm_dir,
         polar_sigma_power=args.polar_sigma_power,
         polar_method=args.polar_method,
+        polar_core_remix_alpha=args.polar_core_remix_alpha,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -510,6 +518,7 @@ def main():
             "polar_norm_dir": args.polar_norm_dir,
             "polar_sigma_power": args.polar_sigma_power,
             "polar_method": args.polar_method,
+            "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,
             "optimizer_config": optimizer_config_dict(optimizer),
