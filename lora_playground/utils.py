@@ -1,7 +1,52 @@
+import json
+import sys
 from dataclasses import dataclass
 
 import torch
 from torch import nn
+
+
+# Debug-only probe for the higham coupled-NS preconditioner. Default off;
+# `train_lora.py --debug_higham_residual` flips it on. When enabled, every
+# higham call computes ‖Z H Z − I‖_F per matrix (the actual quality of the
+# inverse-square-root) and emits a JSON line with the residual + λ_max
+# estimate + presence of non-finite output. Used for the integration test
+# at high r where compound numerical drift / power-iteration underestimate
+# can produce non-SPD output and downstream NaN.
+HIGHAM_DEBUG = {"enabled": False, "step": 0}
+
+
+def _higham_emit_residual(Z, H, lam_max, n_iters, eps, where):
+    """Compute ‖Z H Z − I‖_F per matrix in batch (or scalar for non-batched)
+    and emit a JSON line. Cheap; only fires when HIGHAM_DEBUG['enabled']."""
+    if not HIGHAM_DEBUG["enabled"]:
+        return
+    with torch.no_grad():
+        ZHZ = Z @ H @ Z
+        n = Z.shape[-1]
+        I = torch.eye(n, dtype=Z.dtype, device=Z.device)
+        if Z.dim() > 2:
+            I = I.expand_as(ZHZ)
+        diff = ZHZ - I
+        # Per-matrix Frobenius residual; flatten last 2 dims and norm.
+        res = diff.flatten(-2).norm(dim=-1)
+        non_finite_Z = (~torch.isfinite(Z)).any().item()
+        rec = {
+            "event": "higham_residual",
+            "where": where,
+            "step": HIGHAM_DEBUG["step"],
+            "n_iters": n_iters,
+            "eps": eps,
+            "n": int(n),
+            "batch_size": int(Z.numel() // (n * n)),
+            "residual_max": float(res.max()),
+            "residual_median": float(res.median()),
+            "residual_min": float(res.min()),
+            "lam_max_min": float(lam_max.min()),
+            "lam_max_max": float(lam_max.max()),
+            "non_finite_Z": bool(non_finite_Z),
+        }
+        print(json.dumps(rec, sort_keys=True), flush=True)
 
 
 @dataclass
@@ -72,6 +117,50 @@ def spd_frac_power_inv(H, gamma, eps=1e-6):
     return Q @ torch.diag(evals.clamp(min=eps).pow(-gamma)) @ Q.T
 
 
+def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4):
+    """Batched Iannazzo / Denman-Beavers-Newton coupled NS for H^{-1/2}.
+
+    Shape-broadcasting version of `spd_inv_sqrt_higham`. H: (..., n, n) SPD
+    -> Z: (..., n, n) ≈ H^{-1/2}. Same iteration, same convergence properties,
+    same regularization. Used by the batched precond_refresh path to compute
+    SA^{-1/2}, SB^{-1/2} for all LoRA pairs in one bmm sequence rather than
+    a per-pair Python loop.
+    """
+    n = H.shape[-1]
+    # spdify per-batch: symmetrize + add eps*I
+    H = 0.5 * (H + H.transpose(-2, -1))
+    eye = torch.eye(n, dtype=H.dtype, device=H.device)
+    H = H + eps * eye
+    eye_b = eye.expand_as(H)
+
+    # Power iteration for λ_max(H) per batch element. v: (..., n).
+    # Deterministic init: H @ ones (= row sums, dominant in the leading
+    # eigenvector for typical SPD H). Avoids the non-determinism of a
+    # randn init which produced a different preconditioner per call —
+    # an issue for production reproducibility.
+    batch_shape = H.shape[:-2]
+    ones = torch.ones(*batch_shape, n, dtype=H.dtype, device=H.device)
+    v = (H @ ones.unsqueeze(-1)).squeeze(-1)
+    v = v / v.norm(dim=-1, keepdim=True).clamp(min=eps)
+    for _ in range(n_power_iter):
+        v = (H @ v.unsqueeze(-1)).squeeze(-1)        # (..., n)
+        nv = v.norm(dim=-1, keepdim=True).clamp(min=eps)
+        v = v / nv
+    lam_max = nv.squeeze(-1)                          # (...,)
+
+    s = lam_max.unsqueeze(-1).unsqueeze(-1)           # (..., 1, 1)
+    Y = H / s
+    Z = eye_b.clone()
+    three_eye = 3.0 * eye_b
+    for _ in range(n_iters):
+        T = three_eye - Z @ Y
+        Y = 0.5 * (Y @ T)
+        Z = 0.5 * (T @ Z)
+    out = Z / s.sqrt()
+    _higham_emit_residual(out, H, lam_max, n_iters, eps, where="batched")
+    return out
+
+
 def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4):
     """
     Compute H^{-1/2} for SPD H via the coupled Newton-Schulz iteration
@@ -107,7 +196,9 @@ def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4):
 
     # Estimate λ_max(H) via power iteration. This is the only O(n²) cost beyond
     # the NS iters; tight scaling is critical for quadratic convergence.
-    v = torch.randn(n, dtype=H.dtype, device=H.device)
+    # Deterministic init (H @ ones, dominant in the leading eigenvector for
+    # typical SPD H); see batched version for the reproducibility rationale.
+    v = H @ torch.ones(n, dtype=H.dtype, device=H.device)
     v = v / v.norm().clamp(min=eps)
     for _ in range(n_power_iter):
         v = H @ v
@@ -124,7 +215,9 @@ def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4):
         T = three_eye - Z @ Y
         Y = 0.5 * (Y @ T)
         Z = 0.5 * (T @ Z)
-    return Z / s.sqrt()
+    out = Z / s.sqrt()
+    _higham_emit_residual(out, H, lam_max.unsqueeze(0), n_iters, eps, where="loop")
+    return out
 
 
 def _solve_ridge(A, B, eps=1e-6):
