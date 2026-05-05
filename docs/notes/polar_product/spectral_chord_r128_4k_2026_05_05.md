@@ -53,15 +53,22 @@ All cells single-seed, 4000 steps, r=128, eval_every=200.
 | adam-polar-product-lora-coupled | 1e-4 | 0.8293 | 0.7726 | 0.7468 | 0.7438 | 0.7315 | 0.7203 |
 | adamw | 1e-4 | 0.8280 | 0.7740 | 0.7489 | 0.7459 | 0.7337 | 0.7240 |
 
-Best non-spectral-chord baseline at this rank/horizon: 0.7197 (gauge or
-coupled polar-product at lr ∈ {1e-4, 3e-4}). Best spectral_chord cell
-(lr=1e-2): **0.7151**, **Δ = −0.0046 vs the baseline**.
+Best non-spectral-chord polar-product baseline at this rank/horizon:
+0.7197 (gauge or coupled polar-product at lr ∈ {1e-4, 3e-4}). Best
+AdamW at this rank/horizon: **0.7240 at lr=1e-4** (other AdamW cells:
+3e-5 → 0.7509, 3e-4 → 0.7449, 1e-3 → 1.0239 diverged). Best
+spectral_chord cell (lr=1e-2): **0.7151**.
+
+| comparator | best loss | Δ (spectral_chord − comparator) |
+|---|---|---|
+| AdamW | 0.7240 | **−0.0089** |
+| polar-product (gauge / coupled) | 0.7197 | −0.0046 |
 
 The project's noise floor at the canonical 2k horizon is multi-seed
 AdamW: σ ≈ 0.0006 at r=16, σ ≈ 0.0007 at r=64. r=128 4k σ has not been
-measured, but assuming the same order, Δ = −0.0046 is **roughly 6σ**
-above noise. Multi-seed verification of the variant itself is deferred;
-this is a single-seed result.
+measured, but assuming the same order, **Δ vs AdamW is ≈13σ and Δ vs
+the polar-product baseline is ≈6σ**. Multi-seed verification of the
+variant itself is deferred; this is a single-seed result.
 
 ## 3. Mid-trajectory: the step-2200 region
 
@@ -119,7 +126,9 @@ before this becomes a load-bearing recommendation:
   is bounded and the step-2200 redistribution is absent.
 - Multi-seed spectral_chord at lr=1e-2 r=128 to put a σ on the variant
   itself.
-- r-sweep at the canonical 2k horizon to confirm the rule transfers
-  off r=128 (existing 2k cells at r=128 in
+- r-sweep at the **4k horizon** across r ∈ {16, 32, 64, 128, 256} to
+  confirm spectral_chord dominates AdamW (and the existing
+  polar-product baselines) at every rank — the candidate-headline
+  comparison. Existing 2k cells at r=128 in
   `logs/spectral_chord_r128_2k/` and the lo/v2 variants are partial
-  precursors and should be analyzed or superseded).
+  precursors and should be analyzed or superseded.
