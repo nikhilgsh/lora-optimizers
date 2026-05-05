@@ -2758,6 +2758,12 @@ class AdamPolarProductLoRA(Optimizer):
             return False
         if self.polar_method != "ns":
             return False
+        # The batched unwhiten/rescale path uses `unwhiten_rescale_frob_batched`
+        # which hardcodes the Frobenius magnitude rule. Other rules (e.g.
+        # spectral_chord — Substitution 1' from algorithm.md §6.1) are
+        # algorithmically distinct and only implemented in `_step_per_pair`.
+        if getattr(self, "magnitude_rule", "adam_frobenius") != "adam_frobenius":
+            return False
         # anderson_m, exact_chord, end_rms_align all only modify the cross-term
         # path (k_iter > 0). At picard_iters=1 each is mathematically a no-op,
         # so the batched path produces the same answer. At picard_iters > 1

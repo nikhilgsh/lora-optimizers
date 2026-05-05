@@ -163,6 +163,7 @@ def test_batched_path_disabled_when_exotic_flags():
         (PI1, {"polar_sigma_power": 0.5}),
         (PI1, {"operator_type": "clip"}),
         (PI1, {"polar_method": "ns_hybrid"}),
+        (PI1, {"magnitude_rule": "spectral_chord"}),
         (PI3, {"anderson_m": 2}),
         (PI3, {"exact_chord": True}),
         (PI3, {"end_rms_align": True}),
