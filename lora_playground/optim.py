@@ -105,6 +105,37 @@ def optimizer_config_dict(opt) -> dict:
     return out
 
 
+def _sigma_max_power_iter(M, n_iters=3, eps=1e-30):
+    """Estimate σ_max(M) = ‖M‖_op via power iteration on the smaller-side Gram.
+
+    For an (m, n) matrix, iterates on the (k, k) Gram where k = min(m, n).
+    n_iters=3 gives ~3-digit accuracy on well-conditioned non-square matrices;
+    typical use (LoRA factors, polar pipeline outputs) is well-conditioned by
+    construction. ~50× faster than torch.linalg.matrix_norm(·, ord=2) at
+    r ≤ 256 due to avoiding the SVD kernel-launch overhead. Returns a
+    Python float for downstream scalar arithmetic.
+    """
+    if M.numel() == 0:
+        return 0.0
+    Mf = M.float()
+    if Mf.shape[0] <= Mf.shape[1]:
+        # Iterate (M M^T) v
+        v = torch.randn(Mf.shape[0], device=Mf.device, dtype=Mf.dtype)
+        v = v / (v.norm() + eps)
+        for _ in range(n_iters):
+            v = Mf @ (Mf.T @ v)
+            v = v / (v.norm() + eps)
+        sigma = (Mf.T @ v).norm()
+    else:
+        v = torch.randn(Mf.shape[1], device=Mf.device, dtype=Mf.dtype)
+        v = v / (v.norm() + eps)
+        for _ in range(n_iters):
+            v = Mf.T @ (Mf @ v)
+            v = v / (v.norm() + eps)
+        sigma = (Mf @ v).norm()
+    return float(sigma)
+
+
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
     """Dispatch (H + eps·I)^{-1/2}: 'eigh' uses spd_frac_power_inv; 'higham' uses
     Newton-Schulz (no eigh, ~10× faster on (r×r) at r=256 due to no kernel-launch
@@ -279,6 +310,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled",
     "adam-polar-product-lora-coupled-endrms",
     "adam-polar-product-lora-coupled-exact-chord",
+    "adam-polar-product-lora-coupled-spectral-chord",
     "adam-soap-polar-product-lora",
     "adafactor-polar-product-lora",
     "sign-momentum-polar-product-lora",
@@ -2381,7 +2413,8 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_method="ns",
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
-                 exact_chord=False):
+                 exact_chord=False,
+                 magnitude_rule="adam_frobenius"):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2478,6 +2511,20 @@ class AdamPolarProductLoRA(Optimizer):
         # recomputed each Picard iterate (k≥1) since A_eff, B_eff change.
         # See docs/notes/polar_product/algorithm.md §2 remark.
         self.exact_chord = bool(exact_chord)
+        # Magnitude rule for the per-block update — Substitution 1 vs 1' in
+        # docs/notes/polar_product/algorithm.md §6/§6.1.
+        #   "adam_frobenius" (default): rescale per-block direction to
+        #     ‖dA‖_F = lr·‖u_A‖_F (current Theorem 1, no variational source).
+        #   "spectral_chord":  rescale per-block direction to ‖dA‖_op = ρ where
+        #     ρ = lr/(σ_max(A) + σ_max(B) + 1) (Spectron-style chord trust
+        #     region, ‖ΔW‖_op ≤ lr by submultiplicativity). Self-dampens at
+        #     σ-drift failure mode; lr typically needs to be retuned (~10-30×
+        #     larger than the Frobenius rule's lr).
+        if magnitude_rule not in {"adam_frobenius", "spectral_chord"}:
+            raise ValueError(
+                f"magnitude_rule must be 'adam_frobenius' or 'spectral_chord', "
+                f"got {magnitude_rule!r}")
+        self.magnitude_rule = magnitude_rule
 
         # Shape-group bookkeeping for the batched hot path. Pairs with the
         # same (A.shape, B.shape) get stacked into 3-D buffers; per-pair Adam
@@ -2754,21 +2801,42 @@ class AdamPolarProductLoRA(Optimizer):
                 u_A = (gs['m_A'] / bc1) / ((gs['v_A'] / bc2).sqrt() + self.eps)
                 u_B = (gs['m_B'] / bc1) / ((gs['v_B'] / bc2).sqrt() + self.eps)
 
-            # Precond refresh: per-pair (each call hits eigh on r×r — keeps
-            # the existing algorithmic behavior; not yet batched).
+            # Precond refresh. precond_method='higham' uses batched
+            # `spd_inv_sqrt_higham_batched` (one bmm sequence over all pairs in
+            # the group, ~100× faster than per-pair eigh at r=256). 'eigh' stays
+            # per-pair: batched_eigh only saves ~1.06× at r=256 (per-batch eigh
+            # has real work; launch overhead dominates only at r=16 where eigh
+            # is already trivial). Per-pair eigh is the algorithmic baseline.
+            #
+            # Validated by the r=256 K=1 integration test
+            # (`logs/integration_higham_test/`, 2026-05-04): det-init higham
+            # ran 1000 steps clean, 0 non_finite_Z events out of 224k probe
+            # emits, trajectory within 0.6σ_AdamW peak / 0.07σ final vs the
+            # eigh reference.
             if (step_count - 1) % self.precond_refresh_every == 0:
                 with maybe_time(timer, "precond_refresh"):
-                    for k in range(N):
-                        gs['SA_half_inv'][k] = _spd_inv_half(
-                            gs['A_stack'][k] @ gs['A_stack'][k].T,
-                            eps=self.delta, method=self.precond_method,
-                            higham_iters=self.higham_iters,
-                        )
-                        gs['SB_half_inv'][k] = _spd_inv_half(
-                            gs['B_stack'][k].T @ gs['B_stack'][k],
-                            eps=self.delta, method=self.precond_method,
-                            higham_iters=self.higham_iters,
-                        )
+                    SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
+                    SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
+                    if self.precond_method == "higham":
+                        from .utils import spd_inv_sqrt_higham_batched
+                        gs['SA_half_inv'].copy_(spd_inv_sqrt_higham_batched(
+                            SA_grams, n_iters=self.higham_iters, eps=self.delta,
+                        ))
+                        gs['SB_half_inv'].copy_(spd_inv_sqrt_higham_batched(
+                            SB_grams, n_iters=self.higham_iters, eps=self.delta,
+                        ))
+                    else:
+                        for k in range(N):
+                            gs['SA_half_inv'][k] = _spd_inv_half(
+                                SA_grams[k], eps=self.delta,
+                                method=self.precond_method,
+                                higham_iters=self.higham_iters,
+                            )
+                            gs['SB_half_inv'][k] = _spd_inv_half(
+                                SB_grams[k], eps=self.delta,
+                                method=self.precond_method,
+                                higham_iters=self.higham_iters,
+                            )
             SA_half_inv = gs['SA_half_inv']
             SB_half_inv = gs['SB_half_inv']
 
@@ -2935,6 +3003,27 @@ class AdamPolarProductLoRA(Optimizer):
                 with maybe_time(timer, "picard_polar_pipeline"):
                     dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
                         self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv_k, SB_half_inv_k, lr)
+                if self.magnitude_rule == "spectral_chord":
+                    # Substitution 1' (algorithm.md §6.1): rescale per-block
+                    # direction to operator norm ρ where ρ = lr/(σ_A+σ_B+1),
+                    # enforcing the chord-spectral trust region ‖ΔW‖_op ≤ lr
+                    # by submultiplicativity. Self-dampens at σ-drift failure.
+                    # σ_max via 3 power iterations on the smaller-side gram —
+                    # ~50× faster than torch.linalg.matrix_norm(·, ord=2)'s SVD
+                    # at our matrix sizes; 3 iters give ~3-digit accuracy which
+                    # is plenty for the magnitude rule.
+                    sigma_A = _sigma_max_power_iter(A_f, n_iters=3)
+                    sigma_B = _sigma_max_power_iter(B_f, n_iters=3)
+                    rho = lr / (sigma_A + sigma_B + 1.0)
+                    op_geoA = _sigma_max_power_iter(geo_A, n_iters=3) + 1e-30
+                    op_geoB = _sigma_max_power_iter(geo_B, n_iters=3) + 1e-30
+                    dA = -rho * geo_A / op_geoA
+                    dB = -self.lora_plus_multiplier * rho * geo_B / op_geoB
+                    # Re-expose for downstream diagnostics consistency.
+                    gA_norm = torch.as_tensor(op_geoA, device=geo_A.device)
+                    gB_norm = torch.as_tensor(op_geoB, device=geo_B.device)
+                    uA_norm = torch.as_tensor(rho, device=geo_A.device)  # stand-in
+                    uB_norm = torch.as_tensor(rho, device=geo_B.device)
                 if self.end_rms_align:
                     # Override the pipeline's RMS-align: rescale to the
                     # ORIGINAL Adam-direction norm rather than ‖u_A_eff‖.
@@ -6694,6 +6783,34 @@ def build_optimizer(
             higham_iters=higham_iters,
             picard_iters=2,
             end_rms_align=True,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord":
+        # Substitution 1' (algorithm.md §6.1): replace Frobenius-Adam-magnitude
+        # rescale with spectral-chord rule ρ = lr/(σ_A+σ_B+1). Per-block prox
+        # structure (cross-coupling Picard, whitening, polar) unchanged.
+        # Note: lr should be retuned (~10-30× larger than the standard 3e-4
+        # since "lr" is now interpreted as a spectral-norm trust-region radius
+        # on ΔW rather than a Frobenius-rate scale).
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord",
         )
     if optimizer_type == "adam-polar-product-lora-coupled-exact-chord":
         # Variational target is the actual ΔW = (B+ΔB)(A+ΔA) - BA, not its

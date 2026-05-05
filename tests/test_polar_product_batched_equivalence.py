@@ -44,7 +44,7 @@ class FakeLoRAModel(nn.Module):
             self.adapters.append(FakeLoRALinearPair(r, d_in, d_out, seed=i))
 
 
-def _opt_args(picard_iters, precond_refresh_every):
+def _opt_args(picard_iters, precond_refresh_every, precond_method="eigh"):
     return dict(
         lr=1e-3,
         betas=(0.9, 0.999),
@@ -55,13 +55,14 @@ def _opt_args(picard_iters, precond_refresh_every):
         log_diagnostics=False,
         picard_iters=picard_iters,
         precond_refresh_every=precond_refresh_every,
-        precond_method="eigh",
+        precond_method=precond_method,
     )
 
 
 @pytest.mark.parametrize("picard_iters", [1, 3])
 @pytest.mark.parametrize("precond_refresh_every", [1, 4])
-def test_batched_matches_per_pair_multistep(picard_iters, precond_refresh_every):
+@pytest.mark.parametrize("precond_method", ["eigh", "higham"])
+def test_batched_matches_per_pair_multistep(picard_iters, precond_refresh_every, precond_method):
     """Run N steps with both paths from identical init; assert moment
     buffers and parameter values match within fp32 noise at every step."""
     torch.manual_seed(0)
@@ -73,7 +74,8 @@ def test_batched_matches_per_pair_multistep(picard_iters, precond_refresh_every)
     model_a = FakeLoRAModel(group_specs)
     model_b = copy.deepcopy(model_a)
 
-    opt_args = _opt_args(picard_iters, precond_refresh_every)
+    opt_args = _opt_args(picard_iters, precond_refresh_every,
+                         precond_method=precond_method)
     opt_a = AdamPolarProductLoRA(model_a, **opt_args)
     opt_b = AdamPolarProductLoRA(model_b, **opt_args)
 
