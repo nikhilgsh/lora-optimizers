@@ -325,6 +325,43 @@ def test_enrich_effective_inner_polar_none_for_non_polar_optimizer():
     assert cfg["_derived"]["effective_inner_polar"] is None
 
 
+def test_enrich_backfills_log_optim_diagnostics_from_optimizer_config():
+    """train.py emits two parallel surfaces for the diagnostics knobs:
+    top-level CLI names (``log_optim_diagnostics`` / ``optim_diagnostics_every``)
+    and constructor names inside ``optimizer_config`` (``log_diagnostics`` /
+    ``diagnostics_every``). Older cfg events lack the top-level fields
+    entirely. _enrich_cfg backfills from optimizer_config so callers
+    reading the top-level field see the correct value."""
+    cfg = _cfg("adam-polar-product-lora-coupled", 3e-4)
+    cfg["optimizer_config"] = {
+        "_optim_class": "AdamPolarProductLoRA",
+        "log_diagnostics": True,
+        "diagnostics_every": 80,
+    }
+    # Simulate older cfg shape: top-level CLI fields absent (None on .get()).
+    assert cfg.get("log_optim_diagnostics") is None
+    assert cfg.get("optim_diagnostics_every") is None
+    _enrich_cfg(cfg)
+    assert cfg["log_optim_diagnostics"] is True
+    assert cfg["optim_diagnostics_every"] == 80
+
+
+def test_enrich_does_not_override_explicit_log_optim_diagnostics():
+    """If the cfg event already has the top-level field set, _enrich_cfg
+    leaves it alone — backfill only fills None gaps."""
+    cfg = _cfg("adam-polar-product-lora-coupled", 3e-4)
+    cfg["log_optim_diagnostics"] = False
+    cfg["optim_diagnostics_every"] = 200
+    cfg["optimizer_config"] = {
+        "_optim_class": "AdamPolarProductLoRA",
+        "log_diagnostics": True,   # disagrees with top-level
+        "diagnostics_every": 20,
+    }
+    _enrich_cfg(cfg)
+    assert cfg["log_optim_diagnostics"] is False
+    assert cfg["optim_diagnostics_every"] == 200
+
+
 def test_enrich_effective_inner_polar_polar_product_pre_feature_falls_back_to_ns():
     """Runs from before commit 4b047f5 (May 3 2026) — when polar_method
     was added — have no polar_method anywhere. Code path was unconditional

@@ -229,6 +229,18 @@ def _enrich_cfg(cfg: dict) -> dict:
     if cfg.get("optimizer_config") is None:
         cfg["optimizer_config"] = _backfill_optimizer_config(cfg)
     opt_cfg = cfg["optimizer_config"]
+    # Diagnostic knobs are emitted at two places: the top-level cfg event
+    # (CLI names ``log_optim_diagnostics`` / ``optim_diagnostics_every``) and
+    # the per-optimizer kwargs in ``optimizer_config`` (constructor names
+    # ``log_diagnostics`` / ``diagnostics_every``). Older cfg events lack the
+    # top-level CLI fields entirely (the flag was added later) — they only
+    # carry the constructor names in optimizer_config. Backfill from
+    # optimizer_config so callers can read a single top-level field
+    # consistently regardless of which generation of cfg event they have.
+    if cfg.get("log_optim_diagnostics") is None:
+        cfg["log_optim_diagnostics"] = opt_cfg.get("log_diagnostics")
+    if cfg.get("optim_diagnostics_every") is None:
+        cfg["optim_diagnostics_every"] = opt_cfg.get("diagnostics_every")
     derived: dict[str, Any] = {}
     derived["effective_inner_polar"] = _derive_effective_inner_polar(cfg, opt_cfg)
     k, k_certain = _derive_effective_picard_iters(cfg, opt_cfg)
@@ -258,6 +270,8 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     # Diagnostic emission knobs (don't change algorithm)
     "log_optim_diagnostics", "optim_diagnostics_every",
     "profile_steps",
+    # Diagnostic trajectory data (attached by load_run; not a hyperparameter)
+    "_optim_steps",
     # Local file path resolution (the dataset_name field still pins identity)
     "train_file", "eval_file",
 })

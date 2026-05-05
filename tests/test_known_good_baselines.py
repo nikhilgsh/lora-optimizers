@@ -23,7 +23,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lora_playground.loader import load_runs
-from lora_playground.plot_utils import OPTIM_COLORS
 
 
 # Tolerance for "this is the same number" — eval_loss is logged to 4 decimals,
@@ -33,23 +32,30 @@ TOLERANCE = 1e-3
 
 @pytest.fixture(scope="module")
 def ext_runs() -> list:
-    """Reproduce the leaderboard cell's load: every run for any optimizer in
-    OPTIM_COLORS, deduped including lora_plus_multiplier so m=1 vs m=4 stay
-    distinct.
+    """Load every run for the headline optimizers at the canonical 2k horizon,
+    using the loader's deny-list dedup default so any non-runtime cfg field
+    (max_steps, train_samples, polar_core_remix_alpha, …) automatically acts
+    as a dedup axis — no manual axis enumeration to keep in sync.
     """
     logs_root = str(ROOT / "logs")
     if not (ROOT / "logs").exists():
         pytest.skip("no logs/ directory")
+    headline_optimizers = sorted({row[0] for row in HEADLINE_NUMBERS})
     return load_runs(
-        where={"optimizer": list(OPTIM_COLORS)},
-        key_axes=("optimizer", "lr", "lora_r", "lora_plus_multiplier"),
+        where={"optimizer": headline_optimizers, "max_steps": 2000},
         cfg_postprocess=lambda c, g: c.update(_lora_r=int(c.get("lora_r", 16))),
         logs_root=logs_root,
     )
 
 
 def best_at_m1(runs, optimizer: str, lora_r: int) -> float | None:
-    """Best final eval loss for `optimizer` at `lora_r` with m=1, step=2000."""
+    """Best final eval loss for `optimizer` at `lora_r` with m=1, seed=0, step=2000.
+
+    Headline numbers in docs/notes/optimizer_synthesis.md are single-seed
+    (seed=0). Without the seed filter, multi-seed AdamW data (seeds 1-4 in
+    `adamw_multiseed/`) leaks into a "best across seeds" pick that drifts
+    away from the documented baseline.
+    """
     best = None
     for cfg, evs in runs:
         if cfg["optimizer"] != optimizer:
@@ -57,6 +63,8 @@ def best_at_m1(runs, optimizer: str, lora_r: int) -> float | None:
         if cfg["_lora_r"] != lora_r:
             continue
         if float(cfg.get("lora_plus_multiplier", 1.0)) != 1.0:
+            continue
+        if int(cfg.get("seed", 0)) != 0:
             continue
         if evs[-1]["step"] < 2000:
             continue

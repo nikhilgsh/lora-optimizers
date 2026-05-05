@@ -324,8 +324,24 @@ def parse_flag(command: str, flag: str) -> str | None:
 
 
 def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
-    """Parse a single task .out file → (config dict, list of eval dicts)."""
-    config, evals = None, []
+    """Parse a single task .out file → (config dict, list of eval dicts).
+
+    optim_step diagnostic events (emitted by polar/lin/scaled-LoRA optimizers
+    when --log_optim_diagnostics is on) are attached to the config dict as
+    ``cfg["_optim_steps"]`` (a list of dicts with per-step probe stats).
+    Underscore prefix puts them in RUNTIME_FIELDS for dedup, so adding them
+    doesn't change merge_runs behavior.
+
+    DESIGN NOTE (2026-05-05, staged migration): the cfg["_optim_steps"]
+    attachment is the stage-1 minimum-disruption fix. The cleaner shape is
+    a heterogeneous events list (eval + optim_step + future event types)
+    discriminated by the existing ``event`` field, requiring callers to
+    filter explicitly. Stage 2 has not been done; if you need it, audit the
+    ~12 plot_utils sites that iterate ``evs`` plus tests/notebook callers
+    and update each to filter ``e['event']=='eval'``. Until then,
+    diagnostics live on cfg, not in evs.
+    """
+    config, evals, optim_steps = None, [], []
     for line in Path(log_path).read_text().splitlines():
         line = line.strip()
         if not line:
@@ -338,6 +354,8 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
             config = obj
         elif obj.get("event") == "eval":
             evals.append(obj)
+        elif obj.get("event") == "optim_step":
+            optim_steps.append(obj)
     if config is not None and evals:
         config.setdefault("lr", evals[0]["lr"])
         cmd = config.get("command", "")
@@ -348,6 +366,7 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         rk = parse_flag(cmd, "--precond_refresh_every")
         config.setdefault("precond_refresh_every", int(rk) if rk else 1)
         config.setdefault("precond_method", parse_flag(cmd, "--precond_method"))
+        config["_optim_steps"] = optim_steps
     return config, evals
 
 

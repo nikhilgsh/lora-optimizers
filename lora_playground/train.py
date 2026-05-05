@@ -176,7 +176,33 @@ def make_parser():
     parser.add_argument("--eval_fraction", type=float, default=0.05)
     parser.add_argument("--data_dir", default=None, help="Pre-tokenized dataset dir (Arrow). Skips download + tokenization.")
     parser.add_argument("--max_steps", type=int, default=500)
-    parser.add_argument("--eval_every", type=int, default=100)
+    parser.add_argument(
+        "--allow_multi_epoch",
+        action="store_true",
+        help="Bypass the single-pass guard. Use only for explicit "
+             "multi-epoch experiments (most optimizer comparisons should not).",
+    )
+    parser.add_argument(
+        "--eval_every",
+        type=int,
+        default=200,
+        help="Eval cadence in steps. Project convention: ALWAYS 200, "
+             "regardless of --max_steps. Long-horizon runs get more eval "
+             "points, not coarser ones — keeps trajectory granularity "
+             "consistent across horizons so the same step-2000 eval can "
+             "be compared between runs of different total length.",
+    )
+    parser.add_argument(
+        "--train_loss_every",
+        type=int,
+        default=10,
+        help="Per-step train-loss logging cadence (steps). 0 disables. "
+             "Each emit is a `train_step` JSONL event with a windowed mean "
+             "of step_loss over the last train_loss_every steps. Cheaper "
+             "than eval (no held-out forward), so the cadence can be much "
+             "tighter — useful for spotting magnitude-rule effects on "
+             "training dynamics that average out at eval cadence.",
+    )
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--max_seq_length", type=int, default=512)
@@ -234,6 +260,12 @@ def make_parser():
                              "--no-log_optim_diagnostics to disable for throughput-only benchmarks.")
     parser.add_argument("--optim_diagnostics_every", type=int, default=20,
                         help="Cadence (in optimizer steps) for --log_optim_diagnostics.")
+    parser.add_argument("--debug_higham_residual", action="store_true",
+                        help="Debug-only: every higham `_spd_inv_half` call emits a JSONL "
+                             "`higham_residual` event with ‖Z H Z − I‖_F per matrix and "
+                             "presence of non-finite output. Used to diagnose higham failures "
+                             "(NaN at high r, drift) post-mortem. Cheap (~5%% wall on diagnostic "
+                             "cadence). Off by default.")
     parser.add_argument("--precond_refresh_every", type=int, default=1,
                         help="K-step cadence for refreshing the per-pair Gram-preconditioner cache "
                              "(adam-scaled-lora, adam-lin-lora, adam-polar-product-lora, "
@@ -320,6 +352,10 @@ def main():
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     set_seed(args.seed)
 
+    if args.debug_higham_residual:
+        from lora_playground import utils as _utils
+        _utils.HIGHAM_DEBUG["enabled"] = True
+
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -343,6 +379,28 @@ def main():
     else:
         train_raw, eval_raw = load_splits(args)
         train_dataset, eval_dataset = tokenize_splits(train_raw, eval_raw, tokenizer, args)
+
+    # Single-pass invariant: all training in this project must be one epoch
+    # or less. Multi-epoch sweeps mix capacity-to-fit-the-subset effects with
+    # per-step optimization quality, which makes optimizer comparisons
+    # uninterpretable. (See: 8k-step runs invalidated 2026-05-04 because they
+    # ran ~3.5 epochs over the 32k-sample subset.) Compute the total samples
+    # the training loop will consume and refuse to start if it exceeds the
+    # dataset. Override with --allow_multi_epoch only for explicit experiments.
+    samples_consumed = (
+        args.max_steps * args.batch_size * args.grad_accum_steps
+    )
+    if samples_consumed > len(train_dataset) and not getattr(args, "allow_multi_epoch", False):
+        raise ValueError(
+            f"Multi-epoch training blocked: max_steps × batch_size × grad_accum "
+            f"= {args.max_steps} × {args.batch_size} × {args.grad_accum_steps} = "
+            f"{samples_consumed:,} samples, but train dataset has only "
+            f"{len(train_dataset):,} samples "
+            f"(~{samples_consumed / len(train_dataset):.2f} epochs). "
+            f"Either reduce --max_steps, increase --max_train_samples / dataset "
+            f"size, or pass --allow_multi_epoch if multi-epoch is the intent."
+        )
+
     collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     train_loader = DataLoader(
         train_dataset,
@@ -570,6 +628,9 @@ def main():
     train_iter = iter(train_loader)
     total_tokens = 0
     eval_elapsed = 0.0
+    # Windowed train-loss accumulator for `train_step` events.
+    window_loss_sum = 0.0
+    window_tokens = 0
     cuda_sync()
     start = time.perf_counter()
     model.train()
@@ -598,8 +659,30 @@ def main():
         optimizer.step()
         scheduler.step()
         total_tokens += step_tokens
+        window_loss_sum += step_loss
+        window_tokens += step_tokens
         if profiler is not None:
             profiler.step()
+
+        # Per-window train-loss event (cheap; no held-out eval). Emitted on
+        # every multiple of train_loss_every — including eval steps, so the
+        # window length is consistent (last train_loss_every steps) and
+        # doesn't grow when an eval step falls within the window.
+        if args.train_loss_every > 0 and step % args.train_loss_every == 0:
+            log_event({
+                "event": "train_step",
+                "step": step,
+                "train_loss": window_loss_sum / max(window_tokens, 1),
+                "tokens": total_tokens,
+                "lr": scheduler.get_last_lr()[0],
+            })
+            if wandb_run is not None:
+                wandb_run.log(
+                    {"train_loss": window_loss_sum / max(window_tokens, 1)},
+                    step=step,
+                )
+            window_loss_sum = 0.0
+            window_tokens = 0
 
         if step % args.eval_every == 0 or step == args.max_steps:
             cuda_sync()
