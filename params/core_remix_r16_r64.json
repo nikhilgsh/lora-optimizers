@@ -1,0 +1,1 @@
+{"lr": ["3e-4"], "optimizer": ["adam-polar-product-lora"], "lora_plus_multiplier": ["1.0"], "seed": ["0"], "lora_r": ["16", "64"], "polar_core_remix_alpha": ["0.125", "0.25", "0.375"]}

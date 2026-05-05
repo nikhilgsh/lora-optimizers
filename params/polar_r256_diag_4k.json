@@ -1,0 +1,9 @@
+{
+  "lr": ["1e-4", "3e-4"],
+  "optimizer": ["adam-polar-product-lora", "adam-polar-product-lora-coupled"],
+  "lora_plus_multiplier": ["1.0"],
+  "seed": ["0"],
+  "lora_r": ["256"],
+  "muon_ns_steps": ["5"],
+  "precond_method": ["higham"]
+}
