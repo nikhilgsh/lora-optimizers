@@ -44,7 +44,8 @@ class FakeLoRAModel(nn.Module):
             self.adapters.append(FakeLoRALinearPair(r, d_in, d_out, seed=i))
 
 
-def _opt_args(picard_iters, precond_refresh_every, precond_method="eigh"):
+def _opt_args(picard_iters, precond_refresh_every, precond_method="eigh",
+              magnitude_rule="adam_frobenius"):
     return dict(
         lr=1e-3,
         betas=(0.9, 0.999),
@@ -56,13 +57,79 @@ def _opt_args(picard_iters, precond_refresh_every, precond_method="eigh"):
         picard_iters=picard_iters,
         precond_refresh_every=precond_refresh_every,
         precond_method=precond_method,
+        magnitude_rule=magnitude_rule,
     )
 
 
 @pytest.mark.parametrize("picard_iters", [1, 3])
+@pytest.mark.parametrize("precond_method", ["eigh", "higham"])
+def test_batched_matches_per_pair_spectral_chord(picard_iters, precond_method):
+    """Spectral_chord magnitude rule (Substitution 1') has its own
+    batched code path: σ_max via batched power iteration, operator-norm
+    rescale instead of Frobenius. Equivalence to the per-pair path holds
+    within bf16 NS noise + power-iter init noise."""
+    torch.manual_seed(0)
+    group_specs = [(8, 32, 32)] * 4 + [(8, 32, 64)] * 2
+
+    model_a = FakeLoRAModel(group_specs)
+    model_b = copy.deepcopy(model_a)
+
+    opt_args = _opt_args(picard_iters, 1, precond_method=precond_method,
+                         magnitude_rule="spectral_chord")
+    opt_a = AdamPolarProductLoRA(model_a, **opt_args)
+    opt_b = AdamPolarProductLoRA(model_b, **opt_args)
+
+    object.__setattr__(opt_b, "_force_per_pair", True)
+    original = AdamPolarProductLoRA._batched_path_eligible
+    def _gated(self):
+        if getattr(self, "_force_per_pair", False):
+            return False
+        return original(self)
+    AdamPolarProductLoRA._batched_path_eligible = _gated
+    try:
+        assert opt_a._batched_path_eligible() is True
+        assert opt_b._batched_path_eligible() is False
+
+        def get_A(model, idx):
+            return model.adapters[idx].lora_A["default"].weight
+        def get_B(model, idx):
+            return model.adapters[idx].lora_B["default"].weight
+
+        for step_idx in range(3):
+            torch.manual_seed(100 + step_idx)
+            grads_A = [torch.randn_like(get_A(model_a, j)) for j in range(len(model_a.adapters))]
+            grads_B = [torch.randn_like(get_B(model_a, j)) for j in range(len(model_a.adapters))]
+            for j in range(len(model_a.adapters)):
+                get_A(model_a, j).grad = grads_A[j].clone()
+                get_B(model_a, j).grad = grads_B[j].clone()
+                get_A(model_b, j).grad = grads_A[j].clone()
+                get_B(model_b, j).grad = grads_B[j].clone()
+            opt_a.step()
+            opt_b.step()
+            for j in range(len(model_a.adapters)):
+                err_A = (get_A(model_a, j) - get_A(model_b, j)).abs().max().item()
+                err_B = (get_B(model_a, j) - get_B(model_b, j)).abs().max().item()
+                # Tolerance: bf16 NS (~1e-3) + power-iter init noise. Per-pair
+                # uses random init for σ_max power iter; batched uses
+                # deterministic `H @ ones` init. The two reach the same
+                # leading singular vector but not the same intermediate
+                # iterates, so dA/dB differ by ~σ_max convergence residual.
+                # n_iters=3 warm-start gives ~5% residual — acceptable for
+                # "same algorithm" equivalence.
+                assert err_A < 1e-2, (
+                    f"step {step_idx} pair {j}: lora_A diverged (err={err_A:.2e})")
+                assert err_B < 1e-2, (
+                    f"step {step_idx} pair {j}: lora_B diverged (err={err_B:.2e})")
+    finally:
+        AdamPolarProductLoRA._batched_path_eligible = original
+
+
+@pytest.mark.parametrize("picard_iters,exact_chord", [
+    (1, False), (3, False), (3, True),
+])
 @pytest.mark.parametrize("precond_refresh_every", [1, 4])
 @pytest.mark.parametrize("precond_method", ["eigh", "higham"])
-def test_batched_matches_per_pair_multistep(picard_iters, precond_refresh_every, precond_method):
+def test_batched_matches_per_pair_multistep(picard_iters, exact_chord, precond_refresh_every, precond_method):
     """Run N steps with both paths from identical init; assert moment
     buffers and parameter values match within fp32 noise at every step."""
     torch.manual_seed(0)
@@ -76,6 +143,7 @@ def test_batched_matches_per_pair_multistep(picard_iters, precond_refresh_every,
 
     opt_args = _opt_args(picard_iters, precond_refresh_every,
                          precond_method=precond_method)
+    opt_args["exact_chord"] = exact_chord
     opt_a = AdamPolarProductLoRA(model_a, **opt_args)
     opt_b = AdamPolarProductLoRA(model_b, **opt_args)
 
@@ -163,9 +231,7 @@ def test_batched_path_disabled_when_exotic_flags():
         (PI1, {"polar_sigma_power": 0.5}),
         (PI1, {"operator_type": "clip"}),
         (PI1, {"polar_method": "ns_hybrid"}),
-        (PI1, {"magnitude_rule": "spectral_chord"}),
         (PI3, {"anderson_m": 2}),
-        (PI3, {"exact_chord": True}),
         (PI3, {"end_rms_align": True}),
     ]
     for base, kw in cases:

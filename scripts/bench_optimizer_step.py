@@ -248,6 +248,8 @@ def main():
         "adam-polar-product-lora",
         "adam-polar-product-lora-coupled",
         "adam-polar-product-lora-coupled-endrms",
+        "adam-polar-product-lora-coupled-exact-chord",
+        "adam-polar-product-lora-coupled-spectral-chord",
         "adamuon-polar-product-lora",
     }
     print(f"# {'optimizer':<32} {'method':>7} {'K':>4} {'fwd_ms':>8} {'bwd_ms':>8} "

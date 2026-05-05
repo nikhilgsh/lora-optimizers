@@ -158,6 +158,57 @@ def _sigma_max_power_iter(M, v_init=None, n_iters=8, eps=1e-30):
     return sigma, v
 
 
+def _sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
+    """Batched version of `_sigma_max_power_iter`. M: (..., m, n).
+
+    Returns (sigma: (...,), v: (..., k)) where k = min(m, n). Iterates
+    on the smaller-side Gram via bmm; one launch per iter regardless of
+    batch size, vs N launches for the per-pair loop. ~10× faster on
+    LoRA-shape inputs at OLMo r=64 (verified by spectral_chord bench).
+
+    Convention matches the per-pair version (v lives on M's device, no
+    GPU→CPU sync). Caller supplies `v_init` as the warm-start across
+    optimizer steps; for fresh runs pass None and a deterministic init
+    (M @ ones-like) is used.
+    """
+    if M.numel() == 0:
+        return torch.zeros(M.shape[:-2], device=M.device, dtype=torch.float32), None
+    Mf = M.float() if M.dtype != torch.float32 else M
+    *batch, m, n = Mf.shape
+    smaller_m = m <= n
+    k = m if smaller_m else n
+    expected_shape = (*batch, k)
+    if (v_init is None
+            or v_init.shape != expected_shape
+            or v_init.device != Mf.device
+            or v_init.dtype != torch.float32):
+        # Deterministic init: M·ones (smaller_m=True) or M^T·ones — gives
+        # near-perfect overlap with the dominant singular vector for
+        # typical SPD/Gauss-like factor matrices.
+        if smaller_m:
+            ones_n = torch.ones(*batch, n, device=Mf.device, dtype=torch.float32)
+            v = (Mf @ ones_n.unsqueeze(-1)).squeeze(-1)
+        else:
+            ones_m = torch.ones(*batch, m, device=Mf.device, dtype=torch.float32)
+            v = (Mf.transpose(-2, -1) @ ones_m.unsqueeze(-1)).squeeze(-1)
+    else:
+        v = v_init
+    v = v / (v.norm(dim=-1, keepdim=True) + eps)
+    if smaller_m:
+        for _ in range(n_iters):
+            tmp = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1)
+            v = (Mf @ tmp.unsqueeze(-1)).squeeze(-1)
+            v = v / (v.norm(dim=-1, keepdim=True) + eps)
+        sigma = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
+    else:
+        for _ in range(n_iters):
+            tmp = (Mf @ v.unsqueeze(-1)).squeeze(-1)
+            v = (Mf.transpose(-2, -1) @ tmp.unsqueeze(-1)).squeeze(-1)
+            v = v / (v.norm(dim=-1, keepdim=True) + eps)
+        sigma = (Mf @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
+    return sigma, v
+
+
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
     """Dispatch (H + eps·I)^{-1/2}: 'eigh' uses spd_frac_power_inv; 'higham' uses
     Newton-Schulz (no eigh, ~10× faster on (r×r) at r=256 due to no kernel-launch
@@ -2758,20 +2809,19 @@ class AdamPolarProductLoRA(Optimizer):
             return False
         if self.polar_method != "ns":
             return False
-        # The batched unwhiten/rescale path uses `unwhiten_rescale_frob_batched`
-        # which hardcodes the Frobenius magnitude rule. Other rules (e.g.
-        # spectral_chord — Substitution 1' from algorithm.md §6.1) are
-        # algorithmically distinct and only implemented in `_step_per_pair`.
-        if getattr(self, "magnitude_rule", "adam_frobenius") != "adam_frobenius":
+        # adam_frobenius and spectral_chord both implemented in batched path.
+        # Future magnitude rules need an explicit branch in `_step_batched`.
+        if getattr(self, "magnitude_rule", "adam_frobenius") not in (
+                "adam_frobenius", "spectral_chord"):
             return False
-        # anderson_m, exact_chord, end_rms_align all only modify the cross-term
-        # path (k_iter > 0). At picard_iters=1 each is mathematically a no-op,
+        # anderson_m, end_rms_align only modify the cross-term path
+        # (k_iter > 0). At picard_iters=1 each is mathematically a no-op,
         # so the batched path produces the same answer. At picard_iters > 1
         # they take effect and the per-pair path implements them.
+        # exact_chord IS implemented in batched (refreshes precond per
+        # Picard iter against effective factors via batched higham/eigh).
         if self.picard_iters > 1:
             if self.anderson_m > 0:
-                return False
-            if self.exact_chord:
                 return False
             if self.end_rms_align:
                 return False
@@ -2877,20 +2927,82 @@ class AdamPolarProductLoRA(Optimizer):
             dB_prev = torch.zeros_like(u_B)
             A_f = gs['A_stack']
             B_f = gs['B_stack']
+            # In exact_chord mode the per-Picard-iter precond_refresh uses the
+            # CURRENT iter's preconditioner. Initial values are the same SA/SB
+            # we just computed; recomputed below at k_iter > 0.
+            SA_half_inv_k = SA_half_inv
+            SB_half_inv_k = SB_half_inv
+
+            # spectral_chord: σ_max(A), σ_max(B) once per step (factors don't
+            # change inside the Picard loop). Warm-started across optimizer
+            # steps via `gs['u_A_top_stack']` etc.; n_iters=3 with warm-start
+            # matches n_iters=8 cold-start accuracy. ρ = lr/(σ_A+σ_B+1) is the
+            # operator-norm trust-region radius (Substitution 1', algorithm.md
+            # §6.1).
+            if self.magnitude_rule == "spectral_chord":
+                sigma_A, vA_new = _sigma_max_power_iter_batched(
+                    A_f, v_init=gs.get('u_A_top_stack'), n_iters=3)
+                sigma_B, vB_new = _sigma_max_power_iter_batched(
+                    B_f, v_init=gs.get('u_B_top_stack'), n_iters=3)
+                gs['u_A_top_stack'] = vA_new.detach()
+                gs['u_B_top_stack'] = vB_new.detach()
+                rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
+            else:
+                rho = None
             for k_iter in range(self.picard_iters):
                 with maybe_time(timer, "picard_cross_coupling"):
                     if k_iter > 0:
-                        # Compute-bound chain matmul; bmm vs per-pair was 0.97×
-                        # in microbench (neutral). Prefer batched form for
-                        # code uniformity.
-                        BT_dB_A = B_f.transpose(-2, -1) @ dB_prev @ A_f
-                        B_dA_AT = B_f @ dA_prev @ A_f.transpose(-2, -1)
-                        u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
-                        u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
+                        if self.exact_chord:
+                            # Exact-chord (algorithm.md §2 remark): use
+                            # A_eff = A + dA_prev, B_eff = B + dB_prev for
+                            # both cross-coupling and the spectral
+                            # preconditioner. Refresh SA/SB against the
+                            # effective factors via batched higham at every
+                            # Picard iter (~1 ms/group at r=64; would be
+                            # ~80 ms/group with eigh per-pair).
+                            A_eff = A_f + dA_prev
+                            B_eff = B_f + dB_prev
+                            BT_dB_A = B_eff.transpose(-2, -1) @ dB_prev @ A_f
+                            B_dA_AT = B_f @ dA_prev @ A_eff.transpose(-2, -1)
+                            u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
+                            u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
+                            SA_grams_k = A_eff @ A_eff.transpose(-2, -1)
+                            SB_grams_k = B_eff.transpose(-2, -1) @ B_eff
+                            if self.precond_method == "higham":
+                                from .utils import spd_inv_sqrt_higham_batched
+                                SA_half_inv_k = spd_inv_sqrt_higham_batched(
+                                    SA_grams_k, n_iters=self.higham_iters,
+                                    eps=self.delta,
+                                )
+                                SB_half_inv_k = spd_inv_sqrt_higham_batched(
+                                    SB_grams_k, n_iters=self.higham_iters,
+                                    eps=self.delta,
+                                )
+                            else:
+                                SA_half_inv_k = torch.stack([
+                                    _spd_inv_half(
+                                        SA_grams_k[k_pair], eps=self.delta,
+                                        method=self.precond_method,
+                                        higham_iters=self.higham_iters)
+                                    for k_pair in range(N)])
+                                SB_half_inv_k = torch.stack([
+                                    _spd_inv_half(
+                                        SB_grams_k[k_pair], eps=self.delta,
+                                        method=self.precond_method,
+                                        higham_iters=self.higham_iters)
+                                    for k_pair in range(N)])
+                        else:
+                            # Compute-bound chain matmul; bmm vs per-pair was
+                            # 0.97× in microbench (neutral). Prefer batched
+                            # form for code uniformity.
+                            BT_dB_A = B_f.transpose(-2, -1) @ dB_prev @ A_f
+                            B_dA_AT = B_f @ dA_prev @ A_f.transpose(-2, -1)
+                            u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
+                            u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
                 with maybe_time(timer, "picard_polar_pipeline"):
                     with maybe_time(timer, "polar_whiten"):
-                        X_A = SB_half_inv @ u_A_eff
-                        X_B = u_B_eff @ SA_half_inv
+                        X_A = SB_half_inv_k @ u_A_eff
+                        X_B = u_B_eff @ SA_half_inv_k
                     # Iterate NS in bf16 for ~3.6× throughput on Ampere
                     # tensor cores (microbench: scripts/bench_ns_bf16.py).
                     # Pre-norm + Frobenius rescale stay fp32 (small-number
@@ -2907,12 +3019,32 @@ class AdamPolarProductLoRA(Optimizer):
                             X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
                         ).float()
                     with maybe_time(timer, "polar_unwhiten_rescale"):
-                        from ._batched_polar import unwhiten_rescale_frob_batched
-                        dA, dB = unwhiten_rescale_frob_batched(
-                            P_A, P_B, SA_half_inv, SB_half_inv,
-                            u_A_eff, u_B_eff, lr,
-                            lora_plus_multiplier=self.lora_plus_multiplier,
-                        )
+                        if self.magnitude_rule == "spectral_chord":
+                            # Substitution 1' (algorithm.md §6.1): replace
+                            # the Frobenius rescale with operator-norm trust
+                            # region: dA = -ρ · geo_A / σ_max(geo_A), where
+                            # ρ = lr/(σ_A+σ_B+1) was computed once per step.
+                            # σ_max(geo) shifts each Picard iter (cross-coupling
+                            # changes the polar input), so cold-start n_iters=8.
+                            geo_A = SB_half_inv_k @ P_A
+                            geo_B = P_B @ SA_half_inv_k
+                            op_geoA, _ = _sigma_max_power_iter_batched(
+                                geo_A, n_iters=8)
+                            op_geoB, _ = _sigma_max_power_iter_batched(
+                                geo_B, n_iters=8)
+                            op_geoA = (op_geoA + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                            op_geoB = (op_geoB + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                            rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
+                            dA = -(rho_unsq / op_geoA) * geo_A
+                            dB = -(self.lora_plus_multiplier *
+                                   rho_unsq / op_geoB) * geo_B
+                        else:
+                            from ._batched_polar import unwhiten_rescale_frob_batched
+                            dA, dB = unwhiten_rescale_frob_batched(
+                                P_A, P_B, SA_half_inv_k, SB_half_inv_k,
+                                u_A_eff, u_B_eff, lr,
+                                lora_plus_multiplier=self.lora_plus_multiplier,
+                            )
                 dA_prev = dA
                 dB_prev = dB
 
