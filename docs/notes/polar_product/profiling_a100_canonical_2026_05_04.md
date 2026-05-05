@@ -52,6 +52,37 @@ because A6000's slower fwd+bwd hides it).
 | polar k=3 | eigh | 420 | 535 | 332 | 1.3 | 1289 | 1.35× |
 | polar k=3 | **higham** | 422 | 535 | **94** | 1.3 | **1052** | **1.10×** |
 
+### Chord variants (post-batching)
+
+`-coupled-exact-chord` (refresh `S_{B+ΔB}, S_{A+ΔA}` per Picard iter,
+algorithm.md §2 remark) and `-coupled-spectral-chord` (operator-norm
+trust-region rule, Substitution 1' algorithm.md §6.1) both land in the
+batched hot path as of commit `8ec18aa`.
+
+| optimizer | method | r=16 opt | r=16 ×AdamW | r=64 opt | r=64 ×AdamW |
+|---|---|---:|---:|---:|---:|
+| coupled (plain) | eigh | 127 | 1.15× | 337 | 1.35× |
+| coupled (plain) | higham | 59 | 1.06× | 93 | 1.09× |
+| coupled-exact-chord | eigh | 267 | 1.30× | 812 | 1.85× |
+| **coupled-exact-chord** | **higham** | **67** | **1.07×** | **107** | **1.10×** |
+| coupled-spectral-chord | eigh | 136 | 1.15× | 339 | 1.35× |
+| **coupled-spectral-chord** | **higham** | **65** | **1.07×** | **104** | **1.10×** |
+
+Speedups vs the pre-batched eigh baselines (`bench_chord_a100`,
+job 6338055):
+
+| variant | r=16: was → now | speedup | r=64: was → now | speedup |
+|---|---|---:|---|---:|
+| coupled-exact-chord | 713 → 67 | **10.6×** | 1063 → 107 | **9.9×** |
+| coupled-spectral-chord | 796 → 65 | **12.2×** | 988 → 104 | **9.5×** |
+
+Note: `coupled-spectral-chord` with `eigh` (per-pair eigh in batched
+path) also drops massively — 988 → 339 ms at r=64 — purely from
+batching the σ_max power-iteration launches via
+`_sigma_max_power_iter_batched`. exact-chord with eigh stays expensive
+because per-pair eigh on the perturbed Gram matrices fires 3 times per
+step regardless of batching.
+
 ## Headlines
 
 - **`adam-polar-product-lora` (k=1) with batched higham hits 1.02× AdamW at r=64.** Optimizer.step() is 19.7 ms vs AdamW's 3.7 ms — substantial in isolation, but small relative to fwd+bwd (~951 ms / step). Effectively indistinguishable from AdamW at training-step granularity.
