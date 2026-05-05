@@ -384,6 +384,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled-endrms",
     "adam-polar-product-lora-coupled-exact-chord",
     "adam-polar-product-lora-coupled-spectral-chord",
+    "adam-polar-product-lora-coupled-spectral-chord-tight",
     "adam-soap-polar-product-lora",
     "adafactor-polar-product-lora",
     "sign-momentum-polar-product-lora",
@@ -2593,10 +2594,17 @@ class AdamPolarProductLoRA(Optimizer):
         #     region, ‖ΔW‖_op ≤ lr by submultiplicativity). Self-dampens at
         #     σ-drift failure mode; lr typically needs to be retuned (~10-30×
         #     larger than the Frobenius rule's lr).
-        if magnitude_rule not in {"adam_frobenius", "spectral_chord"}:
+        #   "spectral_chord_tight": same trust region but with the EXACT
+        #     quadratic root ρ = (-s + √(s²+4lr))/2 where s = σ_A + σ_B.
+        #     Solves ρ²+sρ-lr=0 (chord bound with no slack). Spectron's "+1"
+        #     bakes in conservative slack (substitutes ρ²≤ρ); the tight rule
+        #     gives ρ ≈ √lr at s→0 (early training, B≈0) and ρ ≈ lr/s at
+        #     s→∞. Larger ρ at small s where Spectron under-steps.
+        if magnitude_rule not in {"adam_frobenius", "spectral_chord",
+                                  "spectral_chord_tight"}:
             raise ValueError(
-                f"magnitude_rule must be 'adam_frobenius' or 'spectral_chord', "
-                f"got {magnitude_rule!r}")
+                f"magnitude_rule must be 'adam_frobenius', 'spectral_chord', "
+                f"or 'spectral_chord_tight', got {magnitude_rule!r}")
         self.magnitude_rule = magnitude_rule
 
         # Shape-group bookkeeping for the batched hot path. Pairs with the
@@ -2809,10 +2817,10 @@ class AdamPolarProductLoRA(Optimizer):
             return False
         if self.polar_method != "ns":
             return False
-        # adam_frobenius and spectral_chord both implemented in batched path.
-        # Future magnitude rules need an explicit branch in `_step_batched`.
+        # adam_frobenius, spectral_chord, spectral_chord_tight all implemented
+        # in batched path. Future magnitude rules need an explicit branch.
         if getattr(self, "magnitude_rule", "adam_frobenius") not in (
-                "adam_frobenius", "spectral_chord"):
+                "adam_frobenius", "spectral_chord", "spectral_chord_tight"):
             return False
         # anderson_m, end_rms_align only modify the cross-term path
         # (k_iter > 0). At picard_iters=1 each is mathematically a no-op,
@@ -2939,14 +2947,18 @@ class AdamPolarProductLoRA(Optimizer):
             # matches n_iters=8 cold-start accuracy. ρ = lr/(σ_A+σ_B+1) is the
             # operator-norm trust-region radius (Substitution 1', algorithm.md
             # §6.1).
-            if self.magnitude_rule == "spectral_chord":
+            if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
                 sigma_A, vA_new = _sigma_max_power_iter_batched(
                     A_f, v_init=gs.get('u_A_top_stack'), n_iters=3)
                 sigma_B, vB_new = _sigma_max_power_iter_batched(
                     B_f, v_init=gs.get('u_B_top_stack'), n_iters=3)
                 gs['u_A_top_stack'] = vA_new.detach()
                 gs['u_B_top_stack'] = vB_new.detach()
-                rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
+                if self.magnitude_rule == "spectral_chord":
+                    rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
+                else:  # spectral_chord_tight: exact root of ρ²+sρ-lr=0
+                    s_AB = sigma_A + sigma_B
+                    rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
             else:
                 rho = None
             for k_iter in range(self.picard_iters):
@@ -3019,11 +3031,14 @@ class AdamPolarProductLoRA(Optimizer):
                             X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
                         ).float()
                     with maybe_time(timer, "polar_unwhiten_rescale"):
-                        if self.magnitude_rule == "spectral_chord":
+                        if self.magnitude_rule in ("spectral_chord",
+                                                   "spectral_chord_tight"):
                             # Substitution 1' (algorithm.md §6.1): replace
                             # the Frobenius rescale with operator-norm trust
                             # region: dA = -ρ · geo_A / σ_max(geo_A), where
-                            # ρ = lr/(σ_A+σ_B+1) was computed once per step.
+                            # ρ was computed once per step (Spectron loose
+                            # form: ρ=lr/(s+1); tight form: exact root of
+                            # ρ²+sρ-lr=0). Same rescale shape either way.
                             # σ_max(geo) shifts each Picard iter (cross-coupling
                             # changes the polar input), so cold-start n_iters=8.
                             geo_A = SB_half_inv_k @ P_A
@@ -3145,14 +3160,18 @@ class AdamPolarProductLoRA(Optimizer):
             # with warm-started top singular vectors cached in pair_state.
             # n_iters=3 with warm-start (factor changes ~η each step) gives
             # accuracy comparable to n_iters=8 cold-start.
-            if self.magnitude_rule == "spectral_chord":
+            if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
                 vA_init = state.get('u_A_top')
                 vB_init = state.get('u_B_top')
                 sigma_A_t, vA_new = _sigma_max_power_iter(A_f, v_init=vA_init, n_iters=3)
                 sigma_B_t, vB_new = _sigma_max_power_iter(B_f, v_init=vB_init, n_iters=3)
                 state['u_A_top'] = vA_new.detach()
                 state['u_B_top'] = vB_new.detach()
-                rho = lr / (sigma_A_t + sigma_B_t + 1.0)
+                if self.magnitude_rule == "spectral_chord":
+                    rho = lr / (sigma_A_t + sigma_B_t + 1.0)
+                else:  # spectral_chord_tight
+                    s_AB = sigma_A_t + sigma_B_t
+                    rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
             # Anderson history: list of (x_flat, g_flat) where x is the input
             # to G and g = G(x) is the output. Only used when anderson_m > 0.
             and_xs = [] if self.anderson_m > 0 else None
@@ -3192,12 +3211,13 @@ class AdamPolarProductLoRA(Optimizer):
                 with maybe_time(timer, "picard_polar_pipeline"):
                     dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
                         self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv_k, SB_half_inv_k, lr)
-                if self.magnitude_rule == "spectral_chord":
+                if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
                     # Substitution 1' (algorithm.md §6.1): rescale per-block
-                    # direction to operator norm ρ where ρ = lr/(σ_A+σ_B+1),
-                    # enforcing the chord-spectral trust region ‖ΔW‖_op ≤ lr
-                    # by submultiplicativity. ρ is precomputed outside the
-                    # Picard loop (A, B don't change within an optimizer step).
+                    # direction to operator norm ρ. ρ enforces the
+                    # chord-spectral trust region ‖ΔW‖_op ≤ lr (loose form
+                    # uses Spectron's ρ=lr/(s+1); tight form uses the exact
+                    # quadratic root). ρ is precomputed outside the Picard
+                    # loop (A, B don't change within an optimizer step).
                     # σ_max(geo_A), σ_max(geo_B) DO change each Picard iter and
                     # have no obvious warm-start (geo direction shifts as the
                     # cross-coupling correction shifts), so we use n_iters=8
@@ -7001,6 +7021,32 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord",
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight":
+        # Tight chord-spectral rule (algorithm.md §6.1, exact-root variant):
+        # ρ = (-s + sqrt(s²+4lr))/2 where s = σ_A+σ_B. Drops Spectron's "+1"
+        # slack; ρ ≈ √lr at s→0 (early training, B≈0) and ρ ≈ lr/s at s→∞.
+        # Same ‖ΔW‖_op ≤ lr guarantee, with no conservative substitution.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_tight",
         )
     if optimizer_type == "adam-polar-product-lora-coupled-exact-chord":
         # Variational target is the actual ΔW = (B+ΔB)(A+ΔA) - BA, not its

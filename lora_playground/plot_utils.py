@@ -54,6 +54,9 @@ OPTIM_COLORS = {
     "adam-polar-product-lora":     "#8c564b",
     "adam-polar-product-lora-coupled": "#5d342c",   # darker brown — coupled-pair variant of adam-polar
     "adam-polar-product-lora-coupled-endrms": "#a04a3c",  # warm brown — coupled w/ end-of-loop RMS-align
+    "adam-polar-product-lora-coupled-exact-chord": "#7d4a2e",  # ochre — coupled w/ exact ΔW chord (not J-tangent)
+    "adam-polar-product-lora-coupled-spectral-chord": "#c75c2e",  # burnt orange — coupled w/ spectral chord trust region
+    "adam-polar-product-lora-coupled-spectral-chord-tight": "#7a3520",  # darker burnt orange — tight chord (exact root)
     "adam-soap-polar-product-lora": "#c97a3a",  # amber — SOAP eigenbasis Adam before polar
     "adafactor-polar-product-lora": "#d4a04c",  # gold — Adafactor rank-1 v before polar
     "sign-momentum-polar-product-lora": "#7c3aed",  # violet — LION-style sign(m) before polar
@@ -115,6 +118,9 @@ OPTIM_FAMILIES = {
         "adam-polar-product-lora",
         "adam-polar-product-lora-coupled",
         "adam-polar-product-lora-coupled-endrms",
+        "adam-polar-product-lora-coupled-exact-chord",
+        "adam-polar-product-lora-coupled-spectral-chord",
+        "adam-polar-product-lora-coupled-spectral-chord-tight",
         "adam-soap-polar-product-lora",
         "adafactor-polar-product-lora",
         "sign-momentum-polar-product-lora",
@@ -246,6 +252,9 @@ OPTIM_MARKERS = {
     "adam-polar-product-lora":     "o",
     "adam-polar-product-lora-coupled": "P",   # plus (darker brown)
     "adam-polar-product-lora-coupled-endrms": "X",  # x-filled (warm brown)
+    "adam-polar-product-lora-coupled-exact-chord": "h",  # hexagon (ochre) — exact-chord variant
+    "adam-polar-product-lora-coupled-spectral-chord": "8",  # octagon (burnt orange) — spectral-chord magnitude rule
+    "adam-polar-product-lora-coupled-spectral-chord-tight": "H",  # uppercase hexagon — tight chord-spectral (exact root)
     "adam-soap-polar-product-lora": "*",   # star (amber) — SOAP eigenbasis preconditioning
     "adam-polar-product-lora-gauge":          "D",  # diamond (purple) — Sylvester gauge variant
     "adam-polar-product-lora-gauge-coupled":  "d",  # thin diamond (dark purple) — gauge + picard
