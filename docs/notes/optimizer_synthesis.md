@@ -1,5 +1,7 @@
 # Optimizer investigation — synthesis
 
+WARNING STALE
+
 ## TL;DR
 
 Across the LoRA-optimizer search on OLMo-2-1B + Magicoder (2k steps, single seed, canonical horizon), the **headline result** is `adam-polar-product-lora-coupled` with `picard_iters` $k=2$ at $r=64$, $\eta=3\mathrm{e}{-4}$, **eval loss 0.7382** ($\Delta = -0.0168$ vs AdamW $r=64$). At $r=16$ the same family's uncoupled $k=1$ variant gives **0.7546** ($\Delta = -0.0033$ vs AdamW $r=16$). The polar-product family is the only one that strictly beats AdamW at both ranks, but the optimal $k$ is rank-dependent ($k=1$ at $r=16$, $k=2$ at $r=64$); no single config wins at both. See [glossary](glossary.md) for pseudocode of every optimizer named below (LoRA pair, Hybrid Picard, `picard_iters`, polar block solve, spectral preconditioner, Adam covector, RMS-align, AdaMuon-faithful, LoRA+ multiplier).
