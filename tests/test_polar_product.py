@@ -946,7 +946,13 @@ def test_local_model_score_diagnostic_does_not_change_step():
     off = run(False)
     on = run(True)
     for n in off:
-        assert torch.equal(off[n], on[n]), (
+        # log_diagnostics=False routes through `_step_batched` (production
+        # hot path); log_diagnostics=True falls through to `_step_per_pair`
+        # so the diagnostic emit can run. The two paths use different
+        # reduction orders (bmm vs mm) so bit-exact equality no longer
+        # holds; the algorithmic claim "instrumentation does not change
+        # the applied step" survives within fp32 noise.
+        assert torch.allclose(off[n], on[n], atol=1e-5, rtol=1e-5), (
             f"{n} differs with log_diagnostics flag; instrumentation changed step"
         )
 

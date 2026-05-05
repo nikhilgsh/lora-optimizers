@@ -17,6 +17,7 @@ from .utils import (
     spdify,
     truncated_svd,
 )
+from ._step_timer import maybe_time
 
 
 # Init parameters that are construction inputs, not algorithmic state — the
@@ -277,6 +278,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora",
     "adam-polar-product-lora-coupled",
     "adam-polar-product-lora-coupled-endrms",
+    "adam-polar-product-lora-coupled-exact-chord",
     "adam-soap-polar-product-lora",
     "adafactor-polar-product-lora",
     "sign-momentum-polar-product-lora",
@@ -1619,6 +1621,41 @@ def _newton_schulz(X, nsteps=5, eps=1e-7):
     return X.T if tall else X
 
 
+def _newton_schulz_batched(X, nsteps=5, eps=1e-7, dtype=None):
+    """Batched Newton-Schulz over leading dims. X: (..., m, n) -> (..., m, n).
+
+    Mirrors `_newton_schulz` (Muon orthogonalization, per-matrix Frobenius
+    pre-normalization, no post-multiply) but vectorizes across the batch.
+    Used by the batched polar-pipeline path for shape-grouped pairs.
+
+    `dtype` controls the iteration dtype:
+    - None / torch.float32: fp32 throughout (default). Matches per-matrix
+      `_newton_schulz` to fp32 noise.
+    - torch.bfloat16: pre-norm in fp32 (small numbers), iterate in bf16.
+      Tensor cores accumulate to fp32 internally on Ampere+; output is bf16
+      cast back to fp32 by caller. Same pattern as modded-nanogpt's polar
+      express (`train_gpt.py:187` — `X = g.bfloat16()` then iterate). 2×
+      throughput on Ampere bf16 tensor cores vs fp32; orthogonality residual
+      bottoms at ~bf16 precision (~1e-3) which is well within Algorithm 1's
+      tolerance for the polar map.
+
+    Equivalence at fp32: max-abs-err < 1e-7 vs per-matrix `_newton_schulz`
+    on real LoRA shapes (`scripts/bench_ns_batched.py`).
+    """
+    X = X.float()
+    tall = X.shape[-2] > X.shape[-1]
+    if tall:
+        X = X.transpose(-2, -1)
+    norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
+    X = X / norm
+    if dtype is not None and dtype != X.dtype:
+        X = X.to(dtype)
+    for _ in range(nsteps):
+        XXT = X @ X.transpose(-2, -1)
+        X = 1.5 * X - 0.5 * XXT @ X
+    return X.transpose(-2, -1) if tall else X
+
+
 def _polar_retract(X, nsteps=5, eps=1e-7):
     """Polar retraction for near-orthonormal X (singular values already ≈ 1).
 
@@ -2343,7 +2380,8 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_sigma_power=None,
                  polar_method="ns",
                  anderson_m=0, anderson_reg=1e-10,
-                 core_remix_alpha=0.0):
+                 core_remix_alpha=0.0,
+                 exact_chord=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2430,16 +2468,85 @@ class AdamPolarProductLoRA(Optimizer):
             raise ValueError("anderson_m must be >= 0")
         self.anderson_m = int(anderson_m)
         self.anderson_reg = float(anderson_reg)
+        # Exact-chord variant: replace the linearization J = B·ΔA + ΔB·A with
+        # the actual ΔW = (B+ΔB)·ΔA + ΔB·A = B·ΔA + ΔB·(A+ΔA), which keeps the
+        # second-order ΔB·ΔA term. The block-coordinate decomposition still
+        # holds: A-subproblem uses B_eff = B + dB_prev (so the A-side
+        # preconditioner becomes S_{B+dB_prev}), B-subproblem uses A_eff =
+        # A + dA_prev. Cross-coupling corrections: ũ_A = u_A + (1/η)·(B+dB)^T·dB·A,
+        # ũ_B = u_B + (1/η)·B·dA·(A+dA)^T. Spectral preconditioners must be
+        # recomputed each Picard iterate (k≥1) since A_eff, B_eff change.
+        # See docs/notes/polar_product/algorithm.md §2 remark.
+        self.exact_chord = bool(exact_chord)
 
-        self.pair_state = {}
+        # Shape-group bookkeeping for the batched hot path. Pairs with the
+        # same (A.shape, B.shape) get stacked into 3-D buffers; per-pair Adam
+        # state is a view into the buffer, so both per-pair and batched paths
+        # see the same memory through views — behavioral equivalence preserved
+        # by construction. The diagnostic path (`_step_per_pair`) and the
+        # batched path (`_step_batched`) work on identical state.
+        shape_to_pairs: dict[tuple, list[int]] = {}
         for i, (A, B) in enumerate(pairs):
-            self.pair_state[i] = {
-                'm_A': torch.zeros_like(A, dtype=torch.float32),
-                'v_A': torch.zeros_like(A, dtype=torch.float32),
-                'm_B': torch.zeros_like(B, dtype=torch.float32),
-                'v_B': torch.zeros_like(B, dtype=torch.float32),
-                'step': 0,
-            }
+            key = (tuple(A.shape), tuple(B.shape))
+            shape_to_pairs.setdefault(key, []).append(i)
+
+        self.group_state: list[dict] = []
+        self.pair_state: dict[int, dict] = {}
+        for gid, (key, indices) in enumerate(shape_to_pairs.items()):
+            A_shape, B_shape = key
+            r = A_shape[0]
+            d_in = A_shape[1]
+            d_out = B_shape[0]
+            N = len(indices)
+            anchor_A, _ = pairs[indices[0]]
+            device = anchor_A.device
+            # Group buffers (fp32). Adam moments live here; per-pair state is
+            # a view slice. SA_half_inv / SB_half_inv populated by step().
+            m_A_buf = torch.zeros(N, *A_shape, dtype=torch.float32, device=device)
+            v_A_buf = torch.zeros(N, *A_shape, dtype=torch.float32, device=device)
+            m_B_buf = torch.zeros(N, *B_shape, dtype=torch.float32, device=device)
+            v_B_buf = torch.zeros(N, *B_shape, dtype=torch.float32, device=device)
+            SA_half_buf = torch.zeros(N, r, r, dtype=torch.float32, device=device)
+            SB_half_buf = torch.zeros(N, r, r, dtype=torch.float32, device=device)
+            # Reusable scratch for stacked A/B/grad copies; refreshed each step.
+            A_stack = torch.zeros(N, *A_shape, dtype=torch.float32, device=device)
+            B_stack = torch.zeros(N, *B_shape, dtype=torch.float32, device=device)
+            gA_stack = torch.zeros(N, *A_shape, dtype=torch.float32, device=device)
+            gB_stack = torch.zeros(N, *B_shape, dtype=torch.float32, device=device)
+            self.group_state.append({
+                'gid': gid,
+                'indices': indices,
+                'A_shape': A_shape,
+                'B_shape': B_shape,
+                'r': r,
+                'd_in': d_in,
+                'd_out': d_out,
+                'N': N,
+                'm_A': m_A_buf,
+                'v_A': v_A_buf,
+                'm_B': m_B_buf,
+                'v_B': v_B_buf,
+                'SA_half_inv': SA_half_buf,
+                'SB_half_inv': SB_half_buf,
+                'A_stack': A_stack,
+                'B_stack': B_stack,
+                'gA_stack': gA_stack,
+                'gB_stack': gB_stack,
+            })
+            # Per-pair state holds VIEWS into the group buffers, so legacy
+            # accesses (`pair_state[i]['m_A'].mul_(...)`) write through to
+            # the buffer that the batched path reads.
+            for k, gi in enumerate(indices):
+                self.pair_state[gi] = {
+                    'm_A': m_A_buf[k],
+                    'v_A': v_A_buf[k],
+                    'm_B': m_B_buf[k],
+                    'v_B': v_B_buf[k],
+                    '_group': gid,
+                    '_local_idx': k,
+                    'step': 0,
+                }
+        self._n_groups = len(self.group_state)
 
     @staticmethod
     def _sigma_power_polar(M, p, eps=1e-30):
@@ -2499,6 +2606,7 @@ class AdamPolarProductLoRA(Optimizer):
         op = getattr(self, "operator_type", "polar")
         psp = getattr(self, "polar_sigma_power", None)
         pm = getattr(self, "polar_method", "ns")
+        timer = getattr(self, "_step_timer", None)
 
         def _polar_op(X):
             if op == "clip":
@@ -2511,27 +2619,30 @@ class AdamPolarProductLoRA(Optimizer):
                 return _polar_express(X, nsteps=self.ns_steps)
             return _newton_schulz(X, nsteps=self.ns_steps)
 
-        X_B = u_B @ SA_half_inv
-        P_B = _polar_op(X_B)
-        geo_B = P_B @ SA_half_inv
+        with maybe_time(timer, "polar_whiten"):
+            X_B = u_B @ SA_half_inv
+            X_A = SB_half_inv @ u_A
+        with maybe_time(timer, "polar_NS_B"):
+            P_B = _polar_op(X_B)
+        with maybe_time(timer, "polar_NS_A"):
+            P_A = _polar_op(X_A)
+        with maybe_time(timer, "polar_unwhiten_rescale"):
+            geo_B = P_B @ SA_half_inv
+            geo_A = SB_half_inv @ P_A
 
-        X_A = SB_half_inv @ u_A
-        P_A = _polar_op(X_A)
-        geo_A = SB_half_inv @ P_A
-
-        uA_norm = u_A.norm()
-        uB_norm = u_B.norm()
-        # Muon+ row/col normalization on the orthogonalized geo_{A,B} BEFORE
-        # the Frobenius rescale. polar_norm_dir='frob' = original behavior
-        # (no row/col reshaping); other values normalize rows/cols of geo to
-        # unit ℓ₂ then rescale to ‖u‖_F so the total step magnitude is the
-        # same. The only effect is per-row/per-col homogenization.
-        geo_A_n = self._muon_plus_norm(geo_A, self.polar_norm_dir)
-        geo_B_n = self._muon_plus_norm(geo_B, self.polar_norm_dir)
-        gA_norm = geo_A_n.norm() + 1e-30
-        gB_norm = geo_B_n.norm() + 1e-30
-        dA = -lr * (uA_norm / gA_norm) * geo_A_n
-        dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B_n
+            uA_norm = u_A.norm()
+            uB_norm = u_B.norm()
+            # Muon+ row/col normalization on the orthogonalized geo_{A,B} BEFORE
+            # the Frobenius rescale. polar_norm_dir='frob' = original behavior
+            # (no row/col reshaping); other values normalize rows/cols of geo to
+            # unit ℓ₂ then rescale to ‖u‖_F so the total step magnitude is the
+            # same. The only effect is per-row/per-col homogenization.
+            geo_A_n = self._muon_plus_norm(geo_A, self.polar_norm_dir)
+            geo_B_n = self._muon_plus_norm(geo_B, self.polar_norm_dir)
+            gA_norm = geo_A_n.norm() + 1e-30
+            gB_norm = geo_B_n.norm() + 1e-30
+            dA = -lr * (uA_norm / gA_norm) * geo_A_n
+            dB = -self.lora_plus_multiplier * lr * (uB_norm / gB_norm) * geo_B_n
         return dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, P_A, P_B
 
     def _adam_direction(self, state, gA, gB):
@@ -2554,13 +2665,166 @@ class AdamPolarProductLoRA(Optimizer):
         u_B = (state['m_B'] / bc1) / ((state['v_B'] / bc2).sqrt() + self.eps)
         return u_A, u_B
 
+    # Class-level switch: subclasses that override `_adam_direction` (SOAP,
+    # AdaFactor, etc.) should set this to False so they retain the per-pair
+    # path. The batched path inlines the standard per-coord Adam moment update
+    # on stacked buffers and would silently bypass the override.
+    _BATCHED_PATH_SUPPORTED = True
+
+    def _batched_path_eligible(self):
+        """Production hot path. False whenever a feature flag would change
+        per-pair behavior in a way the batched path doesn't reproduce."""
+        if type(self) is not AdamPolarProductLoRA:
+            if not getattr(self, "_BATCHED_PATH_SUPPORTED", False):
+                return False
+        if self.log_diagnostics:
+            return False
+        if self.core_remix_alpha > 0.0:
+            return False
+        if self.polar_norm_dir != "frob":
+            return False
+        if self.polar_sigma_power is not None:
+            return False
+        if self.operator_type != "polar":
+            return False
+        if self.polar_method != "ns":
+            return False
+        # anderson_m, exact_chord, end_rms_align all only modify the cross-term
+        # path (k_iter > 0). At picard_iters=1 each is mathematically a no-op,
+        # so the batched path produces the same answer. At picard_iters > 1
+        # they take effect and the per-pair path implements them.
+        if self.picard_iters > 1:
+            if self.anderson_m > 0:
+                return False
+            if self.exact_chord:
+                return False
+            if self.end_rms_align:
+                return False
+        return True
+
     @torch.no_grad()
     def step(self, closure=None):
         if closure is not None:
             with torch.enable_grad():
                 closure()
+        if self._batched_path_eligible():
+            return self._step_batched()
+        return self._step_per_pair()
+
+    @torch.no_grad()
+    def _step_batched(self):
+        """Production hot path: shape-grouped 3D buffers + batched primitives.
+
+        Behaviorally equivalent to `_step_per_pair` (verified by
+        `tests/test_polar_product_batched_equivalence.py`) under the eligibility
+        conditions in `_batched_path_eligible`. Keeps the same per-pair
+        precond_refresh (eigh / higham per pair) since precond batching has its
+        own algorithmic risk story; just removes the launch storm from Adam,
+        polar NS, polar unwhiten/rescale, and apply.
+        """
+        lr = self.param_groups[0]["lr"]
+        timer = getattr(self, "_step_timer", None)
+
+        for gs in self.group_state:
+            N = gs['N']
+            indices = gs['indices']
+
+            # Stack params + grads into group scratch buffers (per-step copy;
+            # cheap relative to the savings on Adam/NS/unwhiten downstream).
+            for k, gi in enumerate(indices):
+                A, B = self.pairs[gi]
+                if A.grad is None or B.grad is None:
+                    raise ValueError("Gradients are required for AdamPolarProductLoRA update.")
+                gs['A_stack'][k].copy_(A)
+                gs['B_stack'][k].copy_(B)
+                gs['gA_stack'][k].copy_(A.grad)
+                gs['gB_stack'][k].copy_(B.grad)
+                self.pair_state[gi]['step'] += 1
+
+            step_count = self.pair_state[indices[0]]['step']
+
+            # Batched Adam: in-place on group buffers (one launch per op vs N).
+            with maybe_time(timer, "adam_direction"):
+                gs['m_A'].mul_(self.beta1).add_(gs['gA_stack'], alpha=1.0 - self.beta1)
+                gs['m_B'].mul_(self.beta1).add_(gs['gB_stack'], alpha=1.0 - self.beta1)
+                gs['v_A'].mul_(self.beta2).addcmul_(gs['gA_stack'], gs['gA_stack'], value=1.0 - self.beta2)
+                gs['v_B'].mul_(self.beta2).addcmul_(gs['gB_stack'], gs['gB_stack'], value=1.0 - self.beta2)
+                bc1 = 1.0 - self.beta1 ** step_count
+                bc2 = 1.0 - self.beta2 ** step_count
+                u_A = (gs['m_A'] / bc1) / ((gs['v_A'] / bc2).sqrt() + self.eps)
+                u_B = (gs['m_B'] / bc1) / ((gs['v_B'] / bc2).sqrt() + self.eps)
+
+            # Precond refresh: per-pair (each call hits eigh on r×r — keeps
+            # the existing algorithmic behavior; not yet batched).
+            if (step_count - 1) % self.precond_refresh_every == 0:
+                with maybe_time(timer, "precond_refresh"):
+                    for k in range(N):
+                        gs['SA_half_inv'][k] = _spd_inv_half(
+                            gs['A_stack'][k] @ gs['A_stack'][k].T,
+                            eps=self.delta, method=self.precond_method,
+                            higham_iters=self.higham_iters,
+                        )
+                        gs['SB_half_inv'][k] = _spd_inv_half(
+                            gs['B_stack'][k].T @ gs['B_stack'][k],
+                            eps=self.delta, method=self.precond_method,
+                            higham_iters=self.higham_iters,
+                        )
+            SA_half_inv = gs['SA_half_inv']
+            SB_half_inv = gs['SB_half_inv']
+
+            # Picard outer loop (batched bmm chains).
+            u_A_eff = u_A
+            u_B_eff = u_B
+            dA_prev = torch.zeros_like(u_A)
+            dB_prev = torch.zeros_like(u_B)
+            A_f = gs['A_stack']
+            B_f = gs['B_stack']
+            for k_iter in range(self.picard_iters):
+                with maybe_time(timer, "picard_cross_coupling"):
+                    if k_iter > 0:
+                        # Compute-bound chain matmul; bmm vs per-pair was 0.97×
+                        # in microbench (neutral). Prefer batched form for
+                        # code uniformity.
+                        BT_dB_A = B_f.transpose(-2, -1) @ dB_prev @ A_f
+                        B_dA_AT = B_f @ dA_prev @ A_f.transpose(-2, -1)
+                        u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
+                        u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
+                with maybe_time(timer, "picard_polar_pipeline"):
+                    with maybe_time(timer, "polar_whiten"):
+                        X_A = SB_half_inv @ u_A_eff
+                        X_B = u_B_eff @ SA_half_inv
+                    with maybe_time(timer, "polar_NS_A"):
+                        P_A = _newton_schulz_batched(X_A, nsteps=self.ns_steps)
+                    with maybe_time(timer, "polar_NS_B"):
+                        P_B = _newton_schulz_batched(X_B, nsteps=self.ns_steps)
+                    with maybe_time(timer, "polar_unwhiten_rescale"):
+                        from ._batched_polar import unwhiten_rescale_frob_batched
+                        dA, dB = unwhiten_rescale_frob_batched(
+                            P_A, P_B, SA_half_inv, SB_half_inv,
+                            u_A_eff, u_B_eff, lr,
+                            lora_plus_multiplier=self.lora_plus_multiplier,
+                        )
+                dA_prev = dA
+                dB_prev = dB
+
+            # Apply (per-pair view writes — needed since the params are in their
+            # native dtype and live outside the group buffer).
+            with maybe_time(timer, "apply"):
+                for k, gi in enumerate(indices):
+                    A, B = self.pairs[gi]
+                    A.add_(dA[k].to(dtype=A.dtype, device=A.device))
+                    B.add_(dB[k].to(dtype=B.dtype, device=B.device))
+                    A.grad.zero_()
+                    B.grad.zero_()
+
+    @torch.no_grad()
+    def _step_per_pair(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
         lr = self.param_groups[0]["lr"]
         diag_records = [] if self.log_diagnostics else None
+        timer = getattr(self, "_step_timer", None)
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -2575,21 +2839,23 @@ class AdamPolarProductLoRA(Optimizer):
             # implementation runs per-coord Adam on raw (gA, gB); subclasses
             # (e.g. AdamSOAPPolarProductLoRA) may override this hook to run
             # Adam in a data-derived eigenbasis.
-            u_A, u_B = self._adam_direction(state, gA, gB)
+            with maybe_time(timer, "adam_direction"):
+                u_A, u_B = self._adam_direction(state, gA, gB)
 
             # Spectral square-root preconditioners. Refresh every K steps; reuse
             # cached value otherwise. K=1 ⇒ refresh every step (original behavior).
             # precond_method='higham' uses Newton-Schulz iteration instead of eigh
             # — ~10× faster at r=256 by avoiding the eigh kernel-launch storm.
             if (state['step'] - 1) % self.precond_refresh_every == 0:
-                state['SA_half_inv'] = _spd_inv_half(
-                    A.float() @ A.float().T, eps=self.delta,
-                    method=self.precond_method, higham_iters=self.higham_iters,
-                )
-                state['SB_half_inv'] = _spd_inv_half(
-                    B.float().T @ B.float(), eps=self.delta,
-                    method=self.precond_method, higham_iters=self.higham_iters,
-                )
+                with maybe_time(timer, "precond_refresh"):
+                    state['SA_half_inv'] = _spd_inv_half(
+                        A.float() @ A.float().T, eps=self.delta,
+                        method=self.precond_method, higham_iters=self.higham_iters,
+                    )
+                    state['SB_half_inv'] = _spd_inv_half(
+                        B.float().T @ B.float(), eps=self.delta,
+                        method=self.precond_method, higham_iters=self.higham_iters,
+                    )
             SA_half_inv = state['SA_half_inv']
             SB_half_inv = state['SB_half_inv']
 
@@ -2638,14 +2904,37 @@ class AdamPolarProductLoRA(Optimizer):
             shapeB = B_f.shape
             nA_el = A_f.numel()
             for k in range(self.picard_iters):
-                if k == 0:
-                    u_A_eff = u_A
-                    u_B_eff = u_B
-                else:
-                    u_A_eff = u_A + self.picard_alpha * (B_f.T @ dB_prev @ A_f) / lr
-                    u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_f.T) / lr
-                dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
-                    self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv, SB_half_inv, lr)
+                with maybe_time(timer, "picard_cross_coupling"):
+                    if k == 0:
+                        u_A_eff = u_A
+                        u_B_eff = u_B
+                        SA_half_inv_k = SA_half_inv
+                        SB_half_inv_k = SB_half_inv
+                    else:
+                        if self.exact_chord:
+                            # Exact-chord cross-coupling: keep ΔB·ΔA term (§2 remark).
+                            A_eff = A_f + dA_prev
+                            B_eff = B_f + dB_prev
+                            u_A_eff = u_A + self.picard_alpha * (B_eff.T @ dB_prev @ A_f) / lr
+                            u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_eff.T) / lr
+                            # Recompute spectral preconditioners against the effective
+                            # factors. Required because S_{B+dB} ≠ S_B in general.
+                            SA_half_inv_k = _spd_inv_half(
+                                A_eff @ A_eff.T, eps=self.delta,
+                                method=self.precond_method, higham_iters=self.higham_iters,
+                            )
+                            SB_half_inv_k = _spd_inv_half(
+                                B_eff.T @ B_eff, eps=self.delta,
+                                method=self.precond_method, higham_iters=self.higham_iters,
+                            )
+                        else:
+                            u_A_eff = u_A + self.picard_alpha * (B_f.T @ dB_prev @ A_f) / lr
+                            u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_f.T) / lr
+                            SA_half_inv_k = SA_half_inv
+                            SB_half_inv_k = SB_half_inv
+                with maybe_time(timer, "picard_polar_pipeline"):
+                    dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
+                        self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv_k, SB_half_inv_k, lr)
                 if self.end_rms_align:
                     # Override the pipeline's RMS-align: rescale to the
                     # ORIGINAL Adam-direction norm rather than ‖u_A_eff‖.
@@ -3174,10 +3463,11 @@ class AdamPolarProductLoRA(Optimizer):
 
                 diag_records.append(rec)
 
-            A.add_(dA.to(dtype=A.dtype, device=A.device))
-            B.add_(dB.to(dtype=B.dtype, device=B.device))
-            A.grad.zero_()
-            B.grad.zero_()
+            with maybe_time(timer, "apply"):
+                A.add_(dA.to(dtype=A.dtype, device=A.device))
+                B.add_(dB.to(dtype=B.dtype, device=B.device))
+                A.grad.zero_()
+                B.grad.zero_()
 
         if self.log_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
@@ -3186,6 +3476,10 @@ class AdamPolarProductLoRA(Optimizer):
 
 
 class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
+    # Override `_adam_direction`; the batched path inlines per-coord Adam
+    # and would silently bypass SOAP's eigenbasis rotation. Force per-pair.
+    _BATCHED_PATH_SUPPORTED = False
+
     """SOAP-style preconditioning of (u_A, u_B) before the polar pipeline.
 
     Motivated by docs/notes/polar_product/closeout_2026_05_02.md §3 candidate 1:
@@ -3353,6 +3647,10 @@ class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
 
 
 class AdaFactorPolarProductLoRA(AdamPolarProductLoRA):
+    # Override `_adam_direction` (rank-1 Adafactor v); batched path inlines
+    # standard Adam and would silently bypass it. Force per-pair.
+    _BATCHED_PATH_SUPPORTED = False
+
     """Adafactor-style rank-1 v factorization fed into the polar pipeline.
 
     Designed as a probe for "how much preconditioning precision the polar
@@ -6396,6 +6694,33 @@ def build_optimizer(
             higham_iters=higham_iters,
             picard_iters=2,
             end_rms_align=True,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-exact-chord":
+        # Variational target is the actual ΔW = (B+ΔB)(A+ΔA) - BA, not its
+        # tangent J = B·ΔA + ΔB·A. Picard iterates 2..k recompute S_{B+dB},
+        # S_{A+dA} per inner step. Default picard_iters=3 to match the
+        # leaderboard -coupled config; chord effect appears at k≥1, so picard=1
+        # would make the flag a no-op.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            exact_chord=True,
         )
     if optimizer_type == "adam-clip-product-lora":
         # Clip operator + RMS-align (no gauge/lift). Mirrors baseline
