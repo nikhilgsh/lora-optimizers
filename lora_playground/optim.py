@@ -105,35 +105,57 @@ def optimizer_config_dict(opt) -> dict:
     return out
 
 
-def _sigma_max_power_iter(M, n_iters=3, eps=1e-30):
+def _sigma_max_power_iter(M, v_init=None, n_iters=8, eps=1e-30):
     """Estimate σ_max(M) = ‖M‖_op via power iteration on the smaller-side Gram.
 
     For an (m, n) matrix, iterates on the (k, k) Gram where k = min(m, n).
-    n_iters=3 gives ~3-digit accuracy on well-conditioned non-square matrices;
-    typical use (LoRA factors, polar pipeline outputs) is well-conditioned by
-    construction. ~50× faster than torch.linalg.matrix_norm(·, ord=2) at
-    r ≤ 256 due to avoiding the SVD kernel-launch overhead. Returns a
-    Python float for downstream scalar arithmetic.
+    Convergence rate is (σ_2/σ_1)^(2·n_iters); on Gaussian random matrices,
+    cold start at n_iters=8 gives ~5% p95 rel-error, n_iters=16 gives ~3%.
+    With a warm-started v_init across optimizer steps (top singular vector
+    barely moves when factor updates are small), n_iters=3 reaches the
+    same accuracy.
+
+    Args:
+        M: (m, n) tensor on any device, any float dtype.
+        v_init: optional warm-start vector of length min(m, n). If None,
+            random init. After this call returns, the caller should cache
+            the returned v for the next call.
+        n_iters: number of M·M^T (or M^T·M) applications.
+
+    Returns:
+        (sigma, v_new): scalar 0-dim tensor σ_max estimate, and the
+        converged singular vector. Both live on M's device — no
+        GPU→CPU sync. Caller does `float(sigma)` only at logging time.
+
+    Verified by `tests/test_sigma_max_power_iter.py`.
     """
     if M.numel() == 0:
-        return 0.0
-    Mf = M.float()
-    if Mf.shape[0] <= Mf.shape[1]:
-        # Iterate (M M^T) v
-        v = torch.randn(Mf.shape[0], device=Mf.device, dtype=Mf.dtype)
+        return torch.zeros((), device=M.device, dtype=torch.float32), None
+    Mf = M.float() if M.dtype != torch.float32 else M
+    m, n = Mf.shape
+    if m <= n:
+        if (v_init is None or v_init.shape != (m,)
+                or v_init.device != Mf.device or v_init.dtype != torch.float32):
+            v = torch.randn(m, device=Mf.device, dtype=torch.float32)
+        else:
+            v = v_init
         v = v / (v.norm() + eps)
         for _ in range(n_iters):
             v = Mf @ (Mf.T @ v)
             v = v / (v.norm() + eps)
         sigma = (Mf.T @ v).norm()
     else:
-        v = torch.randn(Mf.shape[1], device=Mf.device, dtype=Mf.dtype)
+        if (v_init is None or v_init.shape != (n,)
+                or v_init.device != Mf.device or v_init.dtype != torch.float32):
+            v = torch.randn(n, device=Mf.device, dtype=torch.float32)
+        else:
+            v = v_init
         v = v / (v.norm() + eps)
         for _ in range(n_iters):
             v = Mf.T @ (Mf @ v)
             v = v / (v.norm() + eps)
         sigma = (Mf @ v).norm()
-    return float(sigma)
+    return sigma, v
 
 
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
@@ -2776,17 +2798,19 @@ class AdamPolarProductLoRA(Optimizer):
             N = gs['N']
             indices = gs['indices']
 
-            # Stack params + grads into group scratch buffers (per-step copy;
-            # cheap relative to the savings on Adam/NS/unwhiten downstream).
-            for k, gi in enumerate(indices):
-                A, B = self.pairs[gi]
-                if A.grad is None or B.grad is None:
+            # Stack params + grads. `torch.stack` is one launch per buffer
+            # (vs N copy_ launches for the per-pair pattern); for OLMo r=64
+            # with N=64 in the largest group, that's ~3 ms saved per step.
+            A_list = [self.pairs[gi][0] for gi in indices]
+            B_list = [self.pairs[gi][1] for gi in indices]
+            for j, gi in enumerate(indices):
+                if A_list[j].grad is None or B_list[j].grad is None:
                     raise ValueError("Gradients are required for AdamPolarProductLoRA update.")
-                gs['A_stack'][k].copy_(A)
-                gs['B_stack'][k].copy_(B)
-                gs['gA_stack'][k].copy_(A.grad)
-                gs['gB_stack'][k].copy_(B.grad)
                 self.pair_state[gi]['step'] += 1
+            gs['A_stack'] = torch.stack(A_list).float()
+            gs['B_stack'] = torch.stack(B_list).float()
+            gs['gA_stack'] = torch.stack([A.grad for A in A_list]).float()
+            gs['gB_stack'] = torch.stack([B.grad for B in B_list]).float()
 
             step_count = self.pair_state[indices[0]]['step']
 
@@ -2861,10 +2885,21 @@ class AdamPolarProductLoRA(Optimizer):
                     with maybe_time(timer, "polar_whiten"):
                         X_A = SB_half_inv @ u_A_eff
                         X_B = u_B_eff @ SA_half_inv
+                    # Iterate NS in bf16 for ~3.6× throughput on Ampere
+                    # tensor cores (microbench: scripts/bench_ns_bf16.py).
+                    # Pre-norm + Frobenius rescale stay fp32 (small-number
+                    # robustness); only the matmul-heavy iterations run bf16.
+                    # Output cast back to fp32 for downstream unwhiten/rescale
+                    # which still operates in fp32. Pattern mirrors
+                    # modded-nanogpt train_gpt.py:187.
                     with maybe_time(timer, "polar_NS_A"):
-                        P_A = _newton_schulz_batched(X_A, nsteps=self.ns_steps)
+                        P_A = _newton_schulz_batched(
+                            X_A, nsteps=self.ns_steps, dtype=torch.bfloat16
+                        ).float()
                     with maybe_time(timer, "polar_NS_B"):
-                        P_B = _newton_schulz_batched(X_B, nsteps=self.ns_steps)
+                        P_B = _newton_schulz_batched(
+                            X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
+                        ).float()
                     with maybe_time(timer, "polar_unwhiten_rescale"):
                         from ._batched_polar import unwhiten_rescale_frob_batched
                         dA, dB = unwhiten_rescale_frob_batched(
@@ -2875,15 +2910,18 @@ class AdamPolarProductLoRA(Optimizer):
                 dA_prev = dA
                 dB_prev = dB
 
-            # Apply (per-pair view writes — needed since the params are in their
-            # native dtype and live outside the group buffer).
+            # Apply via `torch._foreach_*`: one multi-tensor kernel each for
+            # add and zero, instead of 4N per-pair launches. ~4 ms saved
+            # per step at OLMo r=64.
             with maybe_time(timer, "apply"):
-                for k, gi in enumerate(indices):
-                    A, B = self.pairs[gi]
-                    A.add_(dA[k].to(dtype=A.dtype, device=A.device))
-                    B.add_(dB[k].to(dtype=B.dtype, device=B.device))
-                    A.grad.zero_()
-                    B.grad.zero_()
+                # Cast the entire (N, ...) dA/dB stack to native dtype in one op.
+                target_dtype = A_list[0].dtype
+                dA_native = dA.to(target_dtype)
+                dB_native = dB.to(target_dtype)
+                torch._foreach_add_(A_list, list(dA_native.unbind(0)))
+                torch._foreach_add_(B_list, list(dB_native.unbind(0)))
+                torch._foreach_zero_([A.grad for A in A_list])
+                torch._foreach_zero_([B.grad for B in B_list])
 
     @torch.no_grad()
     def _step_per_pair(self, closure=None):
@@ -2964,6 +3002,19 @@ class AdamPolarProductLoRA(Optimizer):
             # in end_rms_align mode (vs ‖u_A_eff‖ in the original mode).
             uA_norm_orig = u_A.norm()
             uB_norm_orig = u_B.norm()
+            # σ_max(A), σ_max(B) for the spectral_chord magnitude rule. A and
+            # B don't change inside the Picard loop — compute once per step
+            # with warm-started top singular vectors cached in pair_state.
+            # n_iters=3 with warm-start (factor changes ~η each step) gives
+            # accuracy comparable to n_iters=8 cold-start.
+            if self.magnitude_rule == "spectral_chord":
+                vA_init = state.get('u_A_top')
+                vB_init = state.get('u_B_top')
+                sigma_A_t, vA_new = _sigma_max_power_iter(A_f, v_init=vA_init, n_iters=3)
+                sigma_B_t, vB_new = _sigma_max_power_iter(B_f, v_init=vB_init, n_iters=3)
+                state['u_A_top'] = vA_new.detach()
+                state['u_B_top'] = vB_new.detach()
+                rho = lr / (sigma_A_t + sigma_B_t + 1.0)
             # Anderson history: list of (x_flat, g_flat) where x is the input
             # to G and g = G(x) is the output. Only used when anderson_m > 0.
             and_xs = [] if self.anderson_m > 0 else None
@@ -3007,23 +3058,24 @@ class AdamPolarProductLoRA(Optimizer):
                     # Substitution 1' (algorithm.md §6.1): rescale per-block
                     # direction to operator norm ρ where ρ = lr/(σ_A+σ_B+1),
                     # enforcing the chord-spectral trust region ‖ΔW‖_op ≤ lr
-                    # by submultiplicativity. Self-dampens at σ-drift failure.
-                    # σ_max via 3 power iterations on the smaller-side gram —
-                    # ~50× faster than torch.linalg.matrix_norm(·, ord=2)'s SVD
-                    # at our matrix sizes; 3 iters give ~3-digit accuracy which
-                    # is plenty for the magnitude rule.
-                    sigma_A = _sigma_max_power_iter(A_f, n_iters=3)
-                    sigma_B = _sigma_max_power_iter(B_f, n_iters=3)
-                    rho = lr / (sigma_A + sigma_B + 1.0)
-                    op_geoA = _sigma_max_power_iter(geo_A, n_iters=3) + 1e-30
-                    op_geoB = _sigma_max_power_iter(geo_B, n_iters=3) + 1e-30
+                    # by submultiplicativity. ρ is precomputed outside the
+                    # Picard loop (A, B don't change within an optimizer step).
+                    # σ_max(geo_A), σ_max(geo_B) DO change each Picard iter and
+                    # have no obvious warm-start (geo direction shifts as the
+                    # cross-coupling correction shifts), so we use n_iters=8
+                    # cold-start which gives ~5% p95 accuracy on Gaussian-like
+                    # spectra.
+                    op_geoA, _ = _sigma_max_power_iter(geo_A, n_iters=8)
+                    op_geoB, _ = _sigma_max_power_iter(geo_B, n_iters=8)
+                    op_geoA = op_geoA + 1e-30
+                    op_geoB = op_geoB + 1e-30
                     dA = -rho * geo_A / op_geoA
                     dB = -self.lora_plus_multiplier * rho * geo_B / op_geoB
                     # Re-expose for downstream diagnostics consistency.
-                    gA_norm = torch.as_tensor(op_geoA, device=geo_A.device)
-                    gB_norm = torch.as_tensor(op_geoB, device=geo_B.device)
-                    uA_norm = torch.as_tensor(rho, device=geo_A.device)  # stand-in
-                    uB_norm = torch.as_tensor(rho, device=geo_B.device)
+                    gA_norm = op_geoA
+                    gB_norm = op_geoB
+                    uA_norm = rho.detach() if rho.dim() > 0 else rho
+                    uB_norm = rho.detach() if rho.dim() > 0 else rho
                 if self.end_rms_align:
                     # Override the pipeline's RMS-align: rescale to the
                     # ORIGINAL Adam-direction norm rather than ‖u_A_eff‖.

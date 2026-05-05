@@ -339,7 +339,13 @@ def test_soap_reduces_to_adam_polar_with_identity_basis():
             (baseline[n] - soap_id[n]).norm()
             / (baseline[n].norm() + 1e-30)
         )
-        assert rel_err < 1e-6, (
+        # Tolerance is bf16-precision: AdamPolarProductLoRA's batched hot path
+        # iterates Newton-Schulz in bf16 (Ampere tensor-core throughput),
+        # while AdamSOAPPolarProductLoRA (SOAP override) goes through the
+        # fp32 per-pair path. SOAP-with-identity-basis reduces to plain
+        # AdamPolar algorithmically, but the polar map's bf16/fp32 precision
+        # difference shows up as ~1e-3 relative error on small magnitudes.
+        assert rel_err < 5e-3, (
             f"{n} diverges from AdamPolarProductLoRA at identity-basis "
             f"reduction: rel_err={rel_err:.2e}"
         )
@@ -650,7 +656,13 @@ def test_adafactor_exact_when_grad_squared_is_rank1():
     ):
         assert n_a == n_f
         rel = float((p_a - p_f).norm() / (p_a.norm() + 1e-30))
-        assert rel < 1e-5, (
+        # Tolerance is bf16-precision compounded over 5 steps:
+        # AdamPolarProductLoRA goes through the batched path (Newton-Schulz
+        # in bf16); AdaFactorPolarProductLoRA overrides _adam_direction so
+        # it goes per-pair (fp32 NS). Algorithmic equivalence holds (rank-1
+        # g² → exact AdaFactor matches Adam) but the polar map differs by
+        # bf16 precision (~1e-3 per step), accumulating to ~5e-3 at step 5.
+        assert rel < 5e-3, (
             f"{n_a}: AdaFactor diverges from Adam under rank-1 g² "
             f"(should be exact): rel_err={rel:.2e}"
         )
@@ -947,12 +959,12 @@ def test_local_model_score_diagnostic_does_not_change_step():
     on = run(True)
     for n in off:
         # log_diagnostics=False routes through `_step_batched` (production
-        # hot path); log_diagnostics=True falls through to `_step_per_pair`
-        # so the diagnostic emit can run. The two paths use different
-        # reduction orders (bmm vs mm) so bit-exact equality no longer
-        # holds; the algorithmic claim "instrumentation does not change
-        # the applied step" survives within fp32 noise.
-        assert torch.allclose(off[n], on[n], atol=1e-5, rtol=1e-5), (
+        # hot path with bf16 NS); log_diagnostics=True falls through to
+        # `_step_per_pair` (fp32 NS). The polar map differs at bf16
+        # precision (~1e-3 relative) so the algorithmic claim
+        # "instrumentation does not change the applied step" survives
+        # only within bf16 working precision.
+        assert torch.allclose(off[n], on[n], atol=5e-4, rtol=5e-4), (
             f"{n} differs with log_diagnostics flag; instrumentation changed step"
         )
 
@@ -1369,13 +1381,19 @@ def test_anderson_accelerates_convergence():
     iter budget. The closeout doc reports osc_cos ≈ −0.85 at r=16, which
     is exactly Anderson's regime.
     """
-    # Reference fixed point: large iter count, plain Picard.
-    ref = _picard_step_outputs(picard_iters=30, anderson_m=0)
-    # Plain vs Anderson at a tight budget. picard_iters=8 puts plain Picard
-    # well inside its contracting tail (residual ~1e-4 in this fixture),
-    # where Anderson reliably gives ~4× contraction.
-    plain_k = _picard_step_outputs(picard_iters=8, anderson_m=0)
-    accel_k = _picard_step_outputs(picard_iters=8, anderson_m=3)
+    # Force per-pair path on all three calls — anderson_m>0 routes to
+    # per-pair anyway (fp32 NS), and we need ref/plain in the same precision
+    # regime as accel for a fair distance comparison. Without this, ref and
+    # plain take the batched path (bf16 NS) while accel takes per-pair (fp32),
+    # and the bf16/fp32 noise floor masks Anderson's contraction signal.
+    original_eligible = AdamPolarProductLoRA._batched_path_eligible
+    AdamPolarProductLoRA._batched_path_eligible = lambda self: False
+    try:
+        ref = _picard_step_outputs(picard_iters=30, anderson_m=0)
+        plain_k = _picard_step_outputs(picard_iters=8, anderson_m=0)
+        accel_k = _picard_step_outputs(picard_iters=8, anderson_m=3)
+    finally:
+        AdamPolarProductLoRA._batched_path_eligible = original_eligible
 
     def total_dist(updates):
         return sum(float((u - r).norm()) for u, r in zip(updates, ref))
