@@ -22,8 +22,8 @@ from typing import Any, Callable
 
 from .manifest import live_manifests_newest_first, load_manifests, warn_untagged
 from .plot_utils import (
-    DIVERGE_THRESHOLD, OPTIM_COLORS, has_runs, load_sweep, max_loss, merge_runs,
-    parse_flag,
+    DIVERGE_THRESHOLD, OPTIM_COLORS, RUNTIME_FIELDS, has_runs, load_sweep,
+    max_loss, merge_runs, parse_flag,
 )
 
 
@@ -249,32 +249,13 @@ def _enrich_cfg(cfg: dict) -> dict:
     cfg["_derived"] = derived
     return cfg
 
-# Runtime / metadata fields that vary between otherwise-identical runs and
-# MUST NOT participate in the dedup key. The default dedup model is deny-list:
-# two runs are "the same" iff their cfg fields are equal except for these.
-# That way any new behavioral hyperparameter automatically becomes a dedup
-# axis without the loader needing to know about it (the staleness mode that
-# silently dropped the rsweep / picard_iters_sweep_2x2 collision in 2026-05).
-#
-# Add a name here only if it's runtime/instrumentation metadata that doesn't
-# affect algorithm behavior. When in doubt, leave it out — false-positive
-# collisions (two runs flagged as different when they're identical) are
-# loud and recoverable; false-negative collisions (two different algorithms
-# treated as the same run) silently corrupt analysis.
-RUNTIME_FIELDS: frozenset[str] = frozenset({
-    # Provenance / submit-time metadata
-    "git_commit", "command", "log_group",
-    "wandb_project", "wandb_run_name",
-    # Compute-environment knobs (don't change algorithm)
-    "device", "tf32",
-    # Diagnostic emission knobs (don't change algorithm)
-    "log_optim_diagnostics", "optim_diagnostics_every",
-    "profile_steps",
-    # Diagnostic trajectory data (attached by load_run; not a hyperparameter)
-    "_optim_steps",
-    # Local file path resolution (the dataset_name field still pins identity)
-    "train_file", "eval_file",
-})
+# RUNTIME_FIELDS is imported above from plot_utils, where it's the single
+# canonical definition shared with merge_runs' hidden-axis collision check.
+# The dedup key here and the collision check there cannot drift apart.
+# To add a new runtime field, edit plot_utils.RUNTIME_FIELDS — only if it's
+# instrumentation metadata that doesn't affect algorithm behavior. When in
+# doubt, leave it out: false-positive collisions are loud and recoverable;
+# false-negative collisions silently corrupt analysis.
 
 # Allow-list dedup axes — preserved for callers that intentionally collapse
 # across some axis (e.g. seed averaging). New code should prefer the

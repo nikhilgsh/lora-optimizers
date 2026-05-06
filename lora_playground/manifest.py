@@ -45,6 +45,9 @@ class UntaggedSweepError(RuntimeError):
     """
 
 
+_LOAD_MANIFESTS_CACHE: dict[tuple[str, bool], tuple[tuple, list[dict]]] = {}
+
+
 def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict]:
     """Return one manifest dict per sweep that has both a ``meta.json`` and
     at least one populated run output. Manifests without runs are skipped
@@ -55,11 +58,35 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
     With ``strict=False``, those groups are returned with stub manifests
     flagged (`_untagged`, `_corrupt`, `_empty_scope`) so the caller can
     decide.
+
+    Cached by signature ``(logs_root_mtime, sorted (group, meta_mtime,
+    meta_size))`` so analysis loops that call this once per ``load_runs``
+    don't re-walk 178+ directories. New groups bump logs_root mtime;
+    edited meta.json bumps its own mtime.
     """
     root = Path(logs_root)
-    manifests: list[dict] = []
     if not root.exists():
-        return manifests
+        return []
+    try:
+        root_mtime = root.stat().st_mtime_ns
+        meta_sig = tuple(
+            (run_info.parent.name,
+             (run_info / "meta.json").stat().st_mtime_ns
+             if (run_info / "meta.json").exists() else 0,
+             (run_info / "meta.json").stat().st_size
+             if (run_info / "meta.json").exists() else 0)
+            for run_info in sorted(root.glob("*/run_info"))
+        )
+        sig = (root_mtime, meta_sig)
+        cache_key = (str(root.resolve()), strict)
+        cached = _LOAD_MANIFESTS_CACHE.get(cache_key)
+        if cached is not None and cached[0] == sig:
+            return [dict(m) for m in cached[1]]
+    except OSError:
+        sig = None
+        cache_key = None
+
+    manifests: list[dict] = []
     bad: list[tuple[str, str]] = []  # (group, reason)
     for run_info in sorted(root.glob("*/run_info")):
         group = run_info.parent.name
@@ -92,7 +119,9 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
             f"{len(bad)} log group(s) without valid manifest:\n{details}\n"
             f"See lora_playground/manifest.py for fix instructions."
         )
-    return manifests
+    if cache_key is not None and sig is not None:
+        _LOAD_MANIFESTS_CACHE[cache_key] = (sig, manifests)
+    return [dict(m) for m in manifests]
 
 
 def warn_untagged(manifests: list[dict]) -> list[str]:

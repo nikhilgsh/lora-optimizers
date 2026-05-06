@@ -323,24 +323,35 @@ def parse_flag(command: str, flag: str) -> str | None:
     return None
 
 
+_LOAD_RUN_CACHE: dict[str, tuple[tuple[int, int], dict | None, list[dict]]] = {}
+
+
 def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
     """Parse a single task .out file → (config dict, list of eval dicts).
 
     optim_step diagnostic events (emitted by polar/lin/scaled-LoRA optimizers
     when --log_optim_diagnostics is on) are attached to the config dict as
-    ``cfg["_optim_steps"]`` (a list of dicts with per-step probe stats).
-    Underscore prefix puts them in RUNTIME_FIELDS for dedup, so adding them
-    doesn't change merge_runs behavior.
+    ``cfg["_optim_steps"]``. Both ``loader.RUNTIME_FIELDS`` and
+    ``_HIDDEN_AXIS_RUNTIME_FIELDS`` (re-exported from this module) list it,
+    so dedup ignores it.
 
-    DESIGN NOTE (2026-05-05, staged migration): the cfg["_optim_steps"]
-    attachment is the stage-1 minimum-disruption fix. The cleaner shape is
-    a heterogeneous events list (eval + optim_step + future event types)
-    discriminated by the existing ``event`` field, requiring callers to
-    filter explicitly. Stage 2 has not been done; if you need it, audit the
-    ~12 plot_utils sites that iterate ``evs`` plus tests/notebook callers
-    and update each to filter ``e['event']=='eval'``. Until then,
-    diagnostics live on cfg, not in evs.
+    Result is cached by (path, mtime, size); an in-flight file's growing size
+    invalidates the entry so re-parses pick up new events. Returned cfg is
+    shallow-copied per call because merge_runs mutates ``cfg["log_group"]``
+    and downstream enrichment writes ``cfg["_derived"]``; the cached cfg
+    must stay clean across callers.
     """
+    path_str = str(log_path)
+    try:
+        st = log_path.stat()
+        sig = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        sig = None
+    cached = _LOAD_RUN_CACHE.get(path_str) if sig is not None else None
+    if cached is not None and cached[0] == sig:
+        cfg, evs = cached[1], cached[2]
+        return (None if cfg is None else dict(cfg)), evs
+
     config, evals, optim_steps = None, [], []
     for line in Path(log_path).read_text().splitlines():
         line = line.strip()
@@ -367,18 +378,39 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         config.setdefault("precond_refresh_every", int(rk) if rk else 1)
         config.setdefault("precond_method", parse_flag(cmd, "--precond_method"))
         config["_optim_steps"] = optim_steps
-    return config, evals
+    if sig is not None:
+        _LOAD_RUN_CACHE[path_str] = (sig, config, evals)
+    return (None if config is None else dict(config)), evals
+
+
+_LOAD_SWEEP_CACHE: dict[tuple[str, str], tuple[tuple, list[tuple[dict, list[dict]]]]] = {}
 
 
 def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[dict]]]:
-    """Load all runs for a sweep group. Returns list of (cfg, evs)."""
+    """Load all runs for a sweep group. Returns list of (cfg, evs).
+
+    Cached by the per-file (mtime, size) signature of the group's .out
+    files; in-flight files invalidate naturally as they grow. Returned
+    cfgs are shallow-copied per call so downstream mutation
+    (``merge_runs`` writing ``log_group``, ``_enrich_cfg`` writing
+    ``_derived``) doesn't poison cached entries.
+    """
     log_dir = Path(f"{logs_root}/{group}/run_info/logs")
+    if not log_dir.exists():
+        return []
+    files = sorted(log_dir.glob("*.out"))
+    sig = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in files)
+    cache_key = (logs_root, group)
+    cached = _LOAD_SWEEP_CACHE.get(cache_key)
+    if cached is not None and cached[0] == sig:
+        return [(dict(cfg), evs) for cfg, evs in cached[1]]
     runs = []
-    for f in sorted(log_dir.glob("*.out")):
+    for f in files:
         cfg, evs = load_run(f)
         if cfg is not None and evs:
             runs.append((cfg, evs))
-    return runs
+    _LOAD_SWEEP_CACHE[cache_key] = (sig, runs)
+    return [(dict(cfg), evs) for cfg, evs in runs]
 
 
 def has_runs(group: str, logs_root: str = "../logs") -> bool:
@@ -390,18 +422,23 @@ def has_runs(group: str, logs_root: str = "../logs") -> bool:
 
 
 # Cfg fields that legitimately differ between otherwise-identical runs (run
-# provenance, instrumentation knobs, file paths). Mirror of
-# ``loader.RUNTIME_FIELDS`` — kept here as a literal to avoid creating an
-# import cycle (loader imports from plot_utils). Add a name in BOTH places
-# when introducing a new runtime field.
-_HIDDEN_AXIS_RUNTIME_FIELDS: frozenset[str] = frozenset({
+# provenance, instrumentation knobs, file paths). Canonical definition;
+# ``loader.RUNTIME_FIELDS`` re-exports this name so dedup-key construction
+# and the hidden-axis collision check share one source of truth (drift
+# between two parallel lists previously caused silent collisions on
+# ``_optim_steps`` differences — see git log for 2026-05-06 fix).
+RUNTIME_FIELDS: frozenset[str] = frozenset({
     "git_commit", "command", "log_group",
     "wandb_project", "wandb_run_name",
     "device", "tf32",
     "log_optim_diagnostics", "optim_diagnostics_every",
     "profile_steps",
+    "_optim_steps",
     "train_file", "eval_file",
 })
+
+# Backward-compatible alias.
+_HIDDEN_AXIS_RUNTIME_FIELDS = RUNTIME_FIELDS
 
 
 def _hidden_axis_diffs(cfg_a: dict, cfg_b: dict) -> list[tuple]:
