@@ -36,17 +36,12 @@ Usage:
 """
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
 import torch
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM
-
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from lora_playground._step_timer import CudaTimer
 from lora_playground.optim import build_optimizer, OPTIMIZER_CHOICES

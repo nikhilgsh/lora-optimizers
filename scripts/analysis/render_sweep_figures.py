@@ -6,7 +6,6 @@ notebook each pass.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import matplotlib
@@ -14,9 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
 
-from lora_playground.plot_utils import (  # noqa: E402
+from lora_playground.plot_utils import (
     OPTIM_COLORS, max_loss, merge_runs, parse_flag, load_sweep,
     plot_leaderboard_by_rank, standard_sweep_figure,
 )

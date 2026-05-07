@@ -7,12 +7,9 @@ import argparse
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-import sys
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
-
 from lora_playground.loader import load_runs
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def latest_eval(logfile, target_step=None):
