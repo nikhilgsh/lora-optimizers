@@ -31,7 +31,7 @@ Use a general base model, not a code-specialized base. `OLMo-2-0425-1B` is a mod
 | `lr_scheduler_type` | `constant` | clean, no scheduler interactions |
 | `data_dir` | `data/magicoder_seq512_32k` | pre-tokenized Arrow dataset |
 
-Pre-tokenized cache: run `python scripts/prepare_data.py --out_dir data/magicoder_seq512_32k --max_train_samples 32000 --max_eval_samples 512` once before sweeping.
+Pre-tokenized cache: run `python scripts/data/prepare_data.py --out_dir data/magicoder_seq512_32k --max_train_samples 32000 --max_eval_samples 512` once before sweeping.
 
 **1-epoch invariant:** `max_train_samples` must equal `max_steps × effective_batch_size`. Violating this causes multi-epoch training under constant LR, which diverges. Check before submitting any new sweep.
 

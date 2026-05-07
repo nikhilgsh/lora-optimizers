@@ -17,15 +17,9 @@ launch-cost ratio of stock `torch.optim.AdamW` (which uses foreach by
 default and step-times at 1.5 ms).
 """
 import argparse
-import sys
 import time
-from pathlib import Path
 
 import torch
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 
 def adam_direction_loop(states, gA_list, gB_list, beta1, beta2, eps, step):

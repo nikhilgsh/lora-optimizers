@@ -201,6 +201,6 @@ H-family win).
   momentum-SGD identity
 - Sweep configs:
   `params/{muon_loraplus,muon_nsoff,product_muon,adam_muon}_2k.json`
-- Sweep script: `scripts/sweep_muon_2k.sh`
+- Sweep script: `scripts/sweep/sweep_muon_2k.sh`
 - Notebook: `notebooks/sweep_analysis.ipynb` — section "Muon-LoRA
   variants — beat AdamW campaign"

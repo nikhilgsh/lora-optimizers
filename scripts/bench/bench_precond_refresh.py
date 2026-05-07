@@ -17,15 +17,9 @@ Reports wall time (median over n_reps) and equivalence error vs the
 current production path (loop_eigh).
 """
 import argparse
-import sys
 import time
-from pathlib import Path
 
 import torch
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from lora_playground.utils import (
     spd_frac_power_inv,

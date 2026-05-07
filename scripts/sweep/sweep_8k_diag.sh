@@ -1,6 +1,6 @@
 #!/bin/bash
 # 8000-step sweep with diagnostics. Long-horizon variant of
-# scripts/sweep_2k_r_diag_ns_steps.sh — use to test rank-saturation /
+# scripts/sweep/sweep_2k_r_diag_ns_steps.sh — use to test rank-saturation /
 # data-bound hypotheses where 2k steps is the canonical comparison horizon
 # but a longer trajectory is needed to disambiguate.
 #

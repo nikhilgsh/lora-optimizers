@@ -11,7 +11,7 @@ Schema (written by submit.sh):
       "slurm_job_id":  "6314009",
       "n_gpus":        6,
       "params_file":   "adamuon_polar_product_2k.json",
-      "sweep_script":  "scripts/sweep_2k_r_diag.sh",
+      "sweep_script":  "scripts/sweep/sweep_2k_r_diag.sh",
       "sbatch_script": "slurm_scripts/sbatch.sh",
       "git_commit":    "<sha>",
       "git_dirty":     false,

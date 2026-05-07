@@ -3,7 +3,7 @@
 Same weights, same gradients, same hyperparameters, run a few optimizer steps,
 compare the weight trajectories. Tolerance ~1e-5 (float32 numerics).
 
-Usage: python scripts/verify_galore_against_official.py
+Usage: python scripts/verify/verify_galore_against_official.py
 Requires ~/GaLore on PYTHONPATH.
 """
 import sys
@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 GALORE_REPO = Path("/mnt/home/nghosh/GaLore")
 sys.path.insert(0, str(REPO_ROOT))
 

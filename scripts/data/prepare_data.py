@@ -1,7 +1,7 @@
 """Tokenize Magicoder once and save to disk as HuggingFace Arrow datasets.
 
 Usage:
-    python scripts/prepare_data.py \
+    python scripts/data/prepare_data.py \
         --model_name allenai/OLMo-2-0425-1B \
         --max_seq_length 512 \
         --max_train_samples 4096 \

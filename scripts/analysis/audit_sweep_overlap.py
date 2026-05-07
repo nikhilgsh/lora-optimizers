@@ -1,7 +1,7 @@
 """Audit a sweep params JSON against existing logs/ for already-completed cells.
 
 Usage:
-    python scripts/audit_sweep_overlap.py params/<sweep>.json
+    python scripts/analysis/audit_sweep_overlap.py params/<sweep>.json
 
 For each (config-tuple) in the cartesian product of the params file, search
 logs/ for an existing run matching all keys (allowing string/numeric coercion).

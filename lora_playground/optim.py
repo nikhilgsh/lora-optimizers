@@ -1746,7 +1746,7 @@ def _newton_schulz_batched(X, nsteps=5, eps=1e-7, dtype=None):
       tolerance for the polar map.
 
     Equivalence at fp32: max-abs-err < 1e-7 vs per-matrix `_newton_schulz`
-    on real LoRA shapes (`scripts/bench_ns_batched.py`).
+    on real LoRA shapes (`scripts/bench/bench_ns_batched.py`).
     """
     X = X.float()
     tall = X.shape[-2] > X.shape[-1]
@@ -3016,7 +3016,7 @@ class AdamPolarProductLoRA(Optimizer):
                         X_A = SB_half_inv_k @ u_A_eff
                         X_B = u_B_eff @ SA_half_inv_k
                     # Iterate NS in bf16 for ~3.6× throughput on Ampere
-                    # tensor cores (microbench: scripts/bench_ns_bf16.py).
+                    # tensor cores (microbench: scripts/bench/bench_ns_bf16.py).
                     # Pre-norm + Frobenius rescale stay fp32 (small-number
                     # robustness); only the matmul-heavy iterations run bf16.
                     # Output cast back to fp32 for downstream unwhiten/rescale

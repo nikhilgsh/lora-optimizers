@@ -22,14 +22,8 @@ the cells that fire on every Picard correction iter when running the
 coupled (k=3) optimizer.
 """
 import argparse
-import sys
-from pathlib import Path
 
 import torch
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 
 def cross_coupling_loop(A_list, B_list, dA_list, dB_list, u_A_list, u_B_list,

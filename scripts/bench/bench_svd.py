@@ -8,7 +8,7 @@ Shapes: 112 target modules, rank=16.
 Run on the target hardware (H100 PCIe) for valid timing.
 
 Usage:
-    python scripts/bench_svd.py --device cuda
+    python scripts/bench/bench_svd.py --device cuda
 """
 import argparse
 import time

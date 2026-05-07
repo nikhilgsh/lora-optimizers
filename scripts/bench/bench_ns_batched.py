@@ -17,15 +17,9 @@ microbenchmark, the larger optimizer-integration refactor is not
 worth doing.
 """
 import argparse
-import sys
 import time
-from pathlib import Path
 
 import torch
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from lora_playground.optim import _newton_schulz, _newton_schulz_batched
 

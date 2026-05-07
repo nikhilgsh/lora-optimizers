@@ -19,15 +19,9 @@ Tests the looped vs single-call-on-stacked-batch pattern, on the three
 real shape groups for OLMo-2-1B at r=16. Equivalence within fp32 noise.
 """
 import argparse
-import sys
 import time
-from pathlib import Path
 
 import torch
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 
 def unwhiten_rescale_loop(P_A_list, P_B_list, SA_half_inv_list,

@@ -147,7 +147,7 @@ to match the code: `[1.0, -lr·(1-α₁), -lr·α₁]`.
 - α₁=0: step 1 max |Δw| = 3.7e-9; step 5 max = 2.0e-5
 - α₁=0.9: step 1 max |Δw| = 3.7e-9; step 5 max = 3.1e-5
 
-Both well under 1e-4 tolerance. Test committed at `scripts/verify_psilora_against_official.py`.
+Both well under 1e-4 tolerance. Test committed at `scripts/verify/verify_psilora_against_official.py`.
 
 **Resubmitted.** Job 6312401 (`psi_lora_2k`) with all PSI-LoRA fixes: lr-scaled ρ +
 proximal stability eps + lmbd clamp + momentum init + convex-combination coefficients.
@@ -170,7 +170,7 @@ These produce a small per-step shrinkage of weights when the gram is rank-defici
 
 **Caveat.** Test only validates α₁=0 case. With momentum on, there's a paper-vs-ref-impl discrepancy in the gradient-vs-momentum coefficient weighting (paper: `-η·g, -η·α₁·m`; ref: `-η·(1-α₁)·g, -η·α₁·m` — convex combination instead of sum). My code follows the paper. Resolving this requires reading the paper's appendix carefully or asking the authors. For now, test scope is the F-LoRSUM math + diagonal K-FAC stats, not the momentum convention.
 
-**Resubmitted.** Job 6312353. Test committed as `scripts/verify_psilora_against_official.py`.
+**Resubmitted.** Job 6312353. Test committed as `scripts/verify/verify_psilora_against_official.py`.
 
 ---
 
@@ -178,7 +178,7 @@ These produce a small per-step shrinkage of weights when the gram is rank-defici
 
 **Motivation.** User flagged that the 7% gap between our GaLore (0.811) and AdamW LoRA (0.758) was concerning, and asked whether I'd actually run the official codebase to verify behavioral equivalence (I had only code-reviewed it).
 
-**Action.** Wrote `scripts/verify_galore_against_official.py`: tiny model with both tall and wide linears, deterministic gradients, run N steps with our `GaLoreAdamW` and the official `~/GaLore/galore_torch.AdamW`, compare weight trajectories.
+**Action.** Wrote `scripts/verify/verify_galore_against_official.py`: tiny model with both tall and wide linears, deterministic gradients, run N steps with our `GaLoreAdamW` and the official `~/GaLore/galore_torch.AdamW`, compare weight trajectories.
 
 **Found a behavioral divergence.** Steps 1–4 matched (max |Δw| < 1.9e-9, float32 noise). Step 5 diverged sharply (4e-4) and grew to 1.6e-3 by step 12.
 
@@ -308,7 +308,7 @@ Original sweeps: `lr_sweep_2k` (5 LoRA-mode optimizers × 4 lrs), `optim_compare
 | reproduction | code-review match | end-to-end behavioral match | reference |
 |--------------|-------------------|------------------------------|-----------|
 | Muon NS      | ✓ canonical Muon  | tests verify scale-invariance| modded-nanogpt |
-| GaLore       | ✓ vs `~/GaLore`   | ✓ behavioral match to 1.86e-9 over 12 steps + 2 refreshes (`scripts/verify_galore_against_official.py`) | jiaweizzhao/GaLore |
-| PSI-LoRA     | ✓ vs `~/PSI-LoRA` | ✓ behavioral match for α₁=0 AND α₁=0.9 (paper GLUE default) — bit-exact single step, ~3e-5 cumulative drift over 5 steps (`scripts/verify_psilora_against_official.py`). | zeligism/PSI-LoRA |
+| GaLore       | ✓ vs `~/GaLore`   | ✓ behavioral match to 1.86e-9 over 12 steps + 2 refreshes (`scripts/verify/verify_galore_against_official.py`) | jiaweizzhao/GaLore |
+| PSI-LoRA     | ✓ vs `~/PSI-LoRA` | ✓ behavioral match for α₁=0 AND α₁=0.9 (paper GLUE default) — bit-exact single step, ~3e-5 cumulative drift over 5 steps (`scripts/verify/verify_psilora_against_official.py`). | zeligism/PSI-LoRA |
 
 If we want strong claims about reproduction, we need to run the reference codebase on equivalent settings and compare outputs.

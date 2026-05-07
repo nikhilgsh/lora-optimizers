@@ -135,7 +135,7 @@ Workflow for `docs/notes/*.md` data-derived edits: pull data via canonical loade
 ```bash
 SWEEP_SCOPE="ext_compare,polar_family" \
 SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry" \
-./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [scripts/sweep_2k_r_diag.sh] [slurm_scripts/sbatch.sh]
+./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [scripts/sweep/sweep_2k_r_diag.sh] [slurm_scripts/sbatch.sh]
 ```
 
 To exclude an old sweep from analysis, delete its log dir.

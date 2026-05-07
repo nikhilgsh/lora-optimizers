@@ -1,7 +1,7 @@
 """Behavioral equivalence test: our PSILoRA vs official ScaledOPLoraOptimizer
 (diagonal K-FAC mode) from ~/PSI-LoRA/src/oplora/optimizer.py.
 
-Same convention as scripts/verify_galore_against_official.py: build a tiny
+Same convention as scripts/verify/verify_galore_against_official.py: build a tiny
 LoRA model, run a forward+backward to populate the hook caches, run one
 optimizer step on each, compare resulting weights.
 
@@ -10,7 +10,7 @@ A passing test under that config validates the F-LoRSUM ALS math + diagonal
 K-FAC stats. Momentum-on requires resolving a paper-vs-reference-impl
 coefficient discrepancy first (see test output for divergence breakdown).
 
-Usage: python scripts/verify_psilora_against_official.py
+Usage: python scripts/verify/verify_psilora_against_official.py
 """
 import sys
 from pathlib import Path
@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PSI_REPO = Path("/mnt/home/nghosh/PSI-LoRA")
 sys.path.insert(0, str(REPO_ROOT))
 

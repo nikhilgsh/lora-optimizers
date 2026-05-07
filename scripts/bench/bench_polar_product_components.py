@@ -24,10 +24,10 @@ step time as measured by an outer CUDA-event pair (also recorded).
 
 Usage:
     # Quick smoke (CPU-or-GPU, 1 cell):
-    python scripts/bench_polar_product_components.py --quick
+    python scripts/bench/bench_polar_product_components.py --quick
 
     # A100 sweep (canonical):
-    python scripts/bench_polar_product_components.py \\
+    python scripts/bench/bench_polar_product_components.py \\
         --lora_r 16 64 \\
         --optimizers adam-polar-product-lora adam-polar-product-lora-coupled \\
         --precond_refresh_every 1 16 \\
@@ -44,7 +44,7 @@ import torch
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 

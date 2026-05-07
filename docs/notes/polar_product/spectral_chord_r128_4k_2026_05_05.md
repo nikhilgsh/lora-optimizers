@@ -110,7 +110,7 @@ explanation for the wider basin.
   3e-2; one cell each).
 - Submit: `SWEEP_SCOPE=ext_compare,polar_family ./slurm_scripts/submit.sh
   params/spectral_chord_r128_4k.json spectral_chord_r128_4k 3
-  scripts/sweep_4k_diag.sh slurm_scripts/sbatch_12h.sh`.
+  scripts/sweep/sweep_4k_diag.sh slurm_scripts/sbatch_12h.sh`.
 - SLURM job 6338382, 5h35m wall on 3× A100.
 - Loader: `load_runs(where={"optimizer":
   "adam-polar-product-lora-coupled-spectral-chord", "lora_r": 128,

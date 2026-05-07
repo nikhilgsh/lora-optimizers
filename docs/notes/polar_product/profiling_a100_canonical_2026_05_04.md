@@ -21,7 +21,7 @@ because A6000's slower fwd+bwd hides it).
 - Reproduce:
   ```
   for r in 16 64; do
-    python scripts/bench_optimizer_step.py --bf16 --lora_r $r \
+    python scripts/bench/bench_optimizer_step.py --bf16 --lora_r $r \
         --optimizers adamw adam-polar-product-lora adam-polar-product-lora-coupled \
         --precond_method eigh higham --precond_refresh_every 1 \
         --n_warmup 3 --n_cycles 4 \

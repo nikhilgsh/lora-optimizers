@@ -1,7 +1,7 @@
 #!/bin/bash
 # Usage: ./slurm_scripts/submit.sh <params_json> <group_name> <n_gpus> [sweep_script] [sbatch_script]
 # Example: ./slurm_scripts/submit.sh params/lr_sweep.json sweep_lr 4
-# Example: ./slurm_scripts/submit.sh params/foo.json my_group 6 scripts/sweep_2k.sh slurm_scripts/sbatch_h100.sh
+# Example: ./slurm_scripts/submit.sh params/foo.json my_group 6 scripts/sweep/sweep_2k.sh slurm_scripts/sbatch_h100.sh
 #
 # Optional env vars (recommended — consumed by analysis tooling):
 #   SWEEP_SCOPE="ext_compare,polar_family"   comma-separated tags
@@ -34,7 +34,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PARAM_FILE="$1"
 GROUP="$2"
 N_GPUS="$3"
-SWEEP_SCRIPT="${4:-scripts/sweep.sh}"
+SWEEP_SCRIPT="${4:-scripts/sweep/sweep.sh}"
 SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
 
 # Resolve to repo-relative form. If the caller passes an absolute path, strip
@@ -51,9 +51,9 @@ case "$SBATCH_SCRIPT" in /*) SBATCH_SCRIPT="${SBATCH_SCRIPT#${REPO_DIR}/}";; esa
 # exists in logs/. Override with FORCE_OVERLAP=1 (and document the reason in
 # SWEEP_PURPOSE). The audit covers semantic equivalences (e.g. picard_alpha=0
 # is equivalent to picard_iters=1 / uncoupled). See
-# scripts/audit_sweep_overlap.py.
+# scripts/analysis/audit_sweep_overlap.py.
 if [[ -z "${FORCE_OVERLAP:-}" ]]; then
-    if ! python "${REPO_DIR}/scripts/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${REPO_DIR}/logs" --sweep-script "${REPO_DIR}/${SWEEP_SCRIPT}"; then
+    if ! python "${REPO_DIR}/scripts/analysis/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${REPO_DIR}/logs" --sweep-script "${REPO_DIR}/${SWEEP_SCRIPT}"; then
         echo "" >&2
         echo "ERROR: sweep overlaps with existing logs (see ✓ rows above)." >&2
         echo "Drop the duplicate cells from ${PARAM_FILE}, or set FORCE_OVERLAP=1" >&2

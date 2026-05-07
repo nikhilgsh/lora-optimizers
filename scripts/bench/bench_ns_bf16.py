@@ -22,14 +22,8 @@ SVD polar `‖Y − UV^T‖_F / √min(m,n)` to confirm the algorithm's
 qualitative property is preserved.
 """
 import argparse
-import sys
-from pathlib import Path
 
 import torch
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from lora_playground.optim import _newton_schulz_batched
 

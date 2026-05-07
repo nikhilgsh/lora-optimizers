@@ -29,10 +29,10 @@ they apply uniformly across rows.
 
 Usage:
     # Smoke
-    python scripts/bench_optimizer_step.py --lora_r 16 --n_cycles 2 --bf16
+    python scripts/bench/bench_optimizer_step.py --lora_r 16 --n_cycles 2 --bf16
 
     # Full bench
-    python scripts/bench_optimizer_step.py --lora_r 256 \\
+    python scripts/bench/bench_optimizer_step.py --lora_r 256 \\
         --precond_refresh_every 1 5 10 20 --bf16 \\
         --out logs/bench/precond_stale.jsonl
 """
@@ -45,11 +45,6 @@ from pathlib import Path
 import torch
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM
-
-import sys
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from lora_playground.optim import build_optimizer, OPTIMIZER_CHOICES
 from lora_playground.utils import collect_lora_pairs
@@ -71,8 +66,13 @@ DEFAULT_OPTIMIZERS = ["adamw"] + GRAM_PRECOND_OPTIMIZERS + COUPLED_CORE_OPTIMIZE
 
 
 def build_model(model_name: str, lora_r: int, lora_alpha: int, target_modules: str,
-                dtype: torch.dtype, device: torch.device):
-    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype)
+                dtype: torch.dtype, device: torch.device,
+                attn_implementation: str | None = None,
+                compile_mode: str | None = None):
+    kwargs = {"dtype": dtype}
+    if attn_implementation:
+        kwargs["attn_implementation"] = attn_implementation
+    model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
     model.config.use_cache = False
     peft_config = LoraConfig(
         r=lora_r,
@@ -84,6 +84,8 @@ def build_model(model_name: str, lora_r: int, lora_alpha: int, target_modules: s
     )
     model = get_peft_model(model, peft_config)
     model.to(device)
+    if compile_mode:
+        model = torch.compile(model, mode=compile_mode)
     return model
 
 
@@ -209,6 +211,16 @@ def parse_args():
                              "metric. For non-Gram-preconditioned optimizers (AdamW), "
                              "n_cycles is interpreted as a flat n_reps.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--attn_implementation", default=None,
+                        choices=[None, "eager", "sdpa", "flash_attention_2"],
+                        help="Pass-through to AutoModelForCausalLM.from_pretrained. "
+                             "None = HF default. 'flash_attention_2' requires the "
+                             "flash-attn package and a supported model.")
+    parser.add_argument("--compile", dest="compile_mode", nargs="?",
+                        const="default", default=None,
+                        choices=[None, "default", "reduce-overhead", "max-autotune"],
+                        help="Apply torch.compile after PEFT wrap. Bare --compile "
+                             "uses mode='default'. Omit for eager.")
     parser.add_argument("--out", default=None,
                         help="JSONL output path. If omitted, prints to stdout only.")
     return parser.parse_args()
@@ -223,9 +235,17 @@ def main():
     dtype = torch.bfloat16 if args.bf16 else torch.float32
 
     print(f"# Building model {args.model_name} with lora_r={args.lora_r}, "
-          f"target_modules={args.target_modules}, dtype={dtype}", flush=True)
+          f"target_modules={args.target_modules}, dtype={dtype}, "
+          f"attn={args.attn_implementation}, compile={args.compile_mode}", flush=True)
     model = build_model(args.model_name, args.lora_r, args.lora_alpha,
-                        args.target_modules, dtype, device)
+                        args.target_modules, dtype, device,
+                        attn_implementation=args.attn_implementation,
+                        compile_mode=args.compile_mode)
+    # Resolved attn impl for the loaded base model (HF picks default if None).
+    base_for_cfg = model.base_model.model if hasattr(model, "base_model") else model
+    resolved_attn = getattr(base_for_cfg.config, "_attn_implementation",
+                            args.attn_implementation or "default")
+    print(f"# resolved attn_implementation={resolved_attn}", flush=True)
     pairs = collect_lora_pairs(model)
     n_pairs = len(pairs)
     n_lora_params = sum(A.numel() + B.numel() for A, B in pairs)
@@ -342,6 +362,11 @@ def main():
                         "opt_sec_per_step": opt_mean_phase,
                         "zero_sec_per_step": zero_mean,
                         "peak_memory_mb": peak_mb,
+                        "attn_implementation": resolved_attn,
+                        "compile_mode": args.compile_mode,
+                        "batch_size": args.batch_size,
+                        "seq_len": args.seq_len,
+                        "grad_accum_steps": args.grad_accum_steps,
                     }
                     if out_fh is not None:
                         out_fh.write(json.dumps(rec, sort_keys=True) + "\n")

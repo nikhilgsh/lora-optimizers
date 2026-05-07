@@ -74,7 +74,7 @@ def test_batched_bf16_matches_fp32_orthogonality(shape):
 
     Validates the modded-nanogpt pattern (`train_gpt.py:187`: iterate in
     bf16) on our LoRA shape regime. Verified at the bench-script level
-    by `scripts/bench_ns_bf16.py`.
+    by `scripts/bench/bench_ns_bf16.py`.
     """
     torch.manual_seed(0)
     m, n = shape

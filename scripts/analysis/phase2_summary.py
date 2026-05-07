@@ -1,13 +1,13 @@
 """Phase 2 sweep summary — pulls eval_loss and key diagnostics from
 all 3 phase-2 sweep dirs + baselines, prints a final comparison table.
 
-Usage: conda run -n ffcv-pl python scripts/phase2_summary.py [--step 2000]
+Usage: conda run -n ffcv-pl python scripts/analysis/phase2_summary.py [--step 2000]
 """
 import argparse
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 import sys
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
