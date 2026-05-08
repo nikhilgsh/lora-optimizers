@@ -370,6 +370,41 @@ r=64 (~3%) but a ~10% tax at r=256. The optimizer.step ms column
   ~10% at r=256. No regression from the data-path change — overhead
   is dominated by the higham preconditioner, not data.
 
+### DDP-on-Blackwell — known-broken, not for campaign use (2026-05-08)
+
+A 4-GPU Blackwell DDP bench (SLURM job 6364791, then interactive
+diagnosis on workergpu181) reproducibly fails at the **first NCCL
+collective during DDP construction**, regardless of `--compile`,
+`--data_pipeline_version`, or NCCL workarounds. Failure mode: CUDA
+illegal-memory-access in `dist._broadcast_coalesced` /
+`dist.Reducer(...)`, watchdog thread terminates all ranks with
+SIGABRT.
+
+**Bisected via interactive smokes** (workergpu181, 2 GPUs):
+- Pure NCCL `all_reduce` on a 1-element tensor: ✓ works
+- Tiny `nn.Linear(64,64)` → DDP wrap: ✓ works
+- HF `AutoModelForCausalLM` (OLMo-2 1B) → DDP wrap, no PEFT:
+  ✗ default → ✓ with `NCCL_P2P_DISABLE=1`
+- HF + PEFT LoRA → DDP wrap: ✗ even with `NCCL_P2P_DISABLE=1` and
+  `find_unused_parameters=True`
+
+So plain-HF DDP works on Blackwell with the P2P workaround; **PEFT +
+DDP** is the broken combination at this software stack
+(torch 2.7.0+cu128, NCCL 2.26.2+cuda12.2, NVIDIA driver 580.142,
+PyTorch nightly probably required for a fix). Existing A100 DDP smoke
+documented under "DDP wiring verification" still works.
+
+Decision: **drop DDP from the Phase B/C plan.** Single-GPU per cell on
+Blackwell+packed_v1 fits all four campaign cells in a 24h SLURM wall
+(verdict table above), and parallel-seeds beats DDP for sweep
+workloads anyway. The bench script's DDP support
+(`scripts/bench/bench_optimizer_step.py`, commit 7ba50a2) is left in
+place — it works on A100 — but flagged as Blackwell-incompatible until
+the upstream PyTorch / NCCL / PEFT stack updates.
+
+If a future workload needs DDP on Blackwell, retry with newer torch
+(≥ 2.8 nightly) + NCCL (≥ 2.27); revisit the bisection above.
+
 ### Sanity job (concurrent)
 
 Single end-to-end training run to validate packed_v1 produces a sensible
