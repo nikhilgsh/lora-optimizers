@@ -246,6 +246,14 @@ def _enrich_cfg(cfg: dict) -> dict:
     k, k_certain = _derive_effective_picard_iters(cfg, opt_cfg)
     derived["effective_picard_iters"] = k
     derived["effective_picard_iters_certain"] = k_certain
+    # Data pipeline version: explicit on new runs (>=2026-05-08), absent on
+    # older runs which were all unpacked_v0 (legacy
+    # DataCollatorForLanguageModeling, no prompt mask, dynamic shapes).
+    # Default-fill so analysis can filter by version uniformly.
+    pipeline_version = cfg.get("data_pipeline_version")
+    if pipeline_version is None:
+        pipeline_version = "unpacked_v0"
+    derived["data_pipeline_version"] = pipeline_version
     cfg["_derived"] = derived
     return cfg
 

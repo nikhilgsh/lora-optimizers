@@ -121,6 +121,13 @@ manifest = {
     "git_dirty": ("${GIT_DIRTY}" == "true"),
     "scope": scope,
     "purpose": os.environ.get("SWEEP_PURPOSE", ""),
+    # Default-tag the data pipeline version. Per-run cfg events carry the
+    # authoritative value (set by `--data_pipeline_version`); this is just
+    # a sweep-level hint for analysis filters. Override via env var if a
+    # sweep deliberately mixes versions.
+    "data_pipeline_version": os.environ.get(
+        "SWEEP_DATA_PIPELINE_VERSION", "packed_v1",
+    ),
 }
 out = Path("${RUN_DIR}") / "meta.json"
 out.write_text(json.dumps(manifest, indent=2) + "\n")

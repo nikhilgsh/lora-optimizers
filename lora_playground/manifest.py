@@ -16,8 +16,22 @@ Schema (written by submit.sh):
       "git_commit":    "<sha>",
       "git_dirty":     false,
       "scope":         ["ext_compare", "polar_family"],
-      "purpose":       "E2: AdaMuon-faithful + polar-product geometry"
+      "purpose":       "E2: AdaMuon-faithful + polar-product geometry",
+      "data_pipeline_version": "packed_v1"
     }
+
+The `data_pipeline_version` field marks which data path produced the runs:
+
+  - "unpacked_v0": legacy DataCollatorForLanguageModeling, dynamic shapes,
+                   no prompt-mask, full-text loss. All runs prior to
+                   2026-05-08 are this version (backfilled automatically
+                   by `scripts/data/backfill_pipeline_version.py`).
+  - "packed_v1":   sequence-packed train side, pad-to-max eval side,
+                   prompt-masked loss. New default from 2026-05-08.
+
+Numbers from different versions are NOT directly comparable: prompt-mask
+changes the loss objective; packing changes per-step token density. Use
+`load_runs(where={"data_pipeline_version": "packed_v1"})` to filter.
 
 Loading: ``lora_playground.loader.load_runs(where=...)`` — predicate-based,
 no scope strings. To remove an old sweep from analysis, delete its log dir.
