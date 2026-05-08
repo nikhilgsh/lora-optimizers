@@ -46,6 +46,8 @@ import torch
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM
 
+from lora_playground.data import build_block_diagonal_causal_mask
+from lora_playground.mfu import compute_mfu, count_total_params, device_peak_tflops
 from lora_playground.optim import build_optimizer, OPTIMIZER_CHOICES
 from lora_playground.utils import collect_lora_pairs
 
@@ -65,10 +67,39 @@ COUPLED_CORE_OPTIMIZERS = [
 DEFAULT_OPTIMIZERS = ["adamw"] + GRAM_PRECOND_OPTIMIZERS + COUPLED_CORE_OPTIMIZERS
 
 
+def _apply_liger(model_name: str, fused_linear_ce: bool = False) -> str | None:
+    """Family-dispatch Liger Kernel patches. Must be called BEFORE from_pretrained.
+    fused_linear_ce: enable FusedLinearCrossEntropy (off by default in Liger;
+    bigger memory savings when on, but requires the model's loss path to be
+    the standard HF labels-in-forward pattern).
+    Returns the patched family name (or None if no match)."""
+    name_lower = model_name.lower()
+    kw = {"fused_linear_cross_entropy": fused_linear_ce}
+    if "olmo" in name_lower:
+        from liger_kernel.transformers import apply_liger_kernel_to_olmo2
+        apply_liger_kernel_to_olmo2(**kw)
+        return "olmo2"
+    if "llama" in name_lower:
+        from liger_kernel.transformers import apply_liger_kernel_to_llama
+        apply_liger_kernel_to_llama(**kw)
+        return "llama"
+    if "qwen3" in name_lower:
+        from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+        apply_liger_kernel_to_qwen3(**kw)
+        return "qwen3"
+    if "qwen2" in name_lower:
+        from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+        apply_liger_kernel_to_qwen2(**kw)
+        return "qwen2"
+    raise ValueError(f"--use_liger: no Liger family matches model_name={model_name!r}")
+
+
 def build_model(model_name: str, lora_r: int, lora_alpha: int, target_modules: str,
                 dtype: torch.dtype, device: torch.device,
                 attn_implementation: str | None = None,
-                compile_mode: str | None = None):
+                compile_mode: str | None = None,
+                use_liger: bool = False, liger_flce: bool = False):
+    liger_family = _apply_liger(model_name, fused_linear_ce=liger_flce) if use_liger else None
     kwargs = {"dtype": dtype}
     if attn_implementation:
         kwargs["attn_implementation"] = attn_implementation
@@ -86,17 +117,50 @@ def build_model(model_name: str, lora_r: int, lora_alpha: int, target_modules: s
     model.to(device)
     if compile_mode:
         model = torch.compile(model, mode=compile_mode)
-    return model
+    return model, liger_family
 
 
 def make_batch(model, batch_size: int, seq_len: int, device: torch.device,
-               generator: torch.Generator):
-    """Random token-ID batch. Vocab size from model config."""
+               generator: torch.Generator,
+               *, data_pipeline_version: str = "unpacked_v0",
+               n_docs_per_slot: int = 3):
+    """Random token-ID batch. Vocab size from model config.
+
+    `data_pipeline_version="packed_v1"` simulates a production packed batch:
+    `n_docs_per_slot` equal-length docs per slot, per-doc position_ids reset,
+    4D block-diagonal causal SDPA mask. The 4D mask path is what the
+    production train.py actually runs under packed_v1, so timing it here
+    captures the additional kernel cost (vs the implicit 2D causal mask
+    `unpacked_v0` would use).
+    """
     vocab_size = model.config.vocab_size
     input_ids = torch.randint(0, vocab_size, (batch_size, seq_len),
                               device=device, generator=generator)
-    # Causal LM: labels = input_ids (same shape).
-    return {"input_ids": input_ids, "labels": input_ids}
+    if data_pipeline_version == "unpacked_v0":
+        return {"input_ids": input_ids, "labels": input_ids}
+    if data_pipeline_version != "packed_v1":
+        raise ValueError(f"unknown data_pipeline_version: {data_pipeline_version}")
+    # Synthetic packed slot: split seq_len into n_docs_per_slot equal chunks.
+    n_docs = max(1, n_docs_per_slot)
+    base = seq_len // n_docs
+    rem = seq_len - base * n_docs
+    doc_lens = [base + (1 if i < rem else 0) for i in range(n_docs)]
+    pos: list[int] = []
+    for L in doc_lens:
+        pos.extend(range(L))
+    position_ids = (torch.tensor(pos, device=device, dtype=torch.long)
+                    .unsqueeze(0).expand(batch_size, -1).contiguous())
+    # Mask dtype must match SDPA's expectation. bf16 model → bf16 mask.
+    param_dtype = next(model.parameters()).dtype
+    mask_dtype = param_dtype if param_dtype.is_floating_point else torch.float32
+    mask_1 = build_block_diagonal_causal_mask(doc_lens, seq_len, mask_dtype, device)
+    attention_mask = mask_1.expand(batch_size, 1, seq_len, seq_len).contiguous()
+    return {
+        "input_ids": input_ids,
+        "labels": input_ids,
+        "position_ids": position_ids,
+        "attention_mask": attention_mask,
+    }
 
 
 def time_full_step(model, optimizer, batch, n_warmup: int, n_reps: int,
@@ -212,17 +276,42 @@ def parse_args():
                              "n_cycles is interpreted as a flat n_reps.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--attn_implementation", default=None,
-                        choices=[None, "eager", "sdpa", "flash_attention_2"],
+                        choices=[None, "eager", "sdpa", "flash_attention_2",
+                                 "flash_attention_4"],
                         help="Pass-through to AutoModelForCausalLM.from_pretrained. "
                              "None = HF default. 'flash_attention_2' requires the "
-                             "flash-attn package and a supported model.")
+                             "flash-attn package and a supported model. "
+                             "'flash_attention_4' requires Hopper/Blackwell, "
+                             "transformers >=5, and flash-attn-4 (or kernels-hub).")
     parser.add_argument("--compile", dest="compile_mode", nargs="?",
                         const="default", default=None,
                         choices=[None, "default", "reduce-overhead", "max-autotune"],
                         help="Apply torch.compile after PEFT wrap. Bare --compile "
                              "uses mode='default'. Omit for eager.")
+    parser.add_argument("--use_liger", action="store_true",
+                        help="Apply Liger Kernel patches (RMSNorm/MLP/RoPE/CE fusion) "
+                             "to the base model BEFORE from_pretrained. Family-dispatched "
+                             "from --model_name. Requires liger-kernel package.")
+    parser.add_argument("--liger_flce", action="store_true",
+                        help="With --use_liger, also enable FusedLinearCrossEntropy "
+                             "(off in Liger by default). Bigger memory savings; requires "
+                             "the model's loss path to use the standard HF labels-in-forward.")
     parser.add_argument("--out", default=None,
                         help="JSONL output path. If omitted, prints to stdout only.")
+    parser.add_argument(
+        "--data_pipeline_version",
+        choices=["packed_v1", "unpacked_v0"],
+        default="packed_v1",
+        help="Synthetic batch shape. packed_v1 emits a 4D block-diagonal "
+             "SDPA mask + per-doc position_ids reset; unpacked_v0 emits "
+             "the legacy implicit-causal 2D path. Default packed_v1 (the "
+             "new production path).",
+    )
+    parser.add_argument(
+        "--n_docs_per_slot", type=int, default=3,
+        help="packed_v1 only: number of equal-length docs per packed slot. "
+             "3 reflects Magicoder ~663-token avg at seq=2048.",
+    )
     return parser.parse_args()
 
 
@@ -236,11 +325,16 @@ def main():
 
     print(f"# Building model {args.model_name} with lora_r={args.lora_r}, "
           f"target_modules={args.target_modules}, dtype={dtype}, "
-          f"attn={args.attn_implementation}, compile={args.compile_mode}", flush=True)
-    model = build_model(args.model_name, args.lora_r, args.lora_alpha,
-                        args.target_modules, dtype, device,
-                        attn_implementation=args.attn_implementation,
-                        compile_mode=args.compile_mode)
+          f"attn={args.attn_implementation}, compile={args.compile_mode}, "
+          f"liger={args.use_liger}", flush=True)
+    model, liger_family = build_model(
+        args.model_name, args.lora_r, args.lora_alpha,
+        args.target_modules, dtype, device,
+        attn_implementation=args.attn_implementation,
+        compile_mode=args.compile_mode,
+        use_liger=args.use_liger,
+        liger_flce=args.liger_flce,
+    )
     # Resolved attn impl for the loaded base model (HF picks default if None).
     base_for_cfg = model.base_model.model if hasattr(model, "base_model") else model
     resolved_attn = getattr(base_for_cfg.config, "_attn_implementation",
@@ -252,10 +346,27 @@ def main():
     print(f"# {n_pairs} LoRA pairs, {n_lora_params:,} LoRA params", flush=True)
 
     gen = torch.Generator(device=device).manual_seed(args.seed)
-    batch = make_batch(model, args.batch_size, args.seq_len, device, gen)
+    batch = make_batch(
+        model, args.batch_size, args.seq_len, device, gen,
+        data_pipeline_version=args.data_pipeline_version,
+        n_docs_per_slot=args.n_docs_per_slot,
+    )
     print(f"# batch_size={args.batch_size}, seq_len={args.seq_len}, "
           f"grad_accum_steps={args.grad_accum_steps} "
-          f"(effective batch = {args.batch_size * args.grad_accum_steps})", flush=True)
+          f"(effective batch = {args.batch_size * args.grad_accum_steps}) "
+          f"data_pipeline_version={args.data_pipeline_version}", flush=True)
+
+    # MFU scaffold: 6·N·tokens_per_step / (mean_step_sec × peak_tflops_dense).
+    # tokens_per_step under packed_v1 is the full slot (signal density 100%);
+    # under unpacked_v0 it's also batch×seq×accum here because the synthetic
+    # bench uses fixed-shape random tokens — production unpacked_v0 has lower
+    # effective signal density, so this MFU is an UPPER bound for the
+    # unpacked path, an honest number for the packed path.
+    n_total_params = count_total_params(model)
+    tokens_per_step = args.batch_size * args.seq_len * args.grad_accum_steps
+    peak_tflops = device_peak_tflops() if device.type == "cuda" else None
+    print(f"# n_total_params={n_total_params:,} tokens_per_step={tokens_per_step:,} "
+          f"peak_tflops_dense={peak_tflops}", flush=True)
 
     out_path = Path(args.out) if args.out else None
     if out_path is not None:
@@ -270,14 +381,18 @@ def main():
         "adam-polar-product-lora-coupled-endrms",
         "adam-polar-product-lora-coupled-exact-chord",
         "adam-polar-product-lora-coupled-spectral-chord",
+        "adam-polar-product-lora-coupled-spectral-chord-tight",
         "adamuon-polar-product-lora",
     }
     print(f"# {'optimizer':<32} {'method':>7} {'K':>4} {'fwd_ms':>8} {'bwd_ms':>8} "
-          f"{'opt_ms':>8} {'zero_ms':>8} {'total_ms':>9} {'×AdamW':>8}",
+          f"{'opt_ms':>8} {'zero_ms':>8} {'total_ms':>9} {'×AdamW':>8} "
+          f"{'MFU':>6}",
           flush=True)
     print(f"#   fwd/bwd are summed across grad_accum_steps microbatches.", flush=True)
     print(f"#   opt is optimizer.step() only. zero is optimizer.zero_grad().", flush=True)
     print(f"#   total = fwd + bwd + opt + zero. ×AdamW = total / AdamW(K=1) total.", flush=True)
+    print(f"#   MFU = 6·N·tokens_per_step / (total_sec × peak_TFLOPS_dense). "
+          f"None on unknown GPU.", flush=True)
     adamw_mean = None
     per_optimizer_k1_mean = {}
     try:
@@ -329,10 +444,18 @@ def main():
                     speedup_vs_k1 = (k1_mean / mean_amortized) if k1_mean else float("nan")
                     ratio_vs_adamw = (mean_amortized / adamw_mean) if adamw_mean else float("nan")
 
+                    mfu = compute_mfu(
+                        n_params=n_total_params,
+                        tokens_per_step=tokens_per_step,
+                        step_time_sec=mean_amortized,
+                        peak_tflops=peak_tflops,
+                    ) if peak_tflops is not None else None
+                    mfu_str = f"{mfu*100:>5.1f}%" if mfu is not None else "  --  "
                     print(f"  {opt_name:<32} {method:>7} {K:>4} "
                           f"{fwd_mean*1000:>8.1f} {bwd_mean*1000:>8.1f} "
                           f"{opt_mean_phase*1000:>8.1f} {zero_mean*1000:>8.1f} "
-                          f"{mean_amortized*1000:>9.1f} {ratio_vs_adamw:>7.2f}×",
+                          f"{mean_amortized*1000:>9.1f} {ratio_vs_adamw:>7.2f}× "
+                          f"{mfu_str:>6}",
                           flush=True)
 
                     rec = {
@@ -364,9 +487,20 @@ def main():
                         "peak_memory_mb": peak_mb,
                         "attn_implementation": resolved_attn,
                         "compile_mode": args.compile_mode,
+                        "liger_family": liger_family,
+                        "liger_flce": args.liger_flce if args.use_liger else None,
                         "batch_size": args.batch_size,
                         "seq_len": args.seq_len,
                         "grad_accum_steps": args.grad_accum_steps,
+                        "data_pipeline_version": args.data_pipeline_version,
+                        "n_docs_per_slot": (
+                            args.n_docs_per_slot
+                            if args.data_pipeline_version == "packed_v1" else None
+                        ),
+                        "mfu": mfu,
+                        "mfu_peak_tflops": peak_tflops,
+                        "mfu_n_params": n_total_params,
+                        "tokens_per_step": tokens_per_step,
                     }
                     if out_fh is not None:
                         out_fh.write(json.dumps(rec, sort_keys=True) + "\n")
