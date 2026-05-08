@@ -35,34 +35,6 @@ def short_optim(s: str) -> str:
     return s
 
 
-def correct_lora_mfu(record: dict) -> float | None:
-    """**TEMPORARY** — return MFU under the LoRA 4N formula, correcting
-    old records that used 6N.
-
-    The bench script before commit <fix> wrote `mfu` computed with
-    `flops_per_token_per_param=6.0` (full-FT default) even though the
-    bench builds a LoRA model — that's a 1.5× overestimate. New records
-    carry `mfu_flops_per_token_per_param` so the correction is
-    deterministic; old records lack the field and are assumed to be 6N.
-
-    **Remove this helper once the in-flight bench JSONLs (those without
-    `mfu_flops_per_token_per_param`) are no longer load-bearing**, e.g.
-    after the next reprofile rerun under the new code. At that point
-    the main loop can read `record['mfu']` directly.
-    """
-    mfu = record.get("mfu")
-    if mfu is None:
-        return None
-    multiplier = record.get("mfu_flops_per_token_per_param")
-    if multiplier is None:
-        # Old record. Bench is always LoRA → correct factor is 4.0.
-        return mfu * (4.0 / 6.0)
-    if multiplier == 4.0:
-        return mfu
-    # Anything else (e.g. someone bench'd a full-FT mode at 6N): trust it.
-    return mfu
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -116,7 +88,7 @@ def main() -> int:
     rows.sort(key=sort_key)
     for r in rows:
         tier = TIER_FROM_MODEL.get(r["model_name"], r["model_name"])
-        mfu = correct_lora_mfu(r)
+        mfu = r.get("mfu")
         mfu_str = f"{mfu*100:.1f}%" if mfu is not None else "—"
         print(
             f"| {tier:<4} | "
