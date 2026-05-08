@@ -2,6 +2,19 @@
 
 WARNING STALE
 
+> **All numbers below are at `data_pipeline_version: unpacked_v0`** —
+> the legacy `DataCollatorForLanguageModeling` path with full-text loss
+> (no prompt mask), dynamic shapes, no sequence packing. As of
+> 2026-05-08 the project default flipped to `packed_v1` (sequence
+> packing on train, pad-to-max on eval, prompt-masked loss). Eval-loss
+> values under packed_v1 will shift even at the same optimizer + lr +
+> seed because the loss objective itself changes (response-only CE vs
+> full-text CE). The AdamW noise floor needs re-anchoring under
+> packed_v1 before any optimizer Δ on this leaderboard transfers.
+> Filter analyses with
+> `load_runs(where={"data_pipeline_version": "unpacked_v0"})` (or
+> `"packed_v1"`); see `lora_playground/loader.py::_enrich_cfg`.
+
 ## TL;DR
 
 Across the LoRA-optimizer search on OLMo-2-1B + Magicoder (2k steps, single seed, canonical horizon), the **headline result** is `adam-polar-product-lora-coupled` with `picard_iters` $k=2$ at $r=64$, $\eta=3\mathrm{e}{-4}$, **eval loss 0.7382** ($\Delta = -0.0168$ vs AdamW $r=64$). At $r=16$ the same family's uncoupled $k=1$ variant gives **0.7546** ($\Delta = -0.0033$ vs AdamW $r=16$). The polar-product family is the only one that strictly beats AdamW at both ranks, but the optimal $k$ is rank-dependent ($k=1$ at $r=16$, $k=2$ at $r=64$); no single config wins at both. See [glossary](glossary.md) for pseudocode of every optimizer named below (LoRA pair, Hybrid Picard, `picard_iters`, polar block solve, spectral preconditioner, Adam covector, RMS-align, AdaMuon-faithful, LoRA+ multiplier).
