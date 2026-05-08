@@ -629,27 +629,39 @@ def main():
     # or less. Multi-epoch sweeps mix capacity-to-fit-the-subset effects with
     # per-step optimization quality, which makes optimizer comparisons
     # uninterpretable. (See: 8k-step runs invalidated 2026-05-04 because they
-    # ran ~3.5 epochs over the 32k-sample subset.) Compute the total samples
-    # the training loop will consume and refuse to start if it exceeds the
-    # dataset. Override with --allow_multi_epoch only for explicit experiments.
-    # Global samples consumed = max_steps × per-rank batch × grad_accum × world_size.
-    # Under DDP, each rank sees a disjoint dataset shard of size
-    # len(dataset) / world_size, but the GLOBAL pass counter is still
-    # global_batch_size × max_steps / len(dataset) — what matters for the
-    # 1-pass invariant.
-    samples_consumed = (
+    # ran ~3.5 epochs over the 32k-sample subset.) Refuse to start if the
+    # global step counter would consume more dataset units than exist.
+    # Override with --allow_multi_epoch only for explicit experiments.
+    #
+    # Under packed_v1, len(train_dataset) is the number of PACKED SLOTS, not
+    # docs. Each doc lives in exactly one slot, so single-pass-at-slot-level
+    # is single-pass-at-doc-level — the math is the same, only the unit
+    # changes. The error wording adapts so the reported number matches the
+    # underlying counter.
+    units_consumed = (
         args.max_steps * args.batch_size * args.grad_accum_steps * world_size
     )
-    if samples_consumed > len(train_dataset) and not getattr(args, "allow_multi_epoch", False):
-        raise ValueError(
+    unit_name = "slot" if args.data_pipeline_version == "packed_v1" else "sample"
+    if units_consumed > len(train_dataset) and not getattr(args, "allow_multi_epoch", False):
+        n_units = len(train_dataset)
+        msg = (
             f"Multi-epoch training blocked: max_steps × batch_size × grad_accum × world_size "
             f"= {args.max_steps} × {args.batch_size} × {args.grad_accum_steps} × {world_size} = "
-            f"{samples_consumed:,} samples, but train dataset has only "
-            f"{len(train_dataset):,} samples "
-            f"(~{samples_consumed / len(train_dataset):.2f} epochs). "
-            f"Either reduce --max_steps, increase --max_train_samples / dataset "
-            f"size, or pass --allow_multi_epoch if multi-epoch is the intent."
+            f"{units_consumed:,} {unit_name}s, but train dataset has only "
+            f"{n_units:,} {unit_name}s "
+            f"(~{units_consumed / max(n_units, 1):.2f} epochs). "
         )
+        if args.data_pipeline_version == "packed_v1" and docs_per_slot_mean is not None:
+            msg += (
+                f"Note: under packed_v1, {n_units:,} slots ≈ "
+                f"{int(n_units * docs_per_slot_mean):,} docs (mean "
+                f"{docs_per_slot_mean:.2f} docs/slot). "
+            )
+        msg += (
+            "Either reduce --max_steps, increase --max_train_samples / dataset "
+            "size, or pass --allow_multi_epoch if multi-epoch is the intent."
+        )
+        raise ValueError(msg)
 
     # Collators: packed_v1 uses PackingCollator (train, pre-packed slots)
     # + PadToMaxCollator (eval, per-doc pad-to-max for static shape under
