@@ -370,40 +370,82 @@ r=64 (~3%) but a ~10% tax at r=256. The optimizer.step ms column
   ~10% at r=256. No regression from the data-path change — overhead
   is dominated by the higham preconditioner, not data.
 
-### DDP-on-Blackwell — known-broken, not for campaign use (2026-05-08)
+### DDP-on-Blackwell — NCCL 2.26.2 broken, fixed by upgrade to 2.27.7 (2026-05-08)
+
+**Resolution:** Upgrading `nvidia-nccl-cu12` from `2.26.2` → `2.27.7`
+fully fixes the Blackwell DDP path. `pip install --upgrade --no-deps
+--no-cache-dir nvidia-nccl-cu12==2.27.7` (run by user). torch 2.7.0+cu128
+loads the new `libnccl.so.2` from `site-packages/nvidia/nccl/lib/`
+without rebuild — the binding is dynamic, NCCL 2.x is ABI-stable. Note:
+`torch.cuda.nccl.version()` still returns `(2, 26, 2)` because that's
+the *compile-time* constant baked into torch 2.7.0; the runtime version
+NCCL itself prints (`NCCL version 2.27.7+cuda12.9`) is what's actually
+loaded and used.
+
+**Verified post-upgrade** (workergpu181, 2 GPUs):
+- gpt2 (124M) + DDP + fwd+bwd: ✓
+- OLMo-2 1B + DDP + fwd+bwd: ✓
+- OLMo-2 1B + PEFT LoRA + packed_v1 + compile + DDP (full bench path): ✓ MFU 47%
+
+The bisection below documents the broken-state behavior on NCCL 2.26.2
+for posterity. If the env's NCCL is ever pinned back, this section is
+the regression-test recipe.
+
+#### Pre-fix bisection (NCCL 2.26.2, kept for reference)
 
 A 4-GPU Blackwell DDP bench (SLURM job 6364791, then interactive
 diagnosis on workergpu181) reproducibly fails at the **first NCCL
-collective during DDP construction**, regardless of `--compile`,
+operation after DDP wrap**, regardless of `--compile`,
 `--data_pipeline_version`, or NCCL workarounds. Failure mode: CUDA
-illegal-memory-access in `dist._broadcast_coalesced` /
-`dist.Reducer(...)`, watchdog thread terminates all ranks with
-SIGABRT.
+illegal-memory-access reported by NCCL's watchdog thread (sometimes
+in `dist._broadcast_coalesced`, sometimes in the next CUDA op after
+DDP wrap — DDP construction silently corrupts device state and the
+crash surfaces at the next CUDA call).
 
 **Bisected via interactive smokes** (workergpu181, 2 GPUs):
-- Pure NCCL `all_reduce` on a 1-element tensor: ✓ works
-- Tiny `nn.Linear(64,64)` → DDP wrap: ✓ works
-- HF `AutoModelForCausalLM` (OLMo-2 1B) → DDP wrap, no PEFT:
-  ✗ default → ✓ with `NCCL_P2P_DISABLE=1`
-- HF + PEFT LoRA → DDP wrap: ✗ even with `NCCL_P2P_DISABLE=1` and
-  `find_unused_parameters=True`
 
-So plain-HF DDP works on Blackwell with the P2P workaround; **PEFT +
-DDP** is the broken combination at this software stack
-(torch 2.7.0+cu128, NCCL 2.26.2+cuda12.2, NVIDIA driver 580.142,
-PyTorch nightly probably required for a fix). Existing A100 DDP smoke
-documented under "DDP wiring verification" still works.
+| stage | result |
+|---|---|
+| Pure NCCL `all_reduce` on 1-element tensor | ✓ works |
+| `nn.Linear(64,64) → DDP` (NCCL) | ✓ works |
+| `gpt2` (124M) `→ DDP` (NCCL) | ✗ |
+| `OLMo-2 1B → DDP` (NCCL) | ✗ |
+| `OLMo-2 1B + PEFT LoRA → DDP` (NCCL) | ✗ |
+| `gpt2 → DDP` (**gloo**) | **✓ works** |
+| `OLMo-2 1B → DDP` (**gloo**) | **✓ works** |
 
-Decision: **drop DDP from the Phase B/C plan.** Single-GPU per cell on
-Blackwell+packed_v1 fits all four campaign cells in a 24h SLURM wall
-(verdict table above), and parallel-seeds beats DDP for sweep
-workloads anyway. The bench script's DDP support
-(`scripts/bench/bench_optimizer_step.py`, commit 7ba50a2) is left in
-place — it works on A100 — but flagged as Blackwell-incompatible until
-the upstream PyTorch / NCCL / PEFT stack updates.
+**Workarounds tried that did NOT help:**
+- `NCCL_P2P_DISABLE=1` (disable peer-to-peer)
+- `NCCL_IB_DISABLE=1` (disable InfiniBand)
+- `NCCL_CUMEM_ENABLE=0` (disable cuMem pool)
+- `find_unused_parameters=True`
+- `broadcast_buffers=False, gradient_as_bucket_view=True`
+- `device_id=device` in `init_process_group` (PyTorch 2.7-style)
 
-If a future workload needs DDP on Blackwell, retry with newer torch
-(≥ 2.8 nightly) + NCCL (≥ 2.27); revisit the bisection above.
+**Root cause: NCCL 2.26.2's sm_120 (Blackwell) path is broken in this
+software stack** (torch 2.7.0+cu128, NCCL 2.26.2+cuda12.2, NVIDIA
+driver 580.142). The bug doesn't depend on HF model size, on PEFT, or
+on any of our code — any HF transformer + DDP + NCCL on this Blackwell
+hits it. A100's NCCL path works fine.
+
+**Workaround: switch DDP backend to `gloo` on Blackwell.** Gloo stages
+allreduce through CPU memory, so it's slower than NCCL would be — but
+for LoRA training the cost is minimal because only LoRA gradients are
+allreduced (~10–100 MB/step, vs. multi-GB for full FT). Estimated
+overhead: a few percent on per-step wall under packed_v1+LoRA. Activate
+via `init_process_group("gloo")`. NCCL stays the right choice on A100.
+
+Decision: **drop DDP from the Phase B/C plan** anyway. Single-GPU per
+cell on Blackwell+packed_v1 fits all four campaign cells in 24h
+(verdict table above), and parallel single-GPU seeds beats DDP-within-
+a-cell for sweep workloads. The gloo workaround is documented for
+future workloads that need DDP on Blackwell; until then the bench's
+DDP code (`scripts/bench/bench_optimizer_step.py`, commit 7ba50a2)
+works on A100 unchanged and serves as a regression test for when the
+upstream NCCL/PyTorch stack updates.
+
+When NCCL ≥ 2.27 (or torch ≥ 2.8) is available, retry the bisection
+above before accepting gloo as the long-term answer.
 
 ### Sanity job (concurrent)
 
