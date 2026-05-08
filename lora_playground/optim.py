@@ -3050,14 +3050,30 @@ class AdamPolarProductLoRA(Optimizer):
                             # ρ was computed once per step (Spectron loose
                             # form: ρ=lr/(s+1); tight form: exact root of
                             # ρ²+sρ-lr=0). Same rescale shape either way.
-                            # σ_max(geo) shifts each Picard iter (cross-coupling
-                            # changes the polar input), so cold-start n_iters=8.
+                            # σ_max(geo_A), σ_max(geo_B) via batched eigh on
+                            # the r×r Gram. Replaces the prior 8-iter
+                            # cold-start power iteration which under-estimated
+                            # σ_max(geo_A) by 28-63% at r=64 (Stage-0 F2; see
+                            # docs/notes/polar_product/tight_chord_diagnostics_stage0.md).
+                            # The polar-map spectrum is near-flat so power-iter
+                            # convergence (σ_2/σ_1)^16 is slow; exact eigh on
+                            # r×r is ~150 μs/pair on A100 (~1% step overhead).
                             geo_A = SB_half_inv_k @ P_A
                             geo_B = P_B @ SA_half_inv_k
-                            op_geoA, _ = _sigma_max_power_iter_batched(
-                                geo_A, n_iters=8)
-                            op_geoB, _ = _sigma_max_power_iter_batched(
-                                geo_B, n_iters=8)
+                            geoA_f = geo_A.float()
+                            geoB_f = geo_B.float()
+                            if geoA_f.shape[-2] <= geoA_f.shape[-1]:
+                                gram_A_b = geoA_f @ geoA_f.transpose(-1, -2)
+                            else:
+                                gram_A_b = geoA_f.transpose(-1, -2) @ geoA_f
+                            if geoB_f.shape[-2] <= geoB_f.shape[-1]:
+                                gram_B_b = geoB_f @ geoB_f.transpose(-1, -2)
+                            else:
+                                gram_B_b = geoB_f.transpose(-1, -2) @ geoB_f
+                            op_geoA = (torch.linalg.eigvalsh(gram_A_b)
+                                       .clamp_min(0.0).max(dim=-1).values.sqrt())
+                            op_geoB = (torch.linalg.eigvalsh(gram_B_b)
+                                       .clamp_min(0.0).max(dim=-1).values.sqrt())
                             op_geoA = (op_geoA + 1e-30).unsqueeze(-1).unsqueeze(-1)
                             op_geoB = (op_geoB + 1e-30).unsqueeze(-1).unsqueeze(-1)
                             rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
@@ -3227,15 +3243,30 @@ class AdamPolarProductLoRA(Optimizer):
                     # direction to operator norm ρ. ρ enforces the
                     # chord-spectral trust region ‖ΔW‖_op ≤ lr (loose form
                     # uses Spectron's ρ=lr/(s+1); tight form uses the exact
-                    # quadratic root). ρ is precomputed outside the Picard
-                    # loop (A, B don't change within an optimizer step).
-                    # σ_max(geo_A), σ_max(geo_B) DO change each Picard iter and
-                    # have no obvious warm-start (geo direction shifts as the
-                    # cross-coupling correction shifts), so we use n_iters=8
-                    # cold-start which gives ~5% p95 accuracy on Gaussian-like
-                    # spectra.
-                    op_geoA, _ = _sigma_max_power_iter(geo_A, n_iters=8)
-                    op_geoB, _ = _sigma_max_power_iter(geo_B, n_iters=8)
+                    # quadratic root). σ_max(geo_A), σ_max(geo_B) via exact
+                    # eigh on the r×r Gram (geo · geoᵀ on the smaller side).
+                    # Replaces the prior 8-iter cold-start power iteration
+                    # which under-estimated σ_max(geo_A) by 28-63% at r=64
+                    # because polar-map output spectra are near-flat
+                    # (σ_2/σ_1 → 1, slow geometric convergence). Under-estimate
+                    # caused ‖dA‖_op > ρ → ‖ΔW‖_op > lr → safety bound breach
+                    # (Stage-0 finding F2; see
+                    # docs/notes/polar_product/tight_chord_diagnostics_stage0.md).
+                    # Eigh on r×r is deterministic, exact, ~150 μs/pair on A100
+                    # (~1% step overhead at r=64). LoRA r=16/64 is the natural
+                    # regime for this trade.
+                    geoA_f = geo_A.float()
+                    geoB_f = geo_B.float()
+                    if geoA_f.shape[0] <= geoA_f.shape[1]:
+                        gram_A = geoA_f @ geoA_f.transpose(-1, -2)
+                    else:
+                        gram_A = geoA_f.transpose(-1, -2) @ geoA_f
+                    if geoB_f.shape[0] <= geoB_f.shape[1]:
+                        gram_B = geoB_f @ geoB_f.transpose(-1, -2)
+                    else:
+                        gram_B = geoB_f.transpose(-1, -2) @ geoB_f
+                    op_geoA = torch.linalg.eigvalsh(gram_A).clamp_min(0.0).max().sqrt()
+                    op_geoB = torch.linalg.eigvalsh(gram_B).clamp_min(0.0).max().sqrt()
                     op_geoA = op_geoA + 1e-30
                     op_geoB = op_geoB + 1e-30
                     dA = -rho * geo_A / op_geoA
