@@ -2490,7 +2490,7 @@ class AdamPolarProductLoRA(Optimizer):
                  lora_plus_multiplier=1.0,
                  log_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=1,
-                 precond_method="eigh", higham_iters=10,
+                 precond_method="higham", higham_iters=10,
                  picard_iters=1, end_rms_align=False, picard_alpha=1.0,
                  operator_type="polar",
                  polar_norm_dir="frob",
