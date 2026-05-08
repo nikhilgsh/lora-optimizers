@@ -9,7 +9,9 @@ import time
 import torch
 from datasets import DatasetDict, load_dataset, load_from_disk
 from peft import LoraConfig, get_peft_model
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -18,12 +20,53 @@ from transformers import (
     set_seed,
 )
 
+from .data import PackingCollator, PadToMaxCollator, pack_documents
+from .distributed import (
+    all_reduce_mean,
+    cleanup as dist_cleanup,
+    get_rank,
+    get_world_size,
+    init_distributed,
+    is_main,
+)
+from .mfu import compute_mfu, count_total_params, device_peak_tflops
 from .optim import OPTIMIZER_CHOICES, build_optimizer, optimizer_config_dict
 from .ucv_layer import inject_ucv_adapters
 from .utils import collect_dense_target_weights, freeze_all_except_targets
 
 
 TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore", "ucv")
+DATA_PIPELINE_VERSIONS = ("packed_v1", "unpacked_v0")
+
+
+def format_example_with_boundary(example):
+    """Return (prompt_text, response_text). Mirrors `format_example` but
+    keeps the prompt/response boundary explicit so the tokenizer can
+    record `prompt_len` for prompt-masking under packed_v1."""
+    if "prompt" in example and "completion" in example:
+        return example["prompt"].strip() + "\n", example["completion"].strip()
+    if "instruction" in example and "response" in example:
+        return (
+            f"Instruction:\n{example['instruction']}\n\nResponse:\n",
+            example["response"],
+        )
+    if "prompt" in example and "response" in example:
+        return example["prompt"].strip() + "\n", example["response"].strip()
+    if {"instruction", "input", "output"}.issubset(example):
+        pieces = [f"Instruction:\n{example['instruction']}"]
+        if str(example["input"]).strip():
+            pieces.append(f"Input:\n{example['input']}")
+        prompt = "\n\n".join(pieces) + "\n\nResponse:\n"
+        return prompt, example["output"]
+    # No clean boundary available — treat whole text as response (no prompt
+    # mask). Matches the LM-style loss; downstream cfg records this as a
+    # "no_boundary" case so analysis can flag it.
+    if "prompt" in example and isinstance(example["prompt"], str):
+        return "", example["prompt"]
+    for key in ("text", "content", "code"):
+        if key in example and isinstance(example[key], str):
+            return "", example[key]
+    return "", "\n".join(f"{k}: {v}" for k, v in example.items() if isinstance(v, str))
 
 
 def format_example(example):
@@ -45,6 +88,17 @@ def format_example(example):
         if key in example and isinstance(example[key], str):
             return example[key]
     return "\n".join(f"{k}: {v}" for k, v in example.items() if isinstance(v, str))
+
+
+def _resolve_auto_attn() -> str:
+    if not torch.cuda.is_available():
+        return "sdpa"
+    major = torch.cuda.get_device_capability()[0]
+    if major >= 9:
+        return "flash_attention_4"
+    if major == 8:
+        return "flash_attention_2"
+    return "sdpa"
 
 
 def parse_target_modules(value):
@@ -91,6 +145,9 @@ def load_splits(args):
 
 
 def tokenize_splits(train, eval_dataset, tokenizer, args):
+    """Legacy unpacked_v0 tokenization. Emits a single `input_ids` column;
+    no prompt/response boundary tracked. Kept for back-compat with runs at
+    `--data_pipeline_version unpacked_v0`."""
     def add_text(batch):
         keys = list(batch.keys())
         rows = [
@@ -114,6 +171,72 @@ def tokenize_splits(train, eval_dataset, tokenizer, args):
     return train_tok, eval_tok
 
 
+def tokenize_splits_with_boundary(train, eval_dataset, tokenizer, args):
+    """packed_v1 tokenization. Emits `input_ids` (variable length, no
+    padding) plus `prompt_len` (int, # tokens to mask in `labels` so the
+    loss only sees response positions). Truncation is applied to the
+    response side; if the prompt alone exceeds `max_seq_length` the
+    document is dropped (rare on Magicoder; logged at end)."""
+
+    def tok(batch):
+        keys = list(batch.keys())
+        rows = [
+            {key: batch[key][index] for key in keys}
+            for index in range(len(batch[keys[0]]))
+        ]
+        out_ids: list[list[int]] = []
+        out_pl: list[int] = []
+        for row in rows:
+            prompt, response = format_example_with_boundary(row)
+            prompt_ids = tokenizer(
+                prompt, add_special_tokens=True
+            )["input_ids"] if prompt else []
+            response_ids = tokenizer(
+                response, add_special_tokens=False
+            )["input_ids"] if response else []
+            full = prompt_ids + response_ids
+            if len(full) > args.max_seq_length:
+                # Truncate from the response side. If even the prompt is
+                # too long, the doc has 0 response tokens and contributes
+                # 0 loss → effectively dropped. Capping prompt_len at the
+                # truncated length keeps `labels = -100` everywhere in that
+                # case (no garbage gradient).
+                full = full[: args.max_seq_length]
+            prompt_len = min(len(prompt_ids), len(full))
+            if len(full) == 0:
+                continue
+            out_ids.append(full)
+            out_pl.append(prompt_len)
+        return {"input_ids": out_ids, "prompt_len": out_pl}
+
+    train_tok = train.map(
+        tok, batched=True, remove_columns=train.column_names,
+        desc="Tokenizing train (with boundary)",
+    )
+    eval_tok = eval_dataset.map(
+        tok, batched=True, remove_columns=eval_dataset.column_names,
+        desc="Tokenizing eval (with boundary)",
+    )
+    return train_tok, eval_tok
+
+
+def pack_train_dataset(train_tok, seq_length: int, pad_token_id: int):
+    """Convert a per-doc tokenized HF Dataset into packed-slot rows.
+
+    Pulls input_ids + prompt_len for every doc, runs greedy first-fit
+    packing, returns a HF Dataset where each row is one packed slot
+    (input_ids, labels, position_ids, doc_lens, all length seq_length
+    except doc_lens which is variable).
+    """
+    from datasets import Dataset
+    docs = [
+        {"input_ids": row["input_ids"], "prompt_len": int(row["prompt_len"])}
+        for row in train_tok
+    ]
+    slots = pack_documents(docs, seq_length=seq_length, pad_token_id=pad_token_id)
+    return Dataset.from_list(slots)
+
+
 def batch_to_device(batch, device):
     return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
 
@@ -129,6 +252,9 @@ def cuda_sync():
 
 @torch.no_grad()
 def evaluate(model, dataloader, device):
+    """Held-out NLL. Under DDP, each rank evaluates its DistributedSampler
+    shard; the per-rank (loss-sum, token-count) pair is then all-reduced so
+    every rank returns the same global weighted mean."""
     model.eval()
     total_loss = 0.0
     total_tokens = 0
@@ -139,7 +265,10 @@ def evaluate(model, dataloader, device):
         total_loss += float(outputs.loss.detach()) * tokens
         total_tokens += tokens
     model.train()
-    return total_loss / max(total_tokens, 1)
+    # Pack into tensors so all_reduce_mean can do the global aggregation.
+    loss_t = torch.tensor(total_loss, device=device, dtype=torch.float64)
+    toks_t = torch.tensor(total_tokens, device=device, dtype=torch.float64)
+    return all_reduce_mean(loss_t, toks_t)
 
 
 def git_commit():
@@ -157,6 +286,11 @@ def git_commit():
 
 
 def log_event(payload):
+    """Emit JSON-line config/eval/train_step events. Rank-gated under DDP so
+    only rank 0 writes — the on-disk log stays single-stream, matching
+    single-GPU behavior."""
+    if not is_main():
+        return
     print(json.dumps(payload, sort_keys=True), flush=True)
 
 
@@ -175,6 +309,21 @@ def make_parser():
     parser.add_argument("--max_eval_samples", type=int, default=512)
     parser.add_argument("--eval_fraction", type=float, default=0.05)
     parser.add_argument("--data_dir", default=None, help="Pre-tokenized dataset dir (Arrow). Skips download + tokenization.")
+    parser.add_argument(
+        "--data_pipeline_version",
+        choices=DATA_PIPELINE_VERSIONS,
+        default="packed_v1",
+        help="Data pipeline. 'packed_v1' (default): train side packs "
+             "tokenized docs into static seq_length slots with doc-aware "
+             "SDPA mask + per-doc position_ids reset, eval pads each doc "
+             "to seq_length; prompt-masked loss (labels=-100 on prompt). "
+             "'unpacked_v0': legacy DataCollatorForLanguageModeling path "
+             "(dynamic shapes, no prompt mask, no doc-aware attention). "
+             "All pre-2026-05-08 logs are unpacked_v0; new runs default to "
+             "packed_v1. Boundary is recorded in the cfg event so the "
+             "loader can filter by version. See "
+             "docs/notes/polar_product/data_pipeline_followups.md.",
+    )
     parser.add_argument("--max_steps", type=int, default=500)
     parser.add_argument(
         "--allow_multi_epoch",
@@ -203,8 +352,22 @@ def make_parser():
              "tighter — useful for spotting magnitude-rule effects on "
              "training dynamics that average out at eval cadence.",
     )
-    parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--grad_accum_steps", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=2,
+                        help="Per-rank micro batch size. Under DDP, the global "
+                             "effective batch is batch_size × grad_accum_steps × "
+                             "world_size. Use --global_batch_size to derive this "
+                             "automatically from a single number.")
+    parser.add_argument("--grad_accum_steps", type=int, default=8,
+                        help="Per-rank gradient-accumulation micro-steps. Under "
+                             "DDP this is per-rank; see --global_batch_size.")
+    parser.add_argument("--global_batch_size", type=int, default=None,
+                        help="If set, derives per-rank --batch_size and "
+                             "--grad_accum_steps so that batch_size × "
+                             "grad_accum_steps × world_size == global_batch_size. "
+                             "Per-rank batch_size keeps its CLI value (used as "
+                             "the memory-fitting micro-batch); grad_accum_steps "
+                             "is overridden to match. Errors if the global value "
+                             "doesn't divide cleanly.")
     parser.add_argument("--max_seq_length", type=int, default=512)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
@@ -226,6 +389,24 @@ def make_parser():
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--compile_mode", default="default")
+    parser.add_argument("--attn_implementation", default="flash_attention_2",
+                        choices=["eager", "sdpa", "flash_attention_2",
+                                 "flash_attention_4", "auto"],
+                        help="Attention kernel for the base model. "
+                             "flash_attention_2 matches Schulman/Biderman recipes "
+                             "and is ~1.5-2x faster on Llama/Qwen than sdpa. "
+                             "flash_attention_4 (CuTeDSL) targets Hopper (sm_90) "
+                             "and Blackwell (sm_100+); requires transformers >=5 "
+                             "and the flash-attn-4 package (or kernels-hub fallback). "
+                             "'auto' picks FA4 on sm_90+, FA2 on sm_80, sdpa otherwise. "
+                             "Falls back through FA2 then sdpa if the requested "
+                             "backend is unavailable.")
+    parser.add_argument("--use_liger", action="store_true",
+                        help="Apply LinkedIn Liger Kernel patches (RMSNorm, MLP, "
+                             "RoPE, fused cross-entropy) to the base model BEFORE "
+                             "PEFT wrap. Reported 1.1-1.3x E2E speedup + 30%% "
+                             "memory savings on Llama-3.x. Requires liger-kernel "
+                             "package; family-dispatched from model_name.")
     parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--profile_steps", type=int, default=0)
     parser.add_argument("--profile_dir", default="runs/profiles")
@@ -273,11 +454,16 @@ def make_parser():
                              "behavior; K>1 reuses the cached preconditioner for K-1 steps after "
                              "each refresh, trading a small amount of staleness for a large step-time "
                              "speedup at high LoRA rank.")
-    parser.add_argument("--precond_method", choices=["eigh", "higham"], default="eigh",
+    parser.add_argument("--precond_method", choices=["eigh", "higham"], default="higham",
                         help="Method for computing S^{-1/2} in the polar-product optimizers. "
-                             "'eigh' is the reference (eigendecomp + diag-pow + reconstruct). "
-                             "'higham' uses Newton-Schulz iteration (matmul-only) — much faster "
-                             "at high LoRA rank because it avoids the eigh kernel-launch storm.")
+                             "'higham' (default) uses Newton-Schulz iteration (matmul-only) — much faster "
+                             "at high LoRA rank because it avoids the eigh kernel-launch storm. "
+                             "Validated against eigh on the loose-chord variant "
+                             "(profiling_a100_canonical_2026_05_04.md, 0 non_finite_Z events on 224k probes, "
+                             "trajectory matches eigh within 0.07σ). Tight-chord inherits the same precond "
+                             "machinery; verification cell pending. "
+                             "'eigh' is the reference path (eigendecomp + diag-pow + reconstruct), kept "
+                             "for sanity / equivalence checks.")
     parser.add_argument("--higham_iters", type=int, default=10,
                         help="Newton-Schulz iterations when --precond_method=higham. "
                              "10 is needed for κ ≈ 200 (the worst case observed for SB "
@@ -352,6 +538,33 @@ def main():
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     set_seed(args.seed)
 
+    # Initialize the distributed process group if launched under torchrun /
+    # SLURM with WORLD_SIZE > 1. No-op otherwise (single-GPU back-compat).
+    rank, world_size, local_rank = init_distributed()
+
+    # If --global_batch_size is set, derive grad_accum_steps so that
+    # batch_size × grad_accum × world_size == global_batch_size. The per-rank
+    # batch_size keeps its CLI value (sized to fit GPU memory); grad_accum is
+    # the lever we adjust to hit the target global batch.
+    if args.global_batch_size is not None:
+        denom = args.batch_size * world_size
+        if args.global_batch_size % denom != 0:
+            raise ValueError(
+                f"--global_batch_size {args.global_batch_size} is not divisible "
+                f"by per-rank batch_size {args.batch_size} × world_size "
+                f"{world_size} = {denom}. Adjust --batch_size or "
+                f"--global_batch_size so they divide cleanly."
+            )
+        derived_accum = args.global_batch_size // denom
+        if derived_accum < 1:
+            raise ValueError(
+                f"--global_batch_size {args.global_batch_size} is smaller than "
+                f"per-rank batch_size {args.batch_size} × world_size "
+                f"{world_size} = {denom}; cannot derive a positive "
+                f"grad_accum_steps."
+            )
+        args.grad_accum_steps = derived_accum
+
     if args.debug_higham_residual:
         from lora_playground import utils as _utils
         _utils.HIGHAM_DEBUG["enabled"] = True
@@ -360,6 +573,10 @@ def main():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         device = torch.device(args.device)
+    # Under DDP, pin to the LOCAL_RANK device. init_distributed() already
+    # called torch.cuda.set_device(local_rank); make `device` consistent.
+    if device.type == "cuda" and world_size > 1:
+        device = torch.device(f"cuda:{local_rank}")
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA device requested but torch.cuda.is_available() is false.")
     if device.type == "cuda" and not args.no_tf32:
@@ -378,7 +595,35 @@ def main():
         eval_dataset = load_from_disk(os.path.join(args.data_dir, "eval"))
     else:
         train_raw, eval_raw = load_splits(args)
-        train_dataset, eval_dataset = tokenize_splits(train_raw, eval_raw, tokenizer, args)
+        if args.data_pipeline_version == "packed_v1":
+            train_dataset, eval_dataset = tokenize_splits_with_boundary(
+                train_raw, eval_raw, tokenizer, args,
+            )
+        else:
+            train_dataset, eval_dataset = tokenize_splits(
+                train_raw, eval_raw, tokenizer, args,
+            )
+
+    # Under packed_v1, run offline greedy packing on the train side.
+    # Eval stays per-doc (one doc per row, padded to seq_length at
+    # collation time) — keeps eval-loss semantics commensurable with
+    # held-out per-token CE on the doc distribution.
+    docs_per_slot_mean = None
+    if args.data_pipeline_version == "packed_v1":
+        n_docs_pre = len(train_dataset)
+        train_dataset = pack_train_dataset(
+            train_dataset,
+            seq_length=args.max_seq_length,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+        n_slots = len(train_dataset)
+        docs_per_slot_mean = (n_docs_pre / max(n_slots, 1)) if n_slots else None
+        if is_main():
+            print(
+                f"# packed_v1: {n_docs_pre} docs → {n_slots} slots "
+                f"(mean {docs_per_slot_mean:.2f} docs/slot @ seq={args.max_seq_length})",
+                flush=True,
+            )
 
     # Single-pass invariant: all training in this project must be one epoch
     # or less. Multi-epoch sweeps mix capacity-to-fit-the-subset effects with
@@ -387,13 +632,18 @@ def main():
     # ran ~3.5 epochs over the 32k-sample subset.) Compute the total samples
     # the training loop will consume and refuse to start if it exceeds the
     # dataset. Override with --allow_multi_epoch only for explicit experiments.
+    # Global samples consumed = max_steps × per-rank batch × grad_accum × world_size.
+    # Under DDP, each rank sees a disjoint dataset shard of size
+    # len(dataset) / world_size, but the GLOBAL pass counter is still
+    # global_batch_size × max_steps / len(dataset) — what matters for the
+    # 1-pass invariant.
     samples_consumed = (
-        args.max_steps * args.batch_size * args.grad_accum_steps
+        args.max_steps * args.batch_size * args.grad_accum_steps * world_size
     )
     if samples_consumed > len(train_dataset) and not getattr(args, "allow_multi_epoch", False):
         raise ValueError(
-            f"Multi-epoch training blocked: max_steps × batch_size × grad_accum "
-            f"= {args.max_steps} × {args.batch_size} × {args.grad_accum_steps} = "
+            f"Multi-epoch training blocked: max_steps × batch_size × grad_accum × world_size "
+            f"= {args.max_steps} × {args.batch_size} × {args.grad_accum_steps} × {world_size} = "
             f"{samples_consumed:,} samples, but train dataset has only "
             f"{len(train_dataset):,} samples "
             f"(~{samples_consumed / len(train_dataset):.2f} epochs). "
@@ -401,30 +651,112 @@ def main():
             f"size, or pass --allow_multi_epoch if multi-epoch is the intent."
         )
 
-    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    # Collators: packed_v1 uses PackingCollator (train, pre-packed slots)
+    # + PadToMaxCollator (eval, per-doc pad-to-max for static shape under
+    # compile). unpacked_v0 keeps the legacy dynamic-shape path.
+    if args.data_pipeline_version == "packed_v1":
+        # Mask dtype tracks the model dtype so additive 4D mask casts
+        # cleanly inside SDPA. bf16 model → bf16 mask; fp32 model → fp32.
+        mask_dtype = torch.bfloat16 if use_bf16 else torch.float32
+        train_collator = PackingCollator(
+            seq_length=args.max_seq_length,
+            mask_dtype=mask_dtype,
+        )
+        eval_collator = PadToMaxCollator(
+            seq_length=args.max_seq_length,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+    else:
+        legacy_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer, mlm=False,
+        )
+        train_collator = legacy_collator
+        eval_collator = legacy_collator
+    # Under DDP each rank reads a disjoint shard of the dataset via
+    # DistributedSampler. Single-process keeps the original simple shuffle.
+    # Workers per process are scaled down so we don't oversubscribe CPUs.
+    per_proc_workers = max(1, args.num_workers // max(world_size, 1))
+    if world_size > 1:
+        train_sampler = DistributedSampler(
+            train_dataset, num_replicas=world_size, rank=rank,
+            shuffle=True, seed=args.seed, drop_last=True,
+        )
+        eval_sampler = DistributedSampler(
+            eval_dataset, num_replicas=world_size, rank=rank,
+            shuffle=False, drop_last=False,
+        )
+    else:
+        train_sampler = None
+        eval_sampler = None
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         drop_last=True,
-        collate_fn=collator,
-        num_workers=args.num_workers,
+        collate_fn=train_collator,
+        num_workers=per_proc_workers,
         pin_memory=device.type == "cuda",
     )
     eval_loader = DataLoader(
         eval_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collator,
-        num_workers=args.num_workers,
+        sampler=eval_sampler,
+        collate_fn=eval_collator,
+        num_workers=per_proc_workers,
         pin_memory=device.type == "cuda",
     )
 
     parsed_target_modules = parse_target_modules(args.target_modules)
     svd_rank = args.svd_rank if args.svd_rank is not None else args.lora_r
 
+    # Liger Kernel patching MUST happen before from_pretrained.
+    liger_applied = None
+    if args.use_liger:
+        name_lower = args.model_name.lower()
+        if "olmo" in name_lower:
+            from liger_kernel.transformers import apply_liger_kernel_to_olmo2
+            apply_liger_kernel_to_olmo2()
+            liger_applied = "olmo2"
+        elif "llama" in name_lower:
+            from liger_kernel.transformers import apply_liger_kernel_to_llama
+            apply_liger_kernel_to_llama()
+            liger_applied = "llama"
+        elif "qwen3" in name_lower:
+            from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+            apply_liger_kernel_to_qwen3()
+            liger_applied = "qwen3"
+        elif "qwen2" in name_lower or "qwen2.5" in name_lower:
+            from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+            apply_liger_kernel_to_qwen2()
+            liger_applied = "qwen2"
+        else:
+            raise ValueError(
+                f"--use_liger requested but no Liger family matches model_name={args.model_name!r}. "
+                f"Supported substrings: olmo, llama, qwen2, qwen3."
+            )
+        print(f"# Liger Kernel applied: family={liger_applied}", flush=True)
+
     model_kwargs = {"dtype": dtype} if dtype is not None else {}
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
+    attn_impl = args.attn_implementation
+    if attn_impl == "auto":
+        attn_impl = _resolve_auto_attn()
+        print(f"# attn_implementation=auto resolved to {attn_impl}", flush=True)
+    model_kwargs["attn_implementation"] = attn_impl
+    fallback_chain = {"flash_attention_4": "flash_attention_2",
+                      "flash_attention_2": "sdpa"}
+    while True:
+        try:
+            model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
+            break
+        except (ImportError, ValueError) as e:
+            cur = model_kwargs["attn_implementation"]
+            nxt = fallback_chain.get(cur)
+            if nxt is None:
+                raise
+            print(f"# {cur} unavailable ({e}); falling back to {nxt}", flush=True)
+            model_kwargs["attn_implementation"] = nxt
     model.config.use_cache = False
     dense_targets = []
     ucv_target_names: list[str] = []
@@ -456,6 +788,20 @@ def main():
         model.gradient_checkpointing_enable()
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
+    # Save a reference to the un-DDP-un-compile-wrapped model. The custom
+    # optimizers walk model.named_modules() to find lora_A/lora_B parameters;
+    # passing the bare PEFT model avoids needing to pierce DDP/compile
+    # wrappers later. The actual training forward/backward still goes through
+    # the DDP+compile wrappers below.
+    bare_model = model
+    if world_size > 1:
+        # Wrap BEFORE compile (recommended order in PyTorch 2.x). DDP installs
+        # gradient hooks that all-reduce param.grad during backward; this
+        # keeps Adam-family optimizer state synchronized across ranks by
+        # construction (see docs/notes/polar_product/ddp_refactor_scope.md).
+        ddp_kwargs = {"device_ids": [local_rank], "output_device": local_rank} \
+            if device.type == "cuda" else {}
+        model = DDP(model, **ddp_kwargs)
     if args.compile:
         compile_kwargs = {}
         if args.compile_mode != "default":
@@ -489,8 +835,12 @@ def main():
         rank_constraint = "galore_projection"
 
     svd_niter = None if args.svd_niter < 0 else args.svd_niter
+    # Pass the bare PEFT model (not DDP/compile-wrapped) so the optimizer's
+    # lora_A/lora_B traversal works regardless of wrapping. The pair_state
+    # tensors hold direct references to the underlying nn.Parameter objects,
+    # so DDP's gradient hooks still update them in place.
     optimizer = build_optimizer(
-        model,
+        bare_model,
         optimizer_type=effective_optimizer,
         lr=args.lr,
         weight_decay=args.weight_decay,
@@ -537,7 +887,10 @@ def main():
     )
 
     wandb_run = None
-    if args.wandb_project:
+    # Wandb on rank 0 only — every rank logging the same run would either
+    # corrupt the run state or require per-rank child runs that downstream
+    # tooling doesn't expect.
+    if args.wandb_project and is_main():
         import wandb
 
         run_name = args.wandb_run_name or (
@@ -587,6 +940,15 @@ def main():
             "tf32": device.type == "cuda" and not args.no_tf32,
             "compile": args.compile,
             "compile_mode": args.compile_mode,
+            "attn_implementation": getattr(bare_model.config, "_attn_implementation",
+                                           args.attn_implementation),
+            "liger_family": liger_applied,
+            "world_size": world_size,
+            "global_batch_size": args.batch_size * args.grad_accum_steps * world_size,
+            "per_rank_batch_size": args.batch_size,
+            "grad_accum_steps": args.grad_accum_steps,
+            "data_pipeline_version": args.data_pipeline_version,
+            "docs_per_slot_mean": docs_per_slot_mean,
             "profile_steps": args.profile_steps,
             "picard_alpha": args.picard_alpha,
             "picard_iters_override": args.picard_iters_override,
@@ -603,6 +965,13 @@ def main():
             "optimizer_config": optimizer_config_dict(optimizer),
         }
     )
+
+    # MFU numerator: model FLOPs per step ≈ 6 · N_total · tokens_per_step.
+    # We capture N_total once here so the eval-loop math is just a divide.
+    # Counts the bare model (frozen base + LoRA), not the DDP/compile
+    # wrappers — those don't add params.
+    mfu_n_params = count_total_params(bare_model)
+    mfu_peak_tflops = device_peak_tflops() if device.type == "cuda" else None
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -625,6 +994,11 @@ def main():
         )
         profiler.start()
 
+    # Under DDP, set_epoch on the DistributedSampler ensures different shuffle
+    # ordering across epochs (only matters if we ever multi-epoch; the project
+    # invariant is 1-pass so this is just a forward-compat call).
+    if train_sampler is not None:
+        train_sampler.set_epoch(0)
     train_iter = iter(train_loader)
     total_tokens = 0
     eval_elapsed = 0.0
@@ -695,6 +1069,23 @@ def main():
             peak_memory_mb = None
             if device.type == "cuda":
                 peak_memory_mb = torch.cuda.max_memory_allocated() / 1024**2
+            # MFU diagnostic: 6·N·T / (step_time × peak_TFLOPS). Computed
+            # over the cumulative train window so transient stalls don't
+            # spike a single number. Skipped on CPU (no peak FLOPs to
+            # divide by) or when peak lookup failed (unknown GPU). On
+            # contended GPUs the number is meaningless — only trust under
+            # exclusive allocation.
+            mean_step_time = train_elapsed / max(step, 1)
+            mean_tokens_per_step = total_tokens / max(step, 1)
+            if device.type == "cuda" and mfu_peak_tflops is not None:
+                mfu = compute_mfu(
+                    n_params=mfu_n_params,
+                    tokens_per_step=int(mean_tokens_per_step),
+                    step_time_sec=mean_step_time,
+                    peak_tflops=mfu_peak_tflops,
+                )
+            else:
+                mfu = None
             eval_payload = {
                 "event": "eval",
                 "step": step,
@@ -706,6 +1097,9 @@ def main():
                 "tokens_per_sec": total_tokens / max(train_elapsed, 1e-9),
                 "peak_memory_mb": peak_memory_mb,
                 "lr": scheduler.get_last_lr()[0],
+                "mfu": mfu,
+                "mfu_peak_tflops": mfu_peak_tflops,
+                "mfu_n_params": mfu_n_params,
             }
             log_event(eval_payload)
             if wandb_run is not None:
@@ -720,6 +1114,9 @@ def main():
         profiler.stop()
     if wandb_run is not None:
         wandb_run.finish()
+    # Tear down the distributed process group if we initialized one. No-op
+    # in single-process mode.
+    dist_cleanup()
 
 
 if __name__ == "__main__":

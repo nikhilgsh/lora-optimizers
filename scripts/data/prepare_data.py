@@ -3,16 +3,28 @@
 Usage:
     python scripts/data/prepare_data.py \
         --model_name allenai/OLMo-2-0425-1B \
-        --max_seq_length 512 \
-        --max_train_samples 4096 \
+        --max_seq_length 2048 \
+        --max_train_samples 24000 \
         --max_eval_samples 512 \
         --seed 0 \
-        --out_dir data/magicoder_seq512
+        --out_dir data/magicoder_seq2048
+
+Output schema depends on `--data_pipeline_version`:
+  - "packed_v1" (default): train side emits per-doc rows with
+    `input_ids` (variable length) + `prompt_len` (int); eval side same.
+    Packing happens at train-time (in train.py), not here, so the same
+    Arrow dataset can be reused across runs that differ in seq_length.
+  - "unpacked_v0": legacy single-`input_ids` column, no boundary tracked.
 """
 import argparse
 import os
 
-from lora_playground.train import load_splits, tokenize_splits
+from lora_playground.train import (
+    DATA_PIPELINE_VERSIONS,
+    load_splits,
+    tokenize_splits,
+    tokenize_splits_with_boundary,
+)
 from transformers import AutoTokenizer
 
 
@@ -31,6 +43,14 @@ def main():
     parser.add_argument("--max_eval_samples", type=int, default=512)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out_dir", required=True)
+    parser.add_argument(
+        "--data_pipeline_version",
+        choices=DATA_PIPELINE_VERSIONS,
+        default="packed_v1",
+        help="Tokenization schema. packed_v1 emits per-doc input_ids + "
+             "prompt_len for downstream packing; unpacked_v0 emits a "
+             "single tokenized text column (legacy).",
+    )
     args = parser.parse_args()
 
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -44,8 +64,15 @@ def main():
     train_raw, eval_raw = load_splits(args)
     print(f"  train: {len(train_raw)} examples, eval: {len(eval_raw)} examples")
 
-    print("Tokenizing ...")
-    train_tok, eval_tok = tokenize_splits(train_raw, eval_raw, tokenizer, args)
+    print(f"Tokenizing (data_pipeline_version={args.data_pipeline_version}) ...")
+    if args.data_pipeline_version == "packed_v1":
+        train_tok, eval_tok = tokenize_splits_with_boundary(
+            train_raw, eval_raw, tokenizer, args,
+        )
+    else:
+        train_tok, eval_tok = tokenize_splits(
+            train_raw, eval_raw, tokenizer, args,
+        )
     print(f"  train tokens columns: {train_tok.column_names}")
 
     train_out = os.path.join(args.out_dir, "train")
