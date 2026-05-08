@@ -323,6 +323,53 @@ A100 single-GPU runs the 1B and 8B/r=64 6k cells comfortably, but 8B at
 8B cells **must** run on Blackwell; A100 stays a fallback for 1B/3B
 work where free Blackwell capacity is the binding constraint.
 
+### DDP=4 cells (Blackwell, packed_v1)
+
+Same 4 cells under 4-GPU single-node DDP (NCCL 2.27.7, after the
+upgrade documented above). Per-step time changes very little — DDP's
+all-reduce overhead is small relative to the fwd+bwd compute — but
+each step now consumes 4× the docs (global batch = per-rank batch ×
+accum × world_size).
+
+| tier | r   | optim              | single ms | DDP=4 ms | per-step overhead | MFU (DDP=4) |
+|------|----:|--------------------|----------:|---------:|------------------:|------------:|
+| 1B   |  64 | adamw              |     1652 |     1669 |             +1.0% |       47.8% |
+| 1B   |  64 | tight-chord-higham |     1693 |     1711 |             +1.1% |       46.6% |
+| 1B   | 256 | adamw              |     2124 |     2167 |             +2.0% |       40.3% |
+| 1B   | 256 | tight-chord-higham |     2327 |     2369 |             +1.8% |       36.9% |
+| 8B   |  64 | adamw              |     6830 |     6974 |             +2.1% |       61.2% |
+| 8B   |  64 | tight-chord-higham |     7012 |     7149 |             +2.0% |       59.7% |
+| 8B   | 256 | adamw              |     8998 |     9311 |             +3.5% |       48.6% |
+| 8B   | 256 | tight-chord-higham |     9885 |    10202 |             +3.2% |       44.4% |
+
+Overhead grows mildly with rank because DDP's all-reduce volume is
+proportional to LoRA-grad size (~`2 · r · (d_in + d_out)` per layer).
+Even at 8B/r=256 it's only +3.5%.
+
+Source: `logs/bench_profile_packed_v1/blackwell_ddp4_runs.jsonl`,
+SLURM job 6369469 (4 GPUs on workergpu179).
+
+### Phase B/C wall under DDP=4 (Blackwell, packed_v1)
+
+At fixed *token-budget*, DDP=4 reduces wall by 4× (modulo the few-%
+all-reduce overhead). Useful only if a single cell's wall is
+uncomfortable — for sweep workloads, parallel single-GPU seeds beats
+DDP-within-a-cell.
+
+| tier | r   | per-step (AdamW, DDP=4) | 6k-doc-budget wall | 8.2k-doc-budget (270M) wall |
+|------|----:|------------------------:|-------------------:|----------------------------:|
+| 8B   |  64 |                 6974 ms |              2.9h ✓|                       4.0h ✓ |
+| 8B   | 256 |                 9311 ms |              3.9h ✓|                       5.3h ✓ |
+
+(6k-doc-budget = 1500 steps × 4 ranks × batch×accum=16; 8.2k-doc-budget
+= 2050 steps × 4 ranks × 16. Same total docs as the single-GPU 6k/8.2k
+columns — DDP-4 just gets there in 1/4 the steps.)
+
+8B/r=256 finishes the 270M-token budget in **5.3h** under DDP=4 vs
+**20.5h** single-GPU on the same hardware. 3.86× wall speedup at 4×
+GPU-hours — break-even on GPU-hours, useful when wall matters more
+than throughput.
+
 ### Tight-chord overhead (packed_v1, Blackwell, AdamW=baseline)
 
 | tier | r   | total ms (AdamW) | total ms (tight-chord) | overhead |
