@@ -7,7 +7,38 @@ from lora_playground.mfu import (
     count_total_params,
     device_peak_tflops,
     estimate_step_flops,
+    flops_per_token_for_mode,
 )
+
+
+def test_flops_per_token_for_mode_lora():
+    assert flops_per_token_for_mode("lora") == 4.0
+    assert flops_per_token_for_mode("lora", gradient_checkpointing=True) == 6.0
+
+
+def test_flops_per_token_for_mode_ucv():
+    assert flops_per_token_for_mode("ucv") == 4.0
+
+
+def test_flops_per_token_for_mode_full_ft_modes():
+    assert flops_per_token_for_mode("svd_step_oracle") == 6.0
+    assert flops_per_token_for_mode("svd_cumulative_oracle") == 6.0
+    assert flops_per_token_for_mode("galore") == 6.0
+    assert flops_per_token_for_mode("galore", gradient_checkpointing=True) == 8.0
+
+
+def test_compute_mfu_lora_factor():
+    """4N/6N for LoRA gives 2/3 the MFU of the full-FT formula at the
+    same step time + token count."""
+    common = dict(
+        n_params=1_000_000_000,
+        tokens_per_step=32_768,
+        step_time_sec=1.0,
+        peak_tflops=312.0,
+    )
+    mfu_full_ft = compute_mfu(**common, flops_per_token_per_param=6.0)
+    mfu_lora = compute_mfu(**common, flops_per_token_per_param=4.0)
+    assert abs(mfu_lora / mfu_full_ft - 4 / 6) < 1e-9
 
 
 def test_peak_table_lookup_known():

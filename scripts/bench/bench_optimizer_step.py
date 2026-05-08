@@ -47,7 +47,12 @@ from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM
 
 from lora_playground.data import build_block_diagonal_causal_mask
-from lora_playground.mfu import compute_mfu, count_total_params, device_peak_tflops
+from lora_playground.mfu import (
+    compute_mfu,
+    count_total_params,
+    device_peak_tflops,
+    flops_per_token_for_mode,
+)
 from lora_playground.optim import build_optimizer, OPTIMIZER_CHOICES
 from lora_playground.utils import collect_lora_pairs
 
@@ -356,17 +361,24 @@ def main():
           f"(effective batch = {args.batch_size * args.grad_accum_steps}) "
           f"data_pipeline_version={args.data_pipeline_version}", flush=True)
 
-    # MFU scaffold: 6·N·tokens_per_step / (mean_step_sec × peak_tflops_dense).
-    # tokens_per_step under packed_v1 is the full slot (signal density 100%);
-    # under unpacked_v0 it's also batch×seq×accum here because the synthetic
-    # bench uses fixed-shape random tokens — production unpacked_v0 has lower
-    # effective signal density, so this MFU is an UPPER bound for the
+    # MFU scaffold: c·N·tokens_per_step / (mean_step_sec × peak_tflops_dense).
+    # The bench builds a LoRA model (peft wrap), so c = 4 (frozen base, no
+    # param-grad pass on the base). This bench does NOT enable
+    # gradient checkpointing — would be +2 if it did. tokens_per_step under
+    # packed_v1 is the full slot (signal density 100%); under unpacked_v0
+    # it's also batch×seq×accum here because the synthetic bench uses
+    # fixed-shape random tokens, so this MFU is an UPPER bound for the
     # unpacked path, an honest number for the packed path.
     n_total_params = count_total_params(model)
     tokens_per_step = args.batch_size * args.seq_len * args.grad_accum_steps
     peak_tflops = device_peak_tflops() if device.type == "cuda" else None
+    flops_per_token_per_param = flops_per_token_for_mode(
+        "lora", gradient_checkpointing=False,
+    )
     print(f"# n_total_params={n_total_params:,} tokens_per_step={tokens_per_step:,} "
-          f"peak_tflops_dense={peak_tflops}", flush=True)
+          f"peak_tflops_dense={peak_tflops} "
+          f"flops_per_token_per_param={flops_per_token_per_param} (lora, no ckpt)",
+          flush=True)
 
     out_path = Path(args.out) if args.out else None
     if out_path is not None:
@@ -449,6 +461,7 @@ def main():
                         tokens_per_step=tokens_per_step,
                         step_time_sec=mean_amortized,
                         peak_tflops=peak_tflops,
+                        flops_per_token_per_param=flops_per_token_per_param,
                     ) if peak_tflops is not None else None
                     mfu_str = f"{mfu*100:>5.1f}%" if mfu is not None else "  --  "
                     print(f"  {opt_name:<32} {method:>7} {K:>4} "
@@ -500,6 +513,7 @@ def main():
                         "mfu": mfu,
                         "mfu_peak_tflops": peak_tflops,
                         "mfu_n_params": n_total_params,
+                        "mfu_flops_per_token_per_param": flops_per_token_per_param,
                         "tokens_per_step": tokens_per_step,
                     }
                     if out_fh is not None:

@@ -6,14 +6,23 @@ length, and batch geometry — useful for spotting when something
 (recompiles, padding waste, kernel choice) is leaving compute on the
 floor.
 
-Approximation: per-token compute is 6·N where N = total parameter count.
-The 6 is "fwd cost (2N) + bwd cost (4N)"; bwd counts param grads (2N) +
-activation grads (2N). For LoRA training we still count the full base
-model in N — backward through activations passes through the whole
-graph even though only LoRA params receive gradients, and that backward
-is the dominant cost. This overestimates LoRA MFU slightly compared to
-a "LoRA-only-params" denominator but matches the convention used in
-nanoGPT and Schulman/Biderman writeups, so the numbers are comparable.
+**FLOPs-per-token multiplier depends on training mode and gradient
+checkpointing.** The standard "6·N·T" (Megatron / nanoGPT) formula is
+specifically full fine-tuning, no grad-checkpoint:
+
+  full_ft, no checkpoint:  2N (fwd) + 2N (act grad) + 2N (param grad) = 6N
+  full_ft, checkpoint:     +2N for fwd recomputation                  = 8N
+  LoRA,    no checkpoint:  2N (fwd) + 2N (act grad) + 0 (frozen base) = 4N
+  LoRA,    checkpoint:     +2N for fwd recomputation                  = 6N
+
+For LoRA the param-grad pass on the frozen base is skipped — so LoRA
+runs at 4N, NOT 6N, in the no-checkpoint case. Using 6N for LoRA
+inflates MFU by ~1.5×. The N_lora gradient cost is ≪ N_full and is
+absorbed into the noise floor.
+
+Use `flops_per_token_for_mode(training_mode, gradient_checkpointing)`
+to pick the right multiplier; pass into `compute_mfu(...,
+flops_per_token_per_param=...)`.
 
 Peak-FLOPs values are dense bf16/fp16 throughput for the listed devices
 from the vendor specs. For other devices, returns None and the caller
@@ -88,13 +97,46 @@ def count_total_params(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
+def flops_per_token_for_mode(
+    training_mode: str,
+    gradient_checkpointing: bool = False,
+) -> float:
+    """Return the right `flops_per_token_per_param` multiplier for the
+    standard MFU formula, given the training mode + grad-checkpoint flag.
+
+    See module docstring for the table. The "lora-like" modes (frozen
+    base + tiny trainable adapter) skip the param-grad pass on the base
+    model: 4N instead of 6N. SVD oracle and GaLore modes train the full
+    base parameters → 6N like full FT. UCV is LoRA-shaped → 4N.
+
+    Modes mirroring `lora_playground.train.TRAINING_MODES`:
+      - lora                  → 4N  (frozen base, LoRA adapters)
+      - ucv                   → 4N  (frozen base, UCV adapters)
+      - svd_step_oracle       → 6N  (target weights unfrozen, dense)
+      - svd_cumulative_oracle → 6N  (target weights unfrozen, dense)
+      - galore                → 6N  (target weights unfrozen, dense)
+    """
+    lora_like = training_mode in ("lora", "ucv")
+    if lora_like:
+        base = 4.0
+    else:
+        base = 6.0
+    if gradient_checkpointing:
+        base += 2.0  # extra forward recomputation in the bwd pass
+    return base
+
+
 def estimate_step_flops(
     n_params: int,
     tokens_per_step: int,
     *,
     flops_per_token_per_param: float = 6.0,
 ) -> float:
-    """Rough fwd+bwd FLOPs for one optimizer step: 6 · N · T.
+    """Rough fwd+bwd FLOPs for one optimizer step: c · N · T.
+
+    `c` defaults to 6.0 (full FT, no grad checkpoint); pass the value
+    from `flops_per_token_for_mode(...)` for LoRA/UCV (4) or
+    grad-checkpointed paths (+2).
 
     Ignores the attention quadratic correction (s/(6h) term in the
     Megatron formula); for seq_length up to ~4k on hidden ~1k models
@@ -110,13 +152,24 @@ def compute_mfu(
     step_time_sec: float,
     *,
     peak_tflops: float | None = None,
+    flops_per_token_per_param: float = 6.0,
 ) -> float | None:
     """Returns MFU in [0, 1], or None if peak is unknown / step_time is
-    non-positive."""
+    non-positive.
+
+    `flops_per_token_per_param` defaults to 6.0 (full FT, no grad
+    checkpoint). Pass `flops_per_token_for_mode(training_mode,
+    gradient_checkpointing)` for the right value under LoRA / UCV /
+    grad-checkpointed paths. Default is RETAINED for back-compat with
+    callers that haven't been updated.
+    """
     if peak_tflops is None:
         peak_tflops = device_peak_tflops()
     if peak_tflops is None or step_time_sec <= 0:
         return None
-    flops = estimate_step_flops(n_params, tokens_per_step)
+    flops = estimate_step_flops(
+        n_params, tokens_per_step,
+        flops_per_token_per_param=flops_per_token_per_param,
+    )
     achieved_tflops = flops / step_time_sec / 1e12
     return achieved_tflops / peak_tflops

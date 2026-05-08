@@ -29,7 +29,12 @@ from .distributed import (
     init_distributed,
     is_main,
 )
-from .mfu import compute_mfu, count_total_params, device_peak_tflops
+from .mfu import (
+    compute_mfu,
+    count_total_params,
+    device_peak_tflops,
+    flops_per_token_for_mode,
+)
 from .optim import OPTIMIZER_CHOICES, build_optimizer, optimizer_config_dict
 from .ucv_layer import inject_ucv_adapters
 from .utils import collect_dense_target_weights, freeze_all_except_targets
@@ -978,12 +983,16 @@ def main():
         }
     )
 
-    # MFU numerator: model FLOPs per step ≈ 6 · N_total · tokens_per_step.
-    # We capture N_total once here so the eval-loop math is just a divide.
-    # Counts the bare model (frozen base + LoRA), not the DDP/compile
-    # wrappers — those don't add params.
+    # MFU numerator: model FLOPs per step ≈ c · N_total · tokens_per_step,
+    # where c is 4 for LoRA/UCV (frozen base, no param-grad pass) or 6
+    # for full FT, +2 if gradient checkpointing is on. We capture N_total
+    # once here so the eval-loop math is just a divide. Counts the bare
+    # model (frozen base + LoRA), not the DDP/compile wrappers.
     mfu_n_params = count_total_params(bare_model)
     mfu_peak_tflops = device_peak_tflops() if device.type == "cuda" else None
+    mfu_flops_per_token_per_param = flops_per_token_for_mode(
+        args.training_mode, args.gradient_checkpointing,
+    )
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -1095,6 +1104,7 @@ def main():
                     tokens_per_step=int(mean_tokens_per_step),
                     step_time_sec=mean_step_time,
                     peak_tflops=mfu_peak_tflops,
+                    flops_per_token_per_param=mfu_flops_per_token_per_param,
                 )
             else:
                 mfu = None
@@ -1112,6 +1122,7 @@ def main():
                 "mfu": mfu,
                 "mfu_peak_tflops": mfu_peak_tflops,
                 "mfu_n_params": mfu_n_params,
+                "mfu_flops_per_token_per_param": mfu_flops_per_token_per_param,
             }
             log_event(eval_payload)
             if wandb_run is not None:
