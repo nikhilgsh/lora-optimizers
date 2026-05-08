@@ -1,8 +1,18 @@
 # Wall-time profile across the 1B/3B/8B base ladder
 
+> **Status (2026-05-08): all tables below are at `data_pipeline_version:
+> unpacked_v0`** (legacy `DataCollatorForLanguageModeling`, dynamic shapes,
+> no prompt-mask). The packed_v1 reprofile is in §"Wall-time + MFU under
+> packed_v1 (Blackwell)" below — it adds an MFU column and is the
+> operative table for Phase B/C wall-budget decisions going forward.
+
 Baseline (HF default attn, no compile) vs after (flash_attention_2 + torch.compile mode='default'). Single A100 (shared, not exclusive — relative ordering preserved per profiling_a100_canonical_2026_05_04.md).
 
 Per-step times: forward + backward summed across grad_accum_steps microbatches; optimizer.step() and zero_grad timed separately. All numbers in ms.
+
+**Hardware policy update (2026-05-08):** Blackwell RTX PRO 6000 is the new
+default canonical hardware across all tiers (1B / 3B / 8B), not just 8B.
+A100 numbers below are kept as the historical reference.
 
 ## 1B — allenai/OLMo-2-0425-1B, seq=512, batch=2×accum=8
 
@@ -201,3 +211,85 @@ Production-scale measurements (1B/3B/8B with compile, 100 steps each, sbatch job
 - **Phase A (1B):** stay single-GPU. Cells run in 1-3h on one GPU; sweep-friendly; no DDP overhead.
 - **Phase B (3B):** single-GPU by default. Cells run in 5-9h (6k canonical) or 17-25h (270M target); fits 24h wall comfortably or borderline. DDP only if a specific cell's wall is uncomfortable.
 - **Phase C (8B):** **DDP required for r=256 270M target** (43h single-GPU → ~12-14h on 4-GPU per the math). 8B r=64 borderline — single-GPU 26-29h fits 48h wall, DDP fits 24h.
+
+---
+
+## Wall-time + MFU under packed_v1 (Blackwell)
+
+Reprofile of the campaign-critical cells under
+`data_pipeline_version: packed_v1` on Blackwell RTX PRO 6000 (workstation,
+sm_120; peak 251.9 TFLOPS dense BF16). Run via
+`scripts/bench/bench_optimizer_step.py` with synthetic packed batches
+(equal-length 3-doc-per-slot packing, 4D block-diagonal SDPA mask,
+per-doc position_ids reset).
+
+Why a reprofile is needed:
+1. Packed_v1 forward path uses an explicit 4D additive SDPA mask instead
+   of the implicit `is_causal=True` path. Worth confirming the kernel
+   isn't materially slower.
+2. Per-step compute under packed_v1 is fixed-shape `(B, seq_length)` with
+   100% signal density — so per-step tokens-of-signal is up to ~3× higher
+   than unpacked_v0 at seq=2048 on Magicoder. Tokens-per-sec and MFU
+   numbers from the unpacked tables don't transfer.
+3. Hardware policy change: Blackwell is now the canonical comparison
+   hardware across all tiers, not A100. Old tables are reference-only.
+
+**Source of truth:** `logs/bench_profile_packed_v1/blackwell_runs.jsonl`.
+SLURM job IDs: 6364410 (bench profile, 4 cells).
+
+### Bench cells (queued, not yet landed)
+
+All cells: bf16 + sdpa + compile, `--n_docs_per_slot 3`,
+`precond_method=higham`, `higham_iters=10`, `precond_refresh_every=1`.
+
+| tier | model                         | r   | seq  | batch×accum | optim | total ms | MFU | peak MB |
+|------|-------------------------------|-----|------|-------------|-------|---------:|----:|--------:|
+| 1B   | allenai/OLMo-2-0425-1B        | 64  | 2048 | 2×8         | adamw                                            | _pending_ | _pending_ | _pending_ |
+| 1B   | allenai/OLMo-2-0425-1B        | 64  | 2048 | 2×8         | adam-polar-product-lora-coupled-spectral-chord-tight | _pending_ | _pending_ | _pending_ |
+| 1B   | allenai/OLMo-2-0425-1B        | 256 | 2048 | 2×8         | adamw                                            | _pending_ | _pending_ | _pending_ |
+| 1B   | allenai/OLMo-2-0425-1B        | 256 | 2048 | 2×8         | adam-polar-product-lora-coupled-spectral-chord-tight | _pending_ | _pending_ | _pending_ |
+| 8B   | meta-llama/Meta-Llama-3-8B    | 64  | 2048 | 1×16        | adamw                                            | _pending_ | _pending_ | _pending_ |
+| 8B   | meta-llama/Meta-Llama-3-8B    | 64  | 2048 | 1×16        | adam-polar-product-lora-coupled-spectral-chord-tight | _pending_ | _pending_ | _pending_ |
+| 8B   | meta-llama/Meta-Llama-3-8B    | 256 | 2048 | 1×16        | adamw                                            | _pending_ | _pending_ | _pending_ |
+| 8B   | meta-llama/Meta-Llama-3-8B    | 256 | 2048 | 1×16        | adam-polar-product-lora-coupled-spectral-chord-tight | _pending_ | _pending_ | _pending_ |
+
+### Questions this profile answers
+
+- **Q1: Does the packed_v1 4D SDPA mask path slow per-step compute vs
+  unpacked_v0's implicit causal mask?** Diagnostic: 1B/r=64 AdamW
+  total_ms vs the unpacked 1B/r=128 AdamW row in §1B above. If packed
+  is within ~5% of (unpacked × 2048/512 seq scaling), the mask path is
+  free. Larger Δ ⇒ flag.
+- **Q2: Is per-token throughput (and MFU) actually higher under packed_v1?**
+  Under packed_v1 every step processes seq_length signal tokens; under
+  unpacked_v0 a fraction is padding. MFU column should land in
+  20-40% on Blackwell at 1B/3B; less at 8B/r=256 (memory-bandwidth bound).
+- **Q3: Does 8B/r=256 packed_v1 fit a 24h wall on Blackwell?** Compute:
+  total_ms × 6000 steps / 1000 / 3600. Verdict in §"Phase B/C
+  wall-budget verdict" once cell 4 lands.
+
+### Headline (TBD)
+
+To be filled once cells land. Will compare to existing
+"`Hardware comparison`" table for the 8B r=256 cell at unpacked_v0:
+A100+sdpa = 19,892 ms, Blackwell+sdpa = 7,981 ms (unpacked_v0). If
+packed_v1 matches unpacked_v0 within noise, the data path is "free"
+relative to the hardware win, AND we get 3× more signal/step.
+
+### Sanity job (concurrent)
+
+Single end-to-end training run to validate packed_v1 produces a sensible
+eval-loss trajectory before launching any sweep. SLURM job 6364408,
+config matches `scripts/sweep/sweep_4k_diag.sh` canonical (1B, seq=512,
+4000 steps, AdamW, η=3e-4, r=16, seed=0). Output:
+`logs/adamw_sanity_packed_v1_4k/run.jsonl`. Sanity criteria:
+- Eval-loss decreases monotonically from initial.
+- No NaN / Inf in train_loss or eval_loss.
+- Eval-loss magnitude in 0.4-0.9 range (response-only CE on Magicoder).
+- MFU > 5% (any lower suggests broken pipeline, not just slow optimizer).
+
+A pass on these means the data + forward + loss path is intact under
+packed_v1. Absolute numbers are NOT comparable to the unpacked_v0
+AdamW@r=16 baseline (0.7579) — prompt-mask alone changes the loss
+objective. Re-anchored AdamW noise-floor under packed_v1 is the
+follow-on (multiseed).
