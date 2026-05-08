@@ -23,10 +23,18 @@ if [ -n "${WANDB_PROJECT:-}" ]; then
     wandb_args=(--wandb_project "$WANDB_PROJECT")
 fi
 
+# Compile default-on for production sweeps (CLAUDE.md "torch.compile whenever
+# it amortizes"). Opt out with COMPILE=0 for debug runs only.
+compile_args=()
+if [ "${COMPILE:-1}" = "1" ]; then
+    compile_args=(--compile)
+fi
+
 python train_lora.py \
     --data_dir data/magicoder_seq512_32k \
     --device cuda \
     --bf16 \
+    "${compile_args[@]}" \
     --max_steps "${MAX_STEPS:-8000}" \
     --eval_every "${EVAL_EVERY:-200}" \
     --lr "$lr" \
