@@ -44,9 +44,16 @@ from pathlib import Path
 
 import torch
 from peft import LoraConfig, get_peft_model
+from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoModelForCausalLM
 
 from lora_playground.data import build_block_diagonal_causal_mask
+from lora_playground.distributed import (
+    cleanup as dist_cleanup,
+    get_world_size,
+    init_distributed,
+    is_main,
+)
 from lora_playground.mfu import (
     compute_mfu,
     count_total_params,
@@ -325,13 +332,22 @@ def main():
 
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but not available.")
-    device = torch.device(args.device)
+
+    # Idempotent DDP init — no-op when launched as a single process; under
+    # torchrun (WORLD_SIZE>1) it sets up NCCL and pins the device to
+    # LOCAL_RANK so per-rank metadata is correct downstream.
+    rank, world_size, local_rank = init_distributed()
+    if args.device == "cuda" and world_size > 1:
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device(args.device)
     dtype = torch.bfloat16 if args.bf16 else torch.float32
 
-    print(f"# Building model {args.model_name} with lora_r={args.lora_r}, "
-          f"target_modules={args.target_modules}, dtype={dtype}, "
-          f"attn={args.attn_implementation}, compile={args.compile_mode}, "
-          f"liger={args.use_liger}", flush=True)
+    if is_main():
+        print(f"# Building model {args.model_name} with lora_r={args.lora_r}, "
+              f"target_modules={args.target_modules}, dtype={dtype}, "
+              f"attn={args.attn_implementation}, compile={args.compile_mode}, "
+              f"liger={args.use_liger}, world_size={world_size}", flush=True)
     model, liger_family = build_model(
         args.model_name, args.lora_r, args.lora_alpha,
         args.target_modules, dtype, device,
@@ -340,47 +356,68 @@ def main():
         use_liger=args.use_liger,
         liger_flce=args.liger_flce,
     )
+    # Mirror train.py: keep a reference to the BARE peft+compile model so
+    # the optimizer's `lora_A`/`lora_B` named_modules walk works (DDP adds
+    # a `module.` prefix that breaks collect_lora_pairs). DDP's gradient
+    # hooks fire on the underlying nn.Parameter objects regardless, so
+    # optimizer state stays in sync by construction.
+    bare_model = model
+    if world_size > 1:
+        ddp_kwargs = {"device_ids": [local_rank], "output_device": local_rank} \
+            if device.type == "cuda" else {}
+        model = DDP(model, **ddp_kwargs)
     # Resolved attn impl for the loaded base model (HF picks default if None).
-    base_for_cfg = model.base_model.model if hasattr(model, "base_model") else model
+    # `bare_model` is the peft+compile model (no DDP); used for config
+    # introspection and optimizer construction since collect_lora_pairs
+    # walks named_modules and DDP adds a `module.` prefix.
+    base_for_cfg = (bare_model.base_model.model
+                    if hasattr(bare_model, "base_model") else bare_model)
     resolved_attn = getattr(base_for_cfg.config, "_attn_implementation",
                             args.attn_implementation or "default")
-    print(f"# resolved attn_implementation={resolved_attn}", flush=True)
-    pairs = collect_lora_pairs(model)
+    if is_main():
+        print(f"# resolved attn_implementation={resolved_attn}", flush=True)
+    pairs = collect_lora_pairs(bare_model)
     n_pairs = len(pairs)
     n_lora_params = sum(A.numel() + B.numel() for A, B in pairs)
-    print(f"# {n_pairs} LoRA pairs, {n_lora_params:,} LoRA params", flush=True)
+    if is_main():
+        print(f"# {n_pairs} LoRA pairs, {n_lora_params:,} LoRA params", flush=True)
 
     gen = torch.Generator(device=device).manual_seed(args.seed)
     batch = make_batch(
-        model, args.batch_size, args.seq_len, device, gen,
+        bare_model, args.batch_size, args.seq_len, device, gen,
         data_pipeline_version=args.data_pipeline_version,
         n_docs_per_slot=args.n_docs_per_slot,
     )
-    print(f"# batch_size={args.batch_size}, seq_len={args.seq_len}, "
-          f"grad_accum_steps={args.grad_accum_steps} "
-          f"(effective batch = {args.batch_size * args.grad_accum_steps}) "
-          f"data_pipeline_version={args.data_pipeline_version}", flush=True)
+    if is_main():
+        print(f"# batch_size={args.batch_size}, seq_len={args.seq_len}, "
+              f"grad_accum_steps={args.grad_accum_steps} "
+              f"(effective batch = {args.batch_size * args.grad_accum_steps * world_size}, "
+              f"world_size={world_size}) "
+              f"data_pipeline_version={args.data_pipeline_version}", flush=True)
 
-    # MFU scaffold: c·N·tokens_per_step / (mean_step_sec × peak_tflops_dense).
-    # The bench builds a LoRA model (peft wrap), so c = 4 (frozen base, no
-    # param-grad pass on the base). This bench does NOT enable
-    # gradient checkpointing — would be +2 if it did. tokens_per_step under
-    # packed_v1 is the full slot (signal density 100%); under unpacked_v0
-    # it's also batch×seq×accum here because the synthetic bench uses
-    # fixed-shape random tokens, so this MFU is an UPPER bound for the
-    # unpacked path, an honest number for the packed path.
-    n_total_params = count_total_params(model)
-    tokens_per_step = args.batch_size * args.seq_len * args.grad_accum_steps
+    # MFU scaffold. c = 4 for LoRA (frozen base, no param-grad pass).
+    # Under DDP: each rank does the same flops on its own micro-batch in
+    # parallel, so MFU = per-rank achieved / per-rank peak — the world_size
+    # factor cancels. We report MFU as per-GPU utilization. Global
+    # tokens_per_step (B × S × accum × WS) is the throughput-relevant
+    # number for wall-budget math.
+    n_total_params = count_total_params(bare_model)
+    tokens_per_rank_per_step = args.batch_size * args.seq_len * args.grad_accum_steps
+    tokens_per_step_global = tokens_per_rank_per_step * world_size
     peak_tflops = device_peak_tflops() if device.type == "cuda" else None
     flops_per_token_per_param = flops_per_token_for_mode(
         "lora", gradient_checkpointing=False,
     )
-    print(f"# n_total_params={n_total_params:,} tokens_per_step={tokens_per_step:,} "
-          f"peak_tflops_dense={peak_tflops} "
-          f"flops_per_token_per_param={flops_per_token_per_param} (lora, no ckpt)",
-          flush=True)
+    if is_main():
+        print(f"# n_total_params={n_total_params:,} "
+              f"tokens_per_step_global={tokens_per_step_global:,} "
+              f"peak_tflops_dense={peak_tflops} "
+              f"flops_per_token_per_param={flops_per_token_per_param} (lora, no ckpt)",
+              flush=True)
 
-    out_path = Path(args.out) if args.out else None
+    # Only rank 0 writes the JSONL log (all ranks measure the same numbers
+    # under DDP since the model + batch + dtype are identical per rank).
+    out_path = Path(args.out) if (args.out and is_main()) else None
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_fh = out_path.open("a")
@@ -396,30 +433,35 @@ def main():
         "adam-polar-product-lora-coupled-spectral-chord-tight",
         "adamuon-polar-product-lora",
     }
-    print(f"# {'optimizer':<32} {'method':>7} {'K':>4} {'fwd_ms':>8} {'bwd_ms':>8} "
-          f"{'opt_ms':>8} {'zero_ms':>8} {'total_ms':>9} {'×AdamW':>8} "
-          f"{'MFU':>6}",
-          flush=True)
-    print(f"#   fwd/bwd are summed across grad_accum_steps microbatches.", flush=True)
-    print(f"#   opt is optimizer.step() only. zero is optimizer.zero_grad().", flush=True)
-    print(f"#   total = fwd + bwd + opt + zero. ×AdamW = total / AdamW(K=1) total.", flush=True)
-    print(f"#   MFU = 6·N·tokens_per_step / (total_sec × peak_TFLOPS_dense). "
-          f"None on unknown GPU.", flush=True)
+    if is_main():
+        print(f"# {'optimizer':<32} {'method':>7} {'K':>4} {'fwd_ms':>8} {'bwd_ms':>8} "
+              f"{'opt_ms':>8} {'zero_ms':>8} {'total_ms':>9} {'×AdamW':>8} "
+              f"{'MFU':>6}",
+              flush=True)
+        print(f"#   fwd/bwd are summed across grad_accum_steps microbatches.", flush=True)
+        print(f"#   opt is optimizer.step() only. zero is optimizer.zero_grad().", flush=True)
+        print(f"#   total = fwd + bwd + opt + zero. ×AdamW = total / AdamW(K=1) total.", flush=True)
+        print(f"#   MFU = c·N·tokens_per_rank_per_step / (step_sec × peak_TFLOPS). "
+              f"c={flops_per_token_per_param} (lora). None on unknown GPU.",
+              flush=True)
     adamw_mean = None
     per_optimizer_k1_mean = {}
     try:
         for opt_name in args.optimizers:
             if opt_name not in OPTIMIZER_CHOICES:
-                print(f"# skip unknown optimizer: {opt_name}", flush=True)
+                if is_main():
+                    print(f"# skip unknown optimizer: {opt_name}", flush=True)
                 continue
             ks = args.precond_refresh_every if opt_name in GRAM_PRECOND_OPTIMIZERS else [1]
             methods = args.precond_method if opt_name in POLAR_OPTIMIZERS else ["eigh"]
             for method in methods:
                 for K in ks:
                     # Construct a fresh optimizer per cell so K-stale caches don't
-                    # leak across cells.
+                    # leak across cells. Pass the BARE peft model (no DDP wrap)
+                    # so collect_lora_pairs can find lora_A/lora_B without
+                    # tripping on the `module.` prefix DDP adds.
                     optimizer = build_optimizer(
-                        model,
+                        bare_model,
                         optimizer_type=opt_name,
                         lr=args.lr,
                         precond_refresh_every=K,
@@ -458,18 +500,19 @@ def main():
 
                     mfu = compute_mfu(
                         n_params=n_total_params,
-                        tokens_per_step=tokens_per_step,
+                        tokens_per_step=tokens_per_rank_per_step,
                         step_time_sec=mean_amortized,
                         peak_tflops=peak_tflops,
                         flops_per_token_per_param=flops_per_token_per_param,
                     ) if peak_tflops is not None else None
                     mfu_str = f"{mfu*100:>5.1f}%" if mfu is not None else "  --  "
-                    print(f"  {opt_name:<32} {method:>7} {K:>4} "
-                          f"{fwd_mean*1000:>8.1f} {bwd_mean*1000:>8.1f} "
-                          f"{opt_mean_phase*1000:>8.1f} {zero_mean*1000:>8.1f} "
-                          f"{mean_amortized*1000:>9.1f} {ratio_vs_adamw:>7.2f}× "
-                          f"{mfu_str:>6}",
-                          flush=True)
+                    if is_main():
+                        print(f"  {opt_name:<32} {method:>7} {K:>4} "
+                              f"{fwd_mean*1000:>8.1f} {bwd_mean*1000:>8.1f} "
+                              f"{opt_mean_phase*1000:>8.1f} {zero_mean*1000:>8.1f} "
+                              f"{mean_amortized*1000:>9.1f} {ratio_vs_adamw:>7.2f}× "
+                              f"{mfu_str:>6}",
+                              flush=True)
 
                     rec = {
                         "event": "bench_step",
@@ -514,7 +557,9 @@ def main():
                         "mfu_peak_tflops": peak_tflops,
                         "mfu_n_params": n_total_params,
                         "mfu_flops_per_token_per_param": flops_per_token_per_param,
-                        "tokens_per_step": tokens_per_step,
+                        "tokens_per_rank_per_step": tokens_per_rank_per_step,
+                        "tokens_per_step_global": tokens_per_step_global,
+                        "world_size": world_size,
                     }
                     if out_fh is not None:
                         out_fh.write(json.dumps(rec, sort_keys=True) + "\n")
@@ -527,6 +572,9 @@ def main():
     finally:
         if out_fh is not None:
             out_fh.close()
+        # Tear down the distributed process group if we initialized one
+        # (no-op in single-process mode).
+        dist_cleanup()
 
 
 if __name__ == "__main__":
