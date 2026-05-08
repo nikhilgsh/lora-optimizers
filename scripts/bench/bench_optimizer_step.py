@@ -43,9 +43,6 @@ import time
 from pathlib import Path
 
 import torch
-from peft import LoraConfig, get_peft_model
-from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import AutoModelForCausalLM
 
 from lora_playground.data import build_block_diagonal_causal_mask
 from lora_playground.distributed import (
@@ -61,6 +58,7 @@ from lora_playground.mfu import (
     flops_per_token_for_mode,
 )
 from lora_playground.optim import build_optimizer, OPTIMIZER_CHOICES
+from lora_playground.training_kernel import build_peft_model
 from lora_playground.utils import collect_lora_pairs
 
 # Optimizers that take a precond_refresh_every kwarg.
@@ -77,59 +75,6 @@ COUPLED_CORE_OPTIMIZERS = [
     "muon-coupled-core-lora",
 ]
 DEFAULT_OPTIMIZERS = ["adamw"] + GRAM_PRECOND_OPTIMIZERS + COUPLED_CORE_OPTIMIZERS
-
-
-def _apply_liger(model_name: str, fused_linear_ce: bool = False) -> str | None:
-    """Family-dispatch Liger Kernel patches. Must be called BEFORE from_pretrained.
-    fused_linear_ce: enable FusedLinearCrossEntropy (off by default in Liger;
-    bigger memory savings when on, but requires the model's loss path to be
-    the standard HF labels-in-forward pattern).
-    Returns the patched family name (or None if no match)."""
-    name_lower = model_name.lower()
-    kw = {"fused_linear_cross_entropy": fused_linear_ce}
-    if "olmo" in name_lower:
-        from liger_kernel.transformers import apply_liger_kernel_to_olmo2
-        apply_liger_kernel_to_olmo2(**kw)
-        return "olmo2"
-    if "llama" in name_lower:
-        from liger_kernel.transformers import apply_liger_kernel_to_llama
-        apply_liger_kernel_to_llama(**kw)
-        return "llama"
-    if "qwen3" in name_lower:
-        from liger_kernel.transformers import apply_liger_kernel_to_qwen3
-        apply_liger_kernel_to_qwen3(**kw)
-        return "qwen3"
-    if "qwen2" in name_lower:
-        from liger_kernel.transformers import apply_liger_kernel_to_qwen2
-        apply_liger_kernel_to_qwen2(**kw)
-        return "qwen2"
-    raise ValueError(f"--use_liger: no Liger family matches model_name={model_name!r}")
-
-
-def build_model(model_name: str, lora_r: int, lora_alpha: int, target_modules: str,
-                dtype: torch.dtype, device: torch.device,
-                attn_implementation: str | None = None,
-                compile_mode: str | None = None,
-                use_liger: bool = False, liger_flce: bool = False):
-    liger_family = _apply_liger(model_name, fused_linear_ce=liger_flce) if use_liger else None
-    kwargs = {"dtype": dtype}
-    if attn_implementation:
-        kwargs["attn_implementation"] = attn_implementation
-    model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
-    model.config.use_cache = False
-    peft_config = LoraConfig(
-        r=lora_r,
-        lora_alpha=lora_alpha,
-        lora_dropout=0.0,
-        target_modules=target_modules,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    model = get_peft_model(model, peft_config)
-    model.to(device)
-    if compile_mode:
-        model = torch.compile(model, mode=compile_mode)
-    return model, liger_family
 
 
 def make_batch(model, batch_size: int, seq_len: int, device: torch.device,
@@ -348,32 +293,27 @@ def main():
               f"target_modules={args.target_modules}, dtype={dtype}, "
               f"attn={args.attn_implementation}, compile={args.compile_mode}, "
               f"liger={args.use_liger}, world_size={world_size}", flush=True)
-    model, liger_family = build_model(
-        args.model_name, args.lora_r, args.lora_alpha,
-        args.target_modules, dtype, device,
+    peft = build_peft_model(
+        model_name=args.model_name,
+        training_mode="lora",
+        target_modules=args.target_modules,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=0.0,
+        dtype=dtype,
         attn_implementation=args.attn_implementation,
-        compile_mode=args.compile_mode,
         use_liger=args.use_liger,
         liger_flce=args.liger_flce,
+        gradient_checkpointing=False,
+        compile_mode=args.compile_mode,
+        device=device,
+        world_size=world_size,
+        local_rank=local_rank,
     )
-    # Mirror train.py: keep a reference to the BARE peft+compile model so
-    # the optimizer's `lora_A`/`lora_B` named_modules walk works (DDP adds
-    # a `module.` prefix that breaks collect_lora_pairs). DDP's gradient
-    # hooks fire on the underlying nn.Parameter objects regardless, so
-    # optimizer state stays in sync by construction.
-    bare_model = model
-    if world_size > 1:
-        ddp_kwargs = {"device_ids": [local_rank], "output_device": local_rank} \
-            if device.type == "cuda" else {}
-        model = DDP(model, **ddp_kwargs)
-    # Resolved attn impl for the loaded base model (HF picks default if None).
-    # `bare_model` is the peft+compile model (no DDP); used for config
-    # introspection and optimizer construction since collect_lora_pairs
-    # walks named_modules and DDP adds a `module.` prefix.
-    base_for_cfg = (bare_model.base_model.model
-                    if hasattr(bare_model, "base_model") else bare_model)
-    resolved_attn = getattr(base_for_cfg.config, "_attn_implementation",
-                            args.attn_implementation or "default")
+    bare_model = peft.bare_model
+    model = peft.train_model
+    liger_family = peft.liger_applied
+    resolved_attn = peft.resolved_attn or (args.attn_implementation or "default")
     if is_main():
         print(f"# resolved attn_implementation={resolved_attn}", flush=True)
     pairs = collect_lora_pairs(bare_model)

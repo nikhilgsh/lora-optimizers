@@ -8,12 +8,9 @@ import time
 
 import torch
 from datasets import DatasetDict, load_dataset, load_from_disk
-from peft import LoraConfig, get_peft_model
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import (
-    AutoModelForCausalLM,
     AutoTokenizer,
     DataCollatorForLanguageModeling,
     get_scheduler,
@@ -36,8 +33,12 @@ from .mfu import (
     flops_per_token_for_mode,
 )
 from .optim import OPTIMIZER_CHOICES, build_optimizer, optimizer_config_dict
-from .ucv_layer import inject_ucv_adapters
-from .utils import collect_dense_target_weights, freeze_all_except_targets
+from .training_kernel import (
+    batch_to_device,
+    build_peft_model,
+    count_tokens,
+    run_one_train_step,
+)
 
 
 TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore", "ucv")
@@ -93,17 +94,6 @@ def format_example(example):
         if key in example and isinstance(example[key], str):
             return example[key]
     return "\n".join(f"{k}: {v}" for k, v in example.items() if isinstance(v, str))
-
-
-def _resolve_auto_attn() -> str:
-    if not torch.cuda.is_available():
-        return "sdpa"
-    major = torch.cuda.get_device_capability()[0]
-    if major >= 9:
-        return "flash_attention_4"
-    if major == 8:
-        return "flash_attention_2"
-    return "sdpa"
 
 
 def parse_target_modules(value):
@@ -240,14 +230,6 @@ def pack_train_dataset(train_tok, seq_length: int, pad_token_id: int):
     ]
     slots = pack_documents(docs, seq_length=seq_length, pad_token_id=pad_token_id)
     return Dataset.from_list(slots)
-
-
-def batch_to_device(batch, device):
-    return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
-
-
-def count_tokens(batch):
-    return int((batch["labels"] != -100).sum().item())
 
 
 def cuda_sync():
@@ -728,102 +710,28 @@ def main():
     parsed_target_modules = parse_target_modules(args.target_modules)
     svd_rank = args.svd_rank if args.svd_rank is not None else args.lora_r
 
-    # Liger Kernel patching MUST happen before from_pretrained.
-    liger_applied = None
-    if args.use_liger:
-        name_lower = args.model_name.lower()
-        if "olmo" in name_lower:
-            from liger_kernel.transformers import apply_liger_kernel_to_olmo2
-            apply_liger_kernel_to_olmo2()
-            liger_applied = "olmo2"
-        elif "llama" in name_lower:
-            from liger_kernel.transformers import apply_liger_kernel_to_llama
-            apply_liger_kernel_to_llama()
-            liger_applied = "llama"
-        elif "qwen3" in name_lower:
-            from liger_kernel.transformers import apply_liger_kernel_to_qwen3
-            apply_liger_kernel_to_qwen3()
-            liger_applied = "qwen3"
-        elif "qwen2" in name_lower or "qwen2.5" in name_lower:
-            from liger_kernel.transformers import apply_liger_kernel_to_qwen2
-            apply_liger_kernel_to_qwen2()
-            liger_applied = "qwen2"
-        else:
-            raise ValueError(
-                f"--use_liger requested but no Liger family matches model_name={args.model_name!r}. "
-                f"Supported substrings: olmo, llama, qwen2, qwen3."
-            )
-        print(f"# Liger Kernel applied: family={liger_applied}", flush=True)
-
-    model_kwargs = {"dtype": dtype} if dtype is not None else {}
-    attn_impl = args.attn_implementation
-    if attn_impl == "auto":
-        attn_impl = _resolve_auto_attn()
-        print(f"# attn_implementation=auto resolved to {attn_impl}", flush=True)
-    model_kwargs["attn_implementation"] = attn_impl
-    fallback_chain = {"flash_attention_4": "flash_attention_2",
-                      "flash_attention_2": "sdpa"}
-    while True:
-        try:
-            model = AutoModelForCausalLM.from_pretrained(args.model_name, **model_kwargs)
-            break
-        except (ImportError, ValueError) as e:
-            cur = model_kwargs["attn_implementation"]
-            nxt = fallback_chain.get(cur)
-            if nxt is None:
-                raise
-            print(f"# {cur} unavailable ({e}); falling back to {nxt}", flush=True)
-            model_kwargs["attn_implementation"] = nxt
-    model.config.use_cache = False
-    dense_targets = []
-    ucv_target_names: list[str] = []
-    if args.training_mode == "lora":
-        peft_config = LoraConfig(
-            r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            target_modules=parsed_target_modules,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-        model = get_peft_model(model, peft_config)
-        model.to(device)
-    elif args.training_mode == "ucv":
-        model.to(device)
-        ucv_injected = inject_ucv_adapters(
-            model,
-            target_modules=parsed_target_modules,
-            r=args.lora_r,
-            alpha=args.lora_alpha,
-        )
-        ucv_target_names = [name for name, _ in ucv_injected]
-    else:
-        model.to(device)
-        dense_targets = collect_dense_target_weights(model, parsed_target_modules)
-        freeze_all_except_targets(model, dense_targets)
-    if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-    # Save a reference to the un-DDP-un-compile-wrapped model. The custom
-    # optimizers walk model.named_modules() to find lora_A/lora_B parameters;
-    # passing the bare PEFT model avoids needing to pierce DDP/compile
-    # wrappers later. The actual training forward/backward still goes through
-    # the DDP+compile wrappers below.
-    bare_model = model
-    if world_size > 1:
-        # Wrap BEFORE compile (recommended order in PyTorch 2.x). DDP installs
-        # gradient hooks that all-reduce param.grad during backward; this
-        # keeps Adam-family optimizer state synchronized across ranks by
-        # construction (see docs/notes/polar_product/ddp_refactor_scope.md).
-        ddp_kwargs = {"device_ids": [local_rank], "output_device": local_rank} \
-            if device.type == "cuda" else {}
-        model = DDP(model, **ddp_kwargs)
-    if args.compile:
-        compile_kwargs = {}
-        if args.compile_mode != "default":
-            compile_kwargs["mode"] = args.compile_mode
-        model = torch.compile(model, **compile_kwargs)
+    peft = build_peft_model(
+        model_name=args.model_name,
+        training_mode=args.training_mode,
+        target_modules=parsed_target_modules,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        dtype=dtype,
+        attn_implementation=args.attn_implementation,
+        use_liger=args.use_liger,
+        liger_flce=False,
+        gradient_checkpointing=args.gradient_checkpointing,
+        compile_mode=(args.compile_mode if args.compile else None),
+        device=device,
+        world_size=world_size,
+        local_rank=local_rank,
+    )
+    bare_model = peft.bare_model
+    model = peft.train_model
+    liger_applied = peft.liger_applied
+    dense_targets = peft.dense_targets
+    ucv_target_names = peft.ucv_target_names
 
     if args.training_mode == "lora":
         if args.optimizer in {"svd-step-adamw", "svd-cumulative-adamw", "galore-adamw", "adam-ucv-core-lora"}:
@@ -1031,27 +939,12 @@ def main():
     model.train()
 
     for step in range(1, args.max_steps + 1):
-        optimizer.zero_grad(set_to_none=True)
-        step_loss = 0.0
-        step_tokens = 0
-
-        for _ in range(args.grad_accum_steps):
-            try:
-                batch = next(train_iter)
-            except StopIteration:
-                train_iter = iter(train_loader)
-                batch = next(train_iter)
-
-            batch = batch_to_device(batch, device)
-            tokens = count_tokens(batch)
-            outputs = model(**batch)
-            (outputs.loss / args.grad_accum_steps).backward()
-            step_loss += float(outputs.loss.detach()) * tokens
-            step_tokens += tokens
-
-        if args.max_grad_norm and args.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-        optimizer.step()
+        step_loss, step_tokens, train_iter = run_one_train_step(
+            model, optimizer, train_iter, train_loader,
+            grad_accum_steps=args.grad_accum_steps,
+            max_grad_norm=args.max_grad_norm,
+            device=device,
+        )
         scheduler.step()
         total_tokens += step_tokens
         window_loss_sum += step_loss
