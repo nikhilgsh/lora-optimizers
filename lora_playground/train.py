@@ -376,10 +376,14 @@ def make_parser():
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--compile_mode", default="default")
-    parser.add_argument("--attn_implementation", default="flash_attention_2",
+    parser.add_argument("--attn_implementation", default="sdpa",
                         choices=["eager", "sdpa", "flash_attention_2",
                                  "flash_attention_4", "auto"],
-                        help="Attention kernel for the base model. "
+                        help="Attention kernel for the base model. Default "
+                             "is `sdpa` because packed_v1's varlen path is "
+                             "incompatible with flash_attention_2's cu_seqlens "
+                             "shape contract; opt in to flash_attention_2 only "
+                             "for unpacked_v0 runs. "
                              "flash_attention_2 matches Schulman/Biderman recipes "
                              "and is ~1.5-2x faster on Llama/Qwen than sdpa. "
                              "flash_attention_4 (CuTeDSL) targets Hopper (sm_90) "

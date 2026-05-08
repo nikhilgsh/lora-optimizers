@@ -3477,6 +3477,128 @@ class AdamPolarProductLoRA(Optimizer):
                 # under the revised mechanism story.
                 rec["awc_lambda_core"] = (fdiff ** 2) / (2.0 * (fA ** 2 + fB ** 2) + 1e-30)
 
+                # Stage-0 chord-tight diagnostics (plan
+                # there-are-a-few-indexed-hickey).
+                #
+                # Probe D — Adam-preconditioning gauge residual.
+                # E := u_A A^T − B^T u_B (r × r). For raw factor gradients
+                # g_A = B^T G, g_B = G A^T (G = ∂L/∂W), so g_A A^T = B^T G A^T
+                # = B^T g_B identically — E_raw ≡ 0. Adam preconditioning
+                # breaks the identity; ‖E‖_F measures the geometric distortion
+                # induced by the per-coordinate v_t scaling. Generic
+                # diagnostic, useful across the broader optimizer family.
+                E_gauge = H_A - H_B                                  # reuse awc H_*
+                fE_gauge = float(E_gauge.norm())
+                rec["adam_gauge_residual_frob"] = fE_gauge
+                rec["adam_gauge_residual_rel"] = fE_gauge / max(fA, fB, 1e-30)
+
+                # Probes A, B, C-tight only meaningful under spectral_chord_tight
+                # (rho is the tight-chord scalar; op_geoA/op_geoB are the
+                # operator norms ‖D_A‖_2, ‖D_B‖_2 of the polar directions).
+                if self.magnitude_rule == "spectral_chord_tight":
+                    lr_f = float(lr)
+                    rho_f = float(rho.detach()) if torch.is_tensor(rho) else float(rho)
+
+                    # Probe A — chord slack u_chord = ‖B dA + dB A + dB dA‖_2 / lr.
+                    # The full chord (B+dB)(A+dA) − BA factors as L · R with
+                    # L = [B+dB, B] (m × 2r), R = [A+dA; −A] (2r × n).
+                    # Nonzero σ²(LR) = nonzero eigenvalues of (R R^T)(L^T L)
+                    # — both 2r × 2r. Comparing to lr gives slack vs the
+                    # worst-case submultiplicative bound used by rho.
+                    try:
+                        dA_f = dA.float()
+                        dB_f = dB.float()
+                        L_chord = torch.cat([B_f + dB_f, B_f], dim=1)        # (m, 2r)
+                        R_chord = torch.cat([A_f + dA_f, -A_f], dim=0)       # (2r, n)
+                        G_L = L_chord.T @ L_chord                            # (2r, 2r)
+                        G_R = R_chord @ R_chord.T                            # (2r, 2r)
+                        ev_chord = torch.linalg.eigvals(G_R @ G_L).real
+                        sigma_chord = float(ev_chord.clamp_min(0.0).max().sqrt())
+                    except torch._C._LinAlgError:
+                        sigma_chord = float("nan")
+                    rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
+
+                    # Probe B — direction-aware radius gain.
+                    # P = D_A / ‖D_A‖_2, Q = D_B / ‖D_B‖_2 are unit-norm
+                    # factor directions. With dA = -λ P, dB = -λ Q the safe
+                    # direction-aware bound is
+                    #   ‖ΔW‖_2 ≤ λ (‖B P‖_2 + ‖Q A‖_2) + λ² ‖Q P‖_2 = a λ + b λ².
+                    # Setting that to lr and solving for λ gives the tighter
+                    # (still safe) radius λ_dir vs the worst-case rho.
+                    try:
+                        op_A_safe = op_geoA + 1e-30
+                        op_B_safe = op_geoB + 1e-30
+                        P_dir = (geo_A.float() / op_A_safe).detach()         # (r, n)
+                        Q_dir = (geo_B.float() / op_B_safe).detach()         # (m, r)
+                        GBB = B_f.T @ B_f                                    # (r, r)
+                        GAA = A_f @ A_f.T                                    # (r, r)
+                        PPt = P_dir @ P_dir.T                                # (r, r)
+                        QtQ = Q_dir.T @ Q_dir                                # (r, r)
+                        sigma_BP = float(torch.linalg.eigvals(PPt @ GBB).real.clamp_min(0.0).max().sqrt())
+                        sigma_QA = float(torch.linalg.eigvals(QtQ @ GAA).real.clamp_min(0.0).max().sqrt())
+                        sigma_QP = float(torch.linalg.eigvals(QtQ @ PPt).real.clamp_min(0.0).max().sqrt())
+                    except torch._C._LinAlgError:
+                        sigma_BP = sigma_QA = sigma_QP = float("nan")
+                    a_dir = sigma_BP + sigma_QA
+                    b_dir = sigma_QP
+                    if a_dir != a_dir:  # NaN propagation
+                        lambda_dir = float("nan")
+                    elif b_dir <= 1e-30:
+                        lambda_dir = lr_f / max(a_dir, 1e-30)
+                    else:
+                        lambda_dir = (-a_dir + (a_dir * a_dir + 4.0 * b_dir * lr_f) ** 0.5) / (2.0 * b_dir)
+                    s_AB_f = float(s_AB) if torch.is_tensor(s_AB) else float(s_AB)
+                    rec["lambda_dir"] = lambda_dir
+                    rec["lambda_dir_gain"] = lambda_dir / max(rho_f, 1e-30)
+                    rec["dir_a"] = a_dir
+                    rec["dir_b"] = b_dir
+                    rec["dir_a_over_s"] = a_dir / max(s_AB_f, 1e-30)
+
+                    # Probe C-tight — saturation fraction and polar-vs-clip
+                    # cosine in WHITENED singular-value space at the
+                    # tight-chord threshold τ_A = rho / ‖D_A‖_2, the §8
+                    # saturating-regime threshold from
+                    # algorithm_tight_chord.md. Distinct from the existing
+                    # cos_polar_clip_A which uses the R-equal threshold
+                    # τ_R = ‖X_unc‖_F / √r. Polar maps every nonzero σ → τ,
+                    # clip maps σ → min(η σ, τ); they share singular vectors
+                    # so the cosine is a singular-value-only comparison.
+                    try:
+                        c_A_mat = (SB_half_inv @ u_A).float()
+                        c_B_mat = (u_B @ SA_half_inv).float()
+                        sv_cA_tight = torch.linalg.svdvals(c_A_mat)
+                        sv_cB_tight = torch.linalg.svdvals(c_B_mat)
+                        tau_A_tight = rho_f / max(float(op_geoA), 1e-30)
+                        tau_B_tight = rho_f / max(float(op_geoB), 1e-30)
+                        eta_sA = lr_f * sv_cA_tight
+                        eta_sB = lr_f * sv_cB_tight
+                        clip_A_sv = torch.clamp(eta_sA, max=tau_A_tight)
+                        clip_B_sv = torch.clamp(eta_sB, max=tau_B_tight)
+                        # Polar vector (in σ-space): all entries τ, length √r·τ.
+                        n_cA = clip_A_sv.numel()
+                        n_cB = clip_B_sv.numel()
+                        polar_norm_A = (n_cA ** 0.5) * tau_A_tight
+                        polar_norm_B = (n_cB ** 0.5) * tau_B_tight
+                        clip_norm_A = float(clip_A_sv.norm()) + 1e-30
+                        clip_norm_B = float(clip_B_sv.norm()) + 1e-30
+                        rec["cos_polar_clip_tight_A"] = (
+                            tau_A_tight * float(clip_A_sv.sum())
+                            / (max(polar_norm_A, 1e-30) * clip_norm_A)
+                        )
+                        rec["cos_polar_clip_tight_B"] = (
+                            tau_B_tight * float(clip_B_sv.sum())
+                            / (max(polar_norm_B, 1e-30) * clip_norm_B)
+                        )
+                        rec["sat_frac_tight_A"] = float((eta_sA >= tau_A_tight).float().mean())
+                        rec["sat_frac_tight_B"] = float((eta_sB >= tau_B_tight).float().mean())
+                        rec["tau_tight_A"] = tau_A_tight
+                        rec["tau_tight_B"] = tau_B_tight
+                    except torch._C._LinAlgError:
+                        for _k in ("cos_polar_clip_tight_A", "cos_polar_clip_tight_B",
+                                   "sat_frac_tight_A", "sat_frac_tight_B",
+                                   "tau_tight_A", "tau_tight_B"):
+                            rec[_k] = float("nan")
+
                 # H2/H3 — Picard contraction + polar sensitivity.
                 # Probe-step only (every diagnostics_every) since it costs 3
                 # extra polar-pipeline calls per pair. Independent of the

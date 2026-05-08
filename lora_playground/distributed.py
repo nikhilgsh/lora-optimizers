@@ -8,8 +8,10 @@ Single source of truth for the distributed-training contract:
   counts (used to make eval loss bit-for-bit identical to single-GPU).
 
 Launch with `torchrun --nproc_per_node=N train_lora.py ...`. torchrun sets
-`RANK`, `WORLD_SIZE`, `LOCAL_RANK` env vars; SLURM equivalents
-(`SLURM_PROCID`, `SLURM_NTASKS`, `SLURM_LOCALID`) are honored as fallback.
+`RANK`, `WORLD_SIZE`, `LOCAL_RANK` env vars. SLURM_LOCALID is honored as a
+LOCAL_RANK fallback for srun-launched DDP. SLURM_NTASKS / SLURM_PROCID are
+NOT honored: disBatch sweeps set SLURM_NTASKS=N for N independent tasks,
+which is not a DDP group.
 """
 from __future__ import annotations
 
@@ -33,8 +35,14 @@ def init_distributed() -> tuple[int, int, int]:
     Returns (rank, world_size, local_rank). Single-process mode returns
     (0, 1, 0) and does nothing else. Idempotent — safe to call twice.
     """
-    world_size = _env_int("WORLD_SIZE", ("SLURM_NTASKS",)) or 1
-    rank = _env_int("RANK", ("SLURM_PROCID",)) or 0
+    # Only honor explicitly-set torch env vars (set by torchrun). SLURM_NTASKS
+    # is NOT a reliable DDP signal: disBatch runs N independent tasks in one
+    # allocation and sets SLURM_NTASKS=N, but those are independent jobs, not
+    # an N-way DDP group. Falling back to SLURM_NTASKS here breaks every
+    # disBatch sweep cell because dist.init_process_group then expects RANK /
+    # MASTER_ADDR / MASTER_PORT env vars that disBatch does not set.
+    world_size = _env_int("WORLD_SIZE") or 1
+    rank = _env_int("RANK") or 0
     local_rank = _env_int("LOCAL_RANK", ("SLURM_LOCALID",)) or 0
 
     if world_size <= 1:
