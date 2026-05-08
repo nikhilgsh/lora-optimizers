@@ -346,6 +346,16 @@ def _finite_step_product_diagnostics(A_f, B_f, dA, dB, eps=1e-30):
     return out
 
 
+def _is_main_process() -> bool:
+    """Return True on rank 0 (single-process always). Used to gate the
+    JSONL emissions in this module so they don't duplicate under DDP."""
+    try:
+        from .distributed import is_main
+        return is_main()
+    except Exception:
+        return True
+
+
 def _emit_optim_diagnostics(step_count, per_pair_records):
     """Aggregate per-pair diagnostic records and emit one JSONL `optim_step` event.
 
@@ -364,7 +374,8 @@ def _emit_optim_diagnostics(step_count, per_pair_records):
         payload[k + "_median"] = statistics.median(vals)
         payload[k + "_min"] = min(vals)
         payload[k + "_max"] = max(vals)
-    print(json.dumps(payload, sort_keys=True), flush=True)
+    if _is_main_process():
+        print(json.dumps(payload, sort_keys=True), flush=True)
 
 OPTIMIZER_CHOICES = {
     "adamw",
@@ -3941,7 +3952,8 @@ class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
                             payload[k + '_median'] = statistics.median(vals)
                             payload[k + '_min'] = min(vals)
                             payload[k + '_max'] = max(vals)
-                    print(json.dumps(payload, sort_keys=True), flush=True)
+                    if _is_main_process():
+                        print(json.dumps(payload, sort_keys=True), flush=True)
         return out
 
 
@@ -4063,7 +4075,8 @@ class AdaFactorPolarProductLoRA(AdamPolarProductLoRA):
                             payload[k + '_median'] = statistics.median(vals)
                             payload[k + '_min'] = min(vals)
                             payload[k + '_max'] = max(vals)
-                    print(json.dumps(payload, sort_keys=True), flush=True)
+                    if _is_main_process():
+                        print(json.dumps(payload, sort_keys=True), flush=True)
         return out
 
 
