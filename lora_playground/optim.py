@@ -209,6 +209,33 @@ def _sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
     return sigma, v
 
 
+def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12):
+    """Exact σ_max for a non-symmetric rank-r product via Cholesky+eigvalsh.
+
+    For X, Y of compatible shape, σ²(XY) equals the largest eigenvalue of
+    L^T · G_outer · L where L = chol(G_inner + ε I) and (G_outer, G_inner)
+    is either (X^T X, Y Y^T) or (Y Y^T, X^T X). The matrix L^T · G_outer · L
+    is symmetric PSD so `eigvalsh` is exact and ~one launch per call.
+
+    Used for direction-aware ρ in `spectral_chord_direction` (variant 1 of
+    algorithm_tight_chord.md) and the Stage-0 chord_slack / lambda_dir_gain
+    probes. Replaces an earlier `eigvals` on the non-symmetric product
+    G_outer · G_inner which over-estimated σ_max² on real LoRA chord
+    matrices (complex-eigenvalue imaginary-part artifact); see CLAUDE.md
+    "Suspect the probe before the theorem".
+
+    Supports leading batch dims on both inputs.
+    """
+    last = G_inner.shape[-1]
+    diag = G_inner.diagonal(dim1=-2, dim2=-1).abs().mean(dim=-1, keepdim=True)
+    diag_load = (eps * diag.clamp_min(1e-30)).unsqueeze(-1)
+    I_r = torch.eye(last, dtype=G_inner.dtype, device=G_inner.device)
+    damped = G_inner + diag_load * I_r
+    Lc = torch.linalg.cholesky(damped)
+    M = Lc.transpose(-1, -2) @ G_outer @ Lc
+    return torch.linalg.eigvalsh(M).clamp_min(0.0).max(dim=-1).values.sqrt()
+
+
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
     """Dispatch (H + eps·I)^{-1/2}: 'eigh' uses spd_frac_power_inv; 'higham' uses
     Newton-Schulz (no eigh, ~10× faster on (r×r) at r=256 due to no kernel-launch
@@ -396,6 +423,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled-exact-chord",
     "adam-polar-product-lora-coupled-spectral-chord",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
+    "adam-polar-product-lora-coupled-spectral-chord-direction",
     "adam-soap-polar-product-lora",
     "adafactor-polar-product-lora",
     "sign-momentum-polar-product-lora",
@@ -2611,11 +2639,24 @@ class AdamPolarProductLoRA(Optimizer):
         #     bakes in conservative slack (substitutes ρ²≤ρ); the tight rule
         #     gives ρ ≈ √lr at s→0 (early training, B≈0) and ρ ≈ lr/s at
         #     s→∞. Larger ρ at small s where Spectron under-steps.
+        #   "spectral_chord_direction": variant 1 of algorithm_tight_chord.md.
+        #     Replace the worst-case scalar s with the direction-aware
+        #     a = ‖B·P‖_2 + ‖Q·A‖_2 and the cross-term 1 with b = ‖Q·P‖_2,
+        #     where P = geo_A / ‖geo_A‖_2 and Q = geo_B / ‖geo_B‖_2 are the
+        #     unit-norm polar directions. λ = (-a + √(a²+4·b·lr))/(2b) (or
+        #     lr/a if b=0) is the largest λ such that the direction-aware
+        #     bound ‖ΔW‖_2 ≤ a·λ + b·λ² ≤ lr holds — strictly tighter than
+        #     spectral_chord_tight's worst-case ρ when P,Q misaligned with B,A
+        #     top singular directions. Stage-0 diagnostics
+        #     (docs/notes/polar_product/tight_chord_diagnostics_stage0.md)
+        #     measured λ_dir_gain ≈ 1.3-1.4 at r=64, growing with training.
         if magnitude_rule not in {"adam_frobenius", "spectral_chord",
-                                  "spectral_chord_tight"}:
+                                  "spectral_chord_tight",
+                                  "spectral_chord_direction"}:
             raise ValueError(
                 f"magnitude_rule must be 'adam_frobenius', 'spectral_chord', "
-                f"or 'spectral_chord_tight', got {magnitude_rule!r}")
+                f"'spectral_chord_tight', or 'spectral_chord_direction', "
+                f"got {magnitude_rule!r}")
         self.magnitude_rule = magnitude_rule
 
         # Shape-group bookkeeping for the batched hot path. Pairs with the
@@ -2828,10 +2869,12 @@ class AdamPolarProductLoRA(Optimizer):
             return False
         if self.polar_method != "ns":
             return False
-        # adam_frobenius, spectral_chord, spectral_chord_tight all implemented
-        # in batched path. Future magnitude rules need an explicit branch.
+        # adam_frobenius, spectral_chord, spectral_chord_tight, and
+        # spectral_chord_direction (variant 1) all implemented in batched
+        # path. Future magnitude rules need an explicit branch.
         if getattr(self, "magnitude_rule", "adam_frobenius") not in (
-                "adam_frobenius", "spectral_chord", "spectral_chord_tight"):
+                "adam_frobenius", "spectral_chord", "spectral_chord_tight",
+                "spectral_chord_direction"):
             return False
         # anderson_m, end_rms_align only modify the cross-term path
         # (k_iter > 0). At picard_iters=1 each is mathematically a no-op,
@@ -2956,7 +2999,9 @@ class AdamPolarProductLoRA(Optimizer):
             # Gram. Replaces the warm-started 3-iter power iter; same fix as
             # geo_A / geo_B (commit 57a932b). See docs/notes/polar_product/
             # tight_chord_diagnostics_stage0.md F2 mechanism update.
-            if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
+            if self.magnitude_rule in ("spectral_chord",
+                                       "spectral_chord_tight",
+                                       "spectral_chord_direction"):
                 if A_f.shape[-2] <= A_f.shape[-1]:
                     gram_A_s = A_f @ A_f.transpose(-1, -2)
                 else:
@@ -2971,11 +3016,20 @@ class AdamPolarProductLoRA(Optimizer):
                            .clamp_min(0.0).max(dim=-1).values.sqrt())
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
-                else:  # spectral_chord_tight: exact root of ρ²+sρ-lr=0
+                elif self.magnitude_rule == "spectral_chord_tight":
                     s_AB = sigma_A + sigma_B
                     rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
+                else:  # spectral_chord_direction: dA/dB use λ_dir, but
+                       # rho computed for diagnostic comparison consistency
+                    s_AB = sigma_A + sigma_B
+                    rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
+                # Cache batched Grams for direction-aware σ_max in the loop.
+                GBB_s = B_f.transpose(-1, -2) @ B_f                    # (N, r, r)
+                GAA_s = A_f @ A_f.transpose(-1, -2)                    # (N, r, r)
             else:
                 rho = None
+                GBB_s = None
+                GAA_s = None
             for k_iter in range(self.picard_iters):
                 with maybe_time(timer, "picard_cross_coupling"):
                     if k_iter > 0:
@@ -3047,21 +3101,8 @@ class AdamPolarProductLoRA(Optimizer):
                         ).float()
                     with maybe_time(timer, "polar_unwhiten_rescale"):
                         if self.magnitude_rule in ("spectral_chord",
-                                                   "spectral_chord_tight"):
-                            # Substitution 1' (algorithm.md §6.1): replace
-                            # the Frobenius rescale with operator-norm trust
-                            # region: dA = -ρ · geo_A / σ_max(geo_A), where
-                            # ρ was computed once per step (Spectron loose
-                            # form: ρ=lr/(s+1); tight form: exact root of
-                            # ρ²+sρ-lr=0). Same rescale shape either way.
-                            # σ_max(geo_A), σ_max(geo_B) via batched eigh on
-                            # the r×r Gram. Replaces the prior 8-iter
-                            # cold-start power iteration which under-estimated
-                            # σ_max(geo_A) by 28-63% at r=64 (Stage-0 F2; see
-                            # docs/notes/polar_product/tight_chord_diagnostics_stage0.md).
-                            # The polar-map spectrum is near-flat so power-iter
-                            # convergence (σ_2/σ_1)^16 is slow; exact eigh on
-                            # r×r is ~150 μs/pair on A100 (~1% step overhead).
+                                                   "spectral_chord_tight",
+                                                   "spectral_chord_direction"):
                             geo_A = SB_half_inv_k @ P_A
                             geo_B = P_B @ SA_half_inv_k
                             geoA_f = geo_A.float()
@@ -3074,16 +3115,41 @@ class AdamPolarProductLoRA(Optimizer):
                                 gram_B_b = geoB_f @ geoB_f.transpose(-1, -2)
                             else:
                                 gram_B_b = geoB_f.transpose(-1, -2) @ geoB_f
-                            op_geoA = (torch.linalg.eigvalsh(gram_A_b)
-                                       .clamp_min(0.0).max(dim=-1).values.sqrt())
-                            op_geoB = (torch.linalg.eigvalsh(gram_B_b)
-                                       .clamp_min(0.0).max(dim=-1).values.sqrt())
-                            op_geoA = (op_geoA + 1e-30).unsqueeze(-1).unsqueeze(-1)
-                            op_geoB = (op_geoB + 1e-30).unsqueeze(-1).unsqueeze(-1)
-                            rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
-                            dA = -(rho_unsq / op_geoA) * geo_A
-                            dB = -(self.lora_plus_multiplier *
-                                   rho_unsq / op_geoB) * geo_B
+                            op_geoA_b = (torch.linalg.eigvalsh(gram_A_b)
+                                         .clamp_min(0.0).max(dim=-1).values.sqrt())
+                            op_geoB_b = (torch.linalg.eigvalsh(gram_B_b)
+                                         .clamp_min(0.0).max(dim=-1).values.sqrt())
+                            op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                            op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                            if self.magnitude_rule == "spectral_chord_direction":
+                                # Variant 1 batched: λ_dir from
+                                # a·λ + b·λ² = lr per pair.
+                                P_dir = geoA_f / op_geoA              # (N, r, n)
+                                Q_dir = geoB_f / op_geoB              # (N, m, r)
+                                PPt_b = P_dir @ P_dir.transpose(-1, -2)
+                                QtQ_b = Q_dir.transpose(-1, -2) @ Q_dir
+                                sigma_BP_b = _sigma_max_chol_eigvalsh(GBB_s, PPt_b)
+                                sigma_QA_b = _sigma_max_chol_eigvalsh(GAA_s, QtQ_b)
+                                sigma_QP_b = _sigma_max_chol_eigvalsh(PPt_b, QtQ_b)
+                                a_b = (sigma_BP_b + sigma_QA_b).clamp_min(1e-30)
+                                b_b = sigma_QP_b
+                                # Per-pair quadratic: pick lr/a where b≈0,
+                                # else closed-form root. b_b is (N,) so just
+                                # use the closed form everywhere with safe
+                                # denominator clamping.
+                                disc = a_b * a_b + 4.0 * b_b * lr
+                                lam_quad = (-a_b + torch.sqrt(disc)) / (2.0 * b_b.clamp_min(1e-30))
+                                lam_lin = lr / a_b
+                                lam = torch.where(b_b > 1e-30, lam_quad, lam_lin)
+                                lam_unsq = lam.unsqueeze(-1).unsqueeze(-1)
+                                dA = -lam_unsq * P_dir
+                                dB = -(self.lora_plus_multiplier *
+                                       lam_unsq) * Q_dir
+                            else:
+                                rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
+                                dA = -(rho_unsq / op_geoA) * geo_A
+                                dB = -(self.lora_plus_multiplier *
+                                       rho_unsq / op_geoB) * geo_B
                         else:
                             from ._batched_polar import unwhiten_rescale_frob_batched
                             dA, dB = unwhiten_rescale_frob_batched(
@@ -3186,16 +3252,15 @@ class AdamPolarProductLoRA(Optimizer):
             # in end_rms_align mode (vs ‖u_A_eff‖ in the original mode).
             uA_norm_orig = u_A.norm()
             uB_norm_orig = u_B.norm()
-            # σ_max(A), σ_max(B) for the spectral_chord magnitude rule. Computed
-            # via exact eigh on the r×r Gram (A·Aᵀ on the smaller side). The
-            # 3-iter warm-started power iter that lived here previously was
-            # under-estimating σ_max enough that the resulting ρ was too large,
-            # and the chord-bound ‖ΔW‖_op ≤ lr was breached up to 2.4× at r=64
-            # — measured post the geo_A/geo_B eigh fix (commit 57a932b), which
-            # ruled out the inner-loop power-iter as the dominant cause. See
-            # docs/notes/polar_product/tight_chord_diagnostics_stage0.md (F2
-            # mechanism update). Eigh on r×r is exact and ~50 μs/pair on A100.
-            if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
+            # σ_max(A), σ_max(B) for the spectral_chord magnitude rules.
+            # Computed via exact eigh on the r×r Gram (smaller side). For
+            # spectral_chord_direction the values are still useful as a
+            # sanity reference (dir_a_over_s diagnostic) but ρ uses the
+            # direction-aware a, b instead. See diagnostics doc for the
+            # power-iter-under-estimate story that motivated eigh here.
+            if self.magnitude_rule in ("spectral_chord",
+                                       "spectral_chord_tight",
+                                       "spectral_chord_direction"):
                 if A_f.shape[0] <= A_f.shape[1]:
                     gram_A_t = A_f @ A_f.transpose(-1, -2)
                 else:
@@ -3208,9 +3273,21 @@ class AdamPolarProductLoRA(Optimizer):
                 sigma_B_t = torch.linalg.eigvalsh(gram_B_t).clamp_min(0.0).max().sqrt()
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A_t + sigma_B_t + 1.0)
-                else:  # spectral_chord_tight
+                elif self.magnitude_rule == "spectral_chord_tight":
                     s_AB = sigma_A_t + sigma_B_t
                     rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
+                else:
+                    # spectral_chord_direction: dA/dB use the per-Picard-iter
+                    # λ_dir (direction-aware) rather than this scalar ρ. The
+                    # tight-chord ρ value is computed anyway so the diagnostic
+                    # probe block can report lambda_dir_gain = λ_dir / ρ_tight
+                    # as a meaningful comparison.
+                    s_AB = sigma_A_t + sigma_B_t
+                    rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
+                # Cache GBB, GAA for the direction-aware σ_max(BP), σ_max(QA)
+                # computations inside the Picard loop (variant 1).
+                GBB_t = B_f.transpose(-1, -2) @ B_f                   # (r, r)
+                GAA_t = A_f @ A_f.transpose(-1, -2)                   # (r, r)
             # Anderson history: list of (x_flat, g_flat) where x is the input
             # to G and g = G(x) is the output. Only used when anderson_m > 0.
             and_xs = [] if self.anderson_m > 0 else None
@@ -3250,23 +3327,13 @@ class AdamPolarProductLoRA(Optimizer):
                 with maybe_time(timer, "picard_polar_pipeline"):
                     dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
                         self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv_k, SB_half_inv_k, lr)
-                if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
-                    # Substitution 1' (algorithm.md §6.1): rescale per-block
-                    # direction to operator norm ρ. ρ enforces the
-                    # chord-spectral trust region ‖ΔW‖_op ≤ lr (loose form
-                    # uses Spectron's ρ=lr/(s+1); tight form uses the exact
-                    # quadratic root). σ_max(geo_A), σ_max(geo_B) via exact
-                    # eigh on the r×r Gram (geo · geoᵀ on the smaller side).
-                    # Replaces the prior 8-iter cold-start power iteration
-                    # which under-estimated σ_max(geo_A) by 28-63% at r=64
-                    # because polar-map output spectra are near-flat
-                    # (σ_2/σ_1 → 1, slow geometric convergence). Under-estimate
-                    # caused ‖dA‖_op > ρ → ‖ΔW‖_op > lr → safety bound breach
-                    # (Stage-0 finding F2; see
-                    # docs/notes/polar_product/tight_chord_diagnostics_stage0.md).
-                    # Eigh on r×r is deterministic, exact, ~150 μs/pair on A100
-                    # (~1% step overhead at r=64). LoRA r=16/64 is the natural
-                    # regime for this trade.
+                if self.magnitude_rule in ("spectral_chord",
+                                           "spectral_chord_tight",
+                                           "spectral_chord_direction"):
+                    # σ_max(geo_A), σ_max(geo_B) via exact eigh on the r×r
+                    # Gram (geo · geoᵀ on the smaller side). Required for
+                    # both the chord-rescale normalization (dA = -·geo_A/op_geoA)
+                    # and the direction-aware-bound coefficients.
                     geoA_f = geo_A.float()
                     geoB_f = geo_B.float()
                     if geoA_f.shape[0] <= geoA_f.shape[1]:
@@ -3281,13 +3348,44 @@ class AdamPolarProductLoRA(Optimizer):
                     op_geoB = torch.linalg.eigvalsh(gram_B).clamp_min(0.0).max().sqrt()
                     op_geoA = op_geoA + 1e-30
                     op_geoB = op_geoB + 1e-30
-                    dA = -rho * geo_A / op_geoA
-                    dB = -self.lora_plus_multiplier * rho * geo_B / op_geoB
-                    # Re-expose for downstream diagnostics consistency.
-                    gA_norm = op_geoA
-                    gB_norm = op_geoB
-                    uA_norm = rho.detach() if rho.dim() > 0 else rho
-                    uB_norm = rho.detach() if rho.dim() > 0 else rho
+                    if self.magnitude_rule == "spectral_chord_direction":
+                        # Variant 1: solve a·λ + b·λ² = lr with the
+                        # direction-aware coefficients
+                        #   a = ‖B·P‖_2 + ‖Q·A‖_2,  b = ‖Q·P‖_2,
+                        # P = geo_A / σ_max(geo_A), Q = geo_B / σ_max(geo_B).
+                        # σ_max(B·P), σ_max(Q·A), σ_max(Q·P) via Cholesky+
+                        # eigvalsh symmetric reduction on r×r — exact, ~one
+                        # eigvalsh launch per quantity per pair per Picard
+                        # iter. See algorithm_tight_chord.md variant 1 and
+                        # tight_chord_diagnostics_stage0.md F3 finding.
+                        P_dir = (geoA_f / op_geoA).detach()           # (r, n), op-norm 1
+                        Q_dir = (geoB_f / op_geoB).detach()           # (m, r), op-norm 1
+                        PPt = P_dir @ P_dir.transpose(-1, -2)         # (r, r) sym PSD
+                        QtQ = Q_dir.transpose(-1, -2) @ Q_dir         # (r, r) sym PSD
+                        sigma_BP = _sigma_max_chol_eigvalsh(GBB_t, PPt)
+                        sigma_QA = _sigma_max_chol_eigvalsh(GAA_t, QtQ)
+                        sigma_QP = _sigma_max_chol_eigvalsh(PPt, QtQ)
+                        a_dir = sigma_BP + sigma_QA
+                        b_dir = sigma_QP
+                        if float(b_dir) > 1e-30:
+                            lam = (-a_dir + torch.sqrt(
+                                a_dir * a_dir + 4.0 * b_dir * lr)) / (2.0 * b_dir)
+                        else:
+                            lam = lr / a_dir.clamp_min(1e-30)
+                        dA = -lam * P_dir
+                        dB = -self.lora_plus_multiplier * lam * Q_dir
+                        gA_norm = op_geoA
+                        gB_norm = op_geoB
+                        uA_norm = lam.detach() if lam.dim() > 0 else lam
+                        uB_norm = lam.detach() if lam.dim() > 0 else lam
+                    else:
+                        # spectral_chord / spectral_chord_tight: dA = -ρ · P
+                        dA = -rho * geo_A / op_geoA
+                        dB = -self.lora_plus_multiplier * rho * geo_B / op_geoB
+                        gA_norm = op_geoA
+                        gB_norm = op_geoB
+                        uA_norm = rho.detach() if rho.dim() > 0 else rho
+                        uB_norm = rho.detach() if rho.dim() > 0 else rho
                 if self.end_rms_align:
                     # Override the pipeline's RMS-align: rescale to the
                     # ORIGINAL Adam-direction norm rather than ‖u_A_eff‖.
@@ -3538,7 +3636,8 @@ class AdamPolarProductLoRA(Optimizer):
                 # Probes A, B, C-tight only meaningful under spectral_chord_tight
                 # (rho is the tight-chord scalar; op_geoA/op_geoB are the
                 # operator norms ‖D_A‖_2, ‖D_B‖_2 of the polar directions).
-                if self.magnitude_rule == "spectral_chord_tight":
+                if self.magnitude_rule in ("spectral_chord_tight",
+                                           "spectral_chord_direction"):
                     lr_f = float(lr)
                     rho_f = float(rho.detach()) if torch.is_tensor(rho) else float(rho)
 
@@ -7259,6 +7358,35 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-direction":
+        # Variant 1 of algorithm_tight_chord.md: direction-aware ρ in place
+        # of worst-case ρ. Solves a·λ + b·λ² = lr per pair per Picard iter
+        # with a = ‖B·P‖_2 + ‖Q·A‖_2, b = ‖Q·P‖_2 — strictly tighter than
+        # chord_tight's s·ρ + ρ² = lr when P,Q misaligned with B,A top
+        # singular directions. Stage-0 diagnostics measured λ_dir_gain ≈
+        # 1.3-1.4 at r=64, growing with training; expected ~5-15% loss-
+        # per-step improvement vs chord_tight at 2k canonical horizon.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_direction",
         )
     if optimizer_type == "adam-polar-product-lora-coupled-exact-chord":
         # Variational target is the actual ΔW = (B+ΔB)(A+ΔA) - BA, not its
