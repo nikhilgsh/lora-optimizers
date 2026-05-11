@@ -2952,19 +2952,23 @@ class AdamPolarProductLoRA(Optimizer):
             SA_half_inv_k = SA_half_inv
             SB_half_inv_k = SB_half_inv
 
-            # spectral_chord: σ_max(A), σ_max(B) once per step (factors don't
-            # change inside the Picard loop). Warm-started across optimizer
-            # steps via `gs['u_A_top_stack']` etc.; n_iters=3 with warm-start
-            # matches n_iters=8 cold-start accuracy. ρ = lr/(σ_A+σ_B+1) is the
-            # operator-norm trust-region radius (Substitution 1', algorithm.md
-            # §6.1).
+            # spectral_chord: σ_max(A), σ_max(B) via batched eigh on the r×r
+            # Gram. Replaces the warm-started 3-iter power iter; same fix as
+            # geo_A / geo_B (commit 57a932b). See docs/notes/polar_product/
+            # tight_chord_diagnostics_stage0.md F2 mechanism update.
             if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
-                sigma_A, vA_new = _sigma_max_power_iter_batched(
-                    A_f, v_init=gs.get('u_A_top_stack'), n_iters=3)
-                sigma_B, vB_new = _sigma_max_power_iter_batched(
-                    B_f, v_init=gs.get('u_B_top_stack'), n_iters=3)
-                gs['u_A_top_stack'] = vA_new.detach()
-                gs['u_B_top_stack'] = vB_new.detach()
+                if A_f.shape[-2] <= A_f.shape[-1]:
+                    gram_A_s = A_f @ A_f.transpose(-1, -2)
+                else:
+                    gram_A_s = A_f.transpose(-1, -2) @ A_f
+                if B_f.shape[-2] <= B_f.shape[-1]:
+                    gram_B_s = B_f @ B_f.transpose(-1, -2)
+                else:
+                    gram_B_s = B_f.transpose(-1, -2) @ B_f
+                sigma_A = (torch.linalg.eigvalsh(gram_A_s)
+                           .clamp_min(0.0).max(dim=-1).values.sqrt())
+                sigma_B = (torch.linalg.eigvalsh(gram_B_s)
+                           .clamp_min(0.0).max(dim=-1).values.sqrt())
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
                 else:  # spectral_chord_tight: exact root of ρ²+sρ-lr=0
@@ -3182,18 +3186,26 @@ class AdamPolarProductLoRA(Optimizer):
             # in end_rms_align mode (vs ‖u_A_eff‖ in the original mode).
             uA_norm_orig = u_A.norm()
             uB_norm_orig = u_B.norm()
-            # σ_max(A), σ_max(B) for the spectral_chord magnitude rule. A and
-            # B don't change inside the Picard loop — compute once per step
-            # with warm-started top singular vectors cached in pair_state.
-            # n_iters=3 with warm-start (factor changes ~η each step) gives
-            # accuracy comparable to n_iters=8 cold-start.
+            # σ_max(A), σ_max(B) for the spectral_chord magnitude rule. Computed
+            # via exact eigh on the r×r Gram (A·Aᵀ on the smaller side). The
+            # 3-iter warm-started power iter that lived here previously was
+            # under-estimating σ_max enough that the resulting ρ was too large,
+            # and the chord-bound ‖ΔW‖_op ≤ lr was breached up to 2.4× at r=64
+            # — measured post the geo_A/geo_B eigh fix (commit 57a932b), which
+            # ruled out the inner-loop power-iter as the dominant cause. See
+            # docs/notes/polar_product/tight_chord_diagnostics_stage0.md (F2
+            # mechanism update). Eigh on r×r is exact and ~50 μs/pair on A100.
             if self.magnitude_rule in ("spectral_chord", "spectral_chord_tight"):
-                vA_init = state.get('u_A_top')
-                vB_init = state.get('u_B_top')
-                sigma_A_t, vA_new = _sigma_max_power_iter(A_f, v_init=vA_init, n_iters=3)
-                sigma_B_t, vB_new = _sigma_max_power_iter(B_f, v_init=vB_init, n_iters=3)
-                state['u_A_top'] = vA_new.detach()
-                state['u_B_top'] = vB_new.detach()
+                if A_f.shape[0] <= A_f.shape[1]:
+                    gram_A_t = A_f @ A_f.transpose(-1, -2)
+                else:
+                    gram_A_t = A_f.transpose(-1, -2) @ A_f
+                if B_f.shape[0] <= B_f.shape[1]:
+                    gram_B_t = B_f @ B_f.transpose(-1, -2)
+                else:
+                    gram_B_t = B_f.transpose(-1, -2) @ B_f
+                sigma_A_t = torch.linalg.eigvalsh(gram_A_t).clamp_min(0.0).max().sqrt()
+                sigma_B_t = torch.linalg.eigvalsh(gram_B_t).clamp_min(0.0).max().sqrt()
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A_t + sigma_B_t + 1.0)
                 else:  # spectral_chord_tight
