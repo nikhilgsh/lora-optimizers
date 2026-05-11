@@ -3551,12 +3551,33 @@ class AdamPolarProductLoRA(Optimizer):
                     try:
                         dA_f = dA.float()
                         dB_f = dB.float()
+                        # σ_max of the chord (B+dB)(A+dA) − BA via 2r×2r SYMMETRIC
+                        # reduction. The chord factors as L·R with
+                        # L = [B+dB, B] (m × 2r), R = [A+dA; −A] (2r × n).
+                        # σ²_max(LR) = λ_max(LR(LR)^T) = λ_max(L (R R^T) L^T).
+                        # Via cyclic eigenvalues + symmetrization,
+                        # σ²_max(LR) = λ_max(L_chol^T · (R R^T) · L_chol)
+                        # where L_chol = chol(L^T L). The bracketed matrix is
+                        # symmetric PSD on R^(2r×2r), so eigvalsh is exact.
+                        # An earlier version of this probe used `eigvals` on
+                        # the non-symmetric product (R R^T)(L^T L) and
+                        # was over-estimating σ_max² (complex eigenvalue
+                        # imaginary parts inflating .real.max()) — verified
+                        # vs direct SVD; see CLAUDE.md "Suspect the probe
+                        # before the theorem". Equivalent materialize-then-SVD
+                        # of the full chord matrix is correct but catastrophic
+                        # for lm_head-shape layers (chord_mat ≈ 200000 × 2048).
                         L_chord = torch.cat([B_f + dB_f, B_f], dim=1)        # (m, 2r)
                         R_chord = torch.cat([A_f + dA_f, -A_f], dim=0)       # (2r, n)
-                        G_L = L_chord.T @ L_chord                            # (2r, 2r)
-                        G_R = R_chord @ R_chord.T                            # (2r, 2r)
-                        ev_chord = torch.linalg.eigvals(G_R @ G_L).real
-                        sigma_chord = float(ev_chord.clamp_min(0.0).max().sqrt())
+                        G_L = L_chord.T @ L_chord                            # (2r, 2r) sym PSD
+                        G_R = R_chord @ R_chord.T                            # (2r, 2r) sym PSD
+                        # Damp G_L for safe cholesky on rank-deficient cases.
+                        diag_load = 1e-12 * G_L.diagonal().abs().mean().clamp_min(1e-30)
+                        G_L_damped = G_L + diag_load * torch.eye(
+                            G_L.shape[-1], dtype=G_L.dtype, device=G_L.device)
+                        L_chol = torch.linalg.cholesky(G_L_damped)
+                        M_sym = L_chol.T @ G_R @ L_chol                      # (2r, 2r) sym PSD
+                        sigma_chord = float(torch.linalg.eigvalsh(M_sym).clamp_min(0.0).max().sqrt())
                     except torch._C._LinAlgError:
                         sigma_chord = float("nan")
                     rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
@@ -3573,13 +3594,26 @@ class AdamPolarProductLoRA(Optimizer):
                         op_B_safe = op_geoB + 1e-30
                         P_dir = (geo_A.float() / op_A_safe).detach()         # (r, n)
                         Q_dir = (geo_B.float() / op_B_safe).detach()         # (m, r)
-                        GBB = B_f.T @ B_f                                    # (r, r)
-                        GAA = A_f @ A_f.T                                    # (r, r)
-                        PPt = P_dir @ P_dir.T                                # (r, r)
-                        QtQ = Q_dir.T @ Q_dir                                # (r, r)
-                        sigma_BP = float(torch.linalg.eigvals(PPt @ GBB).real.clamp_min(0.0).max().sqrt())
-                        sigma_QA = float(torch.linalg.eigvals(QtQ @ GAA).real.clamp_min(0.0).max().sqrt())
-                        sigma_QP = float(torch.linalg.eigvals(QtQ @ PPt).real.clamp_min(0.0).max().sqrt())
+                        GBB = B_f.T @ B_f                                    # (r, r) sym PSD
+                        GAA = A_f @ A_f.T                                    # (r, r) sym PSD
+                        PPt = P_dir @ P_dir.T                                # (r, r) sym PSD
+                        QtQ = Q_dir.T @ Q_dir                                # (r, r) sym PSD
+                        # σ²_max(BP) = λ_max(L_PPt^T · GBB · L_PPt), L_PPt =
+                        # chol(PPt). Eigvalsh on the SYMMETRIC reduced form
+                        # (formerly used `eigvals` on the non-symmetric
+                        # PPt @ GBB which over-estimated; same issue as the
+                        # chord-slack probe).
+                        def _sigma_max_via_chol_eigh(G_outer, G_inner):
+                            diag_load = 1e-12 * G_inner.diagonal().abs().mean().clamp_min(1e-30)
+                            damped = G_inner + diag_load * torch.eye(
+                                G_inner.shape[-1], dtype=G_inner.dtype,
+                                device=G_inner.device)
+                            Lc = torch.linalg.cholesky(damped)
+                            M = Lc.T @ G_outer @ Lc
+                            return float(torch.linalg.eigvalsh(M).clamp_min(0.0).max().sqrt())
+                        sigma_BP = _sigma_max_via_chol_eigh(GBB, PPt)
+                        sigma_QA = _sigma_max_via_chol_eigh(GAA, QtQ)
+                        sigma_QP = _sigma_max_via_chol_eigh(PPt, QtQ)
                     except torch._C._LinAlgError:
                         sigma_BP = sigma_QA = sigma_QP = float("nan")
                     a_dir = sigma_BP + sigma_QA
