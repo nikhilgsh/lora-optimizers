@@ -423,6 +423,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled-exact-chord",
     "adam-polar-product-lora-coupled-spectral-chord",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
+    "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening",
     "adam-polar-product-lora-coupled-spectral-chord-direction",
     "adam-soap-polar-product-lora",
     "adafactor-polar-product-lora",
@@ -2527,7 +2528,8 @@ class AdamPolarProductLoRA(Optimizer):
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
-                 magnitude_rule="adam_frobenius"):
+                 magnitude_rule="adam_frobenius",
+                 disable_whitening=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2624,6 +2626,13 @@ class AdamPolarProductLoRA(Optimizer):
         # recomputed each Picard iterate (k≥1) since A_eff, B_eff change.
         # See docs/notes/polar_product/algorithm.md §2 remark.
         self.exact_chord = bool(exact_chord)
+        # Whitening ablation. When True, replace S_A^{-1/2}, S_B^{-1/2} with
+        # the identity at every precond_refresh. The polar pipeline then
+        # reduces to per-factor polar on the raw Adam direction
+        # (≈ algorithm_tight_chord.md §2 program (W) — per-factor Muon-style
+        # update). Tests the importance of whitening for chord-tight's
+        # variational interpretation.
+        self.disable_whitening = bool(disable_whitening)
         # Magnitude rule for the per-block update — Substitution 1 vs 1' in
         # docs/notes/polar_product/algorithm.md §6/§6.1.
         #   "adam_frobenius" (default): rescale per-block direction to
@@ -2957,28 +2966,39 @@ class AdamPolarProductLoRA(Optimizer):
             # eigh reference.
             if (step_count - 1) % self.precond_refresh_every == 0:
                 with maybe_time(timer, "precond_refresh"):
-                    SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
-                    SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
-                    if self.precond_method == "higham":
-                        from .utils import spd_inv_sqrt_higham_batched
-                        gs['SA_half_inv'].copy_(spd_inv_sqrt_higham_batched(
-                            SA_grams, n_iters=self.higham_iters, eps=self.delta,
-                        ))
-                        gs['SB_half_inv'].copy_(spd_inv_sqrt_higham_batched(
-                            SB_grams, n_iters=self.higham_iters, eps=self.delta,
-                        ))
+                    if self.disable_whitening:
+                        # Identity whitening: SA = SB = I broadcast across pairs.
+                        I_A = torch.eye(gs['SA_half_inv'].shape[-1],
+                                        dtype=gs['SA_half_inv'].dtype,
+                                        device=gs['SA_half_inv'].device)
+                        I_B = torch.eye(gs['SB_half_inv'].shape[-1],
+                                        dtype=gs['SB_half_inv'].dtype,
+                                        device=gs['SB_half_inv'].device)
+                        gs['SA_half_inv'].copy_(I_A.expand_as(gs['SA_half_inv']))
+                        gs['SB_half_inv'].copy_(I_B.expand_as(gs['SB_half_inv']))
                     else:
-                        for k in range(N):
-                            gs['SA_half_inv'][k] = _spd_inv_half(
-                                SA_grams[k], eps=self.delta,
-                                method=self.precond_method,
-                                higham_iters=self.higham_iters,
-                            )
-                            gs['SB_half_inv'][k] = _spd_inv_half(
-                                SB_grams[k], eps=self.delta,
-                                method=self.precond_method,
-                                higham_iters=self.higham_iters,
-                            )
+                        SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
+                        SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
+                        if self.precond_method == "higham":
+                            from .utils import spd_inv_sqrt_higham_batched
+                            gs['SA_half_inv'].copy_(spd_inv_sqrt_higham_batched(
+                                SA_grams, n_iters=self.higham_iters, eps=self.delta,
+                            ))
+                            gs['SB_half_inv'].copy_(spd_inv_sqrt_higham_batched(
+                                SB_grams, n_iters=self.higham_iters, eps=self.delta,
+                            ))
+                        else:
+                            for k in range(N):
+                                gs['SA_half_inv'][k] = _spd_inv_half(
+                                    SA_grams[k], eps=self.delta,
+                                    method=self.precond_method,
+                                    higham_iters=self.higham_iters,
+                                )
+                                gs['SB_half_inv'][k] = _spd_inv_half(
+                                    SB_grams[k], eps=self.delta,
+                                    method=self.precond_method,
+                                    higham_iters=self.higham_iters,
+                                )
             SA_half_inv = gs['SA_half_inv']
             SB_half_inv = gs['SB_half_inv']
 
@@ -3204,14 +3224,22 @@ class AdamPolarProductLoRA(Optimizer):
             # — ~10× faster at r=256 by avoiding the eigh kernel-launch storm.
             if (state['step'] - 1) % self.precond_refresh_every == 0:
                 with maybe_time(timer, "precond_refresh"):
-                    state['SA_half_inv'] = _spd_inv_half(
-                        A.float() @ A.float().T, eps=self.delta,
-                        method=self.precond_method, higham_iters=self.higham_iters,
-                    )
-                    state['SB_half_inv'] = _spd_inv_half(
-                        B.float().T @ B.float(), eps=self.delta,
-                        method=self.precond_method, higham_iters=self.higham_iters,
-                    )
+                    if self.disable_whitening:
+                        r_A = A.shape[0]
+                        r_B = B.shape[1]
+                        state['SA_half_inv'] = torch.eye(
+                            r_A, dtype=A.dtype, device=A.device).float()
+                        state['SB_half_inv'] = torch.eye(
+                            r_B, dtype=A.dtype, device=A.device).float()
+                    else:
+                        state['SA_half_inv'] = _spd_inv_half(
+                            A.float() @ A.float().T, eps=self.delta,
+                            method=self.precond_method, higham_iters=self.higham_iters,
+                        )
+                        state['SB_half_inv'] = _spd_inv_half(
+                            B.float().T @ B.float(), eps=self.delta,
+                            method=self.precond_method, higham_iters=self.higham_iters,
+                        )
             SA_half_inv = state['SA_half_inv']
             SB_half_inv = state['SB_half_inv']
 
@@ -3617,6 +3645,81 @@ class AdamPolarProductLoRA(Optimizer):
                 # (full disagreement). Predicts λ_core(r=16) < λ_core(r=64)
                 # under the revised mechanism story.
                 rec["awc_lambda_core"] = (fdiff ** 2) / (2.0 * (fA ** 2 + fB ** 2) + 1e-30)
+
+                # Higham accuracy + S conditioning probe. Tracks the
+                # iterative S^{-1/2} solver's quality vs an eigh reference.
+                # higham_iters=10 (default) is safe for well-to-moderate-
+                # conditioned S but degrades sharply on ill-conditioned S
+                # (synthetic bench at σ_min/σ_max ≈ 0.01 gave 52% rel error
+                # at iters=10 — needs iters=20 for ~1e-5 error). This probe
+                # tells us whether REAL A·A^T spectra during training ever
+                # enter the "ill" regime, vs only synthetic stress tests.
+                # ~6 r×r ops per pair per probe step (cheap).
+                try:
+                    SA_eigs = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
+                    SB_eigs = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
+                    SA_max = float(SA_eigs.max()); SA_min = float(SA_eigs.min())
+                    SB_max = float(SB_eigs.max()); SB_min = float(SB_eigs.min())
+                    rec["cond_SA"] = SA_max / max(SA_min, 1e-30)
+                    rec["cond_SB"] = SB_max / max(SB_min, 1e-30)
+                    # higham accuracy: ‖higham - eigh‖_F / ‖eigh‖_F and the
+                    # symmetric residual ‖X · (S+δI) · X - I‖_F.
+                    SA_grm = A_f @ A_f.T
+                    SB_grm = B_f.T @ B_f
+                    eyeA = torch.eye(SA_grm.shape[0], dtype=SA_grm.dtype, device=SA_grm.device)
+                    eyeB = torch.eye(SB_grm.shape[0], dtype=SB_grm.dtype, device=SB_grm.device)
+                    SA_inv_eigh = _spd_inv_half(SA_grm, eps=self.delta, method="eigh")
+                    SB_inv_eigh = _spd_inv_half(SB_grm, eps=self.delta, method="eigh")
+                    SA_inv_h = _spd_inv_half(
+                        SA_grm, eps=self.delta, method="higham",
+                        higham_iters=self.higham_iters)
+                    SB_inv_h = _spd_inv_half(
+                        SB_grm, eps=self.delta, method="higham",
+                        higham_iters=self.higham_iters)
+                    rec["higham_SA_rel_err_F"] = float(
+                        (SA_inv_h - SA_inv_eigh).norm() / (SA_inv_eigh.norm() + 1e-30))
+                    rec["higham_SB_rel_err_F"] = float(
+                        (SB_inv_h - SB_inv_eigh).norm() / (SB_inv_eigh.norm() + 1e-30))
+                    SA_resid = SA_inv_h @ (SA_grm + self.delta * eyeA) @ SA_inv_h - eyeA
+                    SB_resid = SB_inv_h @ (SB_grm + self.delta * eyeB) @ SB_inv_h - eyeB
+                    rec["higham_SA_residual_F"] = float(SA_resid.norm())
+                    rec["higham_SB_residual_F"] = float(SB_resid.norm())
+                except Exception:
+                    for k in ("cond_SA", "cond_SB",
+                              "higham_SA_rel_err_F", "higham_SB_rel_err_F",
+                              "higham_SA_residual_F", "higham_SB_residual_F"):
+                        rec[k] = float("nan")
+
+                # Power-iter accuracy probe — methodology lesson from
+                # 2026-05-11 (~/.claude/CLAUDE.md "Suspect the probe before
+                # the theorem"): any iterative-numerical-method default in
+                # an optimizer hot path should ship with a direct-accuracy
+                # probe option that compares against an exact reference.
+                # Logs cold-start power-iter σ_max estimates at n_iters ∈
+                # {3, 8} for (A, B, geo_A, geo_B) as ratios to the exact
+                # eigh σ_max already computed by the chord-tight rule.
+                # ratio < 1 ⇒ power-iter under-estimates (the failure mode
+                # we cared about); fires every probe step. Cost: 8 small
+                # _sigma_max_power_iter calls per pair per probe step.
+                if self.magnitude_rule in ("spectral_chord",
+                                           "spectral_chord_tight",
+                                           "spectral_chord_direction"):
+                    try:
+                        for name, mat, sigma_eigh in [
+                            ("A", A_f, sigma_A_t),
+                            ("B", B_f, sigma_B_t),
+                            ("geoA", geo_A.float(), op_geoA - 1e-30),
+                            ("geoB", geo_B.float(), op_geoB - 1e-30),
+                        ]:
+                            ref = float(sigma_eigh) + 1e-30
+                            sig3, _ = _sigma_max_power_iter(mat, n_iters=3)
+                            sig8, _ = _sigma_max_power_iter(mat, n_iters=8)
+                            rec[f"powiter_ratio_{name}_n3"] = float(sig3) / ref
+                            rec[f"powiter_ratio_{name}_n8"] = float(sig8) / ref
+                    except Exception:
+                        for name in ("A", "B", "geoA", "geoB"):
+                            rec[f"powiter_ratio_{name}_n3"] = float("nan")
+                            rec[f"powiter_ratio_{name}_n8"] = float("nan")
 
                 # Stage-0 chord-tight diagnostics (plan
                 # there-are-a-few-indexed-hickey).
@@ -7358,6 +7461,34 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening":
+        # Whitening-importance ablation: chord-tight with S_A^{-1/2} = S_B^{-1/2} = I.
+        # Equivalent to per-factor Muon (algorithm_tight_chord.md §2 program W)
+        # on the Adam direction, plus the chord-tight ρ. Tests whether
+        # whitening matters for training quality at all — if not, the higham
+        # accuracy question is moot.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_tight",
+            disable_whitening=True,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-direction":
         # Variant 1 of algorithm_tight_chord.md: direction-aware ρ in place
