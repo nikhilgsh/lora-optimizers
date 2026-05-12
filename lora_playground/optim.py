@@ -3784,68 +3784,13 @@ class AdamPolarProductLoRA(Optimizer):
                 except Exception:
                     for k in ("cond_SA", "cond_SB"):
                         rec[k] = float("nan")
-                # higham accuracy — HEAVY (double SPD inversion via eigh + matmuls):
-                # gated on log_heavy_diagnostics. ~5-30s per probe step at r=64
-                # (one eigh inversion per LoRA pair × hundreds of pairs).
+                # Heavy factor-accuracy diagnostics (higham + power-iter probes).
                 if self.log_heavy_diagnostics:
-                  try:
-                    SA_grm = A_f @ A_f.T
-                    SB_grm = B_f.T @ B_f
-                    eyeA = torch.eye(SA_grm.shape[0], dtype=SA_grm.dtype, device=SA_grm.device)
-                    eyeB = torch.eye(SB_grm.shape[0], dtype=SB_grm.dtype, device=SB_grm.device)
-                    SA_inv_eigh = _spd_inv_half(SA_grm, eps=self.delta, method="eigh")
-                    SB_inv_eigh = _spd_inv_half(SB_grm, eps=self.delta, method="eigh")
-                    SA_inv_h = _spd_inv_half(
-                        SA_grm, eps=self.delta, method="higham",
-                        higham_iters=self.higham_iters)
-                    SB_inv_h = _spd_inv_half(
-                        SB_grm, eps=self.delta, method="higham",
-                        higham_iters=self.higham_iters)
-                    rec["higham_SA_rel_err_F"] = float(
-                        (SA_inv_h - SA_inv_eigh).norm() / (SA_inv_eigh.norm() + 1e-30))
-                    rec["higham_SB_rel_err_F"] = float(
-                        (SB_inv_h - SB_inv_eigh).norm() / (SB_inv_eigh.norm() + 1e-30))
-                    SA_resid = SA_inv_h @ (SA_grm + self.delta * eyeA) @ SA_inv_h - eyeA
-                    SB_resid = SB_inv_h @ (SB_grm + self.delta * eyeB) @ SB_inv_h - eyeB
-                    rec["higham_SA_residual_F"] = float(SA_resid.norm())
-                    rec["higham_SB_residual_F"] = float(SB_resid.norm())
-                  except Exception:
-                    for k in ("higham_SA_rel_err_F", "higham_SB_rel_err_F",
-                              "higham_SA_residual_F", "higham_SB_residual_F"):
-                        rec[k] = float("nan")
-
-                # Power-iter accuracy probe — methodology lesson from
-                # 2026-05-11 (~/.claude/CLAUDE.md "Suspect the probe before
-                # the theorem"): any iterative-numerical-method default in
-                # an optimizer hot path should ship with a direct-accuracy
-                # probe option that compares against an exact reference.
-                # Logs cold-start power-iter σ_max estimates at n_iters ∈
-                # {3, 8} for (A, B, geo_A, geo_B) as ratios to the exact
-                # eigh σ_max already computed by the chord-tight rule.
-                # ratio < 1 ⇒ power-iter under-estimates (the failure mode
-                # we cared about); fires every probe step. Cost: 8 small
-                # _sigma_max_power_iter calls per pair per probe step.
-                # HEAVY — gated on log_heavy_diagnostics. 8 power-iter calls
-                # per LoRA pair per probe step → ~20s/probe step at r=64.
-                if self.log_heavy_diagnostics and self.magnitude_rule in (
-                        "spectral_chord", "spectral_chord_tight",
-                        "spectral_chord_direction"):
-                    try:
-                        for name, mat, sigma_eigh in [
-                            ("A", A_f, sigma_A_t),
-                            ("B", B_f, sigma_B_t),
-                            ("geoA", geo_A.float(), op_geoA - 1e-30),
-                            ("geoB", geo_B.float(), op_geoB - 1e-30),
-                        ]:
-                            ref = float(sigma_eigh) + 1e-30
-                            sig3, _ = _sigma_max_power_iter(mat, n_iters=3)
-                            sig8, _ = _sigma_max_power_iter(mat, n_iters=8)
-                            rec[f"powiter_ratio_{name}_n3"] = float(sig3) / ref
-                            rec[f"powiter_ratio_{name}_n8"] = float(sig8) / ref
-                    except Exception:
-                        for name in ("A", "B", "geoA", "geoB"):
-                            rec[f"powiter_ratio_{name}_n3"] = float("nan")
-                            rec[f"powiter_ratio_{name}_n8"] = float("nan")
+                    self._emit_heavy_factor_accuracy_diag(
+                        rec, A_f=A_f, B_f=B_f, geo_A=geo_A, geo_B=geo_B,
+                        sigma_A_t=sigma_A_t, sigma_B_t=sigma_B_t,
+                        op_geoA=op_geoA, op_geoB=op_geoB,
+                    )
 
                 # Stage-0 chord-tight diagnostics (plan
                 # there-are-a-few-indexed-hickey).
@@ -3870,44 +3815,11 @@ class AdamPolarProductLoRA(Optimizer):
                     lr_f = float(lr)
                     rho_f = float(rho.detach()) if torch.is_tensor(rho) else float(rho)
 
-                    # Probe A — chord slack u_chord = ‖B dA + dB A + dB dA‖_2 / lr.
-                    # ΔW = (B+dB)(A+dA) − BA. Direct SVD on the materialized
-                    # chord matrix (m × n). For non-lm_head pairs m,n ≤ 4096 so
-                    # this is ~10ms.
-                    #
-                    # Earlier attempts at a 2r×2r shortcut were both wrong:
-                    # (1) `eigvals` on the non-symmetric (R R^T)(L^T L) leaked
-                    #     complex parts into the real-eigenvalue max.
-                    # (2) chol(L^T L) + eigvalsh(L_chol^T · R R^T · L_chol) is
-                    #     mathematically equivalent in exact arithmetic, but
-                    #     L = [B+dB, B] makes L^T L rank-deficient by
-                    #     construction (overlapping column spans as dB → 0); the
-                    #     damping that keeps Cholesky safe also drifts the
-                    #     eigenvalues upward as ‖B‖_F grows, systematically
-                    #     over-estimating σ_max. Confirmed against direct SVD
-                    #     at steps 20-100 of `v1_debug_r64_400_v3` (commit
-                    #     ec95622): chol+eigvalsh crossed 1 by step 80 while
-                    #     direct-SVD stayed at 0.94. See docs/notes/polar_product
-                    #     /chord_slack_probe_resolution_2026_05_11.md.
-                    #
-                    # lm_head pairs (B.shape[0] ~100k) skip the probe — chord
-                    # matrix materialization is too expensive there.
-                    # HEAVY — gated on log_heavy_diagnostics. SVD on m×n
-                    # materialized chord matrix per LoRA pair → ~60s/probe step.
+                    # Probe A — chord_slack via direct SVD (heavy).
                     if self.log_heavy_diagnostics:
-                        try:
-                            dA_f = dA.float()
-                            dB_f = dB.float()
-                            if B_f.shape[0] <= 4096:
-                                with torch.no_grad():
-                                    chord_direct = (B_f + dB_f) @ (A_f + dA_f) - B_f @ A_f
-                                    sigma_chord = float(
-                                        torch.linalg.svdvals(chord_direct).max())
-                            else:
-                                sigma_chord = float("nan")
-                        except Exception:
-                            sigma_chord = float("nan")
-                        rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
+                        self._emit_heavy_chord_slack_diag(
+                            rec, A_f=A_f, B_f=B_f, dA=dA, dB=dB, lr_f=lr_f,
+                        )
 
                     # Probe B — direction-aware radius gain.
                     # P = D_A / ‖D_A‖_2, Q = D_B / ‖D_B‖_2 are unit-norm
@@ -4003,300 +3915,13 @@ class AdamPolarProductLoRA(Optimizer):
                                    "tau_tight_A", "tau_tight_B"):
                             rec[_k] = float("nan")
 
-                # H2/H3 — Picard contraction + polar sensitivity.
-                # HEAVY — 3 extra _polar_pipeline calls per LoRA pair per probe
-                # step → ~30s/probe at r=64. Gated on log_heavy_diagnostics.
-                # Always runs 3 iters from zero so uncoupled/coupled compare
-                # symmetrically; independent of self.picard_iters.
+                # H2/H3 — Picard contraction + polar sensitivity probes (heavy).
                 if is_probe_step and self.log_heavy_diagnostics:
-                    dA1, dB1, _, _, _, _, _, _, P_A1, P_B1 = self._polar_pipeline(
-                        u_A, u_B, SA_half_inv, SB_half_inv, lr)
-                    u_A_2 = u_A + (B_f.T @ dB1 @ A_f) / lr
-                    u_B_2 = u_B + (B_f @ dA1 @ A_f.T) / lr
-                    dA2, dB2, _, _, _, _, _, _, P_A2, P_B2 = self._polar_pipeline(
-                        u_A_2, u_B_2, SA_half_inv, SB_half_inv, lr)
-                    u_A_3 = u_A + (B_f.T @ dB2 @ A_f) / lr
-                    u_B_3 = u_B + (B_f @ dA2 @ A_f.T) / lr
-                    dA3, dB3, _, _, _, _, _, _, _, _ = self._polar_pipeline(
-                        u_A_3, u_B_3, SA_half_inv, SB_half_inv, lr)
-                    nA1 = float(dA1.norm()) + 1e-30
-                    nA2 = float(dA2.norm()) + 1e-30
-                    nB1 = float(dB1.norm()) + 1e-30
-                    nB2 = float(dB2.norm()) + 1e-30
-                    rec["picard_contract_A_12"] = float((dA2 - dA1).norm()) / nA1
-                    rec["picard_contract_A_23"] = float((dA3 - dA2).norm()) / nA2
-                    rec["picard_contract_B_12"] = float((dB2 - dB1).norm()) / nB1
-                    rec["picard_contract_B_23"] = float((dB3 - dB2).norm()) / nB2
-                    rec["polar_cos_A_12"] = _frob_cos(P_A1, P_A2)
-                    rec["polar_cos_B_12"] = _frob_cos(P_B1, P_B2)
-                    # Oscillation detector — cos between successive Picard
-                    # iterate displacements δ_0 = dA2 - dA1 and δ_1 = dA3 - dA2.
-                    # Positive ⇒ monotone contraction toward fixed point.
-                    # Negative ⇒ iterates oscillating across the fixed point;
-                    # signature of negative-eigenvalue Picard Jacobian.
-                    # Per-pair scalar; aggregated to {min, median, max} via
-                    # _emit_optim_diagnostics.
-                    delta_A_0 = dA2 - dA1
-                    delta_A_1 = dA3 - dA2
-                    delta_B_0 = dB2 - dB1
-                    delta_B_1 = dB3 - dB2
-                    rec["picard_osc_cos_A"] = _frob_cos(delta_A_1, delta_A_0)
-                    rec["picard_osc_cos_B"] = _frob_cos(delta_B_1, delta_B_0)
-                    rec.update(_finite_step_product_diagnostics(A_f, B_f, dA, dB))
-                    # Cross-term direction probe — does the iter-1→iter-2
-                    # displacement (the part the cross-term injects) point
-                    # along the gradient direction (-u_A)? Positive ⇒ cross-
-                    # term is descent-aligned refinement. Negative or near-
-                    # zero ⇒ cross-term is rotation orthogonal to gradient
-                    # (the noise hypothesis at small r).
-                    rec["cross_cos_A"] = _frob_cos(delta_A_0, -u_A)
-                    rec["cross_cos_B"] = _frob_cos(delta_B_0, -u_B)
-                    rec["cross_norm_A_rel"] = float(delta_A_0.norm() / nA1)
-                    rec["cross_norm_B_rel"] = float(delta_B_0.norm() / nB1)
-
-                    # Cautious-mask diagnostic — per-coordinate sign agreement of
-                    # the iter-2 correction (δ = dA2−dA1) with the descent
-                    # direction (−grad_A). Two reductions:
-                    #   *_count_frac: fraction of coordinates where signs agree
-                    #     (= what fraction of the correction the cautious mask
-                    #     would preserve if applied uniformly).
-                    #   *_norm_frac: fraction of ‖δ‖² coming from agreeing
-                    #     coordinates (= what fraction of the correction's
-                    #     energy survives the cautious mask). More directly
-                    #     predicts how cautious-coupled would behave.
-                    # gA, gB are the raw gradients on A, B (computed earlier
-                    # in this step from A.grad / B.grad).
-                    neg_gA = -gA
-                    neg_gB = -gB
-                    mask_A = (torch.sign(delta_A_0) == torch.sign(neg_gA))
-                    mask_B = (torch.sign(delta_B_0) == torch.sign(neg_gB))
-                    rec["cautious_mask_A_count_frac"] = float(mask_A.float().mean())
-                    rec["cautious_mask_B_count_frac"] = float(mask_B.float().mean())
-                    delta_A_sq = delta_A_0 * delta_A_0
-                    delta_B_sq = delta_B_0 * delta_B_0
-                    den_A = float(delta_A_sq.sum()) + 1e-30
-                    den_B = float(delta_B_sq.sum()) + 1e-30
-                    rec["cautious_mask_A_norm_frac"] = float(
-                        (delta_A_sq * mask_A.float()).sum() / den_A)
-                    rec["cautious_mask_B_norm_frac"] = float(
-                        (delta_B_sq * mask_B.float()).sum() / den_B)
-                    # Baseline: agreement of iter-1 step itself with −grad.
-                    # If iter-1 already disagrees on many coordinates, the
-                    # mask isn't isolating "iter-2 is bad" from "every step
-                    # has noise vs raw grad."
-                    iter1_mask_A = (torch.sign(dA1) == torch.sign(neg_gA))
-                    iter1_mask_B = (torch.sign(dB1) == torch.sign(neg_gB))
-                    rec["cautious_iter1_A_count_frac"] = float(iter1_mask_A.float().mean())
-                    rec["cautious_iter1_B_count_frac"] = float(iter1_mask_B.float().mean())
-
-                    # Descent alignment + tangent magnitude per iter (mechanism
-                    # diagnostic — k=2's r=64 benefit comes from JOINT NE
-                    # convergence, not col(B) refinement).
-                    # descent_iter = ⟨G_A, dA⟩ + ⟨G_B, dB⟩ (negative ⇒
-                    # descent direction). If iter 2 < iter 1, k=2 buys
-                    # more linear descent per step.
-                    # frob_J_iter = ‖B dA + dB A‖_F (joint tangent norm).
-                    for tag, dA_var, dB_var in [
-                        ("iter1", dA1, dB1),
-                        ("iter2", dA2, dB2),
-                    ]:
-                        dA32 = dA_var.float(); dB32 = dB_var.float()
-                        rec[f"descent_{tag}"] = float(
-                            (gA * dA32).sum() + (gB * dB32).sum()
-                        )
-                        Jt = B_f @ dA32 + dB32 @ A_f
-                        rec[f"frob_J_{tag}"] = float(Jt.norm())
-
-                    # col(B) decomposition of dB at iter 1 vs iter 2
-                    # (mechanism diagnostic for r=64 cross-coupling).
-                    # Hypothesis: at r=64 with k=2, baseline polar's win
-                    # comes from iter 2 GROWING the col(B) component of
-                    # dB (refining the existing preconditioner). Gauge
-                    # k=2 should NOT show this growth (extension-forced).
-                    # P_col(B) = Q_B Q_B^T (projector onto col(B)).
-                    # Decompose: dB_iter = P_col(B) · dB_iter + (I − P_col(B)) · dB_iter.
-                    Q_B_proj, _ = torch.linalg.qr(B_f, mode='reduced')  # (m, r)
-                    for tag, dB_var in [("iter1", dB1), ("iter2", dB2)]:
-                        dB32 = dB_var.float()
-                        proj = Q_B_proj @ (Q_B_proj.T @ dB32)
-                        perp = dB32 - proj
-                        rec[f"colB_frac_{tag}"] = float(
-                            (proj.norm() / (dB32.norm() + 1e-30)).pow(2)
-                        )
-                        rec[f"colB_norm_{tag}"] = float(proj.norm())
-                        rec[f"perp_norm_{tag}"] = float(perp.norm())
-
-                    # Local-model variational score for k=1 and k=2 candidates
-                    # (see plan i-read-all-three-quizzical-plum, Step 1).
-                    # score(ΔA, ΔB) = ⟨u_A, ΔA⟩ + ⟨u_B, ΔB⟩
-                    #                 + (1/(2·lr))·‖B·ΔA + ΔB·A‖_F²
-                    # Negative (k2 − k1) ⇒ the per-step variational program
-                    # prefers k=2 over k=1 on this pair. If the sign of
-                    # (k2 − k1) consistently matches the empirical winner per
-                    # rank, a deterministic local-model selector is a no-HP
-                    # rule that picks k from local geometry.
-                    def _local_score(dA_, dB_):
-                        dA32 = dA_.float()
-                        dB32 = dB_.float()
-                        lin = float((u_A * dA32).sum() + (u_B * dB32).sum())
-                        J = B_f @ dA32 + dB32 @ A_f
-                        coupling = 0.5 * float((J * J).sum()) / lr
-                        return lin + coupling
-                    rec["local_score_k1"] = _local_score(dA1, dB1)
-                    rec["local_score_k2"] = _local_score(dA2, dB2)
-                    rec["local_score_k3"] = _local_score(dA3, dB3)
-                    rec["local_score_k2_minus_k1"] = (
-                        rec["local_score_k2"] - rec["local_score_k1"]
+                    self._emit_heavy_picard_diagnostics(
+                        rec, u_A=u_A, u_B=u_B,
+                        SA_half_inv=SA_half_inv, SB_half_inv=SB_half_inv, lr=lr,
+                        A_f=A_f, B_f=B_f, dA=dA, dB=dB, gA=gA, gB=gB,
                     )
-                    rec["local_score_k3_minus_k1"] = (
-                        rec["local_score_k3"] - rec["local_score_k1"]
-                    )
-
-                    # Revised-AWC diagnostic. Tests the "Picard de-duplicates
-                    # agreed shared-core signal" hypothesis (see
-                    # agreement_weighted_core_coupling_2026_05_03.md and the
-                    # revised reading after the first AWC sweep).
-                    # Decompose each iterate's (dA, dB) into A-side and B-side
-                    # core drives:
-                    #   C_A^(k) = dA^(k) A^T G_A^{-1}     (r × r)
-                    #   C_B^(k) = G_B^{-1} B^T dB^(k)     (r × r)
-                    # Then sum/diff modes:
-                    #   X_C^(k) = C_A + C_B  (agreed core)
-                    #   X_D^(k) = C_A - C_B  (ownership)
-                    # Track magnitude evolution and direction preservation
-                    # across iterates k = 1, 2, 3. Cost: cheap r × r ops.
-                    GA_inv = SA_half_inv @ SA_half_inv     # (r, r)
-                    GB_inv = SB_half_inv @ SB_half_inv     # (r, r)
-                    def _core_drives(dA_var, dB_var):
-                        dA32 = dA_var.float(); dB32 = dB_var.float()
-                        C_A = (dA32 @ A_f.T) @ GA_inv      # (r, r)
-                        C_B = GB_inv @ (B_f.T @ dB32)      # (r, r)
-                        return C_A + C_B, C_A - C_B
-                    XC1, XD1 = _core_drives(dA1, dB1)
-                    XC2, XD2 = _core_drives(dA2, dB2)
-                    XC3, XD3 = _core_drives(dA3, dB3)
-                    # Joint tangent norm at iter 3 (extends existing iter1/iter2)
-                    J3_full = B_f @ dA3.float() + dB3.float() @ A_f
-                    rec["frob_J_iter3"] = float(J3_full.norm())
-                    # Magnitudes
-                    nC1 = float(XC1.norm()) + 1e-30
-                    nC2 = float(XC2.norm()) + 1e-30
-                    nC3 = float(XC3.norm()) + 1e-30
-                    nD1 = float(XD1.norm()) + 1e-30
-                    nD2 = float(XD2.norm()) + 1e-30
-                    nD3 = float(XD3.norm()) + 1e-30
-                    rec["XC_iter1_frob"] = nC1
-                    rec["XC_iter2_frob"] = nC2
-                    rec["XC_iter3_frob"] = nC3
-                    rec["XD_iter1_frob"] = nD1
-                    rec["XD_iter2_frob"] = nD2
-                    rec["XD_iter3_frob"] = nD3
-                    # Shrink ratios (1 - ratio): positive ⇒ Picard shrunk it
-                    rec["XC_shrink_2v1"] = 1.0 - nC2 / nC1
-                    rec["XC_shrink_3v1"] = 1.0 - nC3 / nC1
-                    rec["XD_shrink_2v1"] = 1.0 - nD2 / nD1
-                    rec["XD_shrink_3v1"] = 1.0 - nD3 / nD1
-                    # Direction preservation
-                    rec["XC_cos_2v1"] = float((XC2 * XC1).sum()) / (nC1 * nC2)
-                    rec["XC_cos_3v1"] = float((XC3 * XC1).sum()) / (nC1 * nC3)
-                    rec["XD_cos_2v1"] = float((XD2 * XD1).sum()) / (nD1 * nD2)
-                    rec["XD_cos_3v1"] = float((XD3 * XD1).sum()) / (nD1 * nD3)
-                    # Energy split: what fraction of the total core energy is
-                    # in the agreed (C) vs ownership (D) mode at each iterate?
-                    rec["XC_frac_iter1"] = (nC1 ** 2) / (nC1 ** 2 + nD1 ** 2)
-                    rec["XC_frac_iter2"] = (nC2 ** 2) / (nC2 ** 2 + nD2 ** 2)
-                    rec["XC_frac_iter3"] = (nC3 ** 2) / (nC3 ** 2 + nD3 ** 2)
-
-                    # k=1→k=3 dense update difference: what fraction lives in
-                    # the rank-r shared-core subspace (i.e. is attributable to
-                    # ΔX_C = X_C^(3) - X_C^(1))?
-                    # ΔJ_total = B (dA3 - dA1) + (dB3 - dB1) A    (dense)
-                    # ΔJ_core  = B ΔX_C A                          (rank ≤ r)
-                    # Use trace identity ||B X A||² = tr(G_B X G_A X^T) for the
-                    # core norm; compute ΔJ_total dense (cheap matmul).
-                    GA_full = A_f @ A_f.T               # (r, r)
-                    GB_full = B_f.T @ B_f               # (r, r)
-                    dXC = XC3 - XC1                     # (r, r)
-                    sq_core_dJ = float(((GB_full @ dXC @ GA_full) * dXC).sum())
-                    dJ_full = B_f @ (dA3.float() - dA1.float()) + (dB3.float() - dB1.float()) @ A_f
-                    sq_dJ = float(dJ_full.pow(2).sum())
-                    rec["dJ_3v1_total_frob"] = sq_dJ ** 0.5
-                    rec["dJ_3v1_core_frob"] = max(sq_core_dJ, 0.0) ** 0.5
-                    rec["dJ_3v1_core_frac"] = max(sq_core_dJ, 0.0) / (sq_dJ + 1e-30)
-
-                    # Base-rate diagnostic: what fraction of J^(k) itself
-                    # (not just the k-difference) lives in the rank-r shared-
-                    # core subspace P_U J P_V where P_U = projector onto
-                    # col(B), P_V = projector onto row(A)? Compares against
-                    # dJ_3v1_core_frac to determine whether Picard's action is
-                    # specifically targeting the core (R_I = dJ_core_frac /
-                    # J_core_frac >> 1) or just inheriting the base rate
-                    # (R_I ≈ 1 means everything is in the core anyway).
-                    # Trace identity: ||P_U J P_V||² ≈ tr(M G_A^{-1} M^T G_B^{-1})
-                    # where M = B^T J A^T = G_B dA A^T + B^T dB G_A (r×r).
-                    def _core_frac(dA_var, dB_var):
-                        dA32 = dA_var.float(); dB32 = dB_var.float()
-                        M = GB_full @ (dA32 @ A_f.T) + (B_f.T @ dB32) @ GA_full
-                        sq_core = float(((M @ GA_inv) * (GB_inv @ M)).sum())
-                        Jt = B_f @ dA32 + dB32 @ A_f
-                        sq_full = float(Jt.pow(2).sum())
-                        return max(sq_core, 0.0) / (sq_full + 1e-30)
-                    rec["J_core_frac_iter1"] = _core_frac(dA1, dB1)
-                    rec["J_core_frac_iter2"] = _core_frac(dA2, dB2)
-                    rec["J_core_frac_iter3"] = _core_frac(dA3, dB3)
-
-                    # Scalar gain fit. Tests whether Picard's effect on X_C
-                    # and X_D is literally a scalar attenuation / amplification:
-                    #   X_C^(3) ≈ a_C · X_C^(1),   X_D^(3) ≈ a_D · X_D^(1).
-                    # Residuals r_C, r_D measure how well the scalar fit holds.
-                    aC_3v1 = float((XC3 * XC1).sum()) / (nC1 ** 2)
-                    aD_3v1 = float((XD3 * XD1).sum()) / (nD1 ** 2)
-                    rec["aC_3v1"] = aC_3v1
-                    rec["aD_3v1"] = aD_3v1
-                    rec["rC_3v1"] = float((XC3 - aC_3v1 * XC1).norm()) / nC3
-                    rec["rD_3v1"] = float((XD3 - aD_3v1 * XD1).norm()) / nD3
-
-                    # Hidden-motion ratio: how much core energy lives in the
-                    # first-order-invisible ownership mode X_D vs the
-                    # identifiable mode X_C, at each iterate.
-                    rec["h_iter1"] = (nD1 ** 2) / (nC1 ** 2)
-                    rec["h_iter2"] = (nD2 ** 2) / (nC2 ** 2)
-                    rec["h_iter3"] = (nD3 ** 2) / (nC3 ** 2)
-
-                    # Second-order pollution: finite-update second-order term
-                    # ΔB · ΔA (which is invisible to first-order J but real in
-                    # the actual factor update) relative to J magnitude.
-                    # Predicts: q grows more under Picard at low rank if X_D
-                    # amplification feeds a larger second-order interaction.
-                    def _q(dA_var, dB_var, J_norm):
-                        so = dB_var.float() @ dA_var.float()
-                        return float(so.norm()) / (J_norm + 1e-30)
-                    rec["q_iter1"] = _q(dA1, dB1, rec["frob_J_iter1"])
-                    rec["q_iter2"] = _q(dA2, dB2, rec["frob_J_iter2"])
-                    rec["q_iter3"] = _q(dA3, dB3, rec["frob_J_iter3"])
-
-                    # Gram drift: relative change in (A+ΔA)(A+ΔA)^T vs AA^T,
-                    # per iterate. Tests whether X_D growth at low rank feeds
-                    # downstream preconditioner instability.
-                    nGA = float(GA_full.norm()) + 1e-30
-                    nGB = float(GB_full.norm()) + 1e-30
-                    def _gram_drift(dA_var, dB_var):
-                        dA32 = dA_var.float(); dB32 = dB_var.float()
-                        A_new = A_f + dA32
-                        B_new = B_f + dB32
-                        gA = float((A_new @ A_new.T - GA_full).norm()) / nGA
-                        gB = float((B_new.T @ B_new - GB_full).norm()) / nGB
-                        return gA, gB
-                    gA1, gB1 = _gram_drift(dA1, dB1)
-                    gA2, gB2 = _gram_drift(dA2, dB2)
-                    gA3, gB3 = _gram_drift(dA3, dB3)
-                    rec["gA_iter1"] = gA1
-                    rec["gA_iter2"] = gA2
-                    rec["gA_iter3"] = gA3
-                    rec["gB_iter1"] = gB1
-                    rec["gB_iter2"] = gB2
-                    rec["gB_iter3"] = gB3
-
                 diag_records.append(rec)
 
             with maybe_time(timer, "apply"):
@@ -4309,6 +3934,426 @@ class AdamPolarProductLoRA(Optimizer):
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
+
+    @torch.no_grad()
+    def _emit_heavy_picard_diagnostics(
+        self, rec, *, u_A, u_B, SA_half_inv, SB_half_inv, lr,
+        A_f, B_f, dA, dB, gA, gB,
+    ):
+        """H2/H3 — Picard contraction + polar sensitivity probes.
+
+        ~3 extra _polar_pipeline calls per pair per probe step → ~30 s/probe
+        at r=64. Always runs 3 iters from zero so uncoupled/coupled compare
+        symmetrically; independent of self.picard_iters. Mutates ``rec``.
+        """
+        dA1, dB1, _, _, _, _, _, _, P_A1, P_B1 = self._polar_pipeline(
+            u_A, u_B, SA_half_inv, SB_half_inv, lr)
+        u_A_2 = u_A + (B_f.T @ dB1 @ A_f) / lr
+        u_B_2 = u_B + (B_f @ dA1 @ A_f.T) / lr
+        dA2, dB2, _, _, _, _, _, _, P_A2, P_B2 = self._polar_pipeline(
+            u_A_2, u_B_2, SA_half_inv, SB_half_inv, lr)
+        u_A_3 = u_A + (B_f.T @ dB2 @ A_f) / lr
+        u_B_3 = u_B + (B_f @ dA2 @ A_f.T) / lr
+        dA3, dB3, _, _, _, _, _, _, _, _ = self._polar_pipeline(
+            u_A_3, u_B_3, SA_half_inv, SB_half_inv, lr)
+        nA1 = float(dA1.norm()) + 1e-30
+        nA2 = float(dA2.norm()) + 1e-30
+        nB1 = float(dB1.norm()) + 1e-30
+        nB2 = float(dB2.norm()) + 1e-30
+        rec["picard_contract_A_12"] = float((dA2 - dA1).norm()) / nA1
+        rec["picard_contract_A_23"] = float((dA3 - dA2).norm()) / nA2
+        rec["picard_contract_B_12"] = float((dB2 - dB1).norm()) / nB1
+        rec["picard_contract_B_23"] = float((dB3 - dB2).norm()) / nB2
+        rec["polar_cos_A_12"] = _frob_cos(P_A1, P_A2)
+        rec["polar_cos_B_12"] = _frob_cos(P_B1, P_B2)
+        # Oscillation detector — cos between successive Picard
+        # iterate displacements δ_0 = dA2 - dA1 and δ_1 = dA3 - dA2.
+        # Positive ⇒ monotone contraction toward fixed point.
+        # Negative ⇒ iterates oscillating across the fixed point;
+        # signature of negative-eigenvalue Picard Jacobian.
+        # Per-pair scalar; aggregated to {min, median, max} via
+        # _emit_optim_diagnostics.
+        delta_A_0 = dA2 - dA1
+        delta_A_1 = dA3 - dA2
+        delta_B_0 = dB2 - dB1
+        delta_B_1 = dB3 - dB2
+        rec["picard_osc_cos_A"] = _frob_cos(delta_A_1, delta_A_0)
+        rec["picard_osc_cos_B"] = _frob_cos(delta_B_1, delta_B_0)
+        rec.update(_finite_step_product_diagnostics(A_f, B_f, dA, dB))
+        # Cross-term direction probe — does the iter-1→iter-2
+        # displacement (the part the cross-term injects) point
+        # along the gradient direction (-u_A)? Positive ⇒ cross-
+        # term is descent-aligned refinement. Negative or near-
+        # zero ⇒ cross-term is rotation orthogonal to gradient
+        # (the noise hypothesis at small r).
+        rec["cross_cos_A"] = _frob_cos(delta_A_0, -u_A)
+        rec["cross_cos_B"] = _frob_cos(delta_B_0, -u_B)
+        rec["cross_norm_A_rel"] = float(delta_A_0.norm() / nA1)
+        rec["cross_norm_B_rel"] = float(delta_B_0.norm() / nB1)
+
+        # Cautious-mask diagnostic — per-coordinate sign agreement of
+        # the iter-2 correction (δ = dA2−dA1) with the descent
+        # direction (−grad_A). Two reductions:
+        #   *_count_frac: fraction of coordinates where signs agree
+        #     (= what fraction of the correction the cautious mask
+        #     would preserve if applied uniformly).
+        #   *_norm_frac: fraction of ‖δ‖² coming from agreeing
+        #     coordinates (= what fraction of the correction's
+        #     energy survives the cautious mask). More directly
+        #     predicts how cautious-coupled would behave.
+        # gA, gB are the raw gradients on A, B (computed earlier
+        # in this step from A.grad / B.grad).
+        neg_gA = -gA
+        neg_gB = -gB
+        mask_A = (torch.sign(delta_A_0) == torch.sign(neg_gA))
+        mask_B = (torch.sign(delta_B_0) == torch.sign(neg_gB))
+        rec["cautious_mask_A_count_frac"] = float(mask_A.float().mean())
+        rec["cautious_mask_B_count_frac"] = float(mask_B.float().mean())
+        delta_A_sq = delta_A_0 * delta_A_0
+        delta_B_sq = delta_B_0 * delta_B_0
+        den_A = float(delta_A_sq.sum()) + 1e-30
+        den_B = float(delta_B_sq.sum()) + 1e-30
+        rec["cautious_mask_A_norm_frac"] = float(
+            (delta_A_sq * mask_A.float()).sum() / den_A)
+        rec["cautious_mask_B_norm_frac"] = float(
+            (delta_B_sq * mask_B.float()).sum() / den_B)
+        # Baseline: agreement of iter-1 step itself with −grad.
+        # If iter-1 already disagrees on many coordinates, the
+        # mask isn't isolating "iter-2 is bad" from "every step
+        # has noise vs raw grad."
+        iter1_mask_A = (torch.sign(dA1) == torch.sign(neg_gA))
+        iter1_mask_B = (torch.sign(dB1) == torch.sign(neg_gB))
+        rec["cautious_iter1_A_count_frac"] = float(iter1_mask_A.float().mean())
+        rec["cautious_iter1_B_count_frac"] = float(iter1_mask_B.float().mean())
+
+        # Descent alignment + tangent magnitude per iter (mechanism
+        # diagnostic — k=2's r=64 benefit comes from JOINT NE
+        # convergence, not col(B) refinement).
+        # descent_iter = ⟨G_A, dA⟩ + ⟨G_B, dB⟩ (negative ⇒
+        # descent direction). If iter 2 < iter 1, k=2 buys
+        # more linear descent per step.
+        # frob_J_iter = ‖B dA + dB A‖_F (joint tangent norm).
+        for tag, dA_var, dB_var in [
+            ("iter1", dA1, dB1),
+            ("iter2", dA2, dB2),
+        ]:
+            dA32 = dA_var.float(); dB32 = dB_var.float()
+            rec[f"descent_{tag}"] = float(
+                (gA * dA32).sum() + (gB * dB32).sum()
+            )
+            Jt = B_f @ dA32 + dB32 @ A_f
+            rec[f"frob_J_{tag}"] = float(Jt.norm())
+
+        # col(B) decomposition of dB at iter 1 vs iter 2
+        # (mechanism diagnostic for r=64 cross-coupling).
+        # Hypothesis: at r=64 with k=2, baseline polar's win
+        # comes from iter 2 GROWING the col(B) component of
+        # dB (refining the existing preconditioner). Gauge
+        # k=2 should NOT show this growth (extension-forced).
+        # P_col(B) = Q_B Q_B^T (projector onto col(B)).
+        # Decompose: dB_iter = P_col(B) · dB_iter + (I − P_col(B)) · dB_iter.
+        Q_B_proj, _ = torch.linalg.qr(B_f, mode='reduced')  # (m, r)
+        for tag, dB_var in [("iter1", dB1), ("iter2", dB2)]:
+            dB32 = dB_var.float()
+            proj = Q_B_proj @ (Q_B_proj.T @ dB32)
+            perp = dB32 - proj
+            rec[f"colB_frac_{tag}"] = float(
+                (proj.norm() / (dB32.norm() + 1e-30)).pow(2)
+            )
+            rec[f"colB_norm_{tag}"] = float(proj.norm())
+            rec[f"perp_norm_{tag}"] = float(perp.norm())
+
+        # Local-model variational score for k=1 and k=2 candidates
+        # (see plan i-read-all-three-quizzical-plum, Step 1).
+        # score(ΔA, ΔB) = ⟨u_A, ΔA⟩ + ⟨u_B, ΔB⟩
+        #                 + (1/(2·lr))·‖B·ΔA + ΔB·A‖_F²
+        # Negative (k2 − k1) ⇒ the per-step variational program
+        # prefers k=2 over k=1 on this pair. If the sign of
+        # (k2 − k1) consistently matches the empirical winner per
+        # rank, a deterministic local-model selector is a no-HP
+        # rule that picks k from local geometry.
+        def _local_score(dA_, dB_):
+            dA32 = dA_.float()
+            dB32 = dB_.float()
+            lin = float((u_A * dA32).sum() + (u_B * dB32).sum())
+            J = B_f @ dA32 + dB32 @ A_f
+            coupling = 0.5 * float((J * J).sum()) / lr
+            return lin + coupling
+        rec["local_score_k1"] = _local_score(dA1, dB1)
+        rec["local_score_k2"] = _local_score(dA2, dB2)
+        rec["local_score_k3"] = _local_score(dA3, dB3)
+        rec["local_score_k2_minus_k1"] = (
+            rec["local_score_k2"] - rec["local_score_k1"]
+        )
+        rec["local_score_k3_minus_k1"] = (
+            rec["local_score_k3"] - rec["local_score_k1"]
+        )
+
+        # Revised-AWC diagnostic. Tests the "Picard de-duplicates
+        # agreed shared-core signal" hypothesis (see
+        # agreement_weighted_core_coupling_2026_05_03.md and the
+        # revised reading after the first AWC sweep).
+        # Decompose each iterate's (dA, dB) into A-side and B-side
+        # core drives:
+        #   C_A^(k) = dA^(k) A^T G_A^{-1}     (r × r)
+        #   C_B^(k) = G_B^{-1} B^T dB^(k)     (r × r)
+        # Then sum/diff modes:
+        #   X_C^(k) = C_A + C_B  (agreed core)
+        #   X_D^(k) = C_A - C_B  (ownership)
+        # Track magnitude evolution and direction preservation
+        # across iterates k = 1, 2, 3. Cost: cheap r × r ops.
+        GA_inv = SA_half_inv @ SA_half_inv     # (r, r)
+        GB_inv = SB_half_inv @ SB_half_inv     # (r, r)
+        def _core_drives(dA_var, dB_var):
+            dA32 = dA_var.float(); dB32 = dB_var.float()
+            C_A = (dA32 @ A_f.T) @ GA_inv      # (r, r)
+            C_B = GB_inv @ (B_f.T @ dB32)      # (r, r)
+            return C_A + C_B, C_A - C_B
+        XC1, XD1 = _core_drives(dA1, dB1)
+        XC2, XD2 = _core_drives(dA2, dB2)
+        XC3, XD3 = _core_drives(dA3, dB3)
+        # Joint tangent norm at iter 3 (extends existing iter1/iter2)
+        J3_full = B_f @ dA3.float() + dB3.float() @ A_f
+        rec["frob_J_iter3"] = float(J3_full.norm())
+        # Magnitudes
+        nC1 = float(XC1.norm()) + 1e-30
+        nC2 = float(XC2.norm()) + 1e-30
+        nC3 = float(XC3.norm()) + 1e-30
+        nD1 = float(XD1.norm()) + 1e-30
+        nD2 = float(XD2.norm()) + 1e-30
+        nD3 = float(XD3.norm()) + 1e-30
+        rec["XC_iter1_frob"] = nC1
+        rec["XC_iter2_frob"] = nC2
+        rec["XC_iter3_frob"] = nC3
+        rec["XD_iter1_frob"] = nD1
+        rec["XD_iter2_frob"] = nD2
+        rec["XD_iter3_frob"] = nD3
+        # Shrink ratios (1 - ratio): positive ⇒ Picard shrunk it
+        rec["XC_shrink_2v1"] = 1.0 - nC2 / nC1
+        rec["XC_shrink_3v1"] = 1.0 - nC3 / nC1
+        rec["XD_shrink_2v1"] = 1.0 - nD2 / nD1
+        rec["XD_shrink_3v1"] = 1.0 - nD3 / nD1
+        # Direction preservation
+        rec["XC_cos_2v1"] = float((XC2 * XC1).sum()) / (nC1 * nC2)
+        rec["XC_cos_3v1"] = float((XC3 * XC1).sum()) / (nC1 * nC3)
+        rec["XD_cos_2v1"] = float((XD2 * XD1).sum()) / (nD1 * nD2)
+        rec["XD_cos_3v1"] = float((XD3 * XD1).sum()) / (nD1 * nD3)
+        # Energy split: what fraction of the total core energy is
+        # in the agreed (C) vs ownership (D) mode at each iterate?
+        rec["XC_frac_iter1"] = (nC1 ** 2) / (nC1 ** 2 + nD1 ** 2)
+        rec["XC_frac_iter2"] = (nC2 ** 2) / (nC2 ** 2 + nD2 ** 2)
+        rec["XC_frac_iter3"] = (nC3 ** 2) / (nC3 ** 2 + nD3 ** 2)
+
+        # k=1→k=3 dense update difference: what fraction lives in
+        # the rank-r shared-core subspace (i.e. is attributable to
+        # ΔX_C = X_C^(3) - X_C^(1))?
+        # ΔJ_total = B (dA3 - dA1) + (dB3 - dB1) A    (dense)
+        # ΔJ_core  = B ΔX_C A                          (rank ≤ r)
+        # Use trace identity ||B X A||² = tr(G_B X G_A X^T) for the
+        # core norm; compute ΔJ_total dense (cheap matmul).
+        GA_full = A_f @ A_f.T               # (r, r)
+        GB_full = B_f.T @ B_f               # (r, r)
+        dXC = XC3 - XC1                     # (r, r)
+        sq_core_dJ = float(((GB_full @ dXC @ GA_full) * dXC).sum())
+        dJ_full = B_f @ (dA3.float() - dA1.float()) + (dB3.float() - dB1.float()) @ A_f
+        sq_dJ = float(dJ_full.pow(2).sum())
+        rec["dJ_3v1_total_frob"] = sq_dJ ** 0.5
+        rec["dJ_3v1_core_frob"] = max(sq_core_dJ, 0.0) ** 0.5
+        rec["dJ_3v1_core_frac"] = max(sq_core_dJ, 0.0) / (sq_dJ + 1e-30)
+
+        # Base-rate diagnostic: what fraction of J^(k) itself
+        # (not just the k-difference) lives in the rank-r shared-
+        # core subspace P_U J P_V where P_U = projector onto
+        # col(B), P_V = projector onto row(A)? Compares against
+        # dJ_3v1_core_frac to determine whether Picard's action is
+        # specifically targeting the core (R_I = dJ_core_frac /
+        # J_core_frac >> 1) or just inheriting the base rate
+        # (R_I ≈ 1 means everything is in the core anyway).
+        # Trace identity: ||P_U J P_V||² ≈ tr(M G_A^{-1} M^T G_B^{-1})
+        # where M = B^T J A^T = G_B dA A^T + B^T dB G_A (r×r).
+        def _core_frac(dA_var, dB_var):
+            dA32 = dA_var.float(); dB32 = dB_var.float()
+            M = GB_full @ (dA32 @ A_f.T) + (B_f.T @ dB32) @ GA_full
+            sq_core = float(((M @ GA_inv) * (GB_inv @ M)).sum())
+            Jt = B_f @ dA32 + dB32 @ A_f
+            sq_full = float(Jt.pow(2).sum())
+            return max(sq_core, 0.0) / (sq_full + 1e-30)
+        rec["J_core_frac_iter1"] = _core_frac(dA1, dB1)
+        rec["J_core_frac_iter2"] = _core_frac(dA2, dB2)
+        rec["J_core_frac_iter3"] = _core_frac(dA3, dB3)
+
+        # Scalar gain fit. Tests whether Picard's effect on X_C
+        # and X_D is literally a scalar attenuation / amplification:
+        #   X_C^(3) ≈ a_C · X_C^(1),   X_D^(3) ≈ a_D · X_D^(1).
+        # Residuals r_C, r_D measure how well the scalar fit holds.
+        aC_3v1 = float((XC3 * XC1).sum()) / (nC1 ** 2)
+        aD_3v1 = float((XD3 * XD1).sum()) / (nD1 ** 2)
+        rec["aC_3v1"] = aC_3v1
+        rec["aD_3v1"] = aD_3v1
+        rec["rC_3v1"] = float((XC3 - aC_3v1 * XC1).norm()) / nC3
+        rec["rD_3v1"] = float((XD3 - aD_3v1 * XD1).norm()) / nD3
+
+        # Hidden-motion ratio: how much core energy lives in the
+        # first-order-invisible ownership mode X_D vs the
+        # identifiable mode X_C, at each iterate.
+        rec["h_iter1"] = (nD1 ** 2) / (nC1 ** 2)
+        rec["h_iter2"] = (nD2 ** 2) / (nC2 ** 2)
+        rec["h_iter3"] = (nD3 ** 2) / (nC3 ** 2)
+
+        # Second-order pollution: finite-update second-order term
+        # ΔB · ΔA (which is invisible to first-order J but real in
+        # the actual factor update) relative to J magnitude.
+        # Predicts: q grows more under Picard at low rank if X_D
+        # amplification feeds a larger second-order interaction.
+        def _q(dA_var, dB_var, J_norm):
+            so = dB_var.float() @ dA_var.float()
+            return float(so.norm()) / (J_norm + 1e-30)
+        rec["q_iter1"] = _q(dA1, dB1, rec["frob_J_iter1"])
+        rec["q_iter2"] = _q(dA2, dB2, rec["frob_J_iter2"])
+        rec["q_iter3"] = _q(dA3, dB3, rec["frob_J_iter3"])
+
+        # Gram drift: relative change in (A+ΔA)(A+ΔA)^T vs AA^T,
+        # per iterate. Tests whether X_D growth at low rank feeds
+        # downstream preconditioner instability.
+        nGA = float(GA_full.norm()) + 1e-30
+        nGB = float(GB_full.norm()) + 1e-30
+        def _gram_drift(dA_var, dB_var):
+            dA32 = dA_var.float(); dB32 = dB_var.float()
+            A_new = A_f + dA32
+            B_new = B_f + dB32
+            gA = float((A_new @ A_new.T - GA_full).norm()) / nGA
+            gB = float((B_new.T @ B_new - GB_full).norm()) / nGB
+            return gA, gB
+        gA1, gB1 = _gram_drift(dA1, dB1)
+        gA2, gB2 = _gram_drift(dA2, dB2)
+        gA3, gB3 = _gram_drift(dA3, dB3)
+        rec["gA_iter1"] = gA1
+        rec["gA_iter2"] = gA2
+        rec["gA_iter3"] = gA3
+        rec["gB_iter1"] = gB1
+        rec["gB_iter2"] = gB2
+        rec["gB_iter3"] = gB3
+
+
+    @torch.no_grad()
+    def _emit_heavy_factor_accuracy_diag(
+        self, rec, *, A_f, B_f, geo_A, geo_B,
+        sigma_A_t, sigma_B_t, op_geoA, op_geoB,
+    ):
+        """Heavy probe-step diagnostics: higham SPD-inverse accuracy vs eigh,
+        and cold-start power-iter σ_max accuracy vs eigh reference. Mutates
+        ``rec``. Each block has its own ``if self.log_heavy_diagnostics``
+        gate (the powiter block additionally checks ``self.magnitude_rule``).
+        """
+        # higham accuracy — HEAVY (double SPD inversion via eigh + matmuls):
+        # gated on log_heavy_diagnostics. ~5-30s per probe step at r=64
+        # (one eigh inversion per LoRA pair × hundreds of pairs).
+        if self.log_heavy_diagnostics:
+          try:
+            SA_grm = A_f @ A_f.T
+            SB_grm = B_f.T @ B_f
+            eyeA = torch.eye(SA_grm.shape[0], dtype=SA_grm.dtype, device=SA_grm.device)
+            eyeB = torch.eye(SB_grm.shape[0], dtype=SB_grm.dtype, device=SB_grm.device)
+            SA_inv_eigh = _spd_inv_half(SA_grm, eps=self.delta, method="eigh")
+            SB_inv_eigh = _spd_inv_half(SB_grm, eps=self.delta, method="eigh")
+            SA_inv_h = _spd_inv_half(
+                SA_grm, eps=self.delta, method="higham",
+                higham_iters=self.higham_iters)
+            SB_inv_h = _spd_inv_half(
+                SB_grm, eps=self.delta, method="higham",
+                higham_iters=self.higham_iters)
+            rec["higham_SA_rel_err_F"] = float(
+                (SA_inv_h - SA_inv_eigh).norm() / (SA_inv_eigh.norm() + 1e-30))
+            rec["higham_SB_rel_err_F"] = float(
+                (SB_inv_h - SB_inv_eigh).norm() / (SB_inv_eigh.norm() + 1e-30))
+            SA_resid = SA_inv_h @ (SA_grm + self.delta * eyeA) @ SA_inv_h - eyeA
+            SB_resid = SB_inv_h @ (SB_grm + self.delta * eyeB) @ SB_inv_h - eyeB
+            rec["higham_SA_residual_F"] = float(SA_resid.norm())
+            rec["higham_SB_residual_F"] = float(SB_resid.norm())
+          except Exception:
+            for k in ("higham_SA_rel_err_F", "higham_SB_rel_err_F",
+                      "higham_SA_residual_F", "higham_SB_residual_F"):
+                rec[k] = float("nan")
+
+        # Power-iter accuracy probe — methodology lesson from
+        # 2026-05-11 (~/.claude/CLAUDE.md "Suspect the probe before
+        # the theorem"): any iterative-numerical-method default in
+        # an optimizer hot path should ship with a direct-accuracy
+        # probe option that compares against an exact reference.
+        # Logs cold-start power-iter σ_max estimates at n_iters ∈
+        # {3, 8} for (A, B, geo_A, geo_B) as ratios to the exact
+        # eigh σ_max already computed by the chord-tight rule.
+        # ratio < 1 ⇒ power-iter under-estimates (the failure mode
+        # we cared about); fires every probe step. Cost: 8 small
+        # _sigma_max_power_iter calls per pair per probe step.
+        # HEAVY — gated on log_heavy_diagnostics. 8 power-iter calls
+        # per LoRA pair per probe step → ~20s/probe step at r=64.
+        if self.log_heavy_diagnostics and self.magnitude_rule in (
+                "spectral_chord", "spectral_chord_tight",
+                "spectral_chord_direction"):
+            try:
+                for name, mat, sigma_eigh in [
+                    ("A", A_f, sigma_A_t),
+                    ("B", B_f, sigma_B_t),
+                    ("geoA", geo_A.float(), op_geoA - 1e-30),
+                    ("geoB", geo_B.float(), op_geoB - 1e-30),
+                ]:
+                    ref = float(sigma_eigh) + 1e-30
+                    sig3, _ = _sigma_max_power_iter(mat, n_iters=3)
+                    sig8, _ = _sigma_max_power_iter(mat, n_iters=8)
+                    rec[f"powiter_ratio_{name}_n3"] = float(sig3) / ref
+                    rec[f"powiter_ratio_{name}_n8"] = float(sig8) / ref
+            except Exception:
+                for name in ("A", "B", "geoA", "geoB"):
+                    rec[f"powiter_ratio_{name}_n3"] = float("nan")
+                    rec[f"powiter_ratio_{name}_n8"] = float("nan")
+
+
+    @torch.no_grad()
+    def _emit_heavy_chord_slack_diag(self, rec, *, A_f, B_f, dA, dB, lr_f):
+        """Probe A — chord_slack via direct SVD on the materialized chord
+        matrix. Gated on log_heavy_diagnostics. Only meaningful under
+        spectral_chord_tight / spectral_chord_direction (caller enforces).
+        Mutates ``rec``.
+        """
+        # Probe A — chord slack u_chord = ‖B dA + dB A + dB dA‖_2 / lr.
+        # ΔW = (B+dB)(A+dA) − BA. Direct SVD on the materialized
+        # chord matrix (m × n). For non-lm_head pairs m,n ≤ 4096 so
+        # this is ~10ms.
+        #
+        # Earlier attempts at a 2r×2r shortcut were both wrong:
+        # (1) `eigvals` on the non-symmetric (R R^T)(L^T L) leaked
+        #     complex parts into the real-eigenvalue max.
+        # (2) chol(L^T L) + eigvalsh(L_chol^T · R R^T · L_chol) is
+        #     mathematically equivalent in exact arithmetic, but
+        #     L = [B+dB, B] makes L^T L rank-deficient by
+        #     construction (overlapping column spans as dB → 0); the
+        #     damping that keeps Cholesky safe also drifts the
+        #     eigenvalues upward as ‖B‖_F grows, systematically
+        #     over-estimating σ_max. Confirmed against direct SVD
+        #     at steps 20-100 of `v1_debug_r64_400_v3` (commit
+        #     ec95622): chol+eigvalsh crossed 1 by step 80 while
+        #     direct-SVD stayed at 0.94. See docs/notes/polar_product
+        #     /chord_slack_probe_resolution_2026_05_11.md.
+        #
+        # lm_head pairs (B.shape[0] ~100k) skip the probe — chord
+        # matrix materialization is too expensive there.
+        # HEAVY — gated on log_heavy_diagnostics. SVD on m×n
+        # materialized chord matrix per LoRA pair → ~60s/probe step.
+        if self.log_heavy_diagnostics:
+            try:
+                dA_f = dA.float()
+                dB_f = dB.float()
+                if B_f.shape[0] <= 4096:
+                    with torch.no_grad():
+                        chord_direct = (B_f + dB_f) @ (A_f + dA_f) - B_f @ A_f
+                        sigma_chord = float(
+                            torch.linalg.svdvals(chord_direct).max())
+                else:
+                    sigma_chord = float("nan")
+            except Exception:
+                sigma_chord = float("nan")
+            rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
 
 
 class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
