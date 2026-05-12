@@ -556,16 +556,30 @@ def merge_runs(group_priority: Iterable[str],
 # ─── diverged-run filtering ───────────────────────────────────────────────────
 
 def max_loss(evs: list[dict]) -> float:
-    return max(e["eval_loss"] for e in evs)
+    # NaN-safe: a NaN eval_loss anywhere counts as inf (diverged).
+    return max((float("inf") if (e["eval_loss"] != e["eval_loss"]) else e["eval_loss"])
+               for e in evs)
 
 
 def split_diverged(runs, threshold: float = DIVERGE_THRESHOLD,
                    hard_max: float = float("inf")):
-    def _div(evs):
-        return evs[-1]["eval_loss"] >= threshold or max_loss(evs) >= hard_max
+    def _div(cfg, evs):
+        final = evs[-1]["eval_loss"]
+        # NaN final → diverged. Also any NaN mid-trajectory → diverged.
+        if final != final or max_loss(evs) != max_loss(evs):  # NaN propagation guard
+            return True
+        # Early-termination guard: run that died in the first 10% of training
+        # (and didn't get further) counts as diverged. Catches NaN-killed runs
+        # whose pre-death eval happened to be finite. Threshold is loose enough
+        # not to flag mid-flight partial-horizon runs, which `min_step`
+        # filtering handles separately.
+        max_steps = cfg.get("max_steps")
+        if max_steps is not None and evs[-1]["step"] < max_steps * 0.1:
+            return True
+        return final >= threshold or max_loss(evs) >= hard_max
 
-    keep = [(c, e) for c, e in runs if not _div(e)]
-    drop = [(c, e) for c, e in runs if _div(e)]
+    keep = [(c, e) for c, e in runs if not _div(c, e)]
+    drop = [(c, e) for c, e in runs if _div(c, e)]
     return keep, drop
 
 
@@ -934,21 +948,32 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         for g, lr, fl in sorted(clipped):
             print(f"    {g} η={lr:.0e} final={fl:.4f}")
 
+    import statistics as _stats
+    from collections import defaultdict as _dd
     for g in groups:
-        rows = sorted([(c["lr"], e[-1]["eval_loss"]) for c, e in runs
-                       if group_key_fn(c) == g])
-        if not rows:
+        # Aggregate per-lr across seeds: (lr → list of eval_losses).
+        by_lr: dict[float, list[float]] = _dd(list)
+        for c, e in runs:
+            if group_key_fn(c) != g:
+                continue
+            by_lr[float(c["lr"])].append(e[-1]["eval_loss"])
+        if not by_lr:
             continue
-        xs = [r[0] for r in rows]
-        # Clamp out-of-range ys to y_cap so the line stays connected; the
-        # actual visible distinction is the hollow marker drawn separately.
-        ys = [min(r[1], y_cap) for r in rows]
-        is_oor = [r[1] > y_cap for r in rows]
-        # Optimum-normalize x to η/η⋆ per series (using IN-RANGE ys to pick η⋆
-        # so divergent/clamped runs don't anchor the optimum). Single in-range
-        # point still normalizes — its lr IS η⋆ by definition.
+        # Per-lr aggregate: (lr, mean, std, n). std=0 for single-seed.
+        agg = sorted(
+            (lr, sum(ys)/len(ys),
+             _stats.stdev(ys) if len(ys) > 1 else 0.0,
+             len(ys))
+            for lr, ys in by_lr.items()
+        )
+        xs = [p[0] for p in agg]
+        means = [p[1] for p in agg]
+        stds = [p[2] for p in agg]
+        # Clamp to y_cap for connecting line.
+        ys_clamped = [min(m, y_cap) for m in means]
+        is_oor = [m > y_cap for m in means]
         if normalize_x_to_optimum and any(not o for o in is_oor):
-            in_pairs = [(xs[i], ys[i]) for i, o in enumerate(is_oor) if not o]
+            in_pairs = [(xs[i], means[i]) for i, o in enumerate(is_oor) if not o]
             eta_star = min(in_pairs, key=lambda p: p[1])[0]
             if eta_star > 0:
                 xs = [x / eta_star for x in xs]
@@ -958,24 +983,29 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         ls = BASELINE_LS_CURVE if is_adamw else linestyle_map.get(g, "-")
         lw = BASELINE_LW_CURVE if is_adamw else LINE_WIDTH
         zorder = BASELINE_ZORDER if is_adamw else 5
-        # Connecting line through clamped y values (no per-point markers).
-        ax.plot(xs, ys, color=color, lw=lw, ls=ls, zorder=zorder,
+        # Connecting line through clamped means.
+        ax.plot(xs, ys_clamped, color=color, lw=lw, ls=ls, zorder=zorder,
                 label=f"{g} (baseline)" if is_adamw else g)
-        # Filled markers at in-range points.
-        in_x = [x for x, oor in zip(xs, is_oor) if not oor]
-        in_y = [y for y, oor in zip(ys, is_oor) if not oor]
-        if in_x:
-            ax.plot(in_x, in_y, color=color, marker=marker,
-                    markersize=MARKER_SIZE, ls="", zorder=zorder + 1)
-        # Hollow markers at out-of-range points (clamped to y_cap), signal:
-        # actual value is higher, this is an indicator not the real y.
-        oor_x = [x for x, oor in zip(xs, is_oor) if oor]
-        oor_y = [y for y, oor in zip(ys, is_oor) if oor]
+        # In-range mean markers + ±σ error bars (zero σ on single-seed cells
+        # → caps collapse to the marker, visually identical to a plain marker).
+        in_idx = [i for i, o in enumerate(is_oor) if not o]
+        if in_idx:
+            ax.errorbar(
+                [xs[i] for i in in_idx],
+                [means[i] for i in in_idx],
+                yerr=[stds[i] for i in in_idx],
+                color=color, marker=marker, markersize=MARKER_SIZE,
+                ls="", zorder=zorder + 1,
+                capsize=4, capthick=lw * 0.6, elinewidth=lw * 0.6,
+            )
+        # Hollow markers for out-of-range (clamped) means.
+        oor_x = [xs[i] for i, o in enumerate(is_oor) if o]
+        oor_y = [ys_clamped[i] for i, o in enumerate(is_oor) if o]
         if oor_x:
             ax.plot(oor_x, oor_y, color=color, marker=marker,
                     markersize=MARKER_SIZE + 4, markerfacecolor="none",
                     markeredgewidth=2.2, ls="", zorder=zorder + 2)
-        in_range_losses.extend(ys[i] for i, oor in enumerate(is_oor) if not oor)
+        in_range_losses.extend(means[i] for i in in_idx)
 
     ax.set_xscale("log")
     ax.set_xlabel(r"$\eta / \eta^\star$ (log)" if normalize_x_to_optimum else "η (log)",

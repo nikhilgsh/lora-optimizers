@@ -3352,6 +3352,10 @@ class AdamPolarProductLoRA(Optimizer):
             # in end_rms_align mode (vs ‖u_A_eff‖ in the original mode).
             uA_norm_orig = u_A.norm()
             uB_norm_orig = u_B.norm()
+            # Default picard cross-coupling coefficient — overridden below for
+            # the chord-tight family. Initialized here so the diagnostic block
+            # can read it for any magnitude_rule.
+            picard_coeff_t = None
             # σ_max(A), σ_max(B) for the spectral_chord magnitude rules.
             # Computed via exact eigh on the r×r Gram (smaller side). For
             # spectral_chord_direction the values are still useful as a
@@ -3623,11 +3627,23 @@ class AdamPolarProductLoRA(Optimizer):
                 # H1 — cross-term ratios γ_A, γ_B. Always cheap; uses the
                 # APPLIED step (dA, dB) as the dB_prev/dA_prev surrogate for
                 # the would-be iter-2 correction. Defined as the relative
-                # magnitude of the perturbation that iter-2 would inject:
-                #     γ_A = ‖Bᵀ dB A / lr‖_F / ‖u_A‖_F
-                #     γ_B = ‖B  dA Aᵀ / lr‖_F / ‖u_B‖_F
-                cross_A = (B_f.T @ dB.float() @ A_f) / lr
-                cross_B = (B_f @ dA.float() @ A_f.T) / lr
+                # magnitude of the perturbation that iter-2 would inject,
+                # using the COEFFICIENT THAT IS ACTUALLY APPLIED IN THE
+                # PICARD LOOP and the post-unit-polar-normalization u_A so
+                # the ratio reflects what the polar map sees:
+                #     γ_A = ‖picard_coeff · Bᵀ dB A‖_F / ‖ū_A‖_F
+                #     γ_B = ‖picard_coeff · B  dA Aᵀ‖_F / ‖ū_B‖_F
+                # For chord-tight family, picard_coeff = 2/(ρ·s) (computed
+                # above as picard_coeff_t). For other variants, picard_coeff
+                # = picard_alpha/lr (the legacy scaling). Note u_A here has
+                # already been replaced by ū_A = u_A / σ_XA above when
+                # unit-polar normalization is active, so the denominator
+                # correctly reflects polar-input magnitude.
+                coeff_t = (picard_coeff_t
+                           if picard_coeff_t is not None
+                           else (self.picard_alpha / lr))
+                cross_A = coeff_t * (B_f.T @ dB.float() @ A_f)
+                cross_B = coeff_t * (B_f @ dA.float() @ A_f.T)
                 rec["gamma_A"] = float(cross_A.norm() / (u_A.norm() + 1e-30))
                 rec["gamma_B"] = float(cross_B.norm() / (u_B.norm() + 1e-30))
 
@@ -7579,7 +7595,7 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
-            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             picard_alpha=picard_alpha,
             anderson_m=anderson_m,
             anderson_reg=anderson_reg,
@@ -7606,7 +7622,7 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
-            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             picard_alpha=picard_alpha,
             anderson_m=anderson_m,
             anderson_reg=anderson_reg,
@@ -7633,7 +7649,7 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
-            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             picard_alpha=picard_alpha,
             anderson_m=anderson_m,
             anderson_reg=anderson_reg,
@@ -7663,7 +7679,7 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
-            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             picard_alpha=picard_alpha,
             anderson_m=anderson_m,
             anderson_reg=anderson_reg,
