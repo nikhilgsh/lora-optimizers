@@ -1028,7 +1028,27 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
         ax.legend(**_legend_kw(n_lines))
 
 
-CANONICAL_HORIZON = 2000
+CANONICAL_HORIZON = 2000  # legacy unpacked_v0 default; packed_v1 uses 4000.
+                          # `_infer_min_step` reads cfg["max_steps"] from the actual
+                          # input runs and falls back to this only when absent.
+
+
+def _infer_min_step(runs) -> int | None:
+    """Return the target horizon by reading `max_steps` from the input cfgs.
+
+    Multiple max_steps in the same `runs` list (mixed-regime) → pick the
+    MAX, since the left panel can only report "final" for runs that hit
+    the highest target. Returns None if no cfg carries `max_steps`.
+    """
+    targets = {int(c["max_steps"]) for c, _ in runs if "max_steps" in c}
+    return max(targets) if targets else None
+
+
+# Sentinel: standard_sweep_figure / two_panel_sweep_figure should auto-infer
+# min_step from the input runs (cfg["max_steps"]) rather than defaulting to
+# CANONICAL_HORIZON=2000, which silently mis-fires under packed_v1's 4000-step
+# regime.
+_INFER_MIN_STEP: object = object()
 
 
 def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
@@ -1037,7 +1057,7 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
                            ref_curves: list[tuple] | None = None,
                            ref_eta_sweeps: list[tuple] | None = None,
                            threshold: float = DIVERGE_THRESHOLD,
-                           min_step: int | None = CANONICAL_HORIZON,
+                           min_step: int | None | object = _INFER_MIN_STEP,
                            figsize: tuple = DEFAULT_FIGSIZE,
                            x_tick_step: int = 200,
                            left_title: str = "Final eval loss vs η, per group",
@@ -1065,6 +1085,9 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
     # would bias the comparison. Exclude them from the LEFT panel only —
     # the right panel still shows the partial training curve so progress
     # is visible. Set min_step=None to disable.
+    if min_step is _INFER_MIN_STEP:
+        min_step = _infer_min_step(keep) or CANONICAL_HORIZON
+        print(f"  [auto] min_step inferred from cfg['max_steps']: {min_step}")
     keep_for_right = keep
     keep_for_left = keep
     if min_step is not None:
@@ -1181,6 +1204,22 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
     # Marker map propagates to baseline overlays so secondary references
     # (extra_baselines) and the primary baseline both honor per-optimizer markers.
     _marker_map = kwargs.get("marker_map") or {}
+
+    # Filter partial-horizon runs out of reference_runs BEFORE the η-sweep is
+    # built, so the left-panel AdamW η-sweep doesn't include in-flight runs
+    # at intermediate steps. Use the same min_step the candidate-side filter
+    # will use (inferred from candidate cfg.max_steps in two_panel_sweep_figure).
+    _min_step = kwargs.get("min_step", _INFER_MIN_STEP)
+    if _min_step is _INFER_MIN_STEP:
+        _min_step = _infer_min_step(runs) or CANONICAL_HORIZON
+    if _min_step is not None:
+        n_before = len(reference_runs)
+        reference_runs = [(c, e) for c, e in reference_runs
+                          if e and e[-1]["step"] >= _min_step]
+        n_dropped = n_before - len(reference_runs)
+        if n_dropped:
+            print(f"  [auto] filtered {n_dropped} partial reference run(s) below min_step={_min_step}")
+
     hlines, ref_curves, eta_sweeps = baseline_overlay(
         reference_runs, baseline_optimizer, is_primary=True,
         marker_map=_marker_map,
