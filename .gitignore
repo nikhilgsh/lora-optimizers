@@ -60,3 +60,5 @@ docs/theory/*-blx.bib
 # authoritative submission record is logs/<group>/run_info/meta.json).
 slurm_pending/
 slurm_submitted/
+slurm_cancel_pending/
+slurm_cancel_submitted/
