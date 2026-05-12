@@ -29,6 +29,6 @@ python train_lora.py \
     --lora_r "$lora_r" \
     --lora_alpha "$lora_r" \
     --picard_alpha "$picard_alpha" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

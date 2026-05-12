@@ -27,6 +27,6 @@ python train_lora.py \
     --lora_r "$lora_r" \
     --lora_alpha "$lora_r" \
     --precond_refresh_every "$precond_refresh_every" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

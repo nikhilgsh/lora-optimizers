@@ -20,6 +20,6 @@ python train_lora.py \
     --optimizer "$optimizer" \
     --lora_plus_multiplier "$lora_plus_multiplier" \
     --seed "$seed" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

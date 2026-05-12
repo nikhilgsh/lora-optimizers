@@ -29,6 +29,6 @@ python train_lora.py \
     --lora_alpha "$lora_r" \
     --polar_method "$polar_method" \
     --picard_iters_override "$picard_iters_override" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

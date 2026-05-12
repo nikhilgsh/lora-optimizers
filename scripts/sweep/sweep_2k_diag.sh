@@ -1,5 +1,5 @@
 #!/bin/bash
-# 2000-step sweep with --log_optim_diagnostics enabled (H1 probe).
+# 2000-step sweep with --log_basic_diagnostics enabled (H1 probe).
 # Same arg order as sweep_2k.sh so it's drop-in compatible with existing param JSON.
 lr=${1:-1e-3}
 optimizer=${2:-adam-lin-lora}
@@ -21,6 +21,6 @@ python train_lora.py \
     --optimizer "$optimizer" \
     --lora_plus_multiplier "$lora_plus_multiplier" \
     --seed "$seed" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

@@ -249,15 +249,24 @@ def _enrich_cfg(cfg: dict) -> dict:
         cfg["optimizer_config"] = _backfill_optimizer_config(cfg)
     opt_cfg = cfg["optimizer_config"]
     # Diagnostic knobs are emitted at two places: the top-level cfg event
-    # (CLI names ``log_optim_diagnostics`` / ``optim_diagnostics_every``) and
+    # (CLI names ``log_basic_diagnostics`` / ``optim_diagnostics_every``) and
     # the per-optimizer kwargs in ``optimizer_config`` (constructor names
-    # ``log_diagnostics`` / ``diagnostics_every``). Older cfg events lack the
-    # top-level CLI fields entirely (the flag was added later) — they only
-    # carry the constructor names in optimizer_config. Backfill from
-    # optimizer_config so callers can read a single top-level field
-    # consistently regardless of which generation of cfg event they have.
-    if cfg.get("log_optim_diagnostics") is None:
-        cfg["log_optim_diagnostics"] = opt_cfg.get("log_diagnostics")
+    # ``log_basic_diagnostics`` / ``diagnostics_every``).
+    #
+    # Backward read-compat: cfg events from before the 2026-05-12 diagnostics
+    # refactor used the OLD names — top-level ``log_optim_diagnostics`` and
+    # constructor ``log_diagnostics``. Read both, prefer new. Same applies to
+    # backfill from optimizer_config. Older cfg events also lack the top-level
+    # CLI fields entirely (the flag was added later still) and only carry the
+    # constructor names — also backfilled here.
+    if cfg.get("log_basic_diagnostics") is None:
+        cfg["log_basic_diagnostics"] = (
+            cfg.get("log_optim_diagnostics")
+            or opt_cfg.get("log_basic_diagnostics")
+            or opt_cfg.get("log_diagnostics")
+        )
+    if cfg.get("log_heavy_diagnostics") is None:
+        cfg["log_heavy_diagnostics"] = opt_cfg.get("log_heavy_diagnostics")
     if cfg.get("optim_diagnostics_every") is None:
         cfg["optim_diagnostics_every"] = opt_cfg.get("diagnostics_every")
     derived: dict[str, Any] = {}

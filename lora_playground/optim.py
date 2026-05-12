@@ -631,7 +631,7 @@ class AdamLinLoRA(Optimizer):
     Sylvester on the EMA core covector. This implementation is kept as an
     empirical baseline; reinterpret leaderboard standing accordingly.
     """
-    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0, log_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0, log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -643,7 +643,8 @@ class AdamLinLoRA(Optimizer):
         self.beta1, self.beta2 = betas
         self.scaled_metric = scaled_metric
         self.lora_plus_multiplier = lora_plus_multiplier
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.precond_refresh_every = precond_refresh_every
 
@@ -659,7 +660,7 @@ class AdamLinLoRA(Optimizer):
                 'v_B': torch.zeros_like(B, dtype=torch.float32),
                 'step': 0,
             }
-            if log_diagnostics:
+            if log_basic_diagnostics:
                 # Side-channel raw-grad Adam state for cosine comparison vs the
                 # geometrically-preconditioned step actually applied. Only
                 # allocated when diagnostics are enabled.
@@ -692,7 +693,7 @@ class AdamLinLoRA(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
             if A.grad is None or B.grad is None:
@@ -716,7 +717,7 @@ class AdamLinLoRA(Optimizer):
                 state['evalB'], state['QB'] = torch.linalg.eigh(SB)
                 state['LA'] = torch.linalg.cholesky(SA)
                 state['LB'] = torch.linalg.cholesky(SB)
-                if self.log_diagnostics:
+                if self.log_basic_diagnostics:
                     state['SA_eig_extremes'] = (float(state['evalA'][0]), float(state['evalA'][-1]))
                     state['SB_eig_extremes'] = (float(state['evalB'][0]), float(state['evalB'][-1]))
             evalA, QA = state['evalA'], state['QA']
@@ -761,7 +762,7 @@ class AdamLinLoRA(Optimizer):
             dA = -lr * m_hat_A / (v_hat_A.sqrt() + self.eps)
             dB = -self.lora_plus_multiplier * lr * m_hat_B / (v_hat_B.sqrt() + self.eps)
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 # H1 probe: side-compute the plain-AdamW step on the same raw
                 # gradient (independent m,v state), then compare directions.
                 dA_raw = _adamw_side_step(
@@ -805,7 +806,7 @@ class AdamLinLoRA(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -849,7 +850,7 @@ class AdamLinCoreLoRA(Optimizer):
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
                  adapter_name=None, scaled_metric=False, lora_plus_multiplier=1.0,
                  bias_correction=False,
-                 log_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -862,7 +863,8 @@ class AdamLinCoreLoRA(Optimizer):
         self.scaled_metric = scaled_metric
         self.bias_correction = bias_correction
         self.lora_plus_multiplier = lora_plus_multiplier
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.precond_refresh_every = precond_refresh_every
 
@@ -887,7 +889,7 @@ class AdamLinCoreLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
             if A.grad is None or B.grad is None:
@@ -945,7 +947,7 @@ class AdamLinCoreLoRA(Optimizer):
             dA = -lr * precond_A
             dB = -self.lora_plus_multiplier * lr * precond_B
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 diag_records.append({
                     "norm_M": float(M.norm()),
                     "norm_M_hat": float(M_hat.norm()),
@@ -964,7 +966,7 @@ class AdamLinCoreLoRA(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]["step"]
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -983,7 +985,7 @@ class AdamScaledLoRA(Optimizer):
         v_t = β₂ v_{t-1} + (1-β₂) v_t²
         Δθ = -lr * m_t / (√v_t + ε)
     """
-    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, log_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8, adapter_name=None, log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20, precond_refresh_every=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -993,7 +995,8 @@ class AdamScaledLoRA(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.precond_refresh_every = precond_refresh_every
 
@@ -1008,7 +1011,7 @@ class AdamScaledLoRA(Optimizer):
                 'v_B': torch.zeros_like(B, dtype=torch.float32),
                 'step': 0,
             }
-            if log_diagnostics:
+            if log_basic_diagnostics:
                 entry['m_A_raw'] = torch.zeros_like(A, dtype=torch.float32)
                 entry['v_A_raw'] = torch.zeros_like(A, dtype=torch.float32)
                 entry['m_B_raw'] = torch.zeros_like(B, dtype=torch.float32)
@@ -1031,7 +1034,7 @@ class AdamScaledLoRA(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -1054,7 +1057,7 @@ class AdamScaledLoRA(Optimizer):
                 SA = spdify(A @ A.T, self.delta)       # S_A ∈ ℝ^{r×r}
                 state['LA'] = torch.linalg.cholesky(SA)
                 state['LB'] = torch.linalg.cholesky(SB)
-                if self.log_diagnostics:
+                if self.log_basic_diagnostics:
                     state['SA_for_diag'] = SA
                     state['SB_for_diag'] = SB
             LA = state['LA']
@@ -1087,7 +1090,7 @@ class AdamScaledLoRA(Optimizer):
             dA = -lr * m_hat_A / (v_hat_A.sqrt() + self.eps)
             dB = -lr * m_hat_B / (v_hat_B.sqrt() + self.eps)
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 dA_raw = _adamw_side_step(
                     gA, state['m_A_raw'], state['v_A_raw'],
                     self.beta1, self.beta2, self.eps, state['step'], lr,
@@ -1131,7 +1134,7 @@ class AdamScaledLoRA(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -1153,7 +1156,7 @@ class AdamScaledLoRAPost(Optimizer):
     """
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
-                 eps=1e-8, adapter_name=None, log_diagnostics=False, diagnostics_every=20):
+                 eps=1e-8, adapter_name=None, log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1163,7 +1166,8 @@ class AdamScaledLoRAPost(Optimizer):
         self.delta = delta
         self.eps = eps
         self.beta1, self.beta2 = betas
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
 
         self.pair_state = {}
@@ -1183,7 +1187,7 @@ class AdamScaledLoRAPost(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -1225,7 +1229,7 @@ class AdamScaledLoRAPost(Optimizer):
             dA = -lr * (uA_norm / gA_norm) * geo_A
             dB = -lr * (uB_norm / gB_norm) * geo_B
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 # cos(applied_step, plain-AdamW-direction). Plain AdamW would
                 # apply -lr·u_A; we compute cos(dA, -u_A) so the sign is
                 # consistent across Pre and Post variants regardless of
@@ -1252,7 +1256,7 @@ class AdamScaledLoRAPost(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -1289,7 +1293,7 @@ class AdamLinLoRAPost(Optimizer):
 
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
                  eps=1e-8, adapter_name=None, scaled_metric=False,
-                 lora_plus_multiplier=1.0, log_diagnostics=False, diagnostics_every=20):
+                 lora_plus_multiplier=1.0, log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1301,7 +1305,8 @@ class AdamLinLoRAPost(Optimizer):
         self.beta1, self.beta2 = betas
         self.scaled_metric = scaled_metric
         self.lora_plus_multiplier = lora_plus_multiplier
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
 
         self.pair_state = {}
@@ -1324,7 +1329,7 @@ class AdamLinLoRAPost(Optimizer):
                 closure()
 
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, ((A, B), gamma) in enumerate(zip(self.pairs, self.gammas)):
             if A.grad is None or B.grad is None:
@@ -1376,7 +1381,7 @@ class AdamLinLoRAPost(Optimizer):
             if self.lora_plus_multiplier != 1.0:
                 dB = self.lora_plus_multiplier * dB
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
                 # for sign-convention rationale.
                 sa_min, sa_max = _spd_eig_extremes(SA)
@@ -1401,7 +1406,7 @@ class AdamLinLoRAPost(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -2518,7 +2523,7 @@ class AdamPolarProductLoRA(Optimizer):
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
-                 log_diagnostics=False, diagnostics_every=20,
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=1,
                  precond_method="higham", higham_iters=10,
                  picard_iters=1, end_rms_align=False, picard_alpha=1.0,
@@ -2542,7 +2547,8 @@ class AdamPolarProductLoRA(Optimizer):
         self.beta1, self.beta2 = betas
         self.ns_steps = ns_steps
         self.lora_plus_multiplier = lora_plus_multiplier
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.precond_refresh_every = precond_refresh_every
         self.precond_method = precond_method
@@ -2876,7 +2882,7 @@ class AdamPolarProductLoRA(Optimizer):
         if type(self) is not AdamPolarProductLoRA:
             if not getattr(self, "_BATCHED_PATH_SUPPORTED", False):
                 return False
-        if self.log_diagnostics:
+        if self.log_basic_diagnostics:
             return False
         if self.core_remix_alpha > 0.0:
             return False
@@ -3209,7 +3215,7 @@ class AdamPolarProductLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
         timer = getattr(self, "_step_timer", None)
 
         for i, (A, B) in enumerate(self.pairs):
@@ -3490,7 +3496,7 @@ class AdamPolarProductLoRA(Optimizer):
                 dA_prev = dA
                 dB_prev = dB
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 step_count_local = state['step']
                 is_probe_step = (step_count_local % self.diagnostics_every == 0)
                 # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
@@ -3680,6 +3686,7 @@ class AdamPolarProductLoRA(Optimizer):
                 # tells us whether REAL A·A^T spectra during training ever
                 # enter the "ill" regime, vs only synthetic stress tests.
                 # ~6 r×r ops per pair per probe step (cheap).
+                # cond(S_A), cond(S_B) — CHEAP (r×r eigvalsh): kept in basic tier.
                 try:
                     SA_eigs = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
                     SB_eigs = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
@@ -3687,8 +3694,14 @@ class AdamPolarProductLoRA(Optimizer):
                     SB_max = float(SB_eigs.max()); SB_min = float(SB_eigs.min())
                     rec["cond_SA"] = SA_max / max(SA_min, 1e-30)
                     rec["cond_SB"] = SB_max / max(SB_min, 1e-30)
-                    # higham accuracy: ‖higham - eigh‖_F / ‖eigh‖_F and the
-                    # symmetric residual ‖X · (S+δI) · X - I‖_F.
+                except Exception:
+                    for k in ("cond_SA", "cond_SB"):
+                        rec[k] = float("nan")
+                # higham accuracy — HEAVY (double SPD inversion via eigh + matmuls):
+                # gated on log_heavy_diagnostics. ~5-30s per probe step at r=64
+                # (one eigh inversion per LoRA pair × hundreds of pairs).
+                if self.log_heavy_diagnostics:
+                  try:
                     SA_grm = A_f @ A_f.T
                     SB_grm = B_f.T @ B_f
                     eyeA = torch.eye(SA_grm.shape[0], dtype=SA_grm.dtype, device=SA_grm.device)
@@ -3709,9 +3722,8 @@ class AdamPolarProductLoRA(Optimizer):
                     SB_resid = SB_inv_h @ (SB_grm + self.delta * eyeB) @ SB_inv_h - eyeB
                     rec["higham_SA_residual_F"] = float(SA_resid.norm())
                     rec["higham_SB_residual_F"] = float(SB_resid.norm())
-                except Exception:
-                    for k in ("cond_SA", "cond_SB",
-                              "higham_SA_rel_err_F", "higham_SB_rel_err_F",
+                  except Exception:
+                    for k in ("higham_SA_rel_err_F", "higham_SB_rel_err_F",
                               "higham_SA_residual_F", "higham_SB_residual_F"):
                         rec[k] = float("nan")
 
@@ -3726,9 +3738,11 @@ class AdamPolarProductLoRA(Optimizer):
                 # ratio < 1 ⇒ power-iter under-estimates (the failure mode
                 # we cared about); fires every probe step. Cost: 8 small
                 # _sigma_max_power_iter calls per pair per probe step.
-                if self.magnitude_rule in ("spectral_chord",
-                                           "spectral_chord_tight",
-                                           "spectral_chord_direction"):
+                # HEAVY — gated on log_heavy_diagnostics. 8 power-iter calls
+                # per LoRA pair per probe step → ~20s/probe step at r=64.
+                if self.log_heavy_diagnostics and self.magnitude_rule in (
+                        "spectral_chord", "spectral_chord_tight",
+                        "spectral_chord_direction"):
                     try:
                         for name, mat, sigma_eigh in [
                             ("A", A_f, sigma_A_t),
@@ -3791,19 +3805,22 @@ class AdamPolarProductLoRA(Optimizer):
                     #
                     # lm_head pairs (B.shape[0] ~100k) skip the probe — chord
                     # matrix materialization is too expensive there.
-                    try:
-                        dA_f = dA.float()
-                        dB_f = dB.float()
-                        if B_f.shape[0] <= 4096:
-                            with torch.no_grad():
-                                chord_direct = (B_f + dB_f) @ (A_f + dA_f) - B_f @ A_f
-                                sigma_chord = float(
-                                    torch.linalg.svdvals(chord_direct).max())
-                        else:
+                    # HEAVY — gated on log_heavy_diagnostics. SVD on m×n
+                    # materialized chord matrix per LoRA pair → ~60s/probe step.
+                    if self.log_heavy_diagnostics:
+                        try:
+                            dA_f = dA.float()
+                            dB_f = dB.float()
+                            if B_f.shape[0] <= 4096:
+                                with torch.no_grad():
+                                    chord_direct = (B_f + dB_f) @ (A_f + dA_f) - B_f @ A_f
+                                    sigma_chord = float(
+                                        torch.linalg.svdvals(chord_direct).max())
+                            else:
+                                sigma_chord = float("nan")
+                        except Exception:
                             sigma_chord = float("nan")
-                    except Exception:
-                        sigma_chord = float("nan")
-                    rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
+                        rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
 
                     # Probe B — direction-aware radius gain.
                     # P = D_A / ‖D_A‖_2, Q = D_B / ‖D_B‖_2 are unit-norm
@@ -3900,11 +3917,11 @@ class AdamPolarProductLoRA(Optimizer):
                             rec[_k] = float("nan")
 
                 # H2/H3 — Picard contraction + polar sensitivity.
-                # Probe-step only (every diagnostics_every) since it costs 3
-                # extra polar-pipeline calls per pair. Independent of the
-                # applied step (self.picard_iters); always runs 3 iters from
-                # zero so we can compare uncoupled and coupled symmetrically.
-                if is_probe_step:
+                # HEAVY — 3 extra _polar_pipeline calls per LoRA pair per probe
+                # step → ~30s/probe at r=64. Gated on log_heavy_diagnostics.
+                # Always runs 3 iters from zero so uncoupled/coupled compare
+                # symmetrically; independent of self.picard_iters.
+                if is_probe_step and self.log_heavy_diagnostics:
                     dA1, dB1, _, _, _, _, _, _, P_A1, P_B1 = self._polar_pipeline(
                         u_A, u_B, SA_half_inv, SB_half_inv, lr)
                     u_A_2 = u_A + (B_f.T @ dB1 @ A_f) / lr
@@ -4201,7 +4218,7 @@ class AdamPolarProductLoRA(Optimizer):
                 A.grad.zero_()
                 B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -4335,7 +4352,7 @@ class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
 
         # Per-pair SOAP spectrum probe — answers "is L_A actually isotropic?"
         # Computed at the diagnostics cadence (cheap: r×r eigh, r=16).
-        if self.log_diagnostics and state['step'] % self.diagnostics_every == 0:
+        if self.log_basic_diagnostics and state['step'] % self.diagnostics_every == 0:
             with torch.no_grad():
                 try:
                     eA = torch.linalg.eigvalsh(state['L_A']).clamp_min(0.0)
@@ -4355,7 +4372,7 @@ class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
     @torch.no_grad()
     def step(self, closure=None):
         out = super().step(closure)
-        if self.log_diagnostics:
+        if self.log_basic_diagnostics:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 recs = [
@@ -4453,7 +4470,7 @@ class AdaFactorPolarProductLoRA(AdamPolarProductLoRA):
         # is exact (stable_rank=1 ⇔ g² is rank-1 ⇔ Adafactor = Adam) or lossy
         # (stable_rank ≫ 1 ⇔ rank-1 throws away real info). Cheap: 2 power-
         # iter steps for top singular value, no full SVD.
-        if self.log_diagnostics and state['step'] % self.diagnostics_every == 0:
+        if self.log_basic_diagnostics and state['step'] % self.diagnostics_every == 0:
             with torch.no_grad():
                 def _stable_rank(M_sq):
                     fro_sq = (M_sq * M_sq).sum()
@@ -4478,7 +4495,7 @@ class AdaFactorPolarProductLoRA(AdamPolarProductLoRA):
     @torch.no_grad()
     def step(self, closure=None):
         out = AdamPolarProductLoRA.step(self, closure)
-        if self.log_diagnostics:
+        if self.log_basic_diagnostics:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 recs = [
@@ -4583,7 +4600,7 @@ class AdamPolarProductLoRAGauge(Optimizer):
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
                  picard_iters=1,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -4598,7 +4615,8 @@ class AdamPolarProductLoRAGauge(Optimizer):
         self.picard_iters = int(picard_iters)
         if self.picard_iters < 1:
             raise ValueError("picard_iters must be >= 1")
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
 
         self.pair_state = {}
@@ -4617,7 +4635,7 @@ class AdamPolarProductLoRAGauge(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -4721,7 +4739,7 @@ class AdamPolarProductLoRAGauge(Optimizer):
                 # LoRA+ multiplier on ΔB only (post-picard).
                 dB = self.lora_plus_multiplier * dB
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 step_count_local = state['step']
                 if step_count_local % self.diagnostics_every == 0:
                     rec = {
@@ -4765,7 +4783,7 @@ class AdamPolarProductLoRAGauge(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -4875,7 +4893,7 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
                  picard_iters=1,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -4890,7 +4908,8 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
         self.picard_iters = int(picard_iters)
         if self.picard_iters < 1:
             raise ValueError("picard_iters must be >= 1")
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
 
         self.pair_state = {}
@@ -4909,7 +4928,7 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -5037,7 +5056,7 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
                     tau_A_log = float(sv_A.pow(2).sum().sqrt() / max(1.0, sv_A.numel() ** 0.5))
                     tau_B_log = float(sv_B.pow(2).sum().sqrt() / max(1.0, sv_B.numel() ** 0.5))
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 if state['step'] % self.diagnostics_every == 0:
                     rec = {
                         "norm_dA": float(dA.detach().norm()),
@@ -5080,7 +5099,7 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -5120,7 +5139,7 @@ class AdamuonPolarProductLoRA(Optimizer):
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6,
                  eps=1e-8, ns_steps=5, sign_stabilize=True,
                  adapter_name=None, lora_plus_multiplier=1.0,
-                 log_diagnostics=False, diagnostics_every=20,
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=1,
                  precond_method="eigh", higham_iters=10):
         pairs = collect_lora_pairs(model, adapter_name)
@@ -5135,7 +5154,8 @@ class AdamuonPolarProductLoRA(Optimizer):
         self.ns_steps = ns_steps
         self.sign_stabilize = sign_stabilize
         self.lora_plus_multiplier = lora_plus_multiplier
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.precond_refresh_every = precond_refresh_every
         self.precond_method = precond_method
@@ -5157,7 +5177,7 @@ class AdamuonPolarProductLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -5224,7 +5244,7 @@ class AdamuonPolarProductLoRA(Optimizer):
             dA = -lr * gammaA * tildaA
             dB = -self.lora_plus_multiplier * lr * gammaB * tildaB
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 # Reference plain-AdamW step direction for cos comparisons.
                 # Cheap side-channel: m̂/(√v̂+ε) on raw grads, no extra state.
                 # We don't maintain Adam first/second moments here, so use the
@@ -5255,7 +5275,7 @@ class AdamuonPolarProductLoRA(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -5292,7 +5312,7 @@ class AdaMuonLoRA(Optimizer):
     """
     def __init__(self, model, lr=3e-4, beta=0.95, eps=1e-8, ns_steps=5,
                  adapter_name=None, lr_b_multiplier=1.0,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -5303,7 +5323,8 @@ class AdaMuonLoRA(Optimizer):
         self.eps = eps
         self.ns_steps = ns_steps
         self.lr_b_multiplier = lr_b_multiplier
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.pair_state = {
             i: {
@@ -5322,7 +5343,7 @@ class AdaMuonLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -5364,7 +5385,7 @@ class AdaMuonLoRA(Optimizer):
             dA = -lr * gammaA * tildaA
             dB = -self.lr_b_multiplier * lr * gammaB * tildaB
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 ref_A = -gA.sign()
                 ref_B = -gB.sign()
                 diag_records.append({
@@ -5385,7 +5406,7 @@ class AdaMuonLoRA(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]["step"]
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -6625,7 +6646,7 @@ class PolarCoupledCoreLoRA(Optimizer):
                  gauge="min-frobenius", rho=None,
                  state_rebalance=False, rebalance_every=1,
                  pre_polar_normalize=None,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -6639,7 +6660,8 @@ class PolarCoupledCoreLoRA(Optimizer):
         self.state_rebalance = state_rebalance
         self.rebalance_every = rebalance_every
         self.pre_polar_normalize = pre_polar_normalize
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0} for i in range(len(pairs))}
 
@@ -6649,7 +6671,7 @@ class PolarCoupledCoreLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -6682,13 +6704,13 @@ class PolarCoupledCoreLoRA(Optimizer):
                 A.data.copy_(A_new)
                 B.data.copy_(B_new)
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
                 rec["norm_dA"] = float(dA.norm().item())
                 rec["norm_dB"] = float(dB.norm().item())
                 diag_records.append(rec)
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]["step"]
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -6719,7 +6741,7 @@ class PolarCoupledCoreFactorAdamLoRA(Optimizer):
                  core_scale="squared_penalty",
                  gauge="min-frobenius", rho=None,
                  state_rebalance=False, rebalance_every=1,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -6734,7 +6756,8 @@ class PolarCoupledCoreFactorAdamLoRA(Optimizer):
         self.rho = rho
         self.state_rebalance = state_rebalance
         self.rebalance_every = rebalance_every
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
@@ -6752,7 +6775,7 @@ class PolarCoupledCoreFactorAdamLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -6799,7 +6822,7 @@ class PolarCoupledCoreFactorAdamLoRA(Optimizer):
                 A.data.copy_(A_new)
                 B.data.copy_(B_new)
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
                 rec["norm_dA"] = float(dA.norm().item())
                 rec["norm_dB"] = float(dB.norm().item())
@@ -6809,7 +6832,7 @@ class PolarCoupledCoreFactorAdamLoRA(Optimizer):
                 rec["norm_uB"] = float(u_B.norm().item())
                 diag_records.append(rec)
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]["step"]
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -6844,7 +6867,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                  gauge="min-frobenius", rho=None,
                  state_rebalance=False, rebalance_every=1,
                  pre_polar_normalize=None,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -6859,7 +6882,8 @@ class MuonCoupledCoreLoRA(Optimizer):
         self.state_rebalance = state_rebalance
         self.rebalance_every = rebalance_every
         self.pre_polar_normalize = pre_polar_normalize
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0,
                                "M_prev": None,
@@ -6873,7 +6897,7 @@ class MuonCoupledCoreLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -6897,7 +6921,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                 B.add_(dB_fb.to(dtype=B.dtype, device=B.device))
                 A.grad.zero_()
                 B.grad.zero_()
-                if self.log_diagnostics:
+                if self.log_basic_diagnostics:
                     rec = {k: float(v) for k, v in certs_fb.items() if isinstance(v, (int, float))}
                     rec["norm_dA"] = float(dA_fb.norm().item())
                     rec["norm_dB"] = float(dB_fb.norm().item())
@@ -6963,7 +6987,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                 state["U_prev"] = None
                 state["V_prev"] = None
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
                 rec["norm_dA"] = float(dA.norm().item())
                 rec["norm_dB"] = float(dB.norm().item())
@@ -6971,7 +6995,7 @@ class MuonCoupledCoreLoRA(Optimizer):
                 rec["align_mom"] = certs["LB"]
                 diag_records.append(rec)
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]["step"]
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -7002,7 +7026,7 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
 
     def __init__(self, model, lr=2e-4, delta=1e-6, adapter_name=None,
                  beta1=0.95, beta2=0.999, eps=1e-8,
-                 log_diagnostics=False, diagnostics_every=20):
+                 log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -7013,7 +7037,8 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
         self.beta1 = beta1
         self.beta2 = beta2
         self.eps = eps
-        self.log_diagnostics = log_diagnostics
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.pair_state = {i: {"step": 0,
                                "M_prev": None,
@@ -7028,7 +7053,7 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
             with torch.enable_grad():
                 closure()
         lr = self.param_groups[0]["lr"]
-        diag_records = [] if self.log_diagnostics else None
+        diag_records = [] if self.log_basic_diagnostics else None
 
         for i, (A, B) in enumerate(self.pairs):
             if A.grad is None or B.grad is None:
@@ -7051,7 +7076,7 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
                 B.add_(dB_fb.to(dtype=B.dtype, device=B.device))
                 A.grad.zero_()
                 B.grad.zero_()
-                if self.log_diagnostics:
+                if self.log_basic_diagnostics:
                     rec = {k: float(v) for k, v in certs_fb.items() if isinstance(v, (int, float))}
                     rec["norm_dA"] = float(dA_fb.norm().item())
                     rec["norm_dB"] = float(dB_fb.norm().item())
@@ -7115,7 +7140,7 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
             state["U_prev"] = U_cur
             state["V_prev"] = V_cur
 
-            if self.log_diagnostics:
+            if self.log_basic_diagnostics:
                 rec = {k: float(v) for k, v in certs.items() if isinstance(v, (int, float))}
                 rec["compat"] = bases["compat"]
                 rec["norm_dA"] = float(dA.norm().item())
@@ -7127,7 +7152,7 @@ class MuonRMSCoupledCoreLoRA(Optimizer):
                 rec["tau_step"] = tau_hat
                 diag_records.append(rec)
 
-        if self.log_diagnostics and diag_records:
+        if self.log_basic_diagnostics and diag_records:
             step_count = self.pair_state[0]["step"]
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
@@ -7155,7 +7180,8 @@ def build_optimizer(
     muon_ns_steps: int = 5,
     muon_alpha: int = 16,
     muon_rank: int = 16,
-    log_optim_diagnostics: bool = False,
+    log_basic_diagnostics: bool = False,
+    log_heavy_diagnostics: bool = False,
     optim_diagnostics_every: int = 20,
     precond_refresh_every: int = 1,
     precond_method: str = "eigh",
@@ -7238,7 +7264,7 @@ def build_optimizer(
             betas=(0.9, 0.999),
             delta=1e-6,
             eps=1e-8,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
         )
@@ -7251,7 +7277,7 @@ def build_optimizer(
             eps=1e-8,
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
         )
@@ -7266,7 +7292,7 @@ def build_optimizer(
             eps=1e-8,
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
         )
@@ -7277,7 +7303,7 @@ def build_optimizer(
             betas=(0.9, 0.999),
             delta=1e-6,
             eps=1e-8,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-lin-lora-post":
@@ -7289,7 +7315,7 @@ def build_optimizer(
             eps=1e-8,
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-scaled-lora-matrix":
@@ -7322,7 +7348,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7341,7 +7367,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7362,7 +7388,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7383,7 +7409,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7402,7 +7428,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7421,7 +7447,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7443,7 +7469,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7469,7 +7495,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7496,7 +7522,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7523,7 +7549,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7553,7 +7579,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7580,7 +7606,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7603,7 +7629,7 @@ def build_optimizer(
             model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method, higham_iters=higham_iters,
@@ -7615,7 +7641,7 @@ def build_optimizer(
             model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method, higham_iters=higham_iters,
@@ -7628,7 +7654,7 @@ def build_optimizer(
             model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method, higham_iters=higham_iters,
@@ -7644,7 +7670,7 @@ def build_optimizer(
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 1,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-polar-product-lora-gauge-coupled":
@@ -7656,7 +7682,7 @@ def build_optimizer(
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 2,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-polar-product-lora-clip-gauge":
@@ -7668,7 +7694,7 @@ def build_optimizer(
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 1,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adam-polar-product-lora-clip-gauge-coupled":
@@ -7680,42 +7706,42 @@ def build_optimizer(
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 2,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-lora":
         return PolarCoupledCoreLoRA(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="min-frobenius",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-imbalance-scalar-lora":
         return PolarCoupledCoreLoRA(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="imbalance-preserve-scalar",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-imbalance-lora":
         return PolarCoupledCoreLoRA(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="imbalance-preserve",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-imbalance-restore-lora":
         return PolarCoupledCoreLoRA(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="imbalance-restore",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-balanced-scalar-lora":
         return PolarCoupledCoreLoRA(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="balanced-scalar",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-state-rebalanced-lora":
@@ -7723,7 +7749,7 @@ def build_optimizer(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="min-frobenius",
             state_rebalance=True, rebalance_every=1,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-sign-lora":
@@ -7734,7 +7760,7 @@ def build_optimizer(
             model, lr=lr, delta=1e-6,
             core_scale="squared_penalty", gauge="min-frobenius",
             pre_polar_normalize="sign",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-factor-adam-lora":
@@ -7744,7 +7770,7 @@ def build_optimizer(
             model, lr=lr, delta=1e-6,
             betas=(0.9, 0.999), eps=1e-8,
             core_scale="squared_penalty", gauge="min-frobenius",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-factor-adam-rebalanced-lora":
@@ -7753,7 +7779,7 @@ def build_optimizer(
             betas=(0.9, 0.999), eps=1e-8,
             core_scale="squared_penalty", gauge="min-frobenius",
             state_rebalance=True, rebalance_every=1,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "polar-coupled-core-sign-rebalanced-lora":
@@ -7764,35 +7790,35 @@ def build_optimizer(
             core_scale="squared_penalty", gauge="min-frobenius",
             pre_polar_normalize="sign",
             state_rebalance=True, rebalance_every=1,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-lora":
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="min-frobenius",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-imbalance-scalar-lora":
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="imbalance-preserve-scalar",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-imbalance-lora":
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="imbalance-preserve",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-balanced-scalar-lora":
         return MuonCoupledCoreLoRA(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="balanced-scalar",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-state-rebalanced-lora":
@@ -7800,7 +7826,7 @@ def build_optimizer(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="min-frobenius",
             state_rebalance=True, rebalance_every=1,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-sign-lora":
@@ -7809,7 +7835,7 @@ def build_optimizer(
             model, lr=lr, delta=1e-6, beta1=0.95,
             core_scale="squared_penalty", gauge="min-frobenius",
             pre_polar_normalize="sign",
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-coupled-core-sign-rebalanced-lora":
@@ -7819,7 +7845,7 @@ def build_optimizer(
             core_scale="squared_penalty", gauge="min-frobenius",
             pre_polar_normalize="sign",
             state_rebalance=True, rebalance_every=1,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "adamuon-polar-product-lora":
@@ -7831,7 +7857,7 @@ def build_optimizer(
             ns_steps=muon_ns_steps,
             sign_stabilize=True,
             lora_plus_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
@@ -7844,7 +7870,7 @@ def build_optimizer(
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lr_b_multiplier=lora_plus_multiplier,
-            log_diagnostics=log_optim_diagnostics,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
     if optimizer_type == "muon-lora":

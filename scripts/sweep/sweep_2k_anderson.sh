@@ -28,6 +28,6 @@ python train_lora.py \
     --lora_alpha "$lora_r" \
     --picard_iters_override "$picard_iters_override" \
     --anderson_m "$anderson_m" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

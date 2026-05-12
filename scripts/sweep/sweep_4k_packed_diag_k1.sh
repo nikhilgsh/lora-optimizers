@@ -27,6 +27,17 @@ if [ "${COMPILE:-1}" = "1" ]; then
     compile_args=(--compile)
 fi
 
+# Diagnostics tiering: basic ON by default (~2% wall), heavy OFF by default
+# (~10x at r=64). Override with LOG_DIAGNOSTICS=0 (disables basic too, legacy
+# compat) and/or LOG_HEAVY_DIAGNOSTICS=1.
+diag_args=(--log_basic_diagnostics)
+if [ "${LOG_DIAGNOSTICS:-1}" = "0" ]; then
+    diag_args=(--no-log_basic_diagnostics)
+fi
+if [ "${LOG_HEAVY_DIAGNOSTICS:-0}" = "1" ]; then
+    diag_args+=(--log_heavy_diagnostics)
+fi
+
 python train_lora.py \
     --data_dir data/magicoder_seq512_70k_packed \
     --data_pipeline_version packed_v1 \
@@ -45,6 +56,6 @@ python train_lora.py \
     --muon_ns_steps 5 \
     --precond_method higham \
     --picard_iters_override 1 \
-    --log_optim_diagnostics \
+    "${diag_args[@]}" \
     --optim_diagnostics_every 80 \
     "${wandb_args[@]}"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 2000-step sweep with configurable LoRA rank AND --log_optim_diagnostics.
+# 2000-step sweep with configurable LoRA rank AND --log_basic_diagnostics.
 # 5 positional args: lr, optimizer, lora_plus_multiplier, seed, lora_r.
 # lora_alpha is set to lora_r so alpha/r = 1 (matches the r=16 baseline default).
 lr=${1:-3e-4}
@@ -25,6 +25,6 @@ python train_lora.py \
     --seed "$seed" \
     --lora_r "$lora_r" \
     --lora_alpha "$lora_r" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

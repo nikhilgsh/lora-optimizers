@@ -27,6 +27,6 @@ python train_lora.py \
     --lora_r "$lora_r" \
     --lora_alpha "$lora_r" \
     --polar_core_remix_alpha "$polar_core_remix_alpha" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     "${wandb_args[@]}"

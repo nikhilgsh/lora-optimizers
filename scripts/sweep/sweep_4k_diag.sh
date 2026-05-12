@@ -46,6 +46,6 @@ python train_lora.py \
     --lora_r "$lora_r" \
     --lora_alpha "$lora_r" \
     --muon_ns_steps "$muon_ns_steps" \
-    --log_optim_diagnostics \
+    --log_basic_diagnostics \
     --optim_diagnostics_every 80 \
     "${wandb_args[@]}"

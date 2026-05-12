@@ -424,14 +424,19 @@ def make_parser():
                         help="Steps between GaLore projection updates.")
     parser.add_argument("--galore_scale", type=float, default=0.25,
                         help="GaLore update scale factor.")
-    parser.add_argument("--log_optim_diagnostics", action=argparse.BooleanOptionalAction, default=True,
-                        help="For diagnostic-emitting optimizers (adam-lin-lora, adam-scaled-lora, "
-                             "adam-polar-product-lora, etc.): emit per-step JSONL `optim_step` events "
-                             "with cosine(precond step, raw-Adam step), update norms, and S_A/S_B "
-                             "eigenvalue extremes. ON by default (~10%% wall) — pass "
-                             "--no-log_optim_diagnostics to disable for throughput-only benchmarks.")
+    parser.add_argument("--log_basic_diagnostics", action=argparse.BooleanOptionalAction, default=True,
+                        help="Cheap per-step probes: norms, sat_frac, cond(S_A), cond(S_B), "
+                             "adam_gauge_residual, lambda_dir_gain, cross-coupling magnitudes. "
+                             "~2%% wall. ON by default. Disable with --no-log_basic_diagnostics "
+                             "for absolute throughput.")
+    parser.add_argument("--log_heavy_diagnostics", action=argparse.BooleanOptionalAction, default=False,
+                        help="Expensive probes: chord_slack via direct SVD on materialized chord "
+                             "matrix, higham accuracy reference (extra eigh), power-iter accuracy "
+                             "probes, Picard contraction/oscillation. ~10x wall at r=64. OFF by "
+                             "default; enable only for mechanism-investigation sweeps.")
     parser.add_argument("--optim_diagnostics_every", type=int, default=20,
-                        help="Cadence (in optimizer steps) for --log_optim_diagnostics.")
+                        help="Cadence (in optimizer steps) for both --log_basic_diagnostics and "
+                             "--log_heavy_diagnostics.")
     parser.add_argument("--debug_higham_residual", action="store_true",
                         help="Debug-only: every higham `_spd_inv_half` call emits a JSONL "
                              "`higham_residual` event with ‖Z H Z − I‖_F per matrix and "
@@ -790,7 +795,8 @@ def main():
         muon_ns_steps=args.muon_ns_steps,
         muon_alpha=args.lora_alpha,
         muon_rank=args.lora_r,
-        log_optim_diagnostics=args.log_optim_diagnostics,
+        log_basic_diagnostics=args.log_basic_diagnostics,
+        log_heavy_diagnostics=args.log_heavy_diagnostics,
         optim_diagnostics_every=args.optim_diagnostics_every,
         precond_refresh_every=args.precond_refresh_every,
         precond_method=args.precond_method,

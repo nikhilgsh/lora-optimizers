@@ -340,7 +340,7 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
     """Parse a single task .out file → (config dict, list of eval dicts).
 
     optim_step diagnostic events (emitted by polar/lin/scaled-LoRA optimizers
-    when --log_optim_diagnostics is on) are attached to the config dict as
+    when --log_basic_diagnostics is on) are attached to the config dict as
     ``cfg["_optim_steps"]``. Both ``loader.RUNTIME_FIELDS`` and
     ``_HIDDEN_AXIS_RUNTIME_FIELDS`` (re-exported from this module) list it,
     so dedup ignores it.
@@ -441,7 +441,7 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     "git_commit", "command", "log_group",
     "wandb_project", "wandb_run_name",
     "device", "tf32",
-    "log_optim_diagnostics", "optim_diagnostics_every",
+    "log_basic_diagnostics", "optim_diagnostics_every",
     "profile_steps",
     "_optim_steps",
     "train_file", "eval_file",
