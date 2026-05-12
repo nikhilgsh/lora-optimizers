@@ -3018,6 +3018,39 @@ class AdamPolarProductLoRA(Optimizer):
             SA_half_inv = gs['SA_half_inv']
             SB_half_inv = gs['SB_half_inv']
 
+            # Unit-polar normalization of u_A, u_B for chord-tight family.
+            # The Picard coefficient 2/(ρ·s) was derived assuming the base
+            # covector is unit-magnitude in the polar-input space (where the
+            # polar map actually operates). Without this normalization, the
+            # correction's effective scale is set by Adam's absolute u-magnitude
+            # and not by the geometric formula — empirically rendering Picard
+            # inert (γ ≈ 0.003 at lr=1e-2; see K vs L diagnostics 2026-05-12).
+            #
+            # Polar(c·X) = Polar(X) for c > 0, so this is a strict no-op at
+            # picard_iters=1 (trajectory bit-identical). Affects only k ≥ 2.
+            if self.magnitude_rule in ("spectral_chord_tight",
+                                       "spectral_chord_direction",
+                                       "spectral_chord_tight_outer"):
+                with maybe_time(timer, "picard_unit_polar_norm"):
+                    X_A_pre = SB_half_inv @ u_A             # (N, r, d_in)
+                    X_B_pre = u_B @ SA_half_inv             # (N, d_out, r)
+                    if X_A_pre.shape[-2] <= X_A_pre.shape[-1]:
+                        gram_XA = X_A_pre @ X_A_pre.transpose(-1, -2)
+                    else:
+                        gram_XA = X_A_pre.transpose(-1, -2) @ X_A_pre
+                    if X_B_pre.shape[-2] <= X_B_pre.shape[-1]:
+                        gram_XB = X_B_pre @ X_B_pre.transpose(-1, -2)
+                    else:
+                        gram_XB = X_B_pre.transpose(-1, -2) @ X_B_pre
+                    sigma_XA = (torch.linalg.eigvalsh(gram_XA)
+                                .clamp_min(0.0).max(dim=-1).values
+                                .sqrt() + 1e-30)
+                    sigma_XB = (torch.linalg.eigvalsh(gram_XB)
+                                .clamp_min(0.0).max(dim=-1).values
+                                .sqrt() + 1e-30)
+                    u_A = u_A / sigma_XA.unsqueeze(-1).unsqueeze(-1)
+                    u_B = u_B / sigma_XB.unsqueeze(-1).unsqueeze(-1)
+
             # Picard outer loop (batched bmm chains).
             u_A_eff = u_A
             u_B_eff = u_B
@@ -3363,6 +3396,13 @@ class AdamPolarProductLoRA(Optimizer):
                                            "spectral_chord_direction",
                                            "spectral_chord_tight_outer"):
                     picard_coeff_t = 2.0 / (rho * (sigma_A_t + sigma_B_t) + 1e-30)
+                    # Unit-polar normalization (per-pair mirror of batched path).
+                    XA_pre_t = SB_half_inv @ u_A
+                    XB_pre_t = u_B @ SA_half_inv
+                    sA_pre = torch.linalg.svdvals(XA_pre_t.float())[0].clamp_min(1e-30)
+                    sB_pre = torch.linalg.svdvals(XB_pre_t.float())[0].clamp_min(1e-30)
+                    u_A = u_A / sA_pre
+                    u_B = u_B / sB_pre
                 else:
                     picard_coeff_t = None
             # Anderson history: list of (x_flat, g_flat) where x is the input
