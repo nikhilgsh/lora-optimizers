@@ -598,20 +598,82 @@ def _normalize_hline(entry):
 
 
 def _normalize_ref_curve(entry):
+    # Supported tuple shapes (last variant carries multi-seed std band):
+    #   4-tuple: (label, evs, color, ls)               — legacy
+    #   6-tuple: (label, evs, color, ls, lw, marker)    — standard
+    #   7-tuple: (label, mean_evs, color, ls, lw, marker, std_evs) — multi-seed
     if len(entry) == 4:
         label, evs, color, ls = entry
-        return (label, evs, color, ls, REF_LINE_WIDTH, None)
-    return entry  # already 6-tuple
+        return (label, evs, color, ls, REF_LINE_WIDTH, None, None)
+    if len(entry) == 6:
+        label, evs, color, ls, lw, marker = entry
+        return (label, evs, color, ls, lw, marker, None)
+    return entry  # already 7-tuple with std_evs
 
 
 def _eta_sweep_points(reference_runs, optimizer: str):
-    """All (η, final_eval) points for `optimizer` in `reference_runs`,
-    sorted by η. Used to overlay the full LR-sweep curve of the baseline."""
-    points = sorted(
-        (float(c["lr"]), e[-1]["eval_loss"])
-        for c, e in reference_runs if c.get("optimizer") == optimizer
-    )
+    """Per-η (η, mean_final, std_final, n) points for `optimizer` in
+    `reference_runs`. Multi-seed runs at the same η are aggregated.
+    Used to overlay the LR-sweep curve of the baseline; the std is consumed
+    by `plot_eta_vs_final` to render vertical seed-σ error bars.
+    Single-seed cells have ``std=0`` and render bar-less.
+    """
+    import statistics
+    from collections import defaultdict
+    buckets: dict[float, list[float]] = defaultdict(list)
+    for c, e in reference_runs:
+        if c.get("optimizer") != optimizer:
+            continue
+        buckets[float(c["lr"])].append(e[-1]["eval_loss"])
+    points = []
+    for lr in sorted(buckets):
+        ys = buckets[lr]
+        mean = sum(ys) / len(ys)
+        std = statistics.stdev(ys) if len(ys) > 1 else 0.0
+        points.append((lr, mean, std, len(ys)))
     return points
+
+
+def _multi_seed_curve(reference_runs, optimizer: str, best_lr: float):
+    """For ``optimizer`` at ``best_lr`` in ``reference_runs``, aggregate
+    per-step eval_loss across seeds into a mean-and-std trajectory.
+
+    Returns (mean_evs, std_evs, n_seeds), where ``mean_evs`` and ``std_evs``
+    are lists of ``{step, eval_loss}`` dicts sharing the same step axis.
+    When only one seed is present, ``std_evs`` has ``eval_loss=0`` at each
+    step (renders as a zero-width band, i.e. just the line).
+
+    Steps that don't appear in every seed are dropped (so the band is
+    well-defined across the full sweep). Typical eval cadence is identical
+    across seeds so this drops nothing in practice.
+    """
+    import statistics
+    from collections import defaultdict
+    per_step: dict[int, list[float]] = defaultdict(list)
+    seeds_at_lr: set = set()
+    n_seeds_at_lr = 0
+    for c, evs in reference_runs:
+        if c.get("optimizer") != optimizer:
+            continue
+        if float(c["lr"]) != best_lr:
+            continue
+        seed = c.get("seed")
+        if seed in seeds_at_lr:
+            continue
+        seeds_at_lr.add(seed)
+        n_seeds_at_lr += 1
+        for ev in evs:
+            per_step[int(ev["step"])].append(float(ev["eval_loss"]))
+    # Keep only steps present in every seed
+    common_steps = sorted(s for s, ys in per_step.items() if len(ys) == n_seeds_at_lr)
+    mean_evs = []
+    std_evs = []
+    for s in common_steps:
+        ys = per_step[s]
+        mean_evs.append({"step": s, "eval_loss": sum(ys) / len(ys)})
+        std_evs.append({"step": s,
+                        "eval_loss": (statistics.stdev(ys) if len(ys) > 1 else 0.0)})
+    return mean_evs, std_evs, n_seeds_at_lr
 
 
 def baseline_overlay(reference_runs, optimizer: str, *,
@@ -634,19 +696,29 @@ def baseline_overlay(reference_runs, optimizer: str, *,
     don't visually merge.
 
     Returns:
-        hlines:     [(label, y, color, ls, lw)]            — left-panel floor
-        ref_curves: [(label, evs, color, ls, lw, marker)]  — right-panel curve
-        eta_sweeps: [(label, points, color, ls, lw, marker)] — left-panel
-                    η-sweep so the full LR grid the baseline was tuned over
-                    is visible. Empty if the baseline has < 2 η points.
+        hlines:     [(label, y, color, ls, lw)]                                — left-panel floor
+        ref_curves: [(label, mean_evs, color, ls, lw, marker, std_evs)]        — right-panel curve;
+                    if multi-seed at best η, std_evs is a list of
+                    {step, eval_loss} dicts (per-step std) and the renderer
+                    fills a ±σ band around mean_evs. Single-seed → std_evs
+                    is a list of zeros (no band drawn).
+        eta_sweeps: [(label, points, color, ls, lw, marker)]                   — left-panel
+                    η-sweep; ``points`` is now ``[(lr, mean, std, n), …]``
+                    so the renderer can draw vertical seed-σ error bars.
+                    Empty if < 2 η points.
     """
-    ref = best_run(reference_runs, lambda c: c["optimizer"] == optimizer)
-    if ref is None:
-        return [], [], []
-    cfg, evs = ref
-    fl = evs[-1]["eval_loss"]
     label = label or optimizer
     sweep_points = _eta_sweep_points(reference_runs, optimizer)
+    if not sweep_points:
+        return [], [], []
+    # Pick the best η by mean final loss (multi-seed aware), NOT by best-seed.
+    best_lr, best_mean, best_std, best_n = min(sweep_points, key=lambda p: p[1])
+    mean_evs, std_evs, n_seeds = _multi_seed_curve(
+        reference_runs, optimizer, best_lr,
+    )
+    if not mean_evs:
+        return [], [], []
+    fl = mean_evs[-1]["eval_loss"]
 
     # Only the PRIMARY baseline (AdamW) gets the distinguished visual
     # register: long-dash, square markers, heavy line, black, floor hline.
@@ -656,11 +728,12 @@ def baseline_overlay(reference_runs, optimizer: str, *,
     # cannot upgrade a secondary to baseline styling.
     if is_primary:
         color = BASELINE_COLOR  # locked black
-        hline = (f"{label} floor ({fl:.4f})",
+        hline = (f"{label} floor ({fl:.4f}{' ± ' + format(best_std, '.4f') if n_seeds > 1 else ''})",
                  fl, color, BASELINE_LS_HLINE, BASELINE_LW_HLINE)
-        curve = (f"{label} (baseline, η={cfg['lr']:.0e}, final={fl:.4f})",
-                 evs, color, BASELINE_LS_CURVE,
-                 BASELINE_LW_CURVE, BASELINE_MARKER)
+        seed_tag = f", n_seed={n_seeds}" if n_seeds > 1 else ""
+        curve = (f"{label} (baseline, η={best_lr:.0e}, final={fl:.4f}{seed_tag})",
+                 mean_evs, color, BASELINE_LS_CURVE,
+                 BASELINE_LW_CURVE, BASELINE_MARKER, std_evs)
         eta_sweep = (
             f"{label} η-sweep ({len(sweep_points)} pts)",
             sweep_points, color, BASELINE_LS_CURVE,
@@ -668,13 +741,12 @@ def baseline_overlay(reference_runs, optimizer: str, *,
         ) if len(sweep_points) >= 2 else None
         return [hline], [curve], ([eta_sweep] if eta_sweep else [])
 
-    # Secondary reference: ordinary candidate styling. No hline (only the
-    # primary baseline owns one). Marker honors marker_map if provided.
+    # Secondary reference: ordinary candidate styling. No hline.
     color = color or "#1f77b4"
     marker_map = marker_map or {}
     marker = marker_map.get(optimizer, "o")
-    curve = (f"{label} (η={cfg['lr']:.0e}, final={fl:.4f})",
-             evs, color, "-", LINE_WIDTH, marker)
+    curve = (f"{label} (η={best_lr:.0e}, final={fl:.4f})",
+             mean_evs, color, "-", LINE_WIDTH, marker, std_evs)
     eta_sweep = (
         f"{label} η-sweep",
         sweep_points, color, "-", LINE_WIDTH, marker,
@@ -790,11 +862,22 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
             label, points, color, ls, lw, marker = entry
             if not points:
                 continue
-            xs = [p[0] for p in points]
-            ys = [p[1] for p in points]
-            ax.plot(xs, ys, color=color, ls=ls, lw=lw,
-                    marker=marker, markersize=MARKER_SIZE,
-                    label=label, zorder=BASELINE_ZORDER)
+            # `points` rows are (lr, mean, std, n) per `_eta_sweep_points`.
+            # Legacy (lr, eval) 2-tuples still supported.
+            if len(points[0]) == 4:
+                xs = [p[0] for p in points]
+                ys = [p[1] for p in points]
+                stds = [p[2] for p in points]
+                ax.errorbar(xs, ys, yerr=stds, color=color, ls=ls, lw=lw,
+                            marker=marker, markersize=MARKER_SIZE,
+                            label=label, zorder=BASELINE_ZORDER,
+                            capsize=3, elinewidth=lw * 0.5)
+            else:
+                xs = [p[0] for p in points]
+                ys = [p[1] for p in points]
+                ax.plot(xs, ys, color=color, ls=ls, lw=lw,
+                        marker=marker, markersize=MARKER_SIZE,
+                        label=label, zorder=BASELINE_ZORDER)
             all_losses.extend(ys)
     if hlines:
         for entry in hlines:
@@ -889,8 +972,19 @@ def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
 
     if ref_curves:
         for entry in ref_curves:
-            label, evs, color, ls, lw, marker = _normalize_ref_curve(entry)
-            ax.plot([e["step"] for e in evs], [e["eval_loss"] for e in evs],
+            label, evs, color, ls, lw, marker, std_evs = _normalize_ref_curve(entry)
+            xs = [e["step"] for e in evs]
+            ys = [e["eval_loss"] for e in evs]
+            # If multi-seed std present and not all-zero, draw a ±σ shaded
+            # band. Otherwise fall through to plain line. Band rendered
+            # behind the line so the line stays the visual anchor.
+            if std_evs is not None and any(s["eval_loss"] > 0 for s in std_evs):
+                stds = [s["eval_loss"] for s in std_evs]
+                lo = [y - s for y, s in zip(ys, stds)]
+                hi = [y + s for y, s in zip(ys, stds)]
+                ax.fill_between(xs, lo, hi, color=color, alpha=0.18,
+                                zorder=BASELINE_ZORDER - 1, linewidth=0)
+            ax.plot(xs, ys,
                     color=color, lw=lw, ls=ls, marker=marker,
                     markersize=MARKER_SIZE, label=label,
                     zorder=BASELINE_ZORDER)
