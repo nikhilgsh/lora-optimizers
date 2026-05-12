@@ -424,6 +424,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled-spectral-chord",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening",
+    "adam-polar-product-lora-coupled-spectral-chord-tight-outer",
     "adam-polar-product-lora-coupled-spectral-chord-direction",
     "adam-soap-polar-product-lora",
     "adafactor-polar-product-lora",
@@ -2659,13 +2660,22 @@ class AdamPolarProductLoRA(Optimizer):
         #     top singular directions. Stage-0 diagnostics
         #     (docs/notes/polar_product/tight_chord_diagnostics_stage0.md)
         #     measured λ_dir_gain ≈ 1.3-1.4 at r=64, growing with training.
+        #   "spectral_chord_tight_outer": same magnitude rule as
+        #     spectral_chord_tight (final dA = -ρ · geo_A/‖geo_A‖_op) BUT
+        #     applied only at the LAST Picard iter. Intermediate iters use
+        #     the Frobenius rescale (polar pipeline's default), keeping dA,
+        #     dB at "natural" magnitude during cross-coupling. Tests the
+        #     hypothesis (2026-05-11 investigation) that chord-tight ρ's
+        #     self-attenuation IN-LOOP makes the Picard cross-coupling
+        #     correction tiny → effective k=1.
         if magnitude_rule not in {"adam_frobenius", "spectral_chord",
                                   "spectral_chord_tight",
-                                  "spectral_chord_direction"}:
+                                  "spectral_chord_direction",
+                                  "spectral_chord_tight_outer"}:
             raise ValueError(
                 f"magnitude_rule must be 'adam_frobenius', 'spectral_chord', "
-                f"'spectral_chord_tight', or 'spectral_chord_direction', "
-                f"got {magnitude_rule!r}")
+                f"'spectral_chord_tight', 'spectral_chord_direction', or "
+                f"'spectral_chord_tight_outer', got {magnitude_rule!r}")
         self.magnitude_rule = magnitude_rule
 
         # Shape-group bookkeeping for the batched hot path. Pairs with the
@@ -3288,7 +3298,8 @@ class AdamPolarProductLoRA(Optimizer):
             # power-iter-under-estimate story that motivated eigh here.
             if self.magnitude_rule in ("spectral_chord",
                                        "spectral_chord_tight",
-                                       "spectral_chord_direction"):
+                                       "spectral_chord_direction",
+                                       "spectral_chord_tight_outer"):
                 if A_f.shape[0] <= A_f.shape[1]:
                     gram_A_t = A_f @ A_f.transpose(-1, -2)
                 else:
@@ -3301,7 +3312,8 @@ class AdamPolarProductLoRA(Optimizer):
                 sigma_B_t = torch.linalg.eigvalsh(gram_B_t).clamp_min(0.0).max().sqrt()
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A_t + sigma_B_t + 1.0)
-                elif self.magnitude_rule == "spectral_chord_tight":
+                elif self.magnitude_rule in ("spectral_chord_tight",
+                                             "spectral_chord_tight_outer"):
                     s_AB = sigma_A_t + sigma_B_t
                     rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
                 else:
@@ -3355,9 +3367,22 @@ class AdamPolarProductLoRA(Optimizer):
                 with maybe_time(timer, "picard_polar_pipeline"):
                     dA, dB, geo_A, geo_B, uA_norm, uB_norm, gA_norm, gB_norm, _, _ = \
                         self._polar_pipeline(u_A_eff, u_B_eff, SA_half_inv_k, SB_half_inv_k, lr)
-                if self.magnitude_rule in ("spectral_chord",
-                                           "spectral_chord_tight",
-                                           "spectral_chord_direction"):
+                # For spectral_chord_tight_outer: skip chord-tight rescale
+                # INSIDE the Picard loop except on the LAST iter. Internal
+                # iters use the polar pipeline's default Frobenius rescale
+                # (dA = -lr · uA_norm/gA_norm · geo_A) so cross-coupling at
+                # the next iter receives a substantial dB rather than a
+                # ρ-attenuated one. On the last iter, override with the
+                # chord-tight ρ rescale to enforce the trust region.
+                is_last_picard = (k == self.picard_iters - 1)
+                use_chord_rescale = (
+                    self.magnitude_rule in ("spectral_chord",
+                                            "spectral_chord_tight",
+                                            "spectral_chord_direction")
+                    or (self.magnitude_rule == "spectral_chord_tight_outer"
+                        and is_last_picard)
+                )
+                if use_chord_rescale:
                     # σ_max(geo_A), σ_max(geo_B) via exact eigh on the r×r
                     # Gram (geo · geoᵀ on the smaller side). Required for
                     # both the chord-rescale normalization (dA = -·geo_A/op_geoA)
@@ -3745,42 +3770,38 @@ class AdamPolarProductLoRA(Optimizer):
                     rho_f = float(rho.detach()) if torch.is_tensor(rho) else float(rho)
 
                     # Probe A — chord slack u_chord = ‖B dA + dB A + dB dA‖_2 / lr.
-                    # The full chord (B+dB)(A+dA) − BA factors as L · R with
-                    # L = [B+dB, B] (m × 2r), R = [A+dA; −A] (2r × n).
-                    # Nonzero σ²(LR) = nonzero eigenvalues of (R R^T)(L^T L)
-                    # — both 2r × 2r. Comparing to lr gives slack vs the
-                    # worst-case submultiplicative bound used by rho.
+                    # ΔW = (B+dB)(A+dA) − BA. Direct SVD on the materialized
+                    # chord matrix (m × n). For non-lm_head pairs m,n ≤ 4096 so
+                    # this is ~10ms.
+                    #
+                    # Earlier attempts at a 2r×2r shortcut were both wrong:
+                    # (1) `eigvals` on the non-symmetric (R R^T)(L^T L) leaked
+                    #     complex parts into the real-eigenvalue max.
+                    # (2) chol(L^T L) + eigvalsh(L_chol^T · R R^T · L_chol) is
+                    #     mathematically equivalent in exact arithmetic, but
+                    #     L = [B+dB, B] makes L^T L rank-deficient by
+                    #     construction (overlapping column spans as dB → 0); the
+                    #     damping that keeps Cholesky safe also drifts the
+                    #     eigenvalues upward as ‖B‖_F grows, systematically
+                    #     over-estimating σ_max. Confirmed against direct SVD
+                    #     at steps 20-100 of `v1_debug_r64_400_v3` (commit
+                    #     ec95622): chol+eigvalsh crossed 1 by step 80 while
+                    #     direct-SVD stayed at 0.94. See docs/notes/polar_product
+                    #     /chord_slack_probe_resolution_2026_05_11.md.
+                    #
+                    # lm_head pairs (B.shape[0] ~100k) skip the probe — chord
+                    # matrix materialization is too expensive there.
                     try:
                         dA_f = dA.float()
                         dB_f = dB.float()
-                        # σ_max of the chord (B+dB)(A+dA) − BA via 2r×2r SYMMETRIC
-                        # reduction. The chord factors as L·R with
-                        # L = [B+dB, B] (m × 2r), R = [A+dA; −A] (2r × n).
-                        # σ²_max(LR) = λ_max(LR(LR)^T) = λ_max(L (R R^T) L^T).
-                        # Via cyclic eigenvalues + symmetrization,
-                        # σ²_max(LR) = λ_max(L_chol^T · (R R^T) · L_chol)
-                        # where L_chol = chol(L^T L). The bracketed matrix is
-                        # symmetric PSD on R^(2r×2r), so eigvalsh is exact.
-                        # An earlier version of this probe used `eigvals` on
-                        # the non-symmetric product (R R^T)(L^T L) and
-                        # was over-estimating σ_max² (complex eigenvalue
-                        # imaginary parts inflating .real.max()) — verified
-                        # vs direct SVD; see CLAUDE.md "Suspect the probe
-                        # before the theorem". Equivalent materialize-then-SVD
-                        # of the full chord matrix is correct but catastrophic
-                        # for lm_head-shape layers (chord_mat ≈ 200000 × 2048).
-                        L_chord = torch.cat([B_f + dB_f, B_f], dim=1)        # (m, 2r)
-                        R_chord = torch.cat([A_f + dA_f, -A_f], dim=0)       # (2r, n)
-                        G_L = L_chord.T @ L_chord                            # (2r, 2r) sym PSD
-                        G_R = R_chord @ R_chord.T                            # (2r, 2r) sym PSD
-                        # Damp G_L for safe cholesky on rank-deficient cases.
-                        diag_load = 1e-12 * G_L.diagonal().abs().mean().clamp_min(1e-30)
-                        G_L_damped = G_L + diag_load * torch.eye(
-                            G_L.shape[-1], dtype=G_L.dtype, device=G_L.device)
-                        L_chol = torch.linalg.cholesky(G_L_damped)
-                        M_sym = L_chol.T @ G_R @ L_chol                      # (2r, 2r) sym PSD
-                        sigma_chord = float(torch.linalg.eigvalsh(M_sym).clamp_min(0.0).max().sqrt())
-                    except torch._C._LinAlgError:
+                        if B_f.shape[0] <= 4096:
+                            with torch.no_grad():
+                                chord_direct = (B_f + dB_f) @ (A_f + dA_f) - B_f @ A_f
+                                sigma_chord = float(
+                                    torch.linalg.svdvals(chord_direct).max())
+                        else:
+                            sigma_chord = float("nan")
+                    except Exception:
                         sigma_chord = float("nan")
                     rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
 
@@ -7461,6 +7482,33 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-outer":
+        # User's algorithmic insight (2026-05-11): apply chord-tight ρ ONLY
+        # at the last Picard iter, not inside the loop. Intermediate iters
+        # use Frobenius rescale so the cross-coupling correction stays at
+        # its "natural" magnitude (not ρ-attenuated). Tests whether the
+        # chord-tight ρ self-attenuation IN-LOOP was making Picard inert.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=1e-6,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_diagnostics=log_optim_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 3,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_tight_outer",
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening":
         # Whitening-importance ablation: chord-tight with S_A^{-1/2} = S_B^{-1/2} = I.

@@ -204,8 +204,27 @@ def _derive_effective_inner_polar(cfg: dict, opt_cfg: dict) -> str | None:
 
 
 def _derive_effective_picard_iters(cfg: dict, opt_cfg: dict) -> tuple[Any, bool]:
-    """Returns (k_value, resolved_with_certainty)."""
+    """Returns (k_value, resolved_with_certainty).
+
+    Ground-truth precedence:
+      1. ``opt_cfg["picard_iters"]`` — the constructor kwarg the optimizer
+         actually ran with. Emitted by ``build_optimizer`` for every
+         polar-product variant since the flag existed; if present, this is
+         authoritative regardless of how the value was derived (CLI override
+         vs. variant-default).
+      2. ``opt_cfg["picard_iters_override"]`` / top-level
+         ``cfg["picard_iters_override"]`` — the CLI flag itself. Useful for
+         older cfg events that didn't pass ``picard_iters`` through to the
+         optimizer_config dump.
+      3. Commit-aware default for the optimizer slug (for cfg events that
+         predate either field being recorded).
+    """
+    pi = opt_cfg.get("picard_iters")
+    if pi not in (None, "None"):
+        return (_coerce(pi, int), True)
     override = opt_cfg.get("picard_iters_override")
+    if override in (None, "None"):
+        override = cfg.get("picard_iters_override")
     if override not in (None, "None"):
         return (_coerce(override, int), True)
     # Fall through to commit-aware default lookup.
@@ -322,12 +341,22 @@ def _matches(spec: Any, value: Any) -> bool:
     return value == spec
 
 
+# cfg-field aliases for `where=` filtering. Lets `_group` match the actual
+# `log_group` cfg key (common confusion: `_group` looks like a derived/private
+# field but the canonical key is `log_group`). Add new aliases here.
+_WHERE_FIELD_ALIASES: dict[str, str] = {
+    "_group": "log_group",
+}
+
+
 def _build_filter(where: dict[str, Any] | None) -> Callable[[dict], bool] | None:
     if not where:
         return None
 
+    resolved = {_WHERE_FIELD_ALIASES.get(k, k): v for k, v in where.items()}
+
     def predicate(cfg: dict) -> bool:
-        for field_name, spec in where.items():
+        for field_name, spec in resolved.items():
             if field_name not in cfg:
                 return False
             if not _matches(spec, cfg[field_name]):
@@ -442,6 +471,7 @@ class RunInventory:
     groups_on_disk: tuple[str, ...]            # populated logs/<group>/run_info dirs
     groups_loaded: tuple[str, ...]             # subset that contributes runs
     groups_orphaned: tuple[str, ...]           # populated, no manifest or empty scope
+    groups_no_run_info: tuple[str, ...]        # logs/<group>/ exists with files but no run_info/ — invisible to load_manifests
     optimizers_unknown: tuple[str, ...]        # in logs but not in OPTIM_COLORS
     coverage: tuple[CoverageRow, ...]
 
@@ -535,10 +565,24 @@ def inventory_runs(logs_root: str | None = None) -> RunInventory:
 
     optimizers_unknown = tuple(sorted(o for o in seen_optimizers if o not in OPTIM_COLORS))
 
+    # Groups on disk with files but no run_info/ subdir are invisible to
+    # load_manifests (and therefore to load_runs). Surface them so they
+    # don't silently disappear from analyses.
+    manifest_groups = set(on_disk)
+    no_run_info: list[str] = []
+    root = Path(logs_root)
+    if root.is_dir():
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name in manifest_groups:
+                continue
+            if not (child / "run_info").exists() and any(child.iterdir()):
+                no_run_info.append(child.name)
+
     return RunInventory(
         groups_on_disk=tuple(on_disk),
         groups_loaded=tuple(sorted(contributing_groups)),
         groups_orphaned=tuple(orphaned),
+        groups_no_run_info=tuple(no_run_info),
         optimizers_unknown=optimizers_unknown,
         coverage=tuple(coverage),
     )
@@ -553,6 +597,12 @@ def render_inventory(inv: RunInventory) -> str:
         lines.append("")
         lines.append(f"ORPHANED ({len(inv.groups_orphaned)}) — populated but no valid manifest, will not load:")
         for g in inv.groups_orphaned:
+            lines.append(f"  {g}")
+
+    if inv.groups_no_run_info:
+        lines.append("")
+        lines.append(f"NO run_info/ ({len(inv.groups_no_run_info)}) — files present but missing run_info/ dir, invisible to load_runs:")
+        for g in inv.groups_no_run_info:
             lines.append(f"  {g}")
 
     if inv.optimizers_unknown:

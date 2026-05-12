@@ -58,6 +58,7 @@ OPTIM_COLORS = {
     "adam-polar-product-lora-coupled-spectral-chord": "#c75c2e",  # burnt orange — coupled w/ spectral chord trust region
     "adam-polar-product-lora-coupled-spectral-chord-tight": "#7a3520",  # darker burnt orange — tight chord (exact root)
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening": "#8e6b3c",  # tan — no-whitening ablation
+    "adam-polar-product-lora-coupled-spectral-chord-tight-outer": "#c95a35",  # bright orange — outer-rescale (Picard insight)
     "adam-polar-product-lora-coupled-spectral-chord-direction": "#a02a0d",  # red-orange — variant 1 (direction-aware ρ)
     "adam-soap-polar-product-lora": "#c97a3a",  # amber — SOAP eigenbasis Adam before polar
     "adafactor-polar-product-lora": "#d4a04c",  # gold — Adafactor rank-1 v before polar
@@ -124,6 +125,7 @@ OPTIM_FAMILIES = {
         "adam-polar-product-lora-coupled-spectral-chord",
         "adam-polar-product-lora-coupled-spectral-chord-tight",
         "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening",
+        "adam-polar-product-lora-coupled-spectral-chord-tight-outer",
         "adam-polar-product-lora-coupled-spectral-chord-direction",
         "adam-soap-polar-product-lora",
         "adafactor-polar-product-lora",
@@ -154,6 +156,7 @@ OPTIM_FAMILIES = {
         "muon-coupled-core-sign-rebalanced-lora",
         "adamuon-lora",
         "adamuon-polar-product-lora",
+        "adam-muon-lora",
     },
     # Pre-Adam linear preconditioning (geometry → Adam, H1 found ε-perturbed).
     "pre_adam_lin_scaled": {
@@ -260,6 +263,7 @@ OPTIM_MARKERS = {
     "adam-polar-product-lora-coupled-spectral-chord": "8",  # octagon (burnt orange) — spectral-chord magnitude rule
     "adam-polar-product-lora-coupled-spectral-chord-tight": "H",  # uppercase hexagon — tight chord-spectral (exact root)
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening": "x",  # x — no-whitening ablation
+    "adam-polar-product-lora-coupled-spectral-chord-tight-outer": "P",  # plus — outer rescale (Picard insight)
     "adam-polar-product-lora-coupled-spectral-chord-direction": "*",  # star — direction-aware (variant 1)
     "adam-soap-polar-product-lora": "*",   # star (amber) — SOAP eigenbasis preconditioning
     "adam-polar-product-lora-gauge":          "D",  # diamond (purple) — Sylvester gauge variant
