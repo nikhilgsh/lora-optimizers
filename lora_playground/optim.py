@@ -3062,10 +3062,25 @@ class AdamPolarProductLoRA(Optimizer):
                 # Cache batched Grams for direction-aware σ_max in the loop.
                 GBB_s = B_f.transpose(-1, -2) @ B_f                    # (N, r, r)
                 GAA_s = A_f @ A_f.transpose(-1, -2)                    # (N, r, r)
+                # Picard cross-coupling coefficient: `2/(ρ·s)`, derived from
+                # the normalized whitened objective (see user-proposed math
+                # +`docs/notes/polar_product/handoff_2026_05_11.md` §Picard).
+                # Shape (N,) — unsqueeze to (N, 1, 1) for broadcast against
+                # cross-coupling matrices (N, r, r). Replaces the legacy
+                # `picard_alpha/lr` scaling, which never matched the chord-tight
+                # bound's variational structure and produced ~null effect from
+                # Picard k≥2 under chord-tight.
+                if self.magnitude_rule in ("spectral_chord_tight",
+                                           "spectral_chord_direction"):
+                    s_AB = sigma_A + sigma_B
+                    picard_coeff_s = (2.0 / (rho * s_AB + 1e-30)).unsqueeze(-1).unsqueeze(-1)
+                else:
+                    picard_coeff_s = None
             else:
                 rho = None
                 GBB_s = None
                 GAA_s = None
+                picard_coeff_s = None
             for k_iter in range(self.picard_iters):
                 with maybe_time(timer, "picard_cross_coupling"):
                     if k_iter > 0:
@@ -3081,8 +3096,12 @@ class AdamPolarProductLoRA(Optimizer):
                             B_eff = B_f + dB_prev
                             BT_dB_A = B_eff.transpose(-2, -1) @ dB_prev @ A_f
                             B_dA_AT = B_f @ dA_prev @ A_eff.transpose(-2, -1)
-                            u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
-                            u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
+                            if picard_coeff_s is not None:
+                                u_A_eff = u_A + picard_coeff_s * BT_dB_A
+                                u_B_eff = u_B + picard_coeff_s * B_dA_AT
+                            else:
+                                u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
+                                u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
                             SA_grams_k = A_eff @ A_eff.transpose(-2, -1)
                             SB_grams_k = B_eff.transpose(-2, -1) @ B_eff
                             if self.precond_method == "higham":
@@ -3114,8 +3133,12 @@ class AdamPolarProductLoRA(Optimizer):
                             # form for code uniformity.
                             BT_dB_A = B_f.transpose(-2, -1) @ dB_prev @ A_f
                             B_dA_AT = B_f @ dA_prev @ A_f.transpose(-2, -1)
-                            u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
-                            u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
+                            if picard_coeff_s is not None:
+                                u_A_eff = u_A + picard_coeff_s * BT_dB_A
+                                u_B_eff = u_B + picard_coeff_s * B_dA_AT
+                            else:
+                                u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
+                                u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
                 with maybe_time(timer, "picard_polar_pipeline"):
                     with maybe_time(timer, "polar_whiten"):
                         X_A = SB_half_inv_k @ u_A_eff
@@ -3334,6 +3357,14 @@ class AdamPolarProductLoRA(Optimizer):
                 # computations inside the Picard loop (variant 1).
                 GBB_t = B_f.transpose(-1, -2) @ B_f                   # (r, r)
                 GAA_t = A_f @ A_f.transpose(-1, -2)                   # (r, r)
+                # Picard cross-coupling coefficient `2/(ρ·s)` for chord-tight
+                # family. See batched-path comment above for derivation.
+                if self.magnitude_rule in ("spectral_chord_tight",
+                                           "spectral_chord_direction",
+                                           "spectral_chord_tight_outer"):
+                    picard_coeff_t = 2.0 / (rho * (sigma_A_t + sigma_B_t) + 1e-30)
+                else:
+                    picard_coeff_t = None
             # Anderson history: list of (x_flat, g_flat) where x is the input
             # to G and g = G(x) is the output. Only used when anderson_m > 0.
             and_xs = [] if self.anderson_m > 0 else None
@@ -3353,8 +3384,12 @@ class AdamPolarProductLoRA(Optimizer):
                             # Exact-chord cross-coupling: keep ΔB·ΔA term (§2 remark).
                             A_eff = A_f + dA_prev
                             B_eff = B_f + dB_prev
-                            u_A_eff = u_A + self.picard_alpha * (B_eff.T @ dB_prev @ A_f) / lr
-                            u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_eff.T) / lr
+                            if picard_coeff_t is not None:
+                                u_A_eff = u_A + picard_coeff_t * (B_eff.T @ dB_prev @ A_f)
+                                u_B_eff = u_B + picard_coeff_t * (B_f @ dA_prev @ A_eff.T)
+                            else:
+                                u_A_eff = u_A + self.picard_alpha * (B_eff.T @ dB_prev @ A_f) / lr
+                                u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_eff.T) / lr
                             # Recompute spectral preconditioners against the effective
                             # factors. Required because S_{B+dB} ≠ S_B in general.
                             SA_half_inv_k = _spd_inv_half(
@@ -3366,8 +3401,12 @@ class AdamPolarProductLoRA(Optimizer):
                                 method=self.precond_method, higham_iters=self.higham_iters,
                             )
                         else:
-                            u_A_eff = u_A + self.picard_alpha * (B_f.T @ dB_prev @ A_f) / lr
-                            u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_f.T) / lr
+                            if picard_coeff_t is not None:
+                                u_A_eff = u_A + picard_coeff_t * (B_f.T @ dB_prev @ A_f)
+                                u_B_eff = u_B + picard_coeff_t * (B_f @ dA_prev @ A_f.T)
+                            else:
+                                u_A_eff = u_A + self.picard_alpha * (B_f.T @ dB_prev @ A_f) / lr
+                                u_B_eff = u_B + self.picard_alpha * (B_f @ dA_prev @ A_f.T) / lr
                             SA_half_inv_k = SA_half_inv
                             SB_half_inv_k = SB_half_inv
                 with maybe_time(timer, "picard_polar_pipeline"):
