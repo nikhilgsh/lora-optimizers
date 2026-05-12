@@ -726,6 +726,11 @@ def baseline_overlay(reference_runs, optimizer: str, *,
     # circle markers, normal weight) — they're not baselines, just additional
     # comparisons pulled from reference_runs. This is enforced; callers
     # cannot upgrade a secondary to baseline styling.
+    # Always emit the η-sweep entry — even single-η references render as
+    # one point-with-error-bar, which is more informative than silently
+    # dropping the baseline from the left panel when only one η was tested
+    # at this rank (common when an lr-sweep was only run at one rank but
+    # the figure is rendered at another).
     if is_primary:
         color = BASELINE_COLOR  # locked black
         hline = (f"{label} floor ({fl:.4f}{' ± ' + format(best_std, '.4f') if n_seeds > 1 else ''})",
@@ -734,12 +739,15 @@ def baseline_overlay(reference_runs, optimizer: str, *,
         curve = (f"{label} (baseline, η={best_lr:.0e}, final={fl:.4f}{seed_tag})",
                  mean_evs, color, BASELINE_LS_CURVE,
                  BASELINE_LW_CURVE, BASELINE_MARKER, std_evs)
+        sweep_label = (f"{label} η-sweep ({len(sweep_points)} pts)"
+                       if len(sweep_points) >= 2
+                       else f"{label} @ η={best_lr:.0e} (only η tested)")
         eta_sweep = (
-            f"{label} η-sweep ({len(sweep_points)} pts)",
+            sweep_label,
             sweep_points, color, BASELINE_LS_CURVE,
             BASELINE_LW_CURVE, BASELINE_MARKER,
-        ) if len(sweep_points) >= 2 else None
-        return [hline], [curve], ([eta_sweep] if eta_sweep else [])
+        )
+        return [hline], [curve], [eta_sweep]
 
     # Secondary reference: ordinary candidate styling. No hline.
     color = color or "#1f77b4"
@@ -747,11 +755,13 @@ def baseline_overlay(reference_runs, optimizer: str, *,
     marker = marker_map.get(optimizer, "o")
     curve = (f"{label} (η={best_lr:.0e}, final={fl:.4f})",
              mean_evs, color, "-", LINE_WIDTH, marker, std_evs)
+    sweep_label = (f"{label} η-sweep" if len(sweep_points) >= 2
+                   else f"{label} @ η={best_lr:.0e}")
     eta_sweep = (
-        f"{label} η-sweep",
+        sweep_label,
         sweep_points, color, "-", LINE_WIDTH, marker,
-    ) if len(sweep_points) >= 2 else None
-    return [], [curve], ([eta_sweep] if eta_sweep else [])
+    )
+    return [], [curve], [eta_sweep]
 
 
 # ─── per-rank leaderboard bar chart ──────────────────────────────────────────
@@ -871,7 +881,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                 ax.errorbar(xs, ys, yerr=stds, color=color, ls=ls, lw=lw,
                             marker=marker, markersize=MARKER_SIZE,
                             label=label, zorder=BASELINE_ZORDER,
-                            capsize=3, elinewidth=lw * 0.5)
+                            capsize=6, capthick=lw, elinewidth=lw)
             else:
                 xs = [p[0] for p in points]
                 ys = [p[1] for p in points]
