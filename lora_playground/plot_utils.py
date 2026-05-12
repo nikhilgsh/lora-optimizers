@@ -874,8 +874,11 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
     linestyle_map = linestyle_map or {}
 
     def _maybe_norm(xs, ys):
-        """If normalize_x_to_optimum: divide xs by argmin-of-ys's x. Else: return xs."""
-        if not normalize_x_to_optimum or len(ys) < 2:
+        """If normalize_x_to_optimum: divide xs by argmin-of-ys's x (= η⋆ for
+        this series). Single-point series still normalize (their one lr IS
+        the optimum by definition, so x=1).
+        """
+        if not normalize_x_to_optimum or len(ys) < 1:
             return xs
         best_idx = min(range(len(ys)), key=lambda i: ys[i])
         eta_star = xs[best_idx]
@@ -942,8 +945,9 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         ys = [min(r[1], y_cap) for r in rows]
         is_oor = [r[1] > y_cap for r in rows]
         # Optimum-normalize x to η/η⋆ per series (using IN-RANGE ys to pick η⋆
-        # so divergent/clamped runs don't anchor the optimum).
-        if normalize_x_to_optimum and sum(1 for o in is_oor if not o) >= 2:
+        # so divergent/clamped runs don't anchor the optimum). Single in-range
+        # point still normalizes — its lr IS η⋆ by definition.
+        if normalize_x_to_optimum and any(not o for o in is_oor):
             in_pairs = [(xs[i], ys[i]) for i, o in enumerate(is_oor) if not o]
             eta_star = min(in_pairs, key=lambda p: p[1])[0]
             if eta_star > 0:
