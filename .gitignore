@@ -55,3 +55,8 @@ docs/theory/*.run.xml
 docs/theory/*.synctex.gz
 docs/theory/*.toc
 docs/theory/*-blx.bib
+
+# submit-pending tooling artifacts (not part of the project pipeline — the
+# authoritative submission record is logs/<group>/run_info/meta.json).
+slurm_pending/
+slurm_submitted/
