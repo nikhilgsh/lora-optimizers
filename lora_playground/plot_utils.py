@@ -855,16 +855,33 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                       legend: bool = True,
                       adamw_group_keys: set[str] | None = None,
                       marker_map: dict | None = None,
-                      linestyle_map: dict | None = None) -> None:
+                      linestyle_map: dict | None = None,
+                      normalize_x_to_optimum: bool = False) -> None:
     """Left panel: η vs final eval loss, one line per group key.
 
     `ref_eta_sweeps`: list of (label, points, color, ls, lw, marker) tuples
     where `points` is a list of (η, final_loss) — e.g. the AdamW baseline's
     full LR-sweep curve. Drawn before candidates so candidate lines sit on top.
+
+    `normalize_x_to_optimum`: when True, each series is plotted at x = η/η⋆
+    where η⋆ is the lr giving the lowest mean eval for that series. Methods
+    optimum-align at x=1 so the SHAPE of the lr-response curve is comparable
+    across methods with very different absolute optima. When ≥2 lrs per
+    series are present.
     """
     adamw_group_keys = adamw_group_keys or set()
     marker_map = marker_map or {}
     linestyle_map = linestyle_map or {}
+
+    def _maybe_norm(xs, ys):
+        """If normalize_x_to_optimum: divide xs by argmin-of-ys's x. Else: return xs."""
+        if not normalize_x_to_optimum or len(ys) < 2:
+            return xs
+        best_idx = min(range(len(ys)), key=lambda i: ys[i])
+        eta_star = xs[best_idx]
+        if eta_star <= 0:
+            return xs
+        return [x / eta_star for x in xs]
 
     all_losses = []
     if ref_eta_sweeps:
@@ -878,6 +895,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                 xs = [p[0] for p in points]
                 ys = [p[1] for p in points]
                 stds = [p[2] for p in points]
+                xs = _maybe_norm(xs, ys)
                 ax.errorbar(xs, ys, yerr=stds, color=color, ls=ls, lw=lw,
                             marker=marker, markersize=MARKER_SIZE,
                             label=label, zorder=BASELINE_ZORDER,
@@ -885,6 +903,7 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
             else:
                 xs = [p[0] for p in points]
                 ys = [p[1] for p in points]
+                xs = _maybe_norm(xs, ys)
                 ax.plot(xs, ys, color=color, ls=ls, lw=lw,
                         marker=marker, markersize=MARKER_SIZE,
                         label=label, zorder=BASELINE_ZORDER)
@@ -922,6 +941,13 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         # actual visible distinction is the hollow marker drawn separately.
         ys = [min(r[1], y_cap) for r in rows]
         is_oor = [r[1] > y_cap for r in rows]
+        # Optimum-normalize x to η/η⋆ per series (using IN-RANGE ys to pick η⋆
+        # so divergent/clamped runs don't anchor the optimum).
+        if normalize_x_to_optimum and sum(1 for o in is_oor if not o) >= 2:
+            in_pairs = [(xs[i], ys[i]) for i, o in enumerate(is_oor) if not o]
+            eta_star = min(in_pairs, key=lambda p: p[1])[0]
+            if eta_star > 0:
+                xs = [x / eta_star for x in xs]
         is_adamw = g in adamw_group_keys
         color = BASELINE_COLOR if is_adamw else color_map.get(g, "grey")
         marker = BASELINE_MARKER if is_adamw else marker_map.get(g, "o")
@@ -948,8 +974,11 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         in_range_losses.extend(ys[i] for i, oor in enumerate(is_oor) if not oor)
 
     ax.set_xscale("log")
-    ax.set_xlabel("η (log)", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_xlabel(r"$\eta / \eta^\star$ (log)" if normalize_x_to_optimum else "η (log)",
+                   fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_ylabel("Final eval loss", fontsize=AXIS_LABEL_FONTSIZE)
+    if normalize_x_to_optimum:
+        ax.axvline(1.0, color="grey", ls=":", lw=0.8, alpha=0.6, zorder=0)
     ax.tick_params(labelsize=TICK_LABEL_FONTSIZE)
     ax.grid(True, alpha=0.25, lw=0.6, which="major")
     ax.grid(True, alpha=0.10, lw=0.5, which="minor")
@@ -1065,7 +1094,8 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
                            label_fn: Callable[[dict], str] | None = None,
                            adamw_group_keys: set[str] | None = None,
                            marker_map: dict | None = None,
-                           linestyle_map: dict | None = None):
+                           linestyle_map: dict | None = None,
+                           normalize_x_to_optimum: bool = False):
     """Build the standardized 2-panel sweep figure with diverged-run filtering.
     Returns (fig, axes, n_kept, n_dropped).
 
@@ -1103,12 +1133,19 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
 
     fig, axes = plt.subplots(1, 2, figsize=figsize, constrained_layout=True,
                              gridspec_kw={"width_ratios": [1.0, 1.15]})
+    # When normalizing, retitle so the panel header reflects the x-axis.
+    effective_left_title = (
+        r"Final eval loss vs $\eta/\eta^\star$, per group"
+        if normalize_x_to_optimum and left_title == "Final eval loss vs η, per group"
+        else left_title
+    )
     plot_eta_vs_final(axes[0], keep_for_left, group_key_fn, color_map,
                       hlines=hlines, ref_eta_sweeps=ref_eta_sweeps,
-                      title=left_title, legend=False,
+                      title=effective_left_title, legend=False,
                       adamw_group_keys=adamw_group_keys,
                       marker_map=marker_map,
-                      linestyle_map=linestyle_map)
+                      linestyle_map=linestyle_map,
+                      normalize_x_to_optimum=normalize_x_to_optimum)
     plot_best_eta_curves(axes[1], keep_for_right, group_key_fn, color_map,
                          ref_curves=ref_curves, title=right_title,
                          x_tick_step=x_tick_step,
