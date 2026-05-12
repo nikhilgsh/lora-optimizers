@@ -2876,13 +2876,21 @@ class AdamPolarProductLoRA(Optimizer):
     # on stacked buffers and would silently bypass the override.
     _BATCHED_PATH_SUPPORTED = True
 
-    def _batched_path_eligible(self):
+    def _batched_path_eligible(self, is_probe_step: bool = False):
         """Production hot path. False whenever a feature flag would change
-        per-pair behavior in a way the batched path doesn't reproduce."""
+        per-pair behavior in a way the batched path doesn't reproduce.
+
+        ``is_probe_step``: if True, the caller is signalling that this step
+        will emit basic-diagnostics. Diagnostic intermediates live in the
+        per-pair path; on probe steps with ``log_basic_diagnostics=True``
+        we still need to take per-pair. On non-probe steps the batched path
+        runs even when diagnostics are otherwise enabled — that's the
+        common case (79/80 steps) and the whole reason the gate is
+        conditional on the probe flag instead of the bare option."""
         if type(self) is not AdamPolarProductLoRA:
             if not getattr(self, "_BATCHED_PATH_SUPPORTED", False):
                 return False
-        if self.log_basic_diagnostics:
+        if self.log_basic_diagnostics and is_probe_step:
             return False
         if self.core_remix_alpha > 0.0:
             return False
@@ -2919,7 +2927,16 @@ class AdamPolarProductLoRA(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 closure()
-        if self._batched_path_eligible():
+        # When basic diagnostics are enabled, take per-pair on probe steps
+        # (so the diag block has the per-pair intermediates it consumes)
+        # and batched everywhere else. The optimizer step count is tracked
+        # per LoRA pair; any pair's count works since all advance in lockstep.
+        is_probe_step = False
+        if self.log_basic_diagnostics and self.pair_state:
+            any_state = next(iter(self.pair_state.values()))
+            next_step = any_state.get('step', 0) + 1
+            is_probe_step = (next_step % self.diagnostics_every == 0)
+        if self._batched_path_eligible(is_probe_step=is_probe_step):
             return self._step_batched()
         return self._step_per_pair()
 
