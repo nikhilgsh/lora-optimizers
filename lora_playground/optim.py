@@ -7540,6 +7540,7 @@ def build_optimizer(
     polar_core_remix_alpha: float = 0.0,
     beta1: float = 0.9,
     beta2: float = 0.999,
+    precond_delta_relative: bool = False,
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -7700,6 +7701,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             core_remix_alpha=polar_core_remix_alpha,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -7721,6 +7723,7 @@ def build_optimizer(
             polar_norm_dir=polar_norm_dir,
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-soap-polar-product-lora":
         return AdamSOAPPolarProductLoRA(
@@ -7796,6 +7799,7 @@ def build_optimizer(
             higham_iters=higham_iters,
             picard_iters=2,
             end_rms_align=True,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord":
         # Substitution 1' (algorithm.md §6.1): replace Frobenius-Adam-magnitude
@@ -7824,6 +7828,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord",
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight":
         # Tight chord-spectral rule (algorithm.md §6.1, exact-root variant):
@@ -7850,6 +7855,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening":
         # Whitening-importance ablation: chord-tight with S_A^{-1/2} = S_B^{-1/2} = I.
@@ -7878,6 +7884,7 @@ def build_optimizer(
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
             disable_whitening=True,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-direction":
         # Variant 1 of algorithm_tight_chord.md: direction-aware ρ in place
@@ -7907,6 +7914,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord_direction",
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-exact-chord":
         # Variational target is the actual ΔW = (B+ΔB)(A+ΔA) - BA, not its
@@ -7934,6 +7942,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             exact_chord=True,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-clip-product-lora":
         # Clip operator + RMS-align (no gauge/lift). Mirrors baseline
@@ -7950,6 +7959,7 @@ def build_optimizer(
             precond_method=precond_method, higham_iters=higham_iters,
             picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             operator_type="clip",
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-clip-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -7963,6 +7973,7 @@ def build_optimizer(
             picard_iters=picard_iters_override if picard_iters_override is not None else 2,
             picard_alpha=picard_alpha,
             operator_type="clip",
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-clip-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
@@ -7975,6 +7986,7 @@ def build_optimizer(
             precond_method=precond_method, higham_iters=higham_iters,
             picard_iters=2, end_rms_align=True,
             operator_type="clip",
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-gauge":
         return AdamPolarProductLoRAGauge(
