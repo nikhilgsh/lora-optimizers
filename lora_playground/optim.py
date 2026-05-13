@@ -3817,6 +3817,25 @@ class AdamPolarProductLoRA(Optimizer):
                 abs(sigma_B_opt - sigma_B_exact) / max(sigma_B_exact, 1e-30)
             )
 
+        # Wasted-update probe: fraction of dA / dB that flows through to the
+        # LoRA forward product dW = B·A. ‖B·dA‖_F / ‖dA‖_F low ⇒ A's update
+        # is concentrated in directions of low σ(B) where it doesn't move the
+        # loss (B's near-null modes absorb the update). Mirror probe for dB.
+        # Specifically diagnostic for chord-tight whiten at high r with
+        # rank-deficient B — measures the SB^{-1/2}-induced bias toward
+        # B's small-σ directions which carries little loss gradient.
+        with torch.no_grad():
+            dA_f = dA.detach().to(torch.float32)
+            dB_f = dB.detach().to(torch.float32)
+            B_f_d = B.detach().to(torch.float32)
+            A_f_d = A.detach().to(torch.float32)
+            B_dA = B_f_d @ dA_f                      # (d_out, d_in)
+            dB_A = dB_f @ A_f_d                      # (d_out, d_in)
+            dA_norm = dA_f.norm() + 1e-30
+            dB_norm = dB_f.norm() + 1e-30
+            rec["frac_dA_through_B"] = float(B_dA.norm() / dA_norm)
+            rec["frac_dB_through_A"] = float(dB_A.norm() / dB_norm)
+
         # Muon+ premise probe (arXiv:2602.21545 §2): after orthogonal-
         # ization, per-row/per-col ℓ₂ norms of geo_{A,B} have high
         # variance even though the matrix is well-conditioned σ-wise.
@@ -7709,7 +7728,7 @@ def build_optimizer(
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7813,7 +7832,7 @@ def build_optimizer(
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7840,7 +7859,7 @@ def build_optimizer(
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7868,7 +7887,7 @@ def build_optimizer(
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7899,7 +7918,7 @@ def build_optimizer(
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,

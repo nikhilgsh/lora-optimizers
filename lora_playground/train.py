@@ -420,7 +420,7 @@ def make_parser():
                         help="Fractional power for PSI-LoRA/KFAC-LoRA K-FAC scaling.")
     parser.add_argument("--precond_ema_beta", type=float, default=0.99,
                         help="EMA smoothing for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
-    parser.add_argument("--precond_delta", type=float, default=1e-5,
+    parser.add_argument("--precond_delta", type=float, default=1e-6,
                         help="Damping floor for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
     parser.add_argument("--precond_delta_relative", action="store_true",
                         help="σ_max-relative damping: replace absolute δ in "
