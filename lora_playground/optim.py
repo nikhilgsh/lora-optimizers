@@ -2570,7 +2570,8 @@ class AdamPolarProductLoRA(Optimizer):
                  core_remix_alpha=0.0,
                  exact_chord=False,
                  magnitude_rule="adam_frobenius",
-                 disable_whitening=False):
+                 disable_whitening=False,
+                 precond_delta_relative=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2578,6 +2579,7 @@ class AdamPolarProductLoRA(Optimizer):
         super().__init__([{"params": params, "lr": lr}], {})
         self.pairs = pairs
         self.delta = delta
+        self.precond_delta_relative = bool(precond_delta_relative)
         self.eps = eps
         self.beta1, self.beta2 = betas
         self.ns_steps = ns_steps
