@@ -263,17 +263,18 @@ def test_batched_matches_per_pair_multistep(picard_iters, exact_chord, precond_r
         AdamPolarProductLoRA._batched_path_eligible = original
 
 
-def test_batched_path_disabled_when_log_basic_diagnostics_on_probe_step():
-    """Eligibility check turns off batched path when diagnostics are on AND
-    the step is a probe step. Non-probe steps stay on the batched path
-    (dynamic path selection per commit fe035ce)."""
+def test_batched_path_stays_eligible_on_probe_step_with_basic_diag():
+    """As of Phase D, basic-diag records are emitted by _step_batched
+    itself (slicing per-pair from the 3D shape-group buffers), so
+    log_basic_diagnostics + is_probe_step no longer disables the
+    batched path. Compatibility shim: the kwarg is still accepted but
+    ignored. The per-pair path is reached only via the ablation-flag
+    branches below this test."""
     model = FakeLoRAModel([(8, 32, 32)] * 2)
     opt = AdamPolarProductLoRA(model, log_basic_diagnostics=True, **{
         k: v for k, v in _opt_args(1, 1).items() if k != "log_basic_diagnostics"
     })
-    # Probe step → per-pair.
-    assert opt._batched_path_eligible(is_probe_step=True) is False
-    # Non-probe step → batched, even with diagnostics enabled.
+    assert opt._batched_path_eligible(is_probe_step=True) is True
     assert opt._batched_path_eligible(is_probe_step=False) is True
 
 

@@ -210,41 +210,40 @@ def _sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
     return sigma, v
 
 
-def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12, n_iters=8):
-    """σ_max for a non-symmetric rank-r product via power iteration.
+def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12):
+    """Exact σ_max for a non-symmetric rank-r product via Cholesky+eigvalsh.
 
     For X, Y of compatible shape, σ²(XY) equals the largest eigenvalue of
-    M = G_inner · G_outer where (G_outer, G_inner) is either (X^T X, Y Y^T)
-    or (Y Y^T, X^T X). Power iteration on M converges to the top
-    eigenvalue (real and positive since M is similar to the symmetric PSD
-    G_inner^(1/2) G_outer G_inner^(1/2)).
+    L^T · G_outer · L where L = chol(G_inner + ε I) and (G_outer, G_inner)
+    is either (X^T X, Y Y^T) or (Y Y^T, X^T X). The matrix L^T · G_outer · L
+    is symmetric PSD so `eigvalsh` is exact and ~one launch per call.
 
-    Replaces the original Cholesky + eigvalsh implementation, which is
-    "exact" but cuSOLVER-bound: at r=256 with n_pairs=112, the batched
-    eigvalsh kernel-launch overhead is ~1.5 s/call (3 such calls per step
-    in chord-direction → ~4.5 s/step regression). Power iter at n_iters=8
-    is sub-percent accurate on well-conditioned PSD pairs and runs in
-    O(n_iters · r²) per pair via bmm.
+    Used for direction-aware ρ in `spectral_chord_direction` (variant 1 of
+    algorithm_tight_chord.md) and the Stage-0 chord_slack / lambda_dir_gain
+    probes. Replaces an earlier `eigvals` on the non-symmetric product
+    G_outer · G_inner which over-estimated σ_max² on real LoRA chord
+    matrices (complex-eigenvalue imaginary-part artifact); see CLAUDE.md
+    "Suspect the probe before the theorem".
 
-    Name retained for call-site compatibility. The `eps` arg is also
-    retained (now unused — power-iter has no Cholesky to regularize).
+    KNOWN PERF ISSUE (2026-05-12): at r=256 with batched (n_pairs=112, r, r)
+    inputs, cuSOLVER's batched eigvalsh falls back to per-matrix sequential
+    syevd calls (~10-20 ms each × 112 pairs = 1-2 s/call). Used 3× per step
+    in chord-direction → ~4 s/step slowdown vs chord-tight (which had its
+    eigvalsh calls replaced by power-iter). Naive power-iter at 8-50 iters
+    does NOT converge tightly enough on batched (n_pairs, r, r) data
+    (worst-case rel err 1-15 %). A symmetric power-iter on L^T G_outer L,
+    or LOBPCG with k=1, is the right fix — pending.
 
     Supports leading batch dims on both inputs.
     """
-    del eps  # legacy arg, no longer needed
-    *batch_dims, r = G_outer.shape[:-1]
-    v = torch.ones(*batch_dims, r,
-                   dtype=G_outer.dtype, device=G_outer.device)
-    v = v / (v.norm(dim=-1, keepdim=True) + 1e-30)
-    for _ in range(n_iters):
-        Gv = (G_outer @ v.unsqueeze(-1)).squeeze(-1)
-        Mv = (G_inner @ Gv.unsqueeze(-1)).squeeze(-1)
-        v = Mv / (Mv.norm(dim=-1, keepdim=True) + 1e-30)
-    # Rayleigh quotient: σ² = v^T (G_inner G_outer) v.
-    Gv = (G_outer @ v.unsqueeze(-1)).squeeze(-1)
-    Mv = (G_inner @ Gv.unsqueeze(-1)).squeeze(-1)
-    sigma_sq = (v * Mv).sum(dim=-1).clamp_min(0.0)
-    return sigma_sq.sqrt()
+    last = G_inner.shape[-1]
+    diag = G_inner.diagonal(dim1=-2, dim2=-1).abs().mean(dim=-1, keepdim=True)
+    diag_load = (eps * diag.clamp_min(1e-30)).unsqueeze(-1)
+    I_r = torch.eye(last, dtype=G_inner.dtype, device=G_inner.device)
+    damped = G_inner + diag_load * I_r
+    Lc = torch.linalg.cholesky(damped)
+    M = Lc.transpose(-1, -2) @ G_outer @ Lc
+    return torch.linalg.eigvalsh(M).clamp_min(0.0).max(dim=-1).values.sqrt()
 
 
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
@@ -2881,18 +2880,15 @@ class AdamPolarProductLoRA(Optimizer):
         """Production hot path. False whenever a feature flag would change
         per-pair behavior in a way the batched path doesn't reproduce.
 
-        ``is_probe_step``: if True, the caller is signalling that this step
-        will emit basic-diagnostics. Diagnostic intermediates live in the
-        per-pair path; on probe steps with ``log_basic_diagnostics=True``
-        we still need to take per-pair. On non-probe steps the batched path
-        runs even when diagnostics are otherwise enabled — that's the
-        common case (79/80 steps) and the whole reason the gate is
-        conditional on the probe flag instead of the bare option."""
+        ``is_probe_step`` is accepted for back-compat with monkey-patch test
+        helpers but is no longer consulted: as of Phase D, basic-diag
+        records on probe steps are emitted by the batched path itself
+        (see _step_batched), so probe steps stay on the batched path.
+        The per-pair path is reached only when one of the ablation flags
+        below is set — kept for reproducibility of past sweeps in params/."""
         if type(self) is not AdamPolarProductLoRA:
             if not getattr(self, "_BATCHED_PATH_SUPPORTED", False):
                 return False
-        if self.log_basic_diagnostics and is_probe_step:
-            return False
         if self.core_remix_alpha > 0.0:
             return False
         if self.polar_norm_dir != "frob":
