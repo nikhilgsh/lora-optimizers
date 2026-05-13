@@ -870,7 +870,8 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                       adamw_group_keys: set[str] | None = None,
                       marker_map: dict | None = None,
                       linestyle_map: dict | None = None,
-                      normalize_x_to_optimum: bool = False) -> None:
+                      normalize_x_to_optimum: bool = False,
+                      diverged_runs: list | None = None) -> None:
     """Left panel: η vs final eval loss, one line per group key.
 
     `ref_eta_sweeps`: list of (label, points, color, ls, lw, marker) tuples
@@ -1024,8 +1025,45 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         hi = min(hi + 0.005, lo + 0.16)
         ax.set_ylim(lo, hi)
 
-    # (Out-of-range hollow markers are drawn inline above per-group, connected
-    # to the line via clamped y. No standalone overlay needed here.)
+    # Diverged-run markers — show NaN/early-killed runs at the top of the
+    # axis with an X so the user can see "this lr was tested and blew up"
+    # without reading stdout. Without this they'd just be missing from the
+    # plot. Renders per-(group, lr) pair found in `diverged_runs`.
+    if diverged_runs:
+        # Establish y position: top of the current ylim (set later but we
+        # use y_cap as a reasonable proxy here; otherwise the very top of
+        # what'd be visible).
+        y_div = y_cap
+        # Group by (group_key, lr) so duplicates (same lr at multiple seeds)
+        # render as one marker.
+        seen = set()
+        for cfg, evs in diverged_runs:
+            g = group_key_fn(cfg)
+            lr = float(cfg["lr"])
+            if (g, lr) in seen:
+                continue
+            seen.add((g, lr))
+            color = (BASELINE_COLOR if g in adamw_group_keys
+                     else color_map.get(g, "grey"))
+            # If we normalized the x-axis to η/η★, use the same η★ as the
+            # non-diverged points of this group; otherwise raw lr.
+            x_lr = lr
+            if normalize_x_to_optimum:
+                grp_keep_lrs = [float(c["lr"]) for c, e in runs
+                                if group_key_fn(c) == g]
+                grp_keep_losses = [e[-1]["eval_loss"] for c, e in runs
+                                   if group_key_fn(c) == g]
+                if grp_keep_losses:
+                    eta_star = grp_keep_lrs[
+                        min(range(len(grp_keep_losses)),
+                            key=lambda i: grp_keep_losses[i])
+                    ]
+                    if eta_star > 0:
+                        x_lr = lr / eta_star
+            ax.plot([x_lr], [y_div], color=color, marker="X",
+                    markersize=MARKER_SIZE + 6, ls="",
+                    markeredgecolor="black", markeredgewidth=1.2,
+                    zorder=20)
     if legend:
         ax.legend(**_legend_kw(len(groups)))
 
@@ -1179,7 +1217,8 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
                       adamw_group_keys=adamw_group_keys,
                       marker_map=marker_map,
                       linestyle_map=linestyle_map,
-                      normalize_x_to_optimum=normalize_x_to_optimum)
+                      normalize_x_to_optimum=normalize_x_to_optimum,
+                      diverged_runs=drop)
     plot_best_eta_curves(axes[1], keep_for_right, group_key_fn, color_map,
                          ref_curves=ref_curves, title=right_title,
                          x_tick_step=x_tick_step,

@@ -367,6 +367,18 @@ def make_parser():
                              "Use -1 for exact economy SVD (slow).")
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--lora_dropout", type=float, default=0.0)
+    parser.add_argument(
+        "--lora_init_b",
+        choices=["zero", "gaussian", "symmetric"],
+        default="zero",
+        help=(
+            "LoRA init scheme. 'zero' (default, PEFT standard): A Kaiming, B=0. "
+            "'gaussian' (Init[B]): A=0, B~N(0,1/in_features). "
+            "'symmetric' (Init[AB]): A keeps PEFT default; B sampled at A's std; "
+            "PiSSA-style residual subtracts (alpha/r)*B0@A0 from base_layer so "
+            "the merged weight at step 0 equals the pretrained weight."
+        ),
+    )
     parser.add_argument("--target_modules", default="all-linear")
     parser.add_argument("--lora_plus_multiplier", type=float, default=1.0)
     parser.add_argument("--scaled_metric", action="store_true")
@@ -410,6 +422,11 @@ def make_parser():
                         help="EMA smoothing for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
     parser.add_argument("--precond_delta", type=float, default=1e-5,
                         help="Damping floor for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
+    parser.add_argument("--precond_delta_relative", action="store_true",
+                        help="σ_max-relative damping: replace absolute δ in "
+                             "(S+δI)^{-1/2} with δ·σ_max(S). Currently honored "
+                             "by the chord-tight family only. See "
+                             "docs/notes/polar_product/init_damping_math.md §5.3.")
     parser.add_argument("--psi_inner_iters", type=int, default=1,
                         help="K, number of LoRSUM ALS iterations per PSI-LoRA step.")
     parser.add_argument("--psi_momentum", type=float, default=0.9,
@@ -742,6 +759,16 @@ def main():
     dense_targets = peft.dense_targets
     ucv_target_names = peft.ucv_target_names
 
+    if args.training_mode == "lora" and args.lora_init_b != "zero":
+        from lora_playground.utils import override_lora_init
+        overrides = override_lora_init(bare_model, args.lora_init_b)
+        log_event({
+            "event": "lora_init_override",
+            "mode": args.lora_init_b,
+            "n_layers": len(overrides),
+            "delta_w0_frob_total": sum(x[1] for x in overrides),
+        })
+
     if args.training_mode == "lora":
         if args.optimizer in {"svd-step-adamw", "svd-cumulative-adamw", "galore-adamw", "adam-ucv-core-lora"}:
             raise ValueError(f"{args.optimizer} requires a non-lora training_mode.")
@@ -800,6 +827,7 @@ def main():
         optim_diagnostics_every=args.optim_diagnostics_every,
         precond_refresh_every=args.precond_refresh_every,
         precond_method=args.precond_method,
+        precond_delta_relative=args.precond_delta_relative,
         higham_iters=args.higham_iters,
         picard_alpha=args.picard_alpha,
         picard_iters_override=args.picard_iters_override,

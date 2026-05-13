@@ -107,17 +107,26 @@ def solve_sylvester(SB, SA, RHS):
     return QB @ X @ QA.T                              # (r, r)
 
 
-def spd_frac_power_inv(H, gamma, eps=1e-6):
+def spd_frac_power_inv(H, gamma, eps=1e-6, eps_relative=False):
     """
-    Compute (H + eps*I)^{-gamma} for SPD H via eigendecomposition.
+    Compute (H + eps_eff*I)^{-gamma} for SPD H via eigendecomposition.
+    eps_eff = eps (absolute) or eps * λ_max(H) (relative, σ_max-scaled).
     H: (n, n) float32. Returns (n, n) float32.
     """
-    H = spdify(H, eps)
-    evals, Q = torch.linalg.eigh(H)
+    H_sym = 0.5 * (H.float() + H.float().T)
+    if eps_relative:
+        # λ_max(H) via the eigh we're about to do anyway — read it from evals.
+        evals_raw, Q = torch.linalg.eigh(H_sym)
+        lam_max = float(evals_raw.abs().max())
+        eps_eff = float(eps) * lam_max
+        evals = (evals_raw + eps_eff).clamp(min=eps_eff if eps_eff > 0 else 1e-30)
+        return Q @ torch.diag(evals.pow(-gamma)) @ Q.T
+    H_d = spdify(H_sym, eps)
+    evals, Q = torch.linalg.eigh(H_d)
     return Q @ torch.diag(evals.clamp(min=eps).pow(-gamma)) @ Q.T
 
 
-def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4):
+def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_relative=False):
     """Batched Iannazzo / Denman-Beavers-Newton coupled NS for H^{-1/2}.
 
     Shape-broadcasting version of `spd_inv_sqrt_higham`. H: (..., n, n) SPD
@@ -125,12 +134,29 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4):
     same regularization. Used by the batched precond_refresh path to compute
     SA^{-1/2}, SB^{-1/2} for all LoRA pairs in one bmm sequence rather than
     a per-pair Python loop.
+
+    eps_relative: if True, effective damping is `eps * λ_max(H)` per batch
+    (σ_max-relative damping, see docs/notes/polar_product/init_damping_math.md §5.3).
+    Requires one extra power iter on raw H to estimate λ_max before damping.
     """
     n = H.shape[-1]
-    # spdify per-batch: symmetrize + add eps*I
     H = 0.5 * (H + H.transpose(-2, -1))
     eye = torch.eye(n, dtype=H.dtype, device=H.device)
-    H = H + eps * eye
+    batch_shape = H.shape[:-2]
+    if eps_relative:
+        # Cheap λ_max estimate on RAW H (before damping) via one power iter
+        # so the effective eps scales with H's natural magnitude.
+        ones = torch.ones(*batch_shape, n, dtype=H.dtype, device=H.device)
+        v0 = (H @ ones.unsqueeze(-1)).squeeze(-1)
+        v0 = v0 / v0.norm(dim=-1, keepdim=True).clamp(min=1e-30)
+        for _ in range(2):
+            v0 = (H @ v0.unsqueeze(-1)).squeeze(-1)
+            nv0 = v0.norm(dim=-1, keepdim=True).clamp(min=1e-30)
+            v0 = v0 / nv0
+        lam_max_raw = nv0.squeeze(-1).unsqueeze(-1).unsqueeze(-1)  # (..., 1, 1)
+        H = H + (eps * lam_max_raw) * eye
+    else:
+        H = H + eps * eye
     eye_b = eye.expand_as(H)
 
     # Power iteration for λ_max(H) per batch element. v: (..., n).
@@ -161,7 +187,7 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4):
     return out
 
 
-def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4):
+def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_relative=False):
     """
     Compute H^{-1/2} for SPD H via the coupled Newton-Schulz iteration
     (Iannazzo / Denman-Beavers-Newton). Replaces spd_frac_power_inv(H, 0.5)
@@ -190,8 +216,21 @@ def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4):
     Returns:
         Z: (n, n) float32 approximation of H^{-1/2}.
     """
-    H = spdify(H, eps)
-    n = H.shape[0]
+    H_raw = H.float()
+    H_raw = 0.5 * (H_raw + H_raw.T)
+    n = H_raw.shape[0]
+    if eps_relative:
+        # λ_max estimate on raw H to set effective damping = eps * λ_max.
+        v0 = H_raw @ torch.ones(n, dtype=H_raw.dtype, device=H_raw.device)
+        v0 = v0 / v0.norm().clamp(min=1e-30)
+        for _ in range(2):
+            v0 = H_raw @ v0
+            nv0 = v0.norm().clamp(min=1e-30)
+            v0 = v0 / nv0
+        eps_eff = float(eps) * float(nv0)
+    else:
+        eps_eff = float(eps)
+    H = spdify(H_raw, eps_eff)
     eye = torch.eye(n, dtype=H.dtype, device=H.device)
 
     # Estimate λ_max(H) via power iteration. This is the only O(n²) cost beyond
@@ -199,10 +238,10 @@ def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4):
     # Deterministic init (H @ ones, dominant in the leading eigenvector for
     # typical SPD H); see batched version for the reproducibility rationale.
     v = H @ torch.ones(n, dtype=H.dtype, device=H.device)
-    v = v / v.norm().clamp(min=eps)
+    v = v / v.norm().clamp(min=1e-30)
     for _ in range(n_power_iter):
         v = H @ v
-        nv = v.norm().clamp(min=eps)
+        nv = v.norm().clamp(min=1e-30)
         v = v / nv
     lam_max = nv  # ≥ λ_max, tight after a few iters
 
@@ -497,6 +536,54 @@ def collect_ucv_triples(model):
         if hasattr(mod, "ucv_U") and hasattr(mod, "ucv_C") and hasattr(mod, "ucv_V"):
             triples.append((mod.ucv_U, mod.ucv_C, mod.ucv_V))
     return triples
+
+
+def override_lora_init(model, mode, adapter_name=None):
+    """Override the default PEFT LoRA init.
+
+    mode ∈ {'zero', 'gaussian', 'symmetric'}:
+      - 'zero':      no-op (PEFT default: A Kaiming, B=0).
+      - 'gaussian':  Init[B] from Chen-Villar-Hayou — A=0, B~N(0, 1/in_features).
+      - 'symmetric': Init[AB] from Li et al. — A keeps PEFT default, B sampled
+                     at A's std so σ_A=σ_B. PiSSA-style residual: subtract the
+                     initial (scaling)·B0@A0 contribution from base_layer.weight
+                     so the merged weight at step 0 equals the pretrained weight.
+
+    Returns the list of (layer_name, ΔW0_frob_norm) for diagnostics; empty under 'zero'.
+    """
+    import math
+    if mode == "zero":
+        return []
+    if mode not in {"gaussian", "symmetric"}:
+        raise ValueError(f"unknown lora init mode: {mode}")
+    overrides = []
+    for name, mod in model.named_modules():
+        if not (hasattr(mod, "lora_A") and hasattr(mod, "lora_B")):
+            continue
+        keys = [adapter_name] if adapter_name else list(mod.lora_A.keys())
+        for k in keys:
+            if k not in mod.lora_A or k not in mod.lora_B:
+                continue
+            A = mod.lora_A[k].weight  # (r, in)
+            B = mod.lora_B[k].weight  # (out, r)
+            in_features = A.shape[1]
+            with torch.no_grad():
+                if mode == "gaussian":
+                    A.zero_()
+                    B.normal_(0.0, 1.0 / math.sqrt(in_features))
+                    delta_w0_norm = 0.0
+                elif mode == "symmetric":
+                    a_std = float(A.detach().float().std())
+                    B.normal_(0.0, a_std)
+                    scaling = 1.0
+                    if hasattr(mod, "scaling") and isinstance(mod.scaling, dict) and k in mod.scaling:
+                        scaling = float(mod.scaling[k])
+                    delta_w0 = scaling * (B.float() @ A.float())
+                    delta_w0_norm = float(delta_w0.norm())
+                    base = mod.base_layer.weight if hasattr(mod, "base_layer") else mod.weight
+                    base.data.sub_(delta_w0.to(base.dtype).to(base.device))
+            overrides.append((f"{name}.{k}", delta_w0_norm))
+    return overrides
 
 
 def collect_lora_pairs(model, adapter_name=None):

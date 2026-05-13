@@ -90,6 +90,8 @@ Every training run emits JSON lines to stdout via `log_event()`: one `config` ev
 
 Fix across all optimizer comparisons: model name, dataset + split seed, sample counts, LoRA rank/alpha/dropout, target modules, sequence length, batch size, grad accumulation, dtype, compile mode, eval cadence. Use held-out eval loss for hyperparameter selection (never training loss). Hardware comparison baseline is A100; local RTX A6000 is acceptable only for functional smokes, not for timing or optimizer comparisons.
 
+**LR schedule: constant, no warmup, no cosine.** All sweeps in this project use `train.py` defaults `--lr_scheduler_type constant --warmup_steps 0`. The LR shown in the `config` event and per-eval `lr` field is the LR used at every step — `max_steps` does NOT alter the per-step LR. Loss trajectories at the same `(lr, init, optimizer, seed, lora_r, data_pipeline_version, git_commit)` and same step index are directly comparable across runs regardless of each run's `max_steps`. **Do NOT invoke "different cosine schedule" or "warmup phase" to explain pilot-vs-full-horizon trajectory discrepancies — neither exists here.** If two runs at the same step and same params differ in loss, the cause is elsewhere (code change at the git_commit boundary, sampler/dataloader seeding, diagnostics that mutate state, off-by-one in optimizer init) and must be tracked down rather than rationalized via an imagined schedule.
+
 **Canonical comparison horizon — depends on data pipeline version:**
 
 - **`unpacked_v0` (legacy, pre-2026-05-08): 2000 steps.** All historical `lr_sweep_2k`, `optim_compare_high_eta_2k`, and `h*_*_2k` log groups use this horizon. Baseline numbers (AdamW 0.7579 at η=3e-4, adam-lin-lora 0.7564 at η=1e-3, etc.) are at step 2000 under this version.
