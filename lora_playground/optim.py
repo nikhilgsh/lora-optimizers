@@ -1,5 +1,6 @@
 import inspect
 import json
+import os
 import statistics
 
 import torch
@@ -2926,7 +2927,36 @@ class AdamPolarProductLoRA(Optimizer):
             any_state = next(iter(self.pair_state.values()))
             next_step = any_state.get('step', 0) + 1
             is_probe_step = (next_step % self.diagnostics_every == 0)
-        if self._batched_path_eligible(is_probe_step=is_probe_step):
+        eligible = self._batched_path_eligible(is_probe_step=is_probe_step)
+        # Per-step timing probe (env-gated; off in production by default).
+        # Emits one JSON event per step with path taken and wall time.
+        if os.environ.get("LORA_TIME_STEP", "0") == "1":
+            import time as _t
+            import json as _j
+            import sys as _s
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t0 = _t.perf_counter()
+            if eligible:
+                self._step_batched()
+            else:
+                self._step_per_pair()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            elapsed = _t.perf_counter() - t0
+            step_n = (next(iter(self.pair_state.values())).get('step', -1)
+                      if self.pair_state else -1)
+            _s.stdout.write(_j.dumps({
+                "event": "optim_path_timing",
+                "step": int(step_n),
+                "path": "batched" if eligible else "per_pair",
+                "is_probe_step": bool(is_probe_step),
+                "log_basic_diagnostics": bool(self.log_basic_diagnostics),
+                "elapsed_sec": float(elapsed),
+            }) + "\n")
+            _s.stdout.flush()
+            return None
+        if eligible:
             return self._step_batched()
         return self._step_per_pair()
 
@@ -3040,20 +3070,18 @@ class AdamPolarProductLoRA(Optimizer):
                 with maybe_time(timer, "picard_unit_polar_norm"):
                     X_A_pre = SB_half_inv @ u_A             # (N, r, d_in)
                     X_B_pre = u_B @ SA_half_inv             # (N, d_out, r)
-                    if X_A_pre.shape[-2] <= X_A_pre.shape[-1]:
-                        gram_XA = X_A_pre @ X_A_pre.transpose(-1, -2)
-                    else:
-                        gram_XA = X_A_pre.transpose(-1, -2) @ X_A_pre
-                    if X_B_pre.shape[-2] <= X_B_pre.shape[-1]:
-                        gram_XB = X_B_pre @ X_B_pre.transpose(-1, -2)
-                    else:
-                        gram_XB = X_B_pre.transpose(-1, -2) @ X_B_pre
-                    sigma_XA = (torch.linalg.eigvalsh(gram_XA)
-                                .clamp_min(0.0).max(dim=-1).values
-                                .sqrt() + 1e-30)
-                    sigma_XB = (torch.linalg.eigvalsh(gram_XB)
-                                .clamp_min(0.0).max(dim=-1).values
-                                .sqrt() + 1e-30)
+                    # σ_max via batched power-iter (8 iters cold-start) —
+                    # avoids the cuSOLVER batched-eigvalsh latency hit at
+                    # r=256 (~15 ms per (256,256) matrix × 112 pairs = 1-2 s
+                    # per call; 4-6 such calls per step at r=256 was the
+                    # bottleneck behind chord-whiten's 12 s/step). Power-iter
+                    # at n_iters=8 is the original implementation
+                    # (replaced by eigvalsh in 57a932b for accuracy; the
+                    # actual issue was cold-start 3 iters being too few).
+                    sigma_XA_b, _ = _sigma_max_power_iter_batched(X_A_pre, n_iters=8)
+                    sigma_XB_b, _ = _sigma_max_power_iter_batched(X_B_pre, n_iters=8)
+                    sigma_XA = sigma_XA_b + 1e-30
+                    sigma_XB = sigma_XB_b + 1e-30
                     u_A = u_A / sigma_XA.unsqueeze(-1).unsqueeze(-1)
                     u_B = u_B / sigma_XB.unsqueeze(-1).unsqueeze(-1)
 
@@ -3070,25 +3098,19 @@ class AdamPolarProductLoRA(Optimizer):
             SA_half_inv_k = SA_half_inv
             SB_half_inv_k = SB_half_inv
 
-            # spectral_chord: σ_max(A), σ_max(B) via batched eigh on the r×r
-            # Gram. Replaces the warm-started 3-iter power iter; same fix as
-            # geo_A / geo_B (commit 57a932b). See docs/notes/polar_product/
-            # tight_chord_diagnostics_stage0.md F2 mechanism update.
+            # spectral_chord: σ_max(A), σ_max(B) via batched power-iter (8
+            # iters cold-start). Originally used 3-iter cold-start power-iter,
+            # which under-estimated σ_max → switched to eigvalsh in 57a932b
+            # for accuracy, but cuSOLVER batched syevd on (n_pairs, r, r) at
+            # r=256 falls back to per-matrix calls with ~15 ms overhead each
+            # → 1-2 s per call × 4 such calls per step was the dominant cost
+            # in chord-whiten production. 8-iter power-iter is the original
+            # method with sufficient iters for accuracy at any r.
             if self.magnitude_rule in ("spectral_chord",
                                        "spectral_chord_tight",
                                        "spectral_chord_direction"):
-                if A_f.shape[-2] <= A_f.shape[-1]:
-                    gram_A_s = A_f @ A_f.transpose(-1, -2)
-                else:
-                    gram_A_s = A_f.transpose(-1, -2) @ A_f
-                if B_f.shape[-2] <= B_f.shape[-1]:
-                    gram_B_s = B_f @ B_f.transpose(-1, -2)
-                else:
-                    gram_B_s = B_f.transpose(-1, -2) @ B_f
-                sigma_A = (torch.linalg.eigvalsh(gram_A_s)
-                           .clamp_min(0.0).max(dim=-1).values.sqrt())
-                sigma_B = (torch.linalg.eigvalsh(gram_B_s)
-                           .clamp_min(0.0).max(dim=-1).values.sqrt())
+                sigma_A, _ = _sigma_max_power_iter_batched(A_f, n_iters=8)
+                sigma_B, _ = _sigma_max_power_iter_batched(B_f, n_iters=8)
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
                 elif self.magnitude_rule == "spectral_chord_tight":
@@ -3205,18 +3227,11 @@ class AdamPolarProductLoRA(Optimizer):
                             geo_B = P_B @ SA_half_inv_k
                             geoA_f = geo_A.float()
                             geoB_f = geo_B.float()
-                            if geoA_f.shape[-2] <= geoA_f.shape[-1]:
-                                gram_A_b = geoA_f @ geoA_f.transpose(-1, -2)
-                            else:
-                                gram_A_b = geoA_f.transpose(-1, -2) @ geoA_f
-                            if geoB_f.shape[-2] <= geoB_f.shape[-1]:
-                                gram_B_b = geoB_f @ geoB_f.transpose(-1, -2)
-                            else:
-                                gram_B_b = geoB_f.transpose(-1, -2) @ geoB_f
-                            op_geoA_b = (torch.linalg.eigvalsh(gram_A_b)
-                                         .clamp_min(0.0).max(dim=-1).values.sqrt())
-                            op_geoB_b = (torch.linalg.eigvalsh(gram_B_b)
-                                         .clamp_min(0.0).max(dim=-1).values.sqrt())
+                            # σ_max via 8-iter batched power-iter; replaces
+                            # eigvalsh on (n_pairs, r, r) Gram which has
+                            # ~1.5 s/call cuSOLVER overhead at r=256.
+                            op_geoA_b, _ = _sigma_max_power_iter_batched(geoA_f, n_iters=8)
+                            op_geoB_b, _ = _sigma_max_power_iter_batched(geoB_f, n_iters=8)
                             op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
                             op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
                             if self.magnitude_rule == "spectral_chord_direction":
@@ -3371,16 +3386,11 @@ class AdamPolarProductLoRA(Optimizer):
             if self.magnitude_rule in ("spectral_chord",
                                        "spectral_chord_tight",
                                        "spectral_chord_direction"):
-                if A_f.shape[0] <= A_f.shape[1]:
-                    gram_A_t = A_f @ A_f.transpose(-1, -2)
-                else:
-                    gram_A_t = A_f.transpose(-1, -2) @ A_f
-                if B_f.shape[0] <= B_f.shape[1]:
-                    gram_B_t = B_f @ B_f.transpose(-1, -2)
-                else:
-                    gram_B_t = B_f.transpose(-1, -2) @ B_f
-                sigma_A_t = torch.linalg.eigvalsh(gram_A_t).clamp_min(0.0).max().sqrt()
-                sigma_B_t = torch.linalg.eigvalsh(gram_B_t).clamp_min(0.0).max().sqrt()
+                # σ_max via 8-iter power-iter (matches batched-path
+                # implementation since `eigvalsh → power-iter` switch for
+                # r=256 latency).
+                sigma_A_t, _ = _sigma_max_power_iter(A_f, n_iters=8)
+                sigma_B_t, _ = _sigma_max_power_iter(B_f, n_iters=8)
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A_t + sigma_B_t + 1.0)
                 elif self.magnitude_rule == "spectral_chord_tight":
@@ -3404,10 +3414,13 @@ class AdamPolarProductLoRA(Optimizer):
                                            "spectral_chord_direction"):
                     picard_coeff_t = 2.0 / (rho * (sigma_A_t + sigma_B_t) + 1e-30)
                     # Unit-polar normalization (per-pair mirror of batched path).
+                    # σ_max via 8-iter power-iter (matches batched-path).
                     XA_pre_t = SB_half_inv @ u_A
                     XB_pre_t = u_B @ SA_half_inv
-                    sA_pre = torch.linalg.svdvals(XA_pre_t.float())[0].clamp_min(1e-30)
-                    sB_pre = torch.linalg.svdvals(XB_pre_t.float())[0].clamp_min(1e-30)
+                    sA_pre, _ = _sigma_max_power_iter(XA_pre_t.float(), n_iters=8)
+                    sB_pre, _ = _sigma_max_power_iter(XB_pre_t.float(), n_iters=8)
+                    sA_pre = sA_pre.clamp_min(1e-30)
+                    sB_pre = sB_pre.clamp_min(1e-30)
                     u_A = u_A / sA_pre
                     u_B = u_B / sB_pre
                 else:
@@ -3470,16 +3483,9 @@ class AdamPolarProductLoRA(Optimizer):
                     # and the direction-aware-bound coefficients.
                     geoA_f = geo_A.float()
                     geoB_f = geo_B.float()
-                    if geoA_f.shape[0] <= geoA_f.shape[1]:
-                        gram_A = geoA_f @ geoA_f.transpose(-1, -2)
-                    else:
-                        gram_A = geoA_f.transpose(-1, -2) @ geoA_f
-                    if geoB_f.shape[0] <= geoB_f.shape[1]:
-                        gram_B = geoB_f @ geoB_f.transpose(-1, -2)
-                    else:
-                        gram_B = geoB_f.transpose(-1, -2) @ geoB_f
-                    op_geoA = torch.linalg.eigvalsh(gram_A).clamp_min(0.0).max().sqrt()
-                    op_geoB = torch.linalg.eigvalsh(gram_B).clamp_min(0.0).max().sqrt()
+                    # σ_max via 8-iter power-iter (matches batched-path).
+                    op_geoA, _ = _sigma_max_power_iter(geoA_f, n_iters=8)
+                    op_geoB, _ = _sigma_max_power_iter(geoB_f, n_iters=8)
                     op_geoA = op_geoA + 1e-30
                     op_geoB = op_geoB + 1e-30
                     if self.magnitude_rule == "spectral_chord_direction":

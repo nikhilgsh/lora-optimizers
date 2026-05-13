@@ -53,7 +53,7 @@ def _opt_args(picard_iters, precond_refresh_every, precond_method="eigh",
         eps=1e-8,
         ns_steps=5,
         lora_plus_multiplier=1.0,
-        log_diagnostics=False,
+        log_basic_diagnostics=False,
         picard_iters=picard_iters,
         precond_refresh_every=precond_refresh_every,
         precond_method=precond_method,
@@ -81,7 +81,7 @@ def test_batched_matches_per_pair_spectral_chord(picard_iters, precond_method):
 
     object.__setattr__(opt_b, "_force_per_pair", True)
     original = AdamPolarProductLoRA._batched_path_eligible
-    def _gated(self):
+    def _gated(self, is_probe_step=False):
         if getattr(self, "_force_per_pair", False):
             return False
         return original(self)
@@ -143,7 +143,7 @@ def test_batched_matches_per_pair_spectral_chord_tight(picard_iters, precond_met
 
     object.__setattr__(opt_b, "_force_per_pair", True)
     original = AdamPolarProductLoRA._batched_path_eligible
-    def _gated(self):
+    def _gated(self, is_probe_step=False):
         if getattr(self, "_force_per_pair", False):
             return False
         return original(self)
@@ -206,7 +206,7 @@ def test_batched_matches_per_pair_multistep(picard_iters, exact_chord, precond_r
     # We override the eligibility check on opt_b to force the per-pair path.
     object.__setattr__(opt_b, "_force_per_pair", True)
     original = AdamPolarProductLoRA._batched_path_eligible
-    def _gated(self):
+    def _gated(self, is_probe_step=False):
         if getattr(self, "_force_per_pair", False):
             return False
         return original(self)
@@ -263,13 +263,18 @@ def test_batched_matches_per_pair_multistep(picard_iters, exact_chord, precond_r
         AdamPolarProductLoRA._batched_path_eligible = original
 
 
-def test_batched_path_disabled_when_log_diagnostics():
-    """Eligibility check turns off batched path when diagnostics are on."""
+def test_batched_path_disabled_when_log_basic_diagnostics_on_probe_step():
+    """Eligibility check turns off batched path when diagnostics are on AND
+    the step is a probe step. Non-probe steps stay on the batched path
+    (dynamic path selection per commit fe035ce)."""
     model = FakeLoRAModel([(8, 32, 32)] * 2)
-    opt = AdamPolarProductLoRA(model, log_diagnostics=True, **{
-        k: v for k, v in _opt_args(1, 1).items() if k != "log_diagnostics"
+    opt = AdamPolarProductLoRA(model, log_basic_diagnostics=True, **{
+        k: v for k, v in _opt_args(1, 1).items() if k != "log_basic_diagnostics"
     })
-    assert opt._batched_path_eligible() is False
+    # Probe step → per-pair.
+    assert opt._batched_path_eligible(is_probe_step=True) is False
+    # Non-probe step → batched, even with diagnostics enabled.
+    assert opt._batched_path_eligible(is_probe_step=False) is True
 
 
 def test_batched_path_disabled_when_exotic_flags():
