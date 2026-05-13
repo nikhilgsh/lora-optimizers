@@ -106,170 +106,21 @@ def optimizer_config_dict(opt) -> dict:
     return out
 
 
-def _sigma_max_power_iter(M, v_init=None, n_iters=8, eps=1e-30):
-    """Estimate σ_max(M) = ‖M‖_op via power iteration on the smaller-side Gram.
-
-    For an (m, n) matrix, iterates on the (k, k) Gram where k = min(m, n).
-    Convergence rate is (σ_2/σ_1)^(2·n_iters); on Gaussian random matrices,
-    cold start at n_iters=8 gives ~5% p95 rel-error, n_iters=16 gives ~3%.
-    With a warm-started v_init across optimizer steps (top singular vector
-    barely moves when factor updates are small), n_iters=3 reaches the
-    same accuracy.
-
-    Args:
-        M: (m, n) tensor on any device, any float dtype.
-        v_init: optional warm-start vector of length min(m, n). If None,
-            random init. After this call returns, the caller should cache
-            the returned v for the next call.
-        n_iters: number of M·M^T (or M^T·M) applications.
-
-    Returns:
-        (sigma, v_new): scalar 0-dim tensor σ_max estimate, and the
-        converged singular vector. Both live on M's device — no
-        GPU→CPU sync. Caller does `float(sigma)` only at logging time.
-
-    Verified by `tests/test_sigma_max_power_iter.py`.
-    """
-    if M.numel() == 0:
-        return torch.zeros((), device=M.device, dtype=torch.float32), None
-    Mf = M.float() if M.dtype != torch.float32 else M
-    m, n = Mf.shape
-    if m <= n:
-        if (v_init is None or v_init.shape != (m,)
-                or v_init.device != Mf.device or v_init.dtype != torch.float32):
-            v = torch.randn(m, device=Mf.device, dtype=torch.float32)
-        else:
-            v = v_init
-        v = v / (v.norm() + eps)
-        for _ in range(n_iters):
-            v = Mf @ (Mf.T @ v)
-            v = v / (v.norm() + eps)
-        sigma = (Mf.T @ v).norm()
-    else:
-        if (v_init is None or v_init.shape != (n,)
-                or v_init.device != Mf.device or v_init.dtype != torch.float32):
-            v = torch.randn(n, device=Mf.device, dtype=torch.float32)
-        else:
-            v = v_init
-        v = v / (v.norm() + eps)
-        for _ in range(n_iters):
-            v = Mf.T @ (Mf @ v)
-            v = v / (v.norm() + eps)
-        sigma = (Mf @ v).norm()
-    return sigma, v
-
-
-def _sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
-    """Batched version of `_sigma_max_power_iter`. M: (..., m, n).
-
-    Returns (sigma: (...,), v: (..., k)) where k = min(m, n). Iterates
-    on the smaller-side Gram via bmm; one launch per iter regardless of
-    batch size, vs N launches for the per-pair loop. ~10× faster on
-    LoRA-shape inputs at OLMo r=64 (verified by spectral_chord bench).
-
-    Convention matches the per-pair version (v lives on M's device, no
-    GPU→CPU sync). Caller supplies `v_init` as the warm-start across
-    optimizer steps; for fresh runs pass None and a deterministic init
-    (M @ ones-like) is used.
-    """
-    if M.numel() == 0:
-        return torch.zeros(M.shape[:-2], device=M.device, dtype=torch.float32), None
-    Mf = M.float() if M.dtype != torch.float32 else M
-    *batch, m, n = Mf.shape
-    smaller_m = m <= n
-    k = m if smaller_m else n
-    expected_shape = (*batch, k)
-    # Deterministic fallback: M·ones (smaller_m=True) or M^T·ones — gives
-    # near-perfect overlap with the dominant singular vector for typical
-    # SPD/Gauss-like factor matrices.
-    if smaller_m:
-        ones_n = torch.ones(*batch, n, device=Mf.device, dtype=torch.float32)
-        v_fallback = (Mf @ ones_n.unsqueeze(-1)).squeeze(-1)
-    else:
-        ones_m = torch.ones(*batch, m, device=Mf.device, dtype=torch.float32)
-        v_fallback = (Mf.transpose(-2, -1) @ ones_m.unsqueeze(-1)).squeeze(-1)
-    if (v_init is None
-            or v_init.shape != expected_shape
-            or v_init.device != Mf.device
-            or v_init.dtype != torch.float32):
-        v = v_fallback
-    else:
-        # Sticky-zero guard: if a previous step ran with M ≈ 0 (e.g. chord-tight
-        # whiten at LoRA step 1 with Init[A] has u_A = 0 because gA = 0 when
-        # B = 0), the stored warm-start vector is zero. Power-iter preserves
-        # zero across iterations, so the next call would return σ = 0 even when
-        # M is nonzero — and downstream divisions by sigma+eps explode u_A and
-        # collapse dA. Per-batch fallback to deterministic init when warm-start
-        # is degenerate.
-        v_norm = v_init.norm(dim=-1, keepdim=True)
-        degenerate = v_norm <= eps
-        v = torch.where(degenerate, v_fallback, v_init)
-    v = v / (v.norm(dim=-1, keepdim=True) + eps)
-    if smaller_m:
-        for _ in range(n_iters):
-            tmp = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1)
-            v = (Mf @ tmp.unsqueeze(-1)).squeeze(-1)
-            v = v / (v.norm(dim=-1, keepdim=True) + eps)
-        sigma = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
-    else:
-        for _ in range(n_iters):
-            tmp = (Mf @ v.unsqueeze(-1)).squeeze(-1)
-            v = (Mf.transpose(-2, -1) @ tmp.unsqueeze(-1)).squeeze(-1)
-            v = v / (v.norm(dim=-1, keepdim=True) + eps)
-        sigma = (Mf @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
-    return sigma, v
-
-
-def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12,
-                             n_iters=16, k_sub=5):
-    """σ_max(XY) for X,Y with G_outer=X^T X, G_inner=Y Y^T.
-
-    Krylov-accelerated symmetric power-iter on M = L^T G_outer L (PSD,
-    L = chol(G_inner + ε I)). Power-iter generates a sequence; the last
-    k_sub vectors are QR-orthonormalized and we solve a small
-    (k_sub × k_sub) eigvalsh on Q^T M Q for the top eigenvalue =
-    σ_max²(XY). Su Jianlin's Krylov idea
-    (kexue.fm/archives/11736 §2): the last few power-iter vectors span a
-    near-optimal Krylov subspace; projection onto it gives accuracy
-    several orders of magnitude tighter than the final iterate alone.
-
-    Verified <1e-4 rel-err on batched (n_pairs=112, r=256) structured
-    inputs at n_iters=16, k_sub=5. Replaces an earlier exact
-    `eigvalsh(M)` whose cuSOLVER batched fallback at r ≥ 64 launched
-    per-matrix syevd calls (~10-20 ms each × 112 pairs = 1-2 s per
-    call; 3 calls/step in chord-direction → 4-6 s/step at r=256).
-    Krylov uses only batched ops: 1 chol + 2 matmuls (setup) + n_iters
-    × 2 matmuls (iter) + 1 QR + 1 small eigvalsh on (..., k_sub, k_sub).
-
-    Function name retained for call-site compatibility; behavior is now
-    "approximate σ_max via Krylov" (very tight, but not bit-exact). The
-    `eps` arg kept for back-compat (still used to damp Cholesky).
-
-    Supports leading batch dims on both inputs.
-    """
-    last = G_inner.shape[-1]
-    diag = G_inner.diagonal(dim1=-2, dim2=-1).abs().mean(dim=-1, keepdim=True)
-    diag_load = (eps * diag.clamp_min(1e-30)).unsqueeze(-1)
-    I_r = torch.eye(last, dtype=G_inner.dtype, device=G_inner.device)
-    damped = G_inner + diag_load * I_r
-    Lc = torch.linalg.cholesky(damped)
-    M = Lc.transpose(-1, -2) @ G_outer @ Lc          # (..., r, r) sym PSD
-    batch_shape = M.shape[:-2]
-    r = M.shape[-1]
-    k_eff = min(k_sub, r)
-    v = torch.ones(*batch_shape, r, device=M.device, dtype=M.dtype)
-    v = v / (v.norm(dim=-1, keepdim=True) + 1e-30)
-    history = []
-    for it in range(n_iters):
-        v = (M @ v.unsqueeze(-1)).squeeze(-1)
-        v = v / (v.norm(dim=-1, keepdim=True) + 1e-30)
-        if it >= n_iters - k_eff:
-            history.append(v)
-    V = torch.stack(history, dim=-1)                 # (..., r, k)
-    Q, _ = torch.linalg.qr(V, mode='reduced')        # (..., r, k)
-    M_proj = Q.transpose(-1, -2) @ M @ Q             # (..., k, k)
-    sigma_sq = torch.linalg.eigvalsh(M_proj).max(dim=-1).values
-    return sigma_sq.clamp_min(0.0).sqrt()
+# σ_max primitives live in lora_playground.spectral now. These names are
+# re-exported here as thin aliases so the hundreds of call sites below
+# don't churn. See `docs/notes/sigma_max_estimation.md` for the design.
+#
+# IMPORTANT: keep `_sigma_max_chol_eigvalsh` pointing at `sigma_max_krylov_chol`
+# even though the default eps changed (1e-12 → 1e-6) — call sites do not
+# pass `eps` explicitly, so they pick up the new default. The old 1e-12 was
+# below the bf16-accumulation noise floor and caused Cholesky failure on h100;
+# the new default is principled (~1 decade above the noise floor).
+from .spectral import (
+    sigma_max_power_iter as _sigma_max_power_iter,
+    sigma_max_power_iter_batched as _sigma_max_power_iter_batched,
+    sigma_max_krylov_chol as _sigma_max_chol_eigvalsh,
+    sigma_max_power_iter_nonsym as _sigma_max_power_iter_nonsym,
+)
 
 
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
@@ -3291,9 +3142,17 @@ class AdamPolarProductLoRA(Optimizer):
                                 Q_dir = geoB_f / op_geoB              # (N, m, r)
                                 PPt_b = P_dir @ P_dir.transpose(-1, -2)
                                 QtQ_b = Q_dir.transpose(-1, -2) @ Q_dir
-                                sigma_BP_b = _sigma_max_chol_eigvalsh(GBB_s, PPt_b)
-                                sigma_QA_b = _sigma_max_chol_eigvalsh(GAA_s, QtQ_b)
-                                sigma_QP_b = _sigma_max_chol_eigvalsh(PPt_b, QtQ_b)
+                                # Use power-iter on N = G_outer·G_inner (r×r non-symmetric,
+                                # real-positive spectrum). Same per-iter cost as Krylov-chol
+                                # but no Cholesky → no chol-fails-when-rank-deficient bug
+                                # that crashed chord-direction on h100. See
+                                # `docs/notes/sigma_max_estimation.md` and bench data:
+                                # accuracy matches krylov-chol within 1e-3, timing
+                                # within ~5% on RTX A6000 across all regimes including
+                                # rank-deficient (where krylov-chol crashes outright).
+                                sigma_BP_b, _ = _sigma_max_power_iter_nonsym(GBB_s, PPt_b)
+                                sigma_QA_b, _ = _sigma_max_power_iter_nonsym(GAA_s, QtQ_b)
+                                sigma_QP_b, _ = _sigma_max_power_iter_nonsym(PPt_b, QtQ_b)
                                 a_b = (sigma_BP_b + sigma_QA_b).clamp_min(1e-30)
                                 b_b = sigma_QP_b
                                 # Per-pair quadratic: pick lr/a where b≈0,
@@ -3650,9 +3509,20 @@ class AdamPolarProductLoRA(Optimizer):
                         Q_dir = (geoB_f / op_geoB).detach()           # (m, r), op-norm 1
                         PPt = P_dir @ P_dir.transpose(-1, -2)         # (r, r) sym PSD
                         QtQ = Q_dir.transpose(-1, -2) @ Q_dir         # (r, r) sym PSD
-                        sigma_BP = _sigma_max_chol_eigvalsh(GBB_t, PPt)
-                        sigma_QA = _sigma_max_chol_eigvalsh(GAA_t, QtQ)
-                        sigma_QP = _sigma_max_chol_eigvalsh(PPt, QtQ)
+                        # Per-pair chord-direction σ_max via power-iter on
+                        # N = G_outer · G_inner. No Cholesky; see _step_batched
+                        # callsite above and `docs/notes/sigma_max_estimation.md`.
+                        # Inputs are 2-D (r, r) here; add leading batch dim of 1.
+                        _g_outer_BP = GBB_t.unsqueeze(0) if GBB_t.dim() == 2 else GBB_t
+                        _g_inner_PP = PPt.unsqueeze(0) if PPt.dim() == 2 else PPt
+                        _g_outer_QA = GAA_t.unsqueeze(0) if GAA_t.dim() == 2 else GAA_t
+                        _g_inner_QQ = QtQ.unsqueeze(0) if QtQ.dim() == 2 else QtQ
+                        sigma_BP, _ = _sigma_max_power_iter_nonsym(_g_outer_BP, _g_inner_PP)
+                        sigma_QA, _ = _sigma_max_power_iter_nonsym(_g_outer_QA, _g_inner_QQ)
+                        sigma_QP, _ = _sigma_max_power_iter_nonsym(_g_inner_PP, _g_inner_QQ)
+                        sigma_BP = sigma_BP.squeeze(0) if sigma_BP.dim() else sigma_BP
+                        sigma_QA = sigma_QA.squeeze(0) if sigma_QA.dim() else sigma_QA
+                        sigma_QP = sigma_QP.squeeze(0) if sigma_QP.dim() else sigma_QP
                         a_dir = sigma_BP + sigma_QA
                         b_dir = sigma_QP
                         if float(b_dir) > 1e-30:
