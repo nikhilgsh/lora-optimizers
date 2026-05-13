@@ -3300,6 +3300,10 @@ class AdamPolarProductLoRA(Optimizer):
                 raise ValueError("Gradients are required for AdamPolarProductLoRA update.")
             state = self.pair_state[i]
             state['step'] += 1
+            # Diagnostics-only sentinel; chord-tight / chord-direction assign
+            # s_AB but other magnitude rules don't. _emit_basic_diagnostics
+            # takes it as a kwarg unconditionally.
+            s_AB = None
 
             gA = A.grad.float()
             gB = B.grad.float()
@@ -3585,6 +3589,9 @@ class AdamPolarProductLoRA(Optimizer):
                     geo_A=geo_A, geo_B=geo_B,
                     sigma_A_t=sigma_A_t, sigma_B_t=sigma_B_t,
                     op_geoA=op_geoA, op_geoB=op_geoB,
+                    uA_norm=uA_norm, uB_norm=uB_norm,
+                    gA_norm=gA_norm, gB_norm=gB_norm,
+                    picard_coeff_t=picard_coeff_t,
                     rho=rho, s_AB=s_AB, lr=lr,
                 )
                 diag_records.append(rec)
@@ -3606,6 +3613,7 @@ class AdamPolarProductLoRA(Optimizer):
         self, *, state, A, B, A_f, B_f, u_A, u_B, dA, dB, gA, gB,
         SA_half_inv, SB_half_inv, geo_A, geo_B,
         sigma_A_t, sigma_B_t, op_geoA, op_geoB,
+        uA_norm, uB_norm, gA_norm, gB_norm, picard_coeff_t,
         rho, s_AB, lr,
     ):
         """Basic-tier diagnostics (default ON, ~2% wall). Returns the

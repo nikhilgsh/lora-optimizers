@@ -298,3 +298,107 @@ def test_batched_path_disabled_when_exotic_flags():
         model = FakeLoRAModel(base_specs)
         opt = AdamPolarProductLoRA(model, **{**base, **kw})
         assert opt._batched_path_eligible() is False, f"failed to disable for {kw}"
+
+
+# --------------------------------------------------------------------------- #
+# Phase B (RED until Phase C): basic-diag record equivalence.                 #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("magnitude_rule", [
+    "adam_frobenius", "spectral_chord", "spectral_chord_tight",
+])
+def test_diag_records_match_per_pair_vs_batched(magnitude_rule, monkeypatch):
+    """When log_basic_diagnostics is on, the batched and per-pair paths must
+    populate the same per-pair `rec` dict at every probe step. Currently the
+    batched path does not emit basic-diag records; this test enforces the
+    contract that Phase C wires up.
+
+    Setup: two identical optimizers, one forced onto the batched path (even
+    on probe steps, overriding the case-(a) eligibility gate), one forced
+    onto the per-pair path. Run a few steps with `diagnostics_every=2` so
+    step 2 is a probe step; intercept `_emit_optim_diagnostics` to capture
+    the per-pair record lists. Compare keys + values within fp32 tolerance.
+    """
+    import lora_playground.optim as optim_mod
+    torch.manual_seed(0)
+    group_specs = [(8, 32, 32)] * 2 + [(8, 32, 64)] * 1
+
+    model_a = FakeLoRAModel(group_specs)  # batched side
+    model_b = copy.deepcopy(model_a)      # per-pair side
+
+    opt_args = dict(_opt_args(1, 1, magnitude_rule=magnitude_rule))
+    opt_args["log_basic_diagnostics"] = True
+    opt_args["diagnostics_every"] = 2
+
+    opt_a = AdamPolarProductLoRA(model_a, **opt_args)
+    opt_b = AdamPolarProductLoRA(model_b, **opt_args)
+
+    # Path-selection override (force per-optimizer path independent of case-(a)).
+    object.__setattr__(opt_a, "_force_batched_for_test", True)
+    object.__setattr__(opt_b, "_force_per_pair", True)
+    original = AdamPolarProductLoRA._batched_path_eligible
+
+    def _gated(self, is_probe_step=False):
+        if getattr(self, "_force_per_pair", False):
+            return False
+        if getattr(self, "_force_batched_for_test", False):
+            return True
+        return original(self)
+    AdamPolarProductLoRA._batched_path_eligible = _gated
+
+    # Capture per-pair records as they are emitted.
+    captures = {"a": [], "b": []}
+    current = {"opt": None}
+    orig_emit = optim_mod._emit_optim_diagnostics
+
+    def _capture_emit(step_count, per_pair_records):
+        tag = current["opt"]
+        if tag is not None:
+            captures[tag].append((int(step_count), [dict(r) for r in per_pair_records]))
+        return orig_emit(step_count, per_pair_records)
+    monkeypatch.setattr(optim_mod, "_emit_optim_diagnostics", _capture_emit)
+
+    def get_A(model, idx):
+        return model.adapters[idx].lora_A["default"].weight
+    def get_B(model, idx):
+        return model.adapters[idx].lora_B["default"].weight
+
+    try:
+        for step_idx in range(3):
+            torch.manual_seed(200 + step_idx)
+            grads_A = [torch.randn_like(get_A(model_a, j)) for j in range(len(model_a.adapters))]
+            grads_B = [torch.randn_like(get_B(model_a, j)) for j in range(len(model_a.adapters))]
+            for j in range(len(model_a.adapters)):
+                get_A(model_a, j).grad = grads_A[j].clone()
+                get_B(model_a, j).grad = grads_B[j].clone()
+                get_A(model_b, j).grad = grads_A[j].clone()
+                get_B(model_b, j).grad = grads_B[j].clone()
+            current["opt"] = "a"; opt_a.step()
+            current["opt"] = "b"; opt_b.step()
+    finally:
+        AdamPolarProductLoRA._batched_path_eligible = original
+
+    # Both should have emitted on probe step(s). With diagnostics_every=2 and
+    # 3 steps, exactly 1 probe (step 2).
+    assert len(captures["a"]) == len(captures["b"]) > 0, (
+        f"emission counts diverge: batched={len(captures['a'])} "
+        f"per-pair={len(captures['b'])}")
+
+    for (step_a, recs_a), (step_b, recs_b) in zip(captures["a"], captures["b"]):
+        assert step_a == step_b
+        assert len(recs_a) == len(recs_b)
+        for i, (ra, rb) in enumerate(zip(recs_a, recs_b)):
+            assert set(ra.keys()) == set(rb.keys()), (
+                f"step {step_a} pair {i}: key sets differ "
+                f"(only-batched={set(ra)-set(rb)}, only-per-pair={set(rb)-set(ra)})")
+            for k in ra:
+                va, vb = ra[k], rb[k]
+                if not isinstance(va, float) and not isinstance(va, int):
+                    continue
+                if va != va and vb != vb:  # both NaN
+                    continue
+                rel = abs(va - vb) / max(abs(va), abs(vb), 1e-12)
+                # Spectral fields admit slightly higher noise.
+                tol = 1e-4 if any(t in k for t in ("rank", "stable", "cond", "sigma", "powiter")) else 1e-5
+                assert rel < tol or abs(va - vb) < 1e-7, (
+                    f"step {step_a} pair {i} key {k!r}: "
+                    f"batched={va!r} per_pair={vb!r} rel={rel:.2e}")
