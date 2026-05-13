@@ -3085,8 +3085,15 @@ class AdamPolarProductLoRA(Optimizer):
                     # at n_iters=8 is the original implementation
                     # (replaced by eigvalsh in 57a932b for accuracy; the
                     # actual issue was cold-start 3 iters being too few).
-                    sigma_XA_b, _ = _sigma_max_power_iter_batched(X_A_pre, n_iters=8)
-                    sigma_XB_b, _ = _sigma_max_power_iter_batched(X_B_pre, n_iters=8)
+                    # Warm-start from prior step's top singular vector;
+                    # 4 iters suffice once warm (vs 8 cold). v_init=None
+                    # on first call → helper uses deterministic M @ ones.
+                    sigma_XA_b, v_XA = _sigma_max_power_iter_batched(
+                        X_A_pre, v_init=gs.get('v_sigma_XA'), n_iters=8)
+                    sigma_XB_b, v_XB = _sigma_max_power_iter_batched(
+                        X_B_pre, v_init=gs.get('v_sigma_XB'), n_iters=8)
+                    gs['v_sigma_XA'] = v_XA
+                    gs['v_sigma_XB'] = v_XB
                     sigma_XA = sigma_XA_b + 1e-30
                     sigma_XB = sigma_XB_b + 1e-30
                     u_A = u_A / sigma_XA.unsqueeze(-1).unsqueeze(-1)
@@ -3116,8 +3123,12 @@ class AdamPolarProductLoRA(Optimizer):
             if self.magnitude_rule in ("spectral_chord",
                                        "spectral_chord_tight",
                                        "spectral_chord_direction"):
-                sigma_A, _ = _sigma_max_power_iter_batched(A_f, n_iters=8)
-                sigma_B, _ = _sigma_max_power_iter_batched(B_f, n_iters=8)
+                sigma_A, v_A = _sigma_max_power_iter_batched(
+                    A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
+                sigma_B, v_B = _sigma_max_power_iter_batched(
+                    B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
+                gs['v_sigma_A'] = v_A
+                gs['v_sigma_B'] = v_B
                 if self.magnitude_rule == "spectral_chord":
                     rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
                 elif self.magnitude_rule == "spectral_chord_tight":
@@ -3237,8 +3248,12 @@ class AdamPolarProductLoRA(Optimizer):
                             # σ_max via 8-iter batched power-iter; replaces
                             # eigvalsh on (n_pairs, r, r) Gram which has
                             # ~1.5 s/call cuSOLVER overhead at r=256.
-                            op_geoA_b, _ = _sigma_max_power_iter_batched(geoA_f, n_iters=8)
-                            op_geoB_b, _ = _sigma_max_power_iter_batched(geoB_f, n_iters=8)
+                            op_geoA_b, v_geoA = _sigma_max_power_iter_batched(
+                                geoA_f, v_init=gs.get('v_op_geoA'), n_iters=8)
+                            op_geoB_b, v_geoB = _sigma_max_power_iter_batched(
+                                geoB_f, v_init=gs.get('v_op_geoB'), n_iters=8)
+                            gs['v_op_geoA'] = v_geoA
+                            gs['v_op_geoB'] = v_geoB
                             op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
                             op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
                             if self.magnitude_rule == "spectral_chord_direction":
