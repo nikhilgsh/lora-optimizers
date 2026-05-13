@@ -333,6 +333,330 @@ def parse_flag(command: str, flag: str) -> str | None:
     return None
 
 
+def _coerce_value(v: str):
+    """String → int/float/bool when possible; otherwise leave as str.
+    Used by parse_cli_command and CLI backfill so analysis code can filter
+    on numeric values without per-flag handling."""
+    if v in ("True", "true"): return True
+    if v in ("False", "false"): return False
+    if v in ("None", "none", "null"): return None
+    try: return int(v)
+    except ValueError: pass
+    try: return float(v)
+    except ValueError: pass
+    return v
+
+
+def parse_cli_command(command: str) -> dict:
+    """Parse a logged ``--flag value`` (and ``--bool-flag``) command into a dict.
+
+    Generic backfill source for the loader: turns the full launcher command
+    line into ``{flag_name: typed_value}``. Boolean flags (``store_true`` /
+    ``store_false`` argparse actions) become ``True`` when present. Values are
+    coerced via :func:`_coerce_value` so numeric flags can be filtered on.
+
+    This is the *systemic* alternative to per-flag setdefault clauses in
+    ``_read_run``: every new CLI flag becomes a first-class cfg field
+    automatically, no plot_utils patch needed.
+    """
+    parts = shlex.split(command)
+    out: dict = {}
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        if tok.startswith("--"):
+            key = tok[2:]
+            nxt = parts[i + 1] if i + 1 < len(parts) else None
+            if nxt is None or nxt.startswith("--"):
+                # Bare boolean flag (store_true) — no value follows
+                out[key] = True
+                i += 1
+            else:
+                out[key] = _coerce_value(nxt)
+                i += 2
+        else:
+            i += 1
+    return out
+
+
+class LabelCollisionError(ValueError):
+    """Raised when distinct series_ids share one display label.
+
+    The plotting layer averages within a display-label bucket as if all
+    runs were seeds. When two distinct series_ids land in one bucket, the
+    average silently mixes algorithms — exactly the failure mode this
+    contract exists to forbid. The error message names the differing
+    cfg field(s); the fix is to either extend the group_key/display_label
+    function to discriminate, or (rarely) add the field to
+    `manifest.SERIES_AXIS_FIELDS` if it's truly a per-series axis.
+    """
+
+
+def _hashable(v):
+    """Recursive conversion to a hashable form (mirrors loader._hashable).
+    Dicts → frozenset of items; lists → tuples; everything else → as-is.
+    """
+    if isinstance(v, dict):
+        return frozenset((k, _hashable(vv)) for k, vv in v.items())
+    if isinstance(v, list):
+        return tuple(_hashable(x) for x in v)
+    return v
+
+
+def series_id(cfg: dict, *, axis_fields: frozenset[str] | None = None) -> frozenset:
+    """Mechanical series identity = cfg minus SERIES_AXIS_FIELDS, with
+    ``None``-valued fields treated as absent.
+
+    Two cfgs with the same series_id are seeds / lr-grid points / horizon
+    extensions of the same algorithm at the same model config and may be
+    averaged together. Distinct series_ids cannot be averaged regardless
+    of what a display-label function returns — see
+    `assert_label_discriminates`.
+
+    ``None`` is treated identically to "field not present": an older run
+    whose schema didn't include flag X is informationally equivalent to a
+    newer run with ``X=None`` (both fall through to argparse default at
+    runtime). Treating them as distinct would split every old-vs-new
+    cfg pair purely on schema growth. Explicit non-None values (``False``,
+    ``0``, ``0.0``, ``""``) ARE series-defining.
+    """
+    if axis_fields is None:
+        from lora_playground.manifest import SERIES_AXIS_FIELDS
+        axis_fields = SERIES_AXIS_FIELDS
+    # Also exclude:
+    #   - underscore-prefixed keys (loader enrichment namespaces:
+    #     `_derived`, `_cli_args`, `_optim_steps`, etc.) — these mirror
+    #     source-of-truth scalar fields and would double-count.
+    #   - dict-valued composites like `optimizer_config` (loader backfill
+    #     that mirrors a subset of scalar fields; older runs without it
+    #     get backfilled and may not round-trip exactly).
+    # Scalar top-level cfg fields ARE the source of truth.
+    return frozenset(
+        (k, _hashable(v)) for k, v in cfg.items()
+        if k not in axis_fields
+        and not k.startswith("_")
+        and not isinstance(v, dict)
+        and v is not None
+    )
+
+
+def _label_collision_report(runs, group_key_fn, *,
+                            bucket_keys: tuple[str, ...] = ("lora_r", "lr"),
+                            axis_fields: frozenset[str] | None = None,
+                            ) -> list[dict]:
+    """For every (label, *bucket_keys) bucket, return entries where the
+    runs split into >1 distinct series_id. Each entry names the bucket,
+    the differing cfg field(s), and the per-run values of those fields.
+    """
+    if axis_fields is None:
+        from lora_playground.manifest import SERIES_AXIS_FIELDS
+        axis_fields = SERIES_AXIS_FIELDS
+    from collections import defaultdict
+    buckets: dict[tuple, list[dict]] = defaultdict(list)
+    for cfg, _evs in runs:
+        gk = group_key_fn(cfg)
+        bk = tuple(cfg.get(k) for k in bucket_keys)
+        buckets[(gk, bk)].append(cfg)
+
+    reports: list[dict] = []
+    for (label, bucket_vals), cfgs in buckets.items():
+        if len(cfgs) < 2:
+            continue
+        ids = {series_id(c, axis_fields=axis_fields) for c in cfgs}
+        if len(ids) == 1:
+            continue
+        # Identify the specific cfg fields that disagree across these runs.
+        # Mirror series_id's exclusion rule so the reported diff is the
+        # actual source-of-truth difference (not a derived/enriched field).
+        all_keys: set[str] = set()
+        for c in cfgs:
+            all_keys.update(k for k, v in c.items()
+                            if k not in axis_fields
+                            and not k.startswith("_")
+                            and not isinstance(v, dict))
+        differing: dict[str, set] = {}
+        for k in all_keys:
+            vals = set()
+            for c in cfgs:
+                v = c.get(k)
+                if v is None:
+                    vals.add(None)
+                    continue
+                try:
+                    vals.add(_hashable(v))
+                except TypeError:
+                    vals.add(repr(v))
+            if len(vals) > 1:
+                differing[k] = vals
+        reports.append({
+            "label": label,
+            "bucket": dict(zip(bucket_keys, bucket_vals)),
+            "n_runs": len(cfgs),
+            "n_distinct_series": len(ids),
+            "differing_fields": differing,
+        })
+    return reports
+
+
+def assert_label_discriminates(runs, group_key_fn, *,
+                               bucket_keys: tuple[str, ...] = ("lora_r", "lr"),
+                               axis_fields: frozenset[str] | None = None,
+                               ) -> None:
+    """Hard-fail if any (label, *bucket_keys) bucket contains >1 series_id.
+
+    Wire into every plot entry point that averages within a label bucket
+    (`standard_sweep_figure`, `plot_eta_vs_final`, `_multi_seed_curve`).
+    The failure message names the bucket and the cfg fields that disagree
+    — the fix is a one-line extension of the display-label function (or,
+    rarely, an addition to `manifest.SERIES_AXIS_FIELDS`).
+    """
+    reports = _label_collision_report(runs, group_key_fn,
+                                      bucket_keys=bucket_keys,
+                                      axis_fields=axis_fields)
+    if not reports:
+        return
+    lines = []
+    for r in reports:
+        diffs = ", ".join(
+            f"{k}={sorted(v, key=repr)}" for k, v in r["differing_fields"].items()
+        )
+        lines.append(
+            f"  label={r['label']!r} bucket={r['bucket']} "
+            f"n_runs={r['n_runs']} → {r['n_distinct_series']} distinct series_ids; "
+            f"differing fields: {diffs}"
+        )
+    raise LabelCollisionError(
+        "display label does not discriminate distinct series_ids; "
+        "{} collision(s):\n{}\n"
+        "Fix: extend the group_key / display-label function to discriminate "
+        "on one of the listed fields, OR add the field to "
+        "`lora_playground.manifest.SERIES_AXIS_FIELDS` if it is a true "
+        "per-series axis (seed-like)."
+        .format(len(reports), "\n".join(lines))
+    )
+
+
+def _baseline_values(runs, *, allowed_to_vary: set) -> dict:
+    """Build {field: baseline_value} where baseline_value is the train.py
+    argparse default. Only include fields that (a) vary across ``runs``
+    AND (b) have their argparse default among the observed values.
+
+    Skips fields that are constant across the run set (those are
+    project-wide baselines, not experimental axes), fields without an
+    argparse default (e.g. derived), and ones in ``allowed_to_vary``.
+
+    Why argparse default over modal:
+      - modal is fragile when an investigation's variant data takes >50%
+        of the cell (the variant becomes "modal" → baseline runs get
+        dropped instead of variants).
+      - argparse default is stable: it's the canonical "ran with the
+        default knob" value. Any cell asking "show me the default-knob
+        runs" gets the same answer regardless of how many variant runs
+        happen to be loaded alongside.
+    """
+    from collections import defaultdict
+    from lora_playground.loader import _argparse_defaults
+    defaults = _argparse_defaults()
+    observed: dict = defaultdict(set)
+    for cfg, _ in runs:
+        for k, v in cfg.items():
+            if k in allowed_to_vary or k.startswith("_") or isinstance(v, dict):
+                continue
+            observed[k].add(_hashable(v))
+    baseline: dict = {}
+    for k, vals in observed.items():
+        if len(vals) <= 1:
+            continue
+        if k not in defaults:
+            continue
+        default_val = _hashable(defaults[k])
+        if default_val in vals:
+            baseline[k] = default_val
+    return baseline
+
+
+def filter_baseline(runs, *, varying: tuple[str, ...] = ()):
+    """Keep runs that match the argparse-default value on every scalar
+    cfg field that VARIES WITHIN their ``varying``-tuple group (and has
+    its default observed in the data), excluding fields in ``varying``
+    and in ``manifest.SERIES_AXIS_FIELDS``.
+
+    ``varying`` is the analysis cell's INTENDED axis of variation — fields
+    whose differences the cell's display_label discriminates on (e.g.
+    ``('optimizer', 'effective_picard_iters')`` for an optimizer-x-k
+    leaderboard). Within each (varying-tuple) group, other fields that
+    take >1 value are research variants from a different investigation
+    and get held to the argparse default.
+
+    Per-group (vs global) is essential for co-varying fields: e.g.
+    ``polar_norm_dir`` is constant within each optimizer's runs but
+    differs across optimizers. A global pass would hold it to the
+    argparse default (one optimizer wins, others are excluded). The
+    per-group pass sees no variation within an optimizer and doesn't
+    filter on it.
+
+    Fields constant within a group don't filter anything in that group
+    (single value = no choice to make).
+
+    Pairs with :func:`assert_label_discriminates`: that catches
+    *under-discrimination* (label collapses distinct series_ids); this
+    one catches *over-inclusion* (run set contains variants from a
+    different investigation). Together they bracket the cell's scope.
+
+    Mirror for variant-focused cells: :func:`filter_variants`.
+
+    Future-proof: a new train.py flag added later that some runs turn on
+    automatically filters to its argparse default. Cells that should
+    include the variant list the field in ``varying``; cells that
+    shouldn't include it stay clean with no edit.
+    """
+    from collections import defaultdict
+    from lora_playground.manifest import SERIES_AXIS_FIELDS
+    allowed = set(varying) | SERIES_AXIS_FIELDS
+    groups: dict = defaultdict(list)
+    for cfg, evs in runs:
+        gkey = tuple(_hashable(cfg.get(v)) for v in varying)
+        groups[gkey].append((cfg, evs))
+    kept = []
+    for grp in groups.values():
+        baseline = _baseline_values(grp, allowed_to_vary=allowed)
+        for cfg, evs in grp:
+            if all(_hashable(cfg.get(k)) == expected
+                   for k, expected in baseline.items()):
+                kept.append((cfg, evs))
+    return kept
+
+
+def filter_variants(runs, *, on: tuple[str, ...]):
+    """Mirror of :func:`filter_baseline`. Keep runs where AT LEAST ONE of
+    the fields in ``on`` is off its argparse default. Use in dedicated
+    variant-investigation cells (ε_rel sweep, Init[AB] focused cell) so
+    the run set is exactly "runs that explored this variant axis."
+    """
+    from lora_playground.loader import _argparse_defaults
+    defaults = _argparse_defaults()
+    kept = []
+    for cfg, evs in runs:
+        if any(k in defaults and _hashable(cfg.get(k)) != _hashable(defaults[k])
+               for k in on):
+            kept.append((cfg, evs))
+    return kept
+
+
+def detect_group_collisions(runs, group_key_fn, *,
+                            bucket_keys: tuple[str, ...] = ("lora_r", "lr"),
+                            axis_fields: frozenset[str] | None = None,
+                            ) -> list[dict]:
+    """Non-raising sibling of `assert_label_discriminates`. Returns the
+    same per-bucket collision reports for audit-cell printouts. Most
+    callers should prefer the raising version — silent reports are how
+    label/series drift accumulates.
+    """
+    return _label_collision_report(runs, group_key_fn,
+                                   bucket_keys=bucket_keys,
+                                   axis_fields=axis_fields)
+
+
 _LOAD_RUN_CACHE: dict[str, tuple[tuple[int, int], dict | None, list[dict]]] = {}
 
 
@@ -396,6 +720,20 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         if config.get("lora_init_b") is None:
             cli_init = parse_flag(cmd, "--lora_init_b")
             config["lora_init_b"] = cli_init or init_override_mode or "zero"
+
+        # Generic CLI backfill — every flag in the launched command line
+        # becomes a first-class cfg field via setdefault. Source order:
+        #   1. explicit cfg event keys (newest, typed correctly by train.py)
+        #   2. `_cli_args` blanket dump in the config event (typed)
+        #   3. parsed `command` string (string-coerced fallback)
+        # Eliminates per-flag patches whenever a new CLI flag is added.
+        cli_blob = config.get("_cli_args")
+        if isinstance(cli_blob, dict):
+            for k, v in cli_blob.items():
+                config.setdefault(k, v)
+        if cmd:
+            for k, v in parse_cli_command(cmd).items():
+                config.setdefault(k, v)
         config["_optim_steps"] = optim_steps
     if sig is not None:
         _LOAD_RUN_CACHE[path_str] = (sig, config, evals)
@@ -449,11 +787,21 @@ def has_runs(group: str, logs_root: str = "../logs") -> bool:
 RUNTIME_FIELDS: frozenset[str] = frozenset({
     "git_commit", "command", "log_group",
     "wandb_project", "wandb_run_name",
-    "device", "tf32",
-    "log_basic_diagnostics", "optim_diagnostics_every",
-    "profile_steps",
+    "device", "tf32", "no_tf32",
+    # Diagnostic toggles (none affect optimizer math). Both the current
+    # names and legacy aliases from before the 2026-05-12 diagnostics
+    # refactor are listed so old/new schemas don't split series_id.
+    "log_basic_diagnostics", "log_heavy_diagnostics",
+    "log_optim_diagnostics", "no-log_optim_diagnostics",
+    "optim_diagnostics_every",
+    "profile_steps", "profile_dir",
     "_optim_steps",
     "train_file", "eval_file",
+    # CLI override flags whose canonical resolved value is promoted by
+    # `_enrich_cfg` to a top-level scalar (e.g. `effective_picard_iters`).
+    # The raw override is then redundant — the effective field is the
+    # source of truth for both loader dedup and series_id.
+    "picard_iters_override",
 })
 
 # Backward-compatible alias.
@@ -474,18 +822,33 @@ def _hidden_axis_diffs(cfg_a: dict, cfg_b: dict) -> list[tuple]:
     values surface as the literal string ``"<missing>"``.
     """
     _MISSING = object()
-    keys = (set(cfg_a) | set(cfg_b)) - _HIDDEN_AXIS_RUNTIME_FIELDS
+    # Mirror `_denylist_key` / `series_id` exclusion rules: ignore runtime
+    # metadata, underscore-prefixed enrichment namespaces, and dict-valued
+    # derived composites. Treat None and absent as equivalent (consistent
+    # with the loader's pre-dedup backfill of argparse defaults).
+    candidate_keys = set(cfg_a) | set(cfg_b)
+    keys = {
+        k for k in candidate_keys
+        if k not in _HIDDEN_AXIS_RUNTIME_FIELDS
+        and not k.startswith("_")
+        and not isinstance(cfg_a.get(k), dict)
+        and not isinstance(cfg_b.get(k), dict)
+    }
     diffs = []
     for k in sorted(keys):
         va = cfg_a.get(k, _MISSING)
         vb = cfg_b.get(k, _MISSING)
-        if va is _MISSING and vb is _MISSING:
+        if va is _MISSING:
+            va = None
+        if vb is _MISSING:
+            vb = None
+        if va is None and vb is None:
             continue
         if va != vb:
             diffs.append((
                 k,
-                "<missing>" if va is _MISSING else va,
-                "<missing>" if vb is _MISSING else vb,
+                "<missing>" if va is None else va,
+                "<missing>" if vb is None else vb,
             ))
     return diffs
 
@@ -675,6 +1038,7 @@ def _multi_seed_curve(reference_runs, optimizer: str, best_lr: float):
     per_step: dict[int, list[float]] = defaultdict(list)
     seeds_at_lr: set = set()
     n_seeds_at_lr = 0
+    averaged_cfgs: list[dict] = []
     for c, evs in reference_runs:
         if c.get("optimizer") != optimizer:
             continue
@@ -685,8 +1049,23 @@ def _multi_seed_curve(reference_runs, optimizer: str, best_lr: float):
             continue
         seeds_at_lr.add(seed)
         n_seeds_at_lr += 1
+        averaged_cfgs.append(c)
         for ev in evs:
             per_step[int(ev["step"])].append(float(ev["eval_loss"]))
+
+    # Series-id contract (defensive): the runs we're about to average must
+    # all share the same series_id, otherwise we'd silently mix distinct
+    # algorithms across "seeds." Reaches here only when the caller bypassed
+    # the entry-point assertion (standard_sweep_figure / plot_eta_vs_final).
+    if len(averaged_cfgs) > 1:
+        ids = {series_id(c) for c in averaged_cfgs}
+        if len(ids) > 1:
+            raise LabelCollisionError(
+                f"_multi_seed_curve({optimizer=!r}, {best_lr=}) would "
+                f"average across {len(ids)} distinct series_ids. The caller "
+                f"must filter reference_runs to a single algorithm + model "
+                f"config before requesting seed-aggregated curves."
+            )
     # Keep only steps present in every seed
     common_steps = sorted(s for s, ys in per_step.items() if len(ys) == n_seeds_at_lr)
     mean_evs = []
@@ -880,7 +1259,8 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                       marker_map: dict | None = None,
                       linestyle_map: dict | None = None,
                       normalize_x_to_optimum: bool = False,
-                      diverged_runs: list | None = None) -> None:
+                      diverged_runs: list | None = None,
+                      allow_label_collision: bool = False) -> None:
     """Left panel: η vs final eval loss, one line per group key.
 
     `ref_eta_sweeps`: list of (label, points, color, ls, lw, marker) tuples
@@ -896,6 +1276,12 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
     adamw_group_keys = adamw_group_keys or set()
     marker_map = marker_map or {}
     linestyle_map = linestyle_map or {}
+
+    # Defense in depth: enforce the series-id contract here too, in case
+    # this is called outside standard_sweep_figure. Idempotent when the
+    # caller already asserted.
+    if not allow_label_collision and runs:
+        assert_label_discriminates(runs, group_key_fn)
 
     def _maybe_norm(xs, ys):
         """If normalize_x_to_optimum: divide xs by argmin-of-ys's x (= η⋆ for
@@ -1245,6 +1631,7 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
                           extra_baselines: Iterable[tuple[str, str]] = (),
                           baseline_optimizer: str = "adamw",
                           same_value_axes: tuple = ("lora_plus_multiplier",),
+                          allow_label_collision: bool = False,
                           **kwargs):
     """High-level uniform sweep figure — every section's single entry point.
 
@@ -1297,9 +1684,17 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
                 extra_baselines=extra_baselines,
                 baseline_optimizer=baseline_optimizer,
                 same_value_axes=same_value_axes,
+                allow_label_collision=allow_label_collision,
                 **kwargs,
             ))
         return results
+
+    # Series-id discrimination contract: every (label, lora_r, lr) bucket
+    # must contain exactly one series_id. Otherwise the per-label averaging
+    # downstream silently mixes distinct algorithms. See
+    # `assert_label_discriminates`.
+    if not allow_label_collision and runs:
+        assert_label_discriminates(runs, group_key_fn)
 
     # Robustness: every run in `runs` must agree on `same_value_axes`. Catches
     # the bug where a panel filter forgets to constrain an axis (e.g. m=1 only)
@@ -1331,7 +1726,7 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
     _min_step = kwargs.get("min_step", _INFER_MIN_STEP)
     if _min_step is _INFER_MIN_STEP:
         _min_step = _infer_min_step(runs) or CANONICAL_HORIZON
-    if _min_step is not None:
+    if reference_runs is not None and _min_step is not None:
         n_before = len(reference_runs)
         reference_runs = [(c, e) for c, e in reference_runs
                           if e and e[-1]["step"] >= _min_step]
@@ -1339,14 +1734,17 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
         if n_dropped:
             print(f"  [auto] filtered {n_dropped} partial reference run(s) below min_step={_min_step}")
 
-    hlines, ref_curves, eta_sweeps = baseline_overlay(
-        reference_runs, baseline_optimizer, is_primary=True,
-        marker_map=_marker_map,
-    )
-    if not hlines:
-        raise ValueError(
-            f"No {baseline_optimizer!r} run found in reference_runs — "
-            "every standard sweep figure requires the baseline.")
+    if reference_runs is None:
+        hlines, ref_curves, eta_sweeps = [], [], []
+    else:
+        hlines, ref_curves, eta_sweeps = baseline_overlay(
+            reference_runs, baseline_optimizer, is_primary=True,
+            marker_map=_marker_map,
+        )
+        if not hlines:
+            raise ValueError(
+                f"No {baseline_optimizer!r} run found in reference_runs — "
+                "every standard sweep figure requires the baseline.")
 
     # Library-enforced uniform suptitle: append " at r={N}" when single-rank
     # and rank isn't already in the title.
@@ -1354,6 +1752,8 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
         suptitle = f"{suptitle} at r={ranks[0]}"
 
     for opt, color in extra_baselines:
+        if reference_runs is None:
+            continue
         _h, r, e = baseline_overlay(
             reference_runs, opt, color=color, is_primary=False,
             marker_map=_marker_map,

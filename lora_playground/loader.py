@@ -234,6 +234,51 @@ def _derive_effective_picard_iters(cfg: dict, opt_cfg: dict) -> tuple[Any, bool]
     )
 
 
+# Fields whose argparse default has CHANGED over time, where backfilling
+# from the CURRENT argparse default would mislabel older runs. These get
+# the historical default value instead. Add an entry here whenever a CLI
+# flag's default changes and you need to keep loading older runs.
+#
+# Example: `--data_pipeline_version` was introduced 2026-05-08 with
+# argparse default `packed_v1`. Older runs ran the previous (unpacked)
+# pipeline and don't log the field. Without this override, our argparse
+# backfill would tag every old AdamW run as packed_v1 → analysis filters
+# on packed_v1 silently include unpacked_v0 runs from old sweeps.
+HISTORICAL_DEFAULTS_WHEN_MISSING: dict[str, Any] = {
+    "data_pipeline_version": "unpacked_v0",
+}
+
+
+@lru_cache(maxsize=1)
+def _argparse_defaults() -> dict[str, Any]:
+    """Return ``{dest: default_value}`` for every CLI flag in train.py's
+    parser. Used to backfill older cfgs that were logged before a flag
+    existed: at the time, the runtime fell through to the same default we
+    record here, so the run's effective value WAS the default. Without
+    this backfill, the missing-vs-explicit-default asymmetry would split
+    series_id across schema-growth boundaries even when the algorithm is
+    identical (e.g. old run lacks `precond_delta`, new run logs
+    `precond_delta=1e-6` — both ran with 1e-6).
+
+    Lazy + cached: train.py imports torch + transformers; we pay that
+    cost once per process the first time enrichment runs.
+
+    Caveat: this assumes the flag's default has never changed. When it has,
+    register the history in `HARDCODED_DEFAULT_HISTORY` and resolve via
+    `_resolve_default_at_commit` instead. Today this matters for
+    optimizer-kwarg defaults; CLI-flag defaults change rarely enough that
+    the simple cache is acceptable.
+    """
+    from .train import make_parser
+    parser = make_parser()
+    defaults: dict[str, Any] = {}
+    for action in parser._actions:
+        if action.dest in (None, "help"):
+            continue
+        defaults[action.dest] = action.default
+    return defaults
+
+
 def _enrich_cfg(cfg: dict) -> dict:
     """Add a ``_derived`` namespace and (if missing) a backfilled
     ``optimizer_config`` to ``cfg``. Mutates and returns ``cfg``.
@@ -274,6 +319,17 @@ def _enrich_cfg(cfg: dict) -> dict:
     k, k_certain = _derive_effective_picard_iters(cfg, opt_cfg)
     derived["effective_picard_iters"] = k
     derived["effective_picard_iters_certain"] = k_certain
+    # Promote canonical resolved-values to top-level scalars. `series_id`
+    # and `_denylist_key` only see top-level non-underscore-prefixed
+    # scalars; if the canonical lives only under `_derived`, two cfgs
+    # that resolve to the same effective behavior but with different raw
+    # override flags will incorrectly split. With these promoted, the raw
+    # override flags can sit in RUNTIME_FIELDS (loader) /
+    # SERIES_AXIS_FIELDS (plot) as redundant, and the effective value is
+    # the single source of truth.
+    cfg["effective_picard_iters"] = k
+    if derived["effective_inner_polar"] is not None:
+        cfg["effective_inner_polar"] = derived["effective_inner_polar"]
     # Data pipeline version: explicit on new runs (>=2026-05-08), absent on
     # older runs which were all unpacked_v0 (legacy
     # DataCollatorForLanguageModeling, no prompt mask, dynamic shapes).
@@ -283,6 +339,18 @@ def _enrich_cfg(cfg: dict) -> dict:
         pipeline_version = "unpacked_v0"
     derived["data_pipeline_version"] = pipeline_version
     cfg["_derived"] = derived
+    # Schema-growth backfill: any train.py CLI flag absent or explicitly
+    # logged as None in this cfg event must have fallen through to its
+    # argparse default at runtime. Fill so series_id sees identical state
+    # for runs logged before/after the flag existed AND for the
+    # explicit-None case (newer schemas log unset flags as None instead
+    # of omitting them). load_runs applies the same normalization BEFORE
+    # merge_runs' dedup; this enrichment call is idempotent for cfgs that
+    # went through load_runs, but exists for callers that build runs from
+    # other paths (e.g. ad-hoc load_run usage).
+    for k, v in _argparse_defaults().items():
+        if cfg.get(k) is None:
+            cfg[k] = HISTORICAL_DEFAULTS_WHEN_MISSING.get(k, v)
     return cfg
 
 # RUNTIME_FIELDS is imported above from plot_utils, where it's the single
@@ -318,14 +386,34 @@ def _hashable(v):
 
 
 def _denylist_key(cfg: dict, runtime_fields: frozenset[str]) -> frozenset:
-    """Dedup key = frozenset of (k, hashable(v)) for all non-runtime cfg fields.
+    """Dedup key = frozenset of (k, hashable(v)) for scalar source-of-truth
+    cfg fields, excluding runtime metadata and derived/composite fields.
 
-    Two cfgs hashing to equal values means they specify the same algorithm
-    on the same data with the same hyperparameters — modulo the explicitly
-    excluded runtime/metadata. New behavioral fields automatically participate.
+    Excluded:
+      - keys in `runtime_fields` (git_commit, command, log_group, …)
+      - underscore-prefixed keys (loader enrichment: _derived, _cli_args,
+        _optim_steps)
+      - dict-valued fields (optimizer_config — derived backfill that mirrors
+        scalar fields; older runs without it get reconstructed and the dict
+        may not round-trip exactly, so it cannot be the source of truth)
+      - None-valued fields (a newer schema may log not-provided flags as
+        None; load_runs separately backfills these to argparse defaults
+        before dedup, but the exclusion here is defense-in-depth)
+
+    Mirrors the exclusion rule used by `plot_utils.series_id` — the two
+    must agree, otherwise the loader's dedup and the plot layer's
+    series-identity contract drift apart.
+
+    Two cfgs hashing to equal values mean they specify the same algorithm
+    on the same data with the same hyperparameters. New behavioral fields
+    that are scalar / non-derived automatically participate.
     """
     return frozenset(
-        (k, _hashable(v)) for k, v in cfg.items() if k not in runtime_fields
+        (k, _hashable(v)) for k, v in cfg.items()
+        if k not in runtime_fields
+        and not k.startswith("_")
+        and not isinstance(v, dict)
+        and v is not None
     )
 
 # Pinning categories returned in CoverageRow.pinning.
@@ -422,11 +510,62 @@ def load_runs(
         def key_fn(cfg: dict) -> tuple:
             return tuple(cfg.get(a) for a in key_axes)
 
+    # Apply argparse-default backfill BEFORE merge_runs' dedup. Otherwise
+    # two cfgs of the same algorithm at the same seed — one from an older
+    # commit where a flag didn't exist, one from a newer commit logging
+    # the same default explicitly — get different _denylist_key hashes
+    # and both survive dedup. They then aggregate as two distinct "seed=N"
+    # rows at the plot layer and inflate the seed-σ band. Backfilling
+    # here makes the keys agree so the dedup tiebreak (newest group,
+    # longest trajectory) picks one canonical run per seed.
+    from .manifest import is_commit_excluded
+    _excluded_counts: dict[str, int] = {}
+
+    # Wrap filter_fn to also drop runs at commits in EXCLUDED_COMMITS.
+    # Tally excluded-by-reason so the load surfaces a one-line summary
+    # rather than silently dropping potentially load-bearing data.
+    _user_filter = filter_fn
+    def _wrapped_filter(cfg: dict) -> bool:
+        excluded, reason = is_commit_excluded(cfg.get("git_commit"))
+        if excluded:
+            _excluded_counts[reason] = _excluded_counts.get(reason, 0) + 1
+            return False
+        if _user_filter is not None:
+            return _user_filter(cfg)
+        return True
+    filter_fn = _wrapped_filter
+
+    _defaults = _argparse_defaults()
+    def _wrapped_postprocess(cfg: dict, group: str) -> None:
+        # Backfill argparse defaults. Treat explicit None and absent
+        # identically: a newer schema may LOG `field: None` for a
+        # not-provided flag while an older schema omitted the key
+        # entirely; both indicate "ran with argparse default at runtime,"
+        # so both should land at the default for dedup-key purposes.
+        # `setdefault` alone would leave the explicit-None case in place
+        # and the cfgs would still dedup to different keys.
+        #
+        # HISTORICAL_DEFAULTS_WHEN_MISSING overrides the argparse default
+        # for fields whose default has changed over time — using the
+        # current default for missing-field old runs would mislabel them
+        # (the historical default is the value those runs actually ran with).
+        for k, v in _defaults.items():
+            if cfg.get(k) is None:
+                cfg[k] = HISTORICAL_DEFAULTS_WHEN_MISSING.get(k, v)
+        # Enrich BEFORE dedup so derived canonical fields
+        # (`effective_picard_iters`, `effective_inner_polar`) are present
+        # in the dedup key. Without this, two cfgs with the same
+        # effective k but different raw `picard_iters_override` get
+        # different dedup keys and both survive.
+        _enrich_cfg(cfg)
+        if cfg_postprocess is not None:
+            cfg_postprocess(cfg, group)
+
     runs = merge_runs(
         groups,
         key_fn=key_fn,
         filter_fn=filter_fn,
-        cfg_postprocess=cfg_postprocess,
+        cfg_postprocess=_wrapped_postprocess,
         logs_root=logs_root,
     )
 
@@ -436,6 +575,12 @@ def load_runs(
     # collision); analysis code reads enriched cfgs.
     for cfg, _ in runs:
         _enrich_cfg(cfg)
+
+    if _excluded_counts:
+        total = sum(_excluded_counts.values())
+        summary = "; ".join(f"{n} for {reason!r}"
+                            for reason, n in sorted(_excluded_counts.items()))
+        print(f"  [loader] excluded {total} run(s) from stale commits: {summary}")
 
     if warn_cross_commit and runs:
         commits: dict[str, int] = {}
