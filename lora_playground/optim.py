@@ -3578,356 +3578,15 @@ class AdamPolarProductLoRA(Optimizer):
                 dB_prev = dB
 
             if self.log_basic_diagnostics:
-                step_count_local = state['step']
-                is_probe_step = (step_count_local % self.diagnostics_every == 0)
-                # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
-                # for sign-convention rationale.
-                sa_min, sa_max = _gram_eig_extremes_from_factor(A)
-                sb_min, sb_max = _gram_eig_extremes_from_factor(B)
-                rec = {
-                    "cos_A": _frob_cos(dA, -u_A),
-                    "cos_B": _frob_cos(dB, -u_B),
-                    "norm_dA": float(dA.detach().norm()),
-                    "norm_dA_adamw_eq": float(lr * uA_norm),
-                    "norm_dB": float(dB.detach().norm()),
-                    "norm_dB_adamw_eq": float(lr * uB_norm),
-                    "norm_A": float(A.detach().to(torch.float32).norm()),
-                    "norm_B": float(B.detach().to(torch.float32).norm()),
-                    "SA_min": sa_min, "SA_max": sa_max,
-                    "SB_min": sb_min, "SB_max": sb_max,
-                    "rms_scale_A": float(uA_norm / gA_norm),
-                    "rms_scale_B": float(uB_norm / gB_norm),
-                }
-
-                # Muon+ premise probe (arXiv:2602.21545 §2): after orthogonal-
-                # ization, per-row/per-col ℓ₂ norms of geo_{A,B} have high
-                # variance even though the matrix is well-conditioned σ-wise.
-                # Logged from the PRE-normalization geo_A so the std reflects
-                # what the Muon+ normalization step is actually correcting.
-                # std/mean ratio ≫ 0 ⇒ Muon+ has something to fix; ≈ 0 ⇒ rows
-                # are already balanced and Muon+ is a no-op.
-                with torch.no_grad():
-                    geo_A_f = geo_A.float()
-                    geo_B_f = geo_B.float()
-                    rows_A = geo_A_f.pow(2).sum(dim=-1).sqrt()
-                    cols_A = geo_A_f.pow(2).sum(dim=-2).sqrt()
-                    rows_B = geo_B_f.pow(2).sum(dim=-1).sqrt()
-                    cols_B = geo_B_f.pow(2).sum(dim=-2).sqrt()
-                    rec["geoA_row_norm_cv"] = float(
-                        rows_A.std() / rows_A.mean().clamp_min(1e-30))
-                    rec["geoA_col_norm_cv"] = float(
-                        cols_A.std() / cols_A.mean().clamp_min(1e-30))
-                    rec["geoB_row_norm_cv"] = float(
-                        rows_B.std() / rows_B.mean().clamp_min(1e-30))
-                    rec["geoB_col_norm_cv"] = float(
-                        cols_B.std() / cols_B.mean().clamp_min(1e-30))
-
-                # H1 — cross-term ratios γ_A, γ_B. Always cheap; uses the
-                # APPLIED step (dA, dB) as the dB_prev/dA_prev surrogate for
-                # the would-be iter-2 correction. Defined as the relative
-                # magnitude of the perturbation that iter-2 would inject,
-                # using the COEFFICIENT THAT IS ACTUALLY APPLIED IN THE
-                # PICARD LOOP and the post-unit-polar-normalization u_A so
-                # the ratio reflects what the polar map sees:
-                #     γ_A = ‖picard_coeff · Bᵀ dB A‖_F / ‖ū_A‖_F
-                #     γ_B = ‖picard_coeff · B  dA Aᵀ‖_F / ‖ū_B‖_F
-                # For chord-tight family, picard_coeff = 2/(ρ·s) (computed
-                # above as picard_coeff_t). For other variants, picard_coeff
-                # = picard_alpha/lr (the legacy scaling). Note u_A here has
-                # already been replaced by ū_A = u_A / σ_XA above when
-                # unit-polar normalization is active, so the denominator
-                # correctly reflects polar-input magnitude.
-                coeff_t = (picard_coeff_t
-                           if picard_coeff_t is not None
-                           else (self.picard_alpha / lr))
-                cross_A = coeff_t * (B_f.T @ dB.float() @ A_f)
-                cross_B = coeff_t * (B_f @ dA.float() @ A_f.T)
-                rec["gamma_A"] = float(cross_A.norm() / (u_A.norm() + 1e-30))
-                rec["gamma_B"] = float(cross_B.norm() / (u_B.norm() + 1e-30))
-
-                # H4 — numerical and stable rank of S_A, S_B (r×r, cheap).
-                # nrank_τ = #{σᵢ > τ·σ_max}; stable rank = sum(σ²)/σ_max².
-                # eigvalsh(SA) returns σ²(A) directly (S_A = A Aᵀ has eigs σᵢ²).
-                try:
-                    eigA = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
-                    eigB = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
-                    smax_A = float(eigA.max())
-                    smax_B = float(eigB.max())
-                    rec["nrank_A_1e3"] = int((eigA > 1e-3 * smax_A).sum())
-                    rec["nrank_A_1e2"] = int((eigA > 1e-2 * smax_A).sum())
-                    rec["nrank_B_1e3"] = int((eigB > 1e-3 * smax_B).sum())
-                    rec["nrank_B_1e2"] = int((eigB > 1e-2 * smax_B).sum())
-                    rec["stable_rank_A"] = float(eigA.sum() / (smax_A + 1e-30))
-                    rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
-
-                    # X_unc spectrum probe (Step 3 prep — clip τ-rule
-                    # design). The spectrum of the whitened Adam direction
-                    # X_unc = S_B^{-1/2} u_A is the input to the per-block
-                    # operator (polar in this baseline; clip in the
-                    # candidate). Its singular values determine whether
-                    # clip would do real work. SVD is r×n / m×r with r
-                    # small — cheap.
-                    Xunc_A = SB_half_inv @ u_A           # (r, n)
-                    Xunc_B = u_B @ SA_half_inv           # (m, r)
-                    sv_A = torch.linalg.svdvals(Xunc_A.float())
-                    sv_B = torch.linalg.svdvals(Xunc_B.float())
-                    sv_A_sorted, _ = torch.sort(sv_A, descending=True)
-                    sv_B_sorted, _ = torch.sort(sv_B, descending=True)
-                    sv_A_max = float(sv_A_sorted[0])
-                    sv_B_max = float(sv_B_sorted[0])
-                    sv_A_min = float(sv_A_sorted[-1])
-                    sv_B_min = float(sv_B_sorted[-1])
-                    sv_A_med = float(sv_A_sorted[len(sv_A_sorted) // 2])
-                    sv_B_med = float(sv_B_sorted[len(sv_B_sorted) // 2])
-                    # p90 (= clip-threshold candidate)
-                    p90_idx_A = max(0, int(0.1 * len(sv_A_sorted)) - 1)
-                    p90_idx_B = max(0, int(0.1 * len(sv_B_sorted)) - 1)
-                    sv_A_p90 = float(sv_A_sorted[p90_idx_A])
-                    sv_B_p90 = float(sv_B_sorted[p90_idx_B])
-                    rec["xunc_A_smax"] = sv_A_max
-                    rec["xunc_A_smin"] = sv_A_min
-                    rec["xunc_A_smedian"] = sv_A_med
-                    rec["xunc_A_sp90"] = sv_A_p90
-                    rec["xunc_A_frob"] = float(sv_A.pow(2).sum().sqrt())
-                    rec["xunc_A_stable_rank"] = float(
-                        sv_A.pow(2).sum() / (sv_A_max ** 2 + 1e-30))
-                    rec["xunc_A_participation"] = float(
-                        sv_A.sum().pow(2) / (sv_A.pow(2).sum() + 1e-30))
-                    rec["xunc_B_smax"] = sv_B_max
-                    rec["xunc_B_smin"] = sv_B_min
-                    rec["xunc_B_smedian"] = sv_B_med
-                    rec["xunc_B_sp90"] = sv_B_p90
-                    rec["xunc_B_frob"] = float(sv_B.pow(2).sum().sqrt())
-                    rec["xunc_B_stable_rank"] = float(
-                        sv_B.pow(2).sum() / (sv_B_max ** 2 + 1e-30))
-                    rec["xunc_B_participation"] = float(
-                        sv_B.sum().pow(2) / (sv_B.pow(2).sum() + 1e-30))
-                    # Reference magnitude: would-be clip-τ from R-equal rule.
-                    # τ_R-equal = ‖X_unc‖_F / √r so ratio (smax / τ_R-equal)
-                    # = smax · √r / ‖X_unc‖_F tells us how peaky vs flat
-                    # the spectrum is in the units that matter for clip.
-                    r = u_A.shape[0]
-                    rec["xunc_A_smax_over_tau_equal"] = sv_A_max * (r ** 0.5) / (rec["xunc_A_frob"] + 1e-30)
-
-                    # cos(polar, clip) diagnostic — measures how much the
-                    # operator choice affects step direction. Both operators
-                    # preserve U, V; only the singular values differ. Compute
-                    # cos analytically without re-doing SVDs.
-                    # polar: σ → 1; clip: σ → min(σ, τ_R-equal).
-                    # cos(polar, clip) = Σ min(σ, τ) / (√r · √Σ min(σ, τ)²)
-                    tau_A = float(rec["xunc_A_frob"]) / max(1.0, r ** 0.5)
-                    tau_B = float(rec["xunc_B_frob"]) / max(1.0, r ** 0.5)
-                    sv_A_clipped = sv_A.clamp_max(tau_A)
-                    sv_B_clipped = sv_B.clamp_max(tau_B)
-                    sumA = float(sv_A_clipped.sum())
-                    fnA = float(sv_A_clipped.pow(2).sum().sqrt() + 1e-30)
-                    sumB = float(sv_B_clipped.sum())
-                    fnB = float(sv_B_clipped.pow(2).sum().sqrt() + 1e-30)
-                    sqrt_r = max(1.0, r ** 0.5)
-                    rec["cos_polar_clip_A"] = sumA / (sqrt_r * fnA)
-                    rec["cos_polar_clip_B"] = sumB / (sqrt_r * fnB)
-                    rec["xunc_B_smax_over_tau_equal"] = sv_B_max * (r ** 0.5) / (rec["xunc_B_frob"] + 1e-30)
-                except torch._C._LinAlgError:
-                    for k in ("nrank_A_1e3", "nrank_A_1e2", "nrank_B_1e3",
-                              "nrank_B_1e2", "stable_rank_A", "stable_rank_B"):
-                        rec[k] = float("nan")
-
-                # AWC — Agreement-weighted core diagnostics. The two whitened
-                # core views S_A_aw = SB^{-1/2} (u_A A^T) SA^{-1/2} and
-                # S_B_aw = SB^{-1/2} (B^T u_B) SA^{-1/2} are both r×r. They
-                # are the two factor-side projections of the "shared dense
-                # update" the Adam directions imply. In a noise-free
-                # linearization S_A_aw = S_B_aw; disagreement measures
-                # asymmetric Adam-preconditioning + batch noise corrupting
-                # the shared signal. AWC hypothesis (mechanism for the
-                # rank-dependent k-flip): rank 64 should agree more than
-                # rank 16. See agreement_weighted_core_coupling_2026_05_03.md.
-                # Cost: 2 r×r matmuls + norms per pair per step.
-                H_A = u_A @ A_f.T                                   # (r, r)
-                H_B = B_f.T @ u_B                                   # (r, r)
-                S_A_aw = SB_half_inv @ H_A @ SA_half_inv            # (r, r)
-                S_B_aw = SB_half_inv @ H_B @ SA_half_inv            # (r, r)
-                fA = float(S_A_aw.norm())
-                fB = float(S_B_aw.norm())
-                fdiff = float((S_A_aw - S_B_aw).norm())
-                fsum = float((S_A_aw + S_B_aw).norm())
-                fdot = float((S_A_aw * S_B_aw).sum())
-                rec["awc_SA_frob"] = fA
-                rec["awc_SB_frob"] = fB
-                rec["awc_diff_frob"] = fdiff
-                rec["awc_sum_frob"] = fsum
-                rec["awc_cos_AB"] = fdot / (fA * fB + 1e-30)
-                # q_agree = E+/(E++E-) with E+ = ||S+||²/4, E- = ||S-||²/4.
-                e_plus = (fsum ** 2) / 4.0
-                e_minus = (fdiff ** 2) / 4.0
-                rec["awc_q_agree"] = e_plus / (e_plus + e_minus + 1e-30)
-                # Disagreement-coupling coefficient (revised AWC v3, scalar
-                # per pair):
-                #   λ_core = ||S_A - S_B||² / (2 (||S_A||² + ||S_B||²) + ε)
-                # In [0, 1]: 0 when S_A ≡ S_B (full agreement, "do not couple
-                # / would shrink useful agreed signal"); 1 when S_A ≡ −S_B
-                # (full disagreement). Predicts λ_core(r=16) < λ_core(r=64)
-                # under the revised mechanism story.
-                rec["awc_lambda_core"] = (fdiff ** 2) / (2.0 * (fA ** 2 + fB ** 2) + 1e-30)
-
-                # Higham accuracy + S conditioning probe. Tracks the
-                # iterative S^{-1/2} solver's quality vs an eigh reference.
-                # higham_iters=10 (default) is safe for well-to-moderate-
-                # conditioned S but degrades sharply on ill-conditioned S
-                # (synthetic bench at σ_min/σ_max ≈ 0.01 gave 52% rel error
-                # at iters=10 — needs iters=20 for ~1e-5 error). This probe
-                # tells us whether REAL A·A^T spectra during training ever
-                # enter the "ill" regime, vs only synthetic stress tests.
-                # ~6 r×r ops per pair per probe step (cheap).
-                # cond(S_A), cond(S_B) — CHEAP (r×r eigvalsh): kept in basic tier.
-                try:
-                    SA_eigs = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
-                    SB_eigs = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
-                    SA_max = float(SA_eigs.max()); SA_min = float(SA_eigs.min())
-                    SB_max = float(SB_eigs.max()); SB_min = float(SB_eigs.min())
-                    rec["cond_SA"] = SA_max / max(SA_min, 1e-30)
-                    rec["cond_SB"] = SB_max / max(SB_min, 1e-30)
-                except Exception:
-                    for k in ("cond_SA", "cond_SB"):
-                        rec[k] = float("nan")
-                # Heavy factor-accuracy diagnostics (higham + power-iter probes).
-                if self.log_heavy_diagnostics:
-                    self._emit_heavy_factor_accuracy_diag(
-                        rec, A_f=A_f, B_f=B_f, geo_A=geo_A, geo_B=geo_B,
-                        sigma_A_t=sigma_A_t, sigma_B_t=sigma_B_t,
-                        op_geoA=op_geoA, op_geoB=op_geoB,
-                    )
-
-                # Stage-0 chord-tight diagnostics (plan
-                # there-are-a-few-indexed-hickey).
-                #
-                # Probe D — Adam-preconditioning gauge residual.
-                # E := u_A A^T − B^T u_B (r × r). For raw factor gradients
-                # g_A = B^T G, g_B = G A^T (G = ∂L/∂W), so g_A A^T = B^T G A^T
-                # = B^T g_B identically — E_raw ≡ 0. Adam preconditioning
-                # breaks the identity; ‖E‖_F measures the geometric distortion
-                # induced by the per-coordinate v_t scaling. Generic
-                # diagnostic, useful across the broader optimizer family.
-                E_gauge = H_A - H_B                                  # reuse awc H_*
-                fE_gauge = float(E_gauge.norm())
-                rec["adam_gauge_residual_frob"] = fE_gauge
-                rec["adam_gauge_residual_rel"] = fE_gauge / max(fA, fB, 1e-30)
-
-                # Probes A, B, C-tight only meaningful under spectral_chord_tight
-                # (rho is the tight-chord scalar; op_geoA/op_geoB are the
-                # operator norms ‖D_A‖_2, ‖D_B‖_2 of the polar directions).
-                if self.magnitude_rule in ("spectral_chord_tight",
-                                           "spectral_chord_direction"):
-                    lr_f = float(lr)
-                    rho_f = float(rho.detach()) if torch.is_tensor(rho) else float(rho)
-
-                    # Probe A — chord_slack via direct SVD (heavy).
-                    if self.log_heavy_diagnostics:
-                        self._emit_heavy_chord_slack_diag(
-                            rec, A_f=A_f, B_f=B_f, dA=dA, dB=dB, lr_f=lr_f,
-                        )
-
-                    # Probe B — direction-aware radius gain.
-                    # P = D_A / ‖D_A‖_2, Q = D_B / ‖D_B‖_2 are unit-norm
-                    # factor directions. With dA = -λ P, dB = -λ Q the safe
-                    # direction-aware bound is
-                    #   ‖ΔW‖_2 ≤ λ (‖B P‖_2 + ‖Q A‖_2) + λ² ‖Q P‖_2 = a λ + b λ².
-                    # Setting that to lr and solving for λ gives the tighter
-                    # (still safe) radius λ_dir vs the worst-case rho.
-                    try:
-                        op_A_safe = op_geoA + 1e-30
-                        op_B_safe = op_geoB + 1e-30
-                        P_dir = (geo_A.float() / op_A_safe).detach()         # (r, n)
-                        Q_dir = (geo_B.float() / op_B_safe).detach()         # (m, r)
-                        GBB = B_f.T @ B_f                                    # (r, r) sym PSD
-                        GAA = A_f @ A_f.T                                    # (r, r) sym PSD
-                        PPt = P_dir @ P_dir.T                                # (r, r) sym PSD
-                        QtQ = Q_dir.T @ Q_dir                                # (r, r) sym PSD
-                        # σ²_max(BP) = λ_max(L_PPt^T · GBB · L_PPt), L_PPt =
-                        # chol(PPt). Eigvalsh on the SYMMETRIC reduced form
-                        # (formerly used `eigvals` on the non-symmetric
-                        # PPt @ GBB which over-estimated; same issue as the
-                        # chord-slack probe).
-                        def _sigma_max_via_chol_eigh(G_outer, G_inner):
-                            diag_load = 1e-12 * G_inner.diagonal().abs().mean().clamp_min(1e-30)
-                            damped = G_inner + diag_load * torch.eye(
-                                G_inner.shape[-1], dtype=G_inner.dtype,
-                                device=G_inner.device)
-                            Lc = torch.linalg.cholesky(damped)
-                            M = Lc.T @ G_outer @ Lc
-                            return float(torch.linalg.eigvalsh(M).clamp_min(0.0).max().sqrt())
-                        sigma_BP = _sigma_max_via_chol_eigh(GBB, PPt)
-                        sigma_QA = _sigma_max_via_chol_eigh(GAA, QtQ)
-                        sigma_QP = _sigma_max_via_chol_eigh(PPt, QtQ)
-                    except torch._C._LinAlgError:
-                        sigma_BP = sigma_QA = sigma_QP = float("nan")
-                    a_dir = sigma_BP + sigma_QA
-                    b_dir = sigma_QP
-                    if a_dir != a_dir:  # NaN propagation
-                        lambda_dir = float("nan")
-                    elif b_dir <= 1e-30:
-                        lambda_dir = lr_f / max(a_dir, 1e-30)
-                    else:
-                        lambda_dir = (-a_dir + (a_dir * a_dir + 4.0 * b_dir * lr_f) ** 0.5) / (2.0 * b_dir)
-                    s_AB_f = float(s_AB) if torch.is_tensor(s_AB) else float(s_AB)
-                    rec["lambda_dir"] = lambda_dir
-                    rec["lambda_dir_gain"] = lambda_dir / max(rho_f, 1e-30)
-                    rec["dir_a"] = a_dir
-                    rec["dir_b"] = b_dir
-                    rec["dir_a_over_s"] = a_dir / max(s_AB_f, 1e-30)
-
-                    # Probe C-tight — saturation fraction and polar-vs-clip
-                    # cosine in WHITENED singular-value space at the
-                    # tight-chord threshold τ_A = rho / ‖D_A‖_2, the §8
-                    # saturating-regime threshold from
-                    # algorithm_tight_chord.md. Distinct from the existing
-                    # cos_polar_clip_A which uses the R-equal threshold
-                    # τ_R = ‖X_unc‖_F / √r. Polar maps every nonzero σ → τ,
-                    # clip maps σ → min(η σ, τ); they share singular vectors
-                    # so the cosine is a singular-value-only comparison.
-                    try:
-                        c_A_mat = (SB_half_inv @ u_A).float()
-                        c_B_mat = (u_B @ SA_half_inv).float()
-                        sv_cA_tight = torch.linalg.svdvals(c_A_mat)
-                        sv_cB_tight = torch.linalg.svdvals(c_B_mat)
-                        tau_A_tight = rho_f / max(float(op_geoA), 1e-30)
-                        tau_B_tight = rho_f / max(float(op_geoB), 1e-30)
-                        eta_sA = lr_f * sv_cA_tight
-                        eta_sB = lr_f * sv_cB_tight
-                        clip_A_sv = torch.clamp(eta_sA, max=tau_A_tight)
-                        clip_B_sv = torch.clamp(eta_sB, max=tau_B_tight)
-                        # Polar vector (in σ-space): all entries τ, length √r·τ.
-                        n_cA = clip_A_sv.numel()
-                        n_cB = clip_B_sv.numel()
-                        polar_norm_A = (n_cA ** 0.5) * tau_A_tight
-                        polar_norm_B = (n_cB ** 0.5) * tau_B_tight
-                        clip_norm_A = float(clip_A_sv.norm()) + 1e-30
-                        clip_norm_B = float(clip_B_sv.norm()) + 1e-30
-                        rec["cos_polar_clip_tight_A"] = (
-                            tau_A_tight * float(clip_A_sv.sum())
-                            / (max(polar_norm_A, 1e-30) * clip_norm_A)
-                        )
-                        rec["cos_polar_clip_tight_B"] = (
-                            tau_B_tight * float(clip_B_sv.sum())
-                            / (max(polar_norm_B, 1e-30) * clip_norm_B)
-                        )
-                        rec["sat_frac_tight_A"] = float((eta_sA >= tau_A_tight).float().mean())
-                        rec["sat_frac_tight_B"] = float((eta_sB >= tau_B_tight).float().mean())
-                        rec["tau_tight_A"] = tau_A_tight
-                        rec["tau_tight_B"] = tau_B_tight
-                    except torch._C._LinAlgError:
-                        for _k in ("cos_polar_clip_tight_A", "cos_polar_clip_tight_B",
-                                   "sat_frac_tight_A", "sat_frac_tight_B",
-                                   "tau_tight_A", "tau_tight_B"):
-                            rec[_k] = float("nan")
-
-                # H2/H3 — Picard contraction + polar sensitivity probes (heavy).
-                if is_probe_step and self.log_heavy_diagnostics:
-                    self._emit_heavy_picard_diagnostics(
-                        rec, u_A=u_A, u_B=u_B,
-                        SA_half_inv=SA_half_inv, SB_half_inv=SB_half_inv, lr=lr,
-                        A_f=A_f, B_f=B_f, dA=dA, dB=dB, gA=gA, gB=gB,
-                    )
+                rec = self._emit_basic_diagnostics(
+                    state=state, A=A, B=B, A_f=A_f, B_f=B_f,
+                    u_A=u_A, u_B=u_B, dA=dA, dB=dB, gA=gA, gB=gB,
+                    SA_half_inv=SA_half_inv, SB_half_inv=SB_half_inv,
+                    geo_A=geo_A, geo_B=geo_B,
+                    sigma_A_t=sigma_A_t, sigma_B_t=sigma_B_t,
+                    op_geoA=op_geoA, op_geoB=op_geoB,
+                    rho=rho, s_AB=s_AB, lr=lr,
+                )
                 diag_records.append(rec)
 
             with maybe_time(timer, "apply"):
@@ -3942,6 +3601,376 @@ class AdamPolarProductLoRA(Optimizer):
                 _emit_optim_diagnostics(step_count, diag_records)
 
     @torch.no_grad()
+    @torch.no_grad()
+    def _emit_basic_diagnostics(
+        self, *, state, A, B, A_f, B_f, u_A, u_B, dA, dB, gA, gB,
+        SA_half_inv, SB_half_inv, geo_A, geo_B,
+        sigma_A_t, sigma_B_t, op_geoA, op_geoB,
+        rho, s_AB, lr,
+    ):
+        """Basic-tier diagnostics (default ON, ~2% wall). Returns the
+        per-pair ``rec`` dict the caller appends to ``diag_records``.
+
+        Pure function over the supplied per-pair tensors (mutates only the
+        local ``rec`` it constructs and returns) so both the per-pair and
+        batched step paths can call it on the same inputs to produce
+        bit-identical diagnostic records. Calls into the heavy-tier
+        helpers (``_emit_heavy_factor_accuracy_diag``,
+        ``_emit_heavy_chord_slack_diag``, ``_emit_heavy_picard_diagnostics``)
+        when their gates fire.
+        """
+        step_count_local = state['step']
+        is_probe_step = (step_count_local % self.diagnostics_every == 0)
+        # cos(applied_step, plain-AdamW-direction). See AdamScaledLoRAPost
+        # for sign-convention rationale.
+        sa_min, sa_max = _gram_eig_extremes_from_factor(A)
+        sb_min, sb_max = _gram_eig_extremes_from_factor(B)
+        rec = {
+            "cos_A": _frob_cos(dA, -u_A),
+            "cos_B": _frob_cos(dB, -u_B),
+            "norm_dA": float(dA.detach().norm()),
+            "norm_dA_adamw_eq": float(lr * uA_norm),
+            "norm_dB": float(dB.detach().norm()),
+            "norm_dB_adamw_eq": float(lr * uB_norm),
+            "norm_A": float(A.detach().to(torch.float32).norm()),
+            "norm_B": float(B.detach().to(torch.float32).norm()),
+            "SA_min": sa_min, "SA_max": sa_max,
+            "SB_min": sb_min, "SB_max": sb_max,
+            "rms_scale_A": float(uA_norm / gA_norm),
+            "rms_scale_B": float(uB_norm / gB_norm),
+        }
+
+        # Muon+ premise probe (arXiv:2602.21545 §2): after orthogonal-
+        # ization, per-row/per-col ℓ₂ norms of geo_{A,B} have high
+        # variance even though the matrix is well-conditioned σ-wise.
+        # Logged from the PRE-normalization geo_A so the std reflects
+        # what the Muon+ normalization step is actually correcting.
+        # std/mean ratio ≫ 0 ⇒ Muon+ has something to fix; ≈ 0 ⇒ rows
+        # are already balanced and Muon+ is a no-op.
+        with torch.no_grad():
+            geo_A_f = geo_A.float()
+            geo_B_f = geo_B.float()
+            rows_A = geo_A_f.pow(2).sum(dim=-1).sqrt()
+            cols_A = geo_A_f.pow(2).sum(dim=-2).sqrt()
+            rows_B = geo_B_f.pow(2).sum(dim=-1).sqrt()
+            cols_B = geo_B_f.pow(2).sum(dim=-2).sqrt()
+            rec["geoA_row_norm_cv"] = float(
+                rows_A.std() / rows_A.mean().clamp_min(1e-30))
+            rec["geoA_col_norm_cv"] = float(
+                cols_A.std() / cols_A.mean().clamp_min(1e-30))
+            rec["geoB_row_norm_cv"] = float(
+                rows_B.std() / rows_B.mean().clamp_min(1e-30))
+            rec["geoB_col_norm_cv"] = float(
+                cols_B.std() / cols_B.mean().clamp_min(1e-30))
+
+        # H1 — cross-term ratios γ_A, γ_B. Always cheap; uses the
+        # APPLIED step (dA, dB) as the dB_prev/dA_prev surrogate for
+        # the would-be iter-2 correction. Defined as the relative
+        # magnitude of the perturbation that iter-2 would inject,
+        # using the COEFFICIENT THAT IS ACTUALLY APPLIED IN THE
+        # PICARD LOOP and the post-unit-polar-normalization u_A so
+        # the ratio reflects what the polar map sees:
+        #     γ_A = ‖picard_coeff · Bᵀ dB A‖_F / ‖ū_A‖_F
+        #     γ_B = ‖picard_coeff · B  dA Aᵀ‖_F / ‖ū_B‖_F
+        # For chord-tight family, picard_coeff = 2/(ρ·s) (computed
+        # above as picard_coeff_t). For other variants, picard_coeff
+        # = picard_alpha/lr (the legacy scaling). Note u_A here has
+        # already been replaced by ū_A = u_A / σ_XA above when
+        # unit-polar normalization is active, so the denominator
+        # correctly reflects polar-input magnitude.
+        coeff_t = (picard_coeff_t
+                   if picard_coeff_t is not None
+                   else (self.picard_alpha / lr))
+        cross_A = coeff_t * (B_f.T @ dB.float() @ A_f)
+        cross_B = coeff_t * (B_f @ dA.float() @ A_f.T)
+        rec["gamma_A"] = float(cross_A.norm() / (u_A.norm() + 1e-30))
+        rec["gamma_B"] = float(cross_B.norm() / (u_B.norm() + 1e-30))
+
+        # H4 — numerical and stable rank of S_A, S_B (r×r, cheap).
+        # nrank_τ = #{σᵢ > τ·σ_max}; stable rank = sum(σ²)/σ_max².
+        # eigvalsh(SA) returns σ²(A) directly (S_A = A Aᵀ has eigs σᵢ²).
+        try:
+            eigA = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
+            eigB = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
+            smax_A = float(eigA.max())
+            smax_B = float(eigB.max())
+            rec["nrank_A_1e3"] = int((eigA > 1e-3 * smax_A).sum())
+            rec["nrank_A_1e2"] = int((eigA > 1e-2 * smax_A).sum())
+            rec["nrank_B_1e3"] = int((eigB > 1e-3 * smax_B).sum())
+            rec["nrank_B_1e2"] = int((eigB > 1e-2 * smax_B).sum())
+            rec["stable_rank_A"] = float(eigA.sum() / (smax_A + 1e-30))
+            rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
+
+            # X_unc spectrum probe (Step 3 prep — clip τ-rule
+            # design). The spectrum of the whitened Adam direction
+            # X_unc = S_B^{-1/2} u_A is the input to the per-block
+            # operator (polar in this baseline; clip in the
+            # candidate). Its singular values determine whether
+            # clip would do real work. SVD is r×n / m×r with r
+            # small — cheap.
+            Xunc_A = SB_half_inv @ u_A           # (r, n)
+            Xunc_B = u_B @ SA_half_inv           # (m, r)
+            sv_A = torch.linalg.svdvals(Xunc_A.float())
+            sv_B = torch.linalg.svdvals(Xunc_B.float())
+            sv_A_sorted, _ = torch.sort(sv_A, descending=True)
+            sv_B_sorted, _ = torch.sort(sv_B, descending=True)
+            sv_A_max = float(sv_A_sorted[0])
+            sv_B_max = float(sv_B_sorted[0])
+            sv_A_min = float(sv_A_sorted[-1])
+            sv_B_min = float(sv_B_sorted[-1])
+            sv_A_med = float(sv_A_sorted[len(sv_A_sorted) // 2])
+            sv_B_med = float(sv_B_sorted[len(sv_B_sorted) // 2])
+            # p90 (= clip-threshold candidate)
+            p90_idx_A = max(0, int(0.1 * len(sv_A_sorted)) - 1)
+            p90_idx_B = max(0, int(0.1 * len(sv_B_sorted)) - 1)
+            sv_A_p90 = float(sv_A_sorted[p90_idx_A])
+            sv_B_p90 = float(sv_B_sorted[p90_idx_B])
+            rec["xunc_A_smax"] = sv_A_max
+            rec["xunc_A_smin"] = sv_A_min
+            rec["xunc_A_smedian"] = sv_A_med
+            rec["xunc_A_sp90"] = sv_A_p90
+            rec["xunc_A_frob"] = float(sv_A.pow(2).sum().sqrt())
+            rec["xunc_A_stable_rank"] = float(
+                sv_A.pow(2).sum() / (sv_A_max ** 2 + 1e-30))
+            rec["xunc_A_participation"] = float(
+                sv_A.sum().pow(2) / (sv_A.pow(2).sum() + 1e-30))
+            rec["xunc_B_smax"] = sv_B_max
+            rec["xunc_B_smin"] = sv_B_min
+            rec["xunc_B_smedian"] = sv_B_med
+            rec["xunc_B_sp90"] = sv_B_p90
+            rec["xunc_B_frob"] = float(sv_B.pow(2).sum().sqrt())
+            rec["xunc_B_stable_rank"] = float(
+                sv_B.pow(2).sum() / (sv_B_max ** 2 + 1e-30))
+            rec["xunc_B_participation"] = float(
+                sv_B.sum().pow(2) / (sv_B.pow(2).sum() + 1e-30))
+            # Reference magnitude: would-be clip-τ from R-equal rule.
+            # τ_R-equal = ‖X_unc‖_F / √r so ratio (smax / τ_R-equal)
+            # = smax · √r / ‖X_unc‖_F tells us how peaky vs flat
+            # the spectrum is in the units that matter for clip.
+            r = u_A.shape[0]
+            rec["xunc_A_smax_over_tau_equal"] = sv_A_max * (r ** 0.5) / (rec["xunc_A_frob"] + 1e-30)
+
+            # cos(polar, clip) diagnostic — measures how much the
+            # operator choice affects step direction. Both operators
+            # preserve U, V; only the singular values differ. Compute
+            # cos analytically without re-doing SVDs.
+            # polar: σ → 1; clip: σ → min(σ, τ_R-equal).
+            # cos(polar, clip) = Σ min(σ, τ) / (√r · √Σ min(σ, τ)²)
+            tau_A = float(rec["xunc_A_frob"]) / max(1.0, r ** 0.5)
+            tau_B = float(rec["xunc_B_frob"]) / max(1.0, r ** 0.5)
+            sv_A_clipped = sv_A.clamp_max(tau_A)
+            sv_B_clipped = sv_B.clamp_max(tau_B)
+            sumA = float(sv_A_clipped.sum())
+            fnA = float(sv_A_clipped.pow(2).sum().sqrt() + 1e-30)
+            sumB = float(sv_B_clipped.sum())
+            fnB = float(sv_B_clipped.pow(2).sum().sqrt() + 1e-30)
+            sqrt_r = max(1.0, r ** 0.5)
+            rec["cos_polar_clip_A"] = sumA / (sqrt_r * fnA)
+            rec["cos_polar_clip_B"] = sumB / (sqrt_r * fnB)
+            rec["xunc_B_smax_over_tau_equal"] = sv_B_max * (r ** 0.5) / (rec["xunc_B_frob"] + 1e-30)
+        except torch._C._LinAlgError:
+            for k in ("nrank_A_1e3", "nrank_A_1e2", "nrank_B_1e3",
+                      "nrank_B_1e2", "stable_rank_A", "stable_rank_B"):
+                rec[k] = float("nan")
+
+        # AWC — Agreement-weighted core diagnostics. The two whitened
+        # core views S_A_aw = SB^{-1/2} (u_A A^T) SA^{-1/2} and
+        # S_B_aw = SB^{-1/2} (B^T u_B) SA^{-1/2} are both r×r. They
+        # are the two factor-side projections of the "shared dense
+        # update" the Adam directions imply. In a noise-free
+        # linearization S_A_aw = S_B_aw; disagreement measures
+        # asymmetric Adam-preconditioning + batch noise corrupting
+        # the shared signal. AWC hypothesis (mechanism for the
+        # rank-dependent k-flip): rank 64 should agree more than
+        # rank 16. See agreement_weighted_core_coupling_2026_05_03.md.
+        # Cost: 2 r×r matmuls + norms per pair per step.
+        H_A = u_A @ A_f.T                                   # (r, r)
+        H_B = B_f.T @ u_B                                   # (r, r)
+        S_A_aw = SB_half_inv @ H_A @ SA_half_inv            # (r, r)
+        S_B_aw = SB_half_inv @ H_B @ SA_half_inv            # (r, r)
+        fA = float(S_A_aw.norm())
+        fB = float(S_B_aw.norm())
+        fdiff = float((S_A_aw - S_B_aw).norm())
+        fsum = float((S_A_aw + S_B_aw).norm())
+        fdot = float((S_A_aw * S_B_aw).sum())
+        rec["awc_SA_frob"] = fA
+        rec["awc_SB_frob"] = fB
+        rec["awc_diff_frob"] = fdiff
+        rec["awc_sum_frob"] = fsum
+        rec["awc_cos_AB"] = fdot / (fA * fB + 1e-30)
+        # q_agree = E+/(E++E-) with E+ = ||S+||²/4, E- = ||S-||²/4.
+        e_plus = (fsum ** 2) / 4.0
+        e_minus = (fdiff ** 2) / 4.0
+        rec["awc_q_agree"] = e_plus / (e_plus + e_minus + 1e-30)
+        # Disagreement-coupling coefficient (revised AWC v3, scalar
+        # per pair):
+        #   λ_core = ||S_A - S_B||² / (2 (||S_A||² + ||S_B||²) + ε)
+        # In [0, 1]: 0 when S_A ≡ S_B (full agreement, "do not couple
+        # / would shrink useful agreed signal"); 1 when S_A ≡ −S_B
+        # (full disagreement). Predicts λ_core(r=16) < λ_core(r=64)
+        # under the revised mechanism story.
+        rec["awc_lambda_core"] = (fdiff ** 2) / (2.0 * (fA ** 2 + fB ** 2) + 1e-30)
+
+        # Higham accuracy + S conditioning probe. Tracks the
+        # iterative S^{-1/2} solver's quality vs an eigh reference.
+        # higham_iters=10 (default) is safe for well-to-moderate-
+        # conditioned S but degrades sharply on ill-conditioned S
+        # (synthetic bench at σ_min/σ_max ≈ 0.01 gave 52% rel error
+        # at iters=10 — needs iters=20 for ~1e-5 error). This probe
+        # tells us whether REAL A·A^T spectra during training ever
+        # enter the "ill" regime, vs only synthetic stress tests.
+        # ~6 r×r ops per pair per probe step (cheap).
+        # cond(S_A), cond(S_B) — CHEAP (r×r eigvalsh): kept in basic tier.
+        try:
+            SA_eigs = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
+            SB_eigs = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
+            SA_max = float(SA_eigs.max()); SA_min = float(SA_eigs.min())
+            SB_max = float(SB_eigs.max()); SB_min = float(SB_eigs.min())
+            rec["cond_SA"] = SA_max / max(SA_min, 1e-30)
+            rec["cond_SB"] = SB_max / max(SB_min, 1e-30)
+        except Exception:
+            for k in ("cond_SA", "cond_SB"):
+                rec[k] = float("nan")
+        # Heavy factor-accuracy diagnostics (higham + power-iter probes).
+        if self.log_heavy_diagnostics:
+            self._emit_heavy_factor_accuracy_diag(
+                rec, A_f=A_f, B_f=B_f, geo_A=geo_A, geo_B=geo_B,
+                sigma_A_t=sigma_A_t, sigma_B_t=sigma_B_t,
+                op_geoA=op_geoA, op_geoB=op_geoB,
+            )
+
+        # Stage-0 chord-tight diagnostics (plan
+        # there-are-a-few-indexed-hickey).
+        #
+        # Probe D — Adam-preconditioning gauge residual.
+        # E := u_A A^T − B^T u_B (r × r). For raw factor gradients
+        # g_A = B^T G, g_B = G A^T (G = ∂L/∂W), so g_A A^T = B^T G A^T
+        # = B^T g_B identically — E_raw ≡ 0. Adam preconditioning
+        # breaks the identity; ‖E‖_F measures the geometric distortion
+        # induced by the per-coordinate v_t scaling. Generic
+        # diagnostic, useful across the broader optimizer family.
+        E_gauge = H_A - H_B                                  # reuse awc H_*
+        fE_gauge = float(E_gauge.norm())
+        rec["adam_gauge_residual_frob"] = fE_gauge
+        rec["adam_gauge_residual_rel"] = fE_gauge / max(fA, fB, 1e-30)
+
+        # Probes A, B, C-tight only meaningful under spectral_chord_tight
+        # (rho is the tight-chord scalar; op_geoA/op_geoB are the
+        # operator norms ‖D_A‖_2, ‖D_B‖_2 of the polar directions).
+        if self.magnitude_rule in ("spectral_chord_tight",
+                                   "spectral_chord_direction"):
+            lr_f = float(lr)
+            rho_f = float(rho.detach()) if torch.is_tensor(rho) else float(rho)
+
+            # Probe A — chord_slack via direct SVD (heavy).
+            if self.log_heavy_diagnostics:
+                self._emit_heavy_chord_slack_diag(
+                    rec, A_f=A_f, B_f=B_f, dA=dA, dB=dB, lr_f=lr_f,
+                )
+
+            # Probe B — direction-aware radius gain.
+            # P = D_A / ‖D_A‖_2, Q = D_B / ‖D_B‖_2 are unit-norm
+            # factor directions. With dA = -λ P, dB = -λ Q the safe
+            # direction-aware bound is
+            #   ‖ΔW‖_2 ≤ λ (‖B P‖_2 + ‖Q A‖_2) + λ² ‖Q P‖_2 = a λ + b λ².
+            # Setting that to lr and solving for λ gives the tighter
+            # (still safe) radius λ_dir vs the worst-case rho.
+            try:
+                op_A_safe = op_geoA + 1e-30
+                op_B_safe = op_geoB + 1e-30
+                P_dir = (geo_A.float() / op_A_safe).detach()         # (r, n)
+                Q_dir = (geo_B.float() / op_B_safe).detach()         # (m, r)
+                GBB = B_f.T @ B_f                                    # (r, r) sym PSD
+                GAA = A_f @ A_f.T                                    # (r, r) sym PSD
+                PPt = P_dir @ P_dir.T                                # (r, r) sym PSD
+                QtQ = Q_dir.T @ Q_dir                                # (r, r) sym PSD
+                # σ²_max(BP) = λ_max(L_PPt^T · GBB · L_PPt), L_PPt =
+                # chol(PPt). Eigvalsh on the SYMMETRIC reduced form
+                # (formerly used `eigvals` on the non-symmetric
+                # PPt @ GBB which over-estimated; same issue as the
+                # chord-slack probe).
+                def _sigma_max_via_chol_eigh(G_outer, G_inner):
+                    diag_load = 1e-12 * G_inner.diagonal().abs().mean().clamp_min(1e-30)
+                    damped = G_inner + diag_load * torch.eye(
+                        G_inner.shape[-1], dtype=G_inner.dtype,
+                        device=G_inner.device)
+                    Lc = torch.linalg.cholesky(damped)
+                    M = Lc.T @ G_outer @ Lc
+                    return float(torch.linalg.eigvalsh(M).clamp_min(0.0).max().sqrt())
+                sigma_BP = _sigma_max_via_chol_eigh(GBB, PPt)
+                sigma_QA = _sigma_max_via_chol_eigh(GAA, QtQ)
+                sigma_QP = _sigma_max_via_chol_eigh(PPt, QtQ)
+            except torch._C._LinAlgError:
+                sigma_BP = sigma_QA = sigma_QP = float("nan")
+            a_dir = sigma_BP + sigma_QA
+            b_dir = sigma_QP
+            if a_dir != a_dir:  # NaN propagation
+                lambda_dir = float("nan")
+            elif b_dir <= 1e-30:
+                lambda_dir = lr_f / max(a_dir, 1e-30)
+            else:
+                lambda_dir = (-a_dir + (a_dir * a_dir + 4.0 * b_dir * lr_f) ** 0.5) / (2.0 * b_dir)
+            s_AB_f = float(s_AB) if torch.is_tensor(s_AB) else float(s_AB)
+            rec["lambda_dir"] = lambda_dir
+            rec["lambda_dir_gain"] = lambda_dir / max(rho_f, 1e-30)
+            rec["dir_a"] = a_dir
+            rec["dir_b"] = b_dir
+            rec["dir_a_over_s"] = a_dir / max(s_AB_f, 1e-30)
+
+            # Probe C-tight — saturation fraction and polar-vs-clip
+            # cosine in WHITENED singular-value space at the
+            # tight-chord threshold τ_A = rho / ‖D_A‖_2, the §8
+            # saturating-regime threshold from
+            # algorithm_tight_chord.md. Distinct from the existing
+            # cos_polar_clip_A which uses the R-equal threshold
+            # τ_R = ‖X_unc‖_F / √r. Polar maps every nonzero σ → τ,
+            # clip maps σ → min(η σ, τ); they share singular vectors
+            # so the cosine is a singular-value-only comparison.
+            try:
+                c_A_mat = (SB_half_inv @ u_A).float()
+                c_B_mat = (u_B @ SA_half_inv).float()
+                sv_cA_tight = torch.linalg.svdvals(c_A_mat)
+                sv_cB_tight = torch.linalg.svdvals(c_B_mat)
+                tau_A_tight = rho_f / max(float(op_geoA), 1e-30)
+                tau_B_tight = rho_f / max(float(op_geoB), 1e-30)
+                eta_sA = lr_f * sv_cA_tight
+                eta_sB = lr_f * sv_cB_tight
+                clip_A_sv = torch.clamp(eta_sA, max=tau_A_tight)
+                clip_B_sv = torch.clamp(eta_sB, max=tau_B_tight)
+                # Polar vector (in σ-space): all entries τ, length √r·τ.
+                n_cA = clip_A_sv.numel()
+                n_cB = clip_B_sv.numel()
+                polar_norm_A = (n_cA ** 0.5) * tau_A_tight
+                polar_norm_B = (n_cB ** 0.5) * tau_B_tight
+                clip_norm_A = float(clip_A_sv.norm()) + 1e-30
+                clip_norm_B = float(clip_B_sv.norm()) + 1e-30
+                rec["cos_polar_clip_tight_A"] = (
+                    tau_A_tight * float(clip_A_sv.sum())
+                    / (max(polar_norm_A, 1e-30) * clip_norm_A)
+                )
+                rec["cos_polar_clip_tight_B"] = (
+                    tau_B_tight * float(clip_B_sv.sum())
+                    / (max(polar_norm_B, 1e-30) * clip_norm_B)
+                )
+                rec["sat_frac_tight_A"] = float((eta_sA >= tau_A_tight).float().mean())
+                rec["sat_frac_tight_B"] = float((eta_sB >= tau_B_tight).float().mean())
+                rec["tau_tight_A"] = tau_A_tight
+                rec["tau_tight_B"] = tau_B_tight
+            except torch._C._LinAlgError:
+                for _k in ("cos_polar_clip_tight_A", "cos_polar_clip_tight_B",
+                           "sat_frac_tight_A", "sat_frac_tight_B",
+                           "tau_tight_A", "tau_tight_B"):
+                    rec[_k] = float("nan")
+
+        # H2/H3 — Picard contraction + polar sensitivity probes (heavy).
+        if is_probe_step and self.log_heavy_diagnostics:
+            self._emit_heavy_picard_diagnostics(
+                rec, u_A=u_A, u_B=u_B,
+                SA_half_inv=SA_half_inv, SB_half_inv=SB_half_inv, lr=lr,
+                A_f=A_f, B_f=B_f, dA=dA, dB=dB, gA=gA, gB=gB,
+            )
+        return rec
+
     def _emit_heavy_picard_diagnostics(
         self, rec, *, u_A, u_B, SA_half_inv, SB_half_inv, lr,
         A_f, B_f, dA, dB, gA, gB,
