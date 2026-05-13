@@ -57,6 +57,7 @@ OPTIM_COLORS = {
     "adam-polar-product-lora-coupled-exact-chord": "#7d4a2e",  # ochre — coupled w/ exact ΔW chord (not J-tangent)
     "adam-polar-product-lora-coupled-spectral-chord": "#c75c2e",  # burnt orange — coupled w/ spectral chord trust region
     "adam-polar-product-lora-coupled-spectral-chord-tight": "#7a3520",  # darker burnt orange — tight chord (exact root)
+    "adam-polar-product-lora-coupled-spectral-chord-tight-exact": "#a8453c",  # red-orange — tight chord + exact-chord direction iter
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening": "#8e6b3c",  # tan — no-whitening ablation
     "adam-polar-product-lora-coupled-spectral-chord-tight-outer": "#c95a35",  # bright orange — outer-rescale (Picard insight)
     "adam-polar-product-lora-coupled-spectral-chord-direction": "#a02a0d",  # red-orange — variant 1 (direction-aware ρ)
@@ -124,6 +125,7 @@ OPTIM_FAMILIES = {
         "adam-polar-product-lora-coupled-exact-chord",
         "adam-polar-product-lora-coupled-spectral-chord",
         "adam-polar-product-lora-coupled-spectral-chord-tight",
+        "adam-polar-product-lora-coupled-spectral-chord-tight-exact",
         "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening",
         "adam-polar-product-lora-coupled-spectral-chord-tight-outer",
         "adam-polar-product-lora-coupled-spectral-chord-direction",

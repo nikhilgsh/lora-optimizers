@@ -310,6 +310,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled-exact-chord",
     "adam-polar-product-lora-coupled-spectral-chord",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
+    "adam-polar-product-lora-coupled-spectral-chord-tight-exact",
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening",
     "adam-polar-product-lora-coupled-spectral-chord-direction",
     "adam-soap-polar-product-lora",
@@ -7746,6 +7747,40 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
+            precond_delta_relative=precond_delta_relative,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-exact":
+        # Chord-tight magnitude rule + exact-chord direction iteration.
+        # Aligns the variational direction target (currently J = B·dA + dB·A,
+        # the tangent — see algorithm_tight_chord.md §3) with the magnitude
+        # program's actual target (ΔW = J + dB·dA, the chord — §8). Picard
+        # cross-coupling correction uses (B + dB_prev) and (A + dA_prev)
+        # instead of just B and A; both magnitude budget AND direction
+        # iteration consistently target ΔW. Investigates whether the
+        # observed lr=5e-3 loss bump at chord-tight k=3 r=64 is a symptom
+        # of the J-vs-ΔW asymmetry (bump shows where dB has grown enough
+        # that J ≠ ΔW but the default iter still optimizes J).
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_tight",
+            exact_chord=True,
             precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening":
