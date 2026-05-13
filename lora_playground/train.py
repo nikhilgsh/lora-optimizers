@@ -925,7 +925,15 @@ def main():
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,
+            "lora_init_b": args.lora_init_b,
+            "precond_delta": args.precond_delta,
+            "precond_delta_relative": args.precond_delta_relative,
             "optimizer_config": optimizer_config_dict(optimizer),
+            # Future-proofing: blanket dump of every CLI flag so analysis
+            # never has to wait for a manual cfg event update when a new
+            # flag is added. Named fields above remain for backward compat.
+            "_cli_args": {k: v for k, v in vars(args).items()
+                          if not k.startswith("_") and not callable(v)},
         }
     )
 

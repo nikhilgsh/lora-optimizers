@@ -363,6 +363,7 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         return (None if cfg is None else dict(cfg)), evs
 
     config, evals, optim_steps = None, [], []
+    init_override_mode = None
     for line in Path(log_path).read_text().splitlines():
         line = line.strip()
         if not line:
@@ -377,6 +378,8 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
             evals.append(obj)
         elif obj.get("event") == "optim_step":
             optim_steps.append(obj)
+        elif obj.get("event") == "lora_init_override":
+            init_override_mode = obj.get("mode")
     if config is not None and evals:
         config.setdefault("lr", evals[0]["lr"])
         cmd = config.get("command", "")
@@ -387,6 +390,12 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         rk = parse_flag(cmd, "--precond_refresh_every")
         config.setdefault("precond_refresh_every", int(rk) if rk else 1)
         config.setdefault("precond_method", parse_flag(cmd, "--precond_method"))
+        # lora_init_b: explicit cfg field (new runs as of train.py change
+        # 2026-05-13), CLI flag fallback, then lora_init_override event
+        # (which only fires for non-zero modes), default "zero".
+        if config.get("lora_init_b") is None:
+            cli_init = parse_flag(cmd, "--lora_init_b")
+            config["lora_init_b"] = cli_init or init_override_mode or "zero"
         config["_optim_steps"] = optim_steps
     if sig is not None:
         _LOAD_RUN_CACHE[path_str] = (sig, config, evals)
