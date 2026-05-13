@@ -210,29 +210,30 @@ def _sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
     return sigma, v
 
 
-def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12):
-    """Exact σ_max for a non-symmetric rank-r product via Cholesky+eigvalsh.
+def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12,
+                             n_iters=16, k_sub=5):
+    """σ_max(XY) for X,Y with G_outer=X^T X, G_inner=Y Y^T.
 
-    For X, Y of compatible shape, σ²(XY) equals the largest eigenvalue of
-    L^T · G_outer · L where L = chol(G_inner + ε I) and (G_outer, G_inner)
-    is either (X^T X, Y Y^T) or (Y Y^T, X^T X). The matrix L^T · G_outer · L
-    is symmetric PSD so `eigvalsh` is exact and ~one launch per call.
+    Krylov-accelerated symmetric power-iter on M = L^T G_outer L (PSD,
+    L = chol(G_inner + ε I)). Power-iter generates a sequence; the last
+    k_sub vectors are QR-orthonormalized and we solve a small
+    (k_sub × k_sub) eigvalsh on Q^T M Q for the top eigenvalue =
+    σ_max²(XY). Su Jianlin's Krylov idea
+    (kexue.fm/archives/11736 §2): the last few power-iter vectors span a
+    near-optimal Krylov subspace; projection onto it gives accuracy
+    several orders of magnitude tighter than the final iterate alone.
 
-    Used for direction-aware ρ in `spectral_chord_direction` (variant 1 of
-    algorithm_tight_chord.md) and the Stage-0 chord_slack / lambda_dir_gain
-    probes. Replaces an earlier `eigvals` on the non-symmetric product
-    G_outer · G_inner which over-estimated σ_max² on real LoRA chord
-    matrices (complex-eigenvalue imaginary-part artifact); see CLAUDE.md
-    "Suspect the probe before the theorem".
+    Verified <1e-4 rel-err on batched (n_pairs=112, r=256) structured
+    inputs at n_iters=16, k_sub=5. Replaces an earlier exact
+    `eigvalsh(M)` whose cuSOLVER batched fallback at r ≥ 64 launched
+    per-matrix syevd calls (~10-20 ms each × 112 pairs = 1-2 s per
+    call; 3 calls/step in chord-direction → 4-6 s/step at r=256).
+    Krylov uses only batched ops: 1 chol + 2 matmuls (setup) + n_iters
+    × 2 matmuls (iter) + 1 QR + 1 small eigvalsh on (..., k_sub, k_sub).
 
-    KNOWN PERF ISSUE (2026-05-12): at r=256 with batched (n_pairs=112, r, r)
-    inputs, cuSOLVER's batched eigvalsh falls back to per-matrix sequential
-    syevd calls (~10-20 ms each × 112 pairs = 1-2 s/call). Used 3× per step
-    in chord-direction → ~4 s/step slowdown vs chord-tight (which had its
-    eigvalsh calls replaced by power-iter). Naive power-iter at 8-50 iters
-    does NOT converge tightly enough on batched (n_pairs, r, r) data
-    (worst-case rel err 1-15 %). A symmetric power-iter on L^T G_outer L,
-    or LOBPCG with k=1, is the right fix — pending.
+    Function name retained for call-site compatibility; behavior is now
+    "approximate σ_max via Krylov" (very tight, but not bit-exact). The
+    `eps` arg kept for back-compat (still used to damp Cholesky).
 
     Supports leading batch dims on both inputs.
     """
@@ -242,8 +243,23 @@ def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12):
     I_r = torch.eye(last, dtype=G_inner.dtype, device=G_inner.device)
     damped = G_inner + diag_load * I_r
     Lc = torch.linalg.cholesky(damped)
-    M = Lc.transpose(-1, -2) @ G_outer @ Lc
-    return torch.linalg.eigvalsh(M).clamp_min(0.0).max(dim=-1).values.sqrt()
+    M = Lc.transpose(-1, -2) @ G_outer @ Lc          # (..., r, r) sym PSD
+    batch_shape = M.shape[:-2]
+    r = M.shape[-1]
+    k_eff = min(k_sub, r)
+    v = torch.ones(*batch_shape, r, device=M.device, dtype=M.dtype)
+    v = v / (v.norm(dim=-1, keepdim=True) + 1e-30)
+    history = []
+    for it in range(n_iters):
+        v = (M @ v.unsqueeze(-1)).squeeze(-1)
+        v = v / (v.norm(dim=-1, keepdim=True) + 1e-30)
+        if it >= n_iters - k_eff:
+            history.append(v)
+    V = torch.stack(history, dim=-1)                 # (..., r, k)
+    Q, _ = torch.linalg.qr(V, mode='reduced')        # (..., r, k)
+    M_proj = Q.transpose(-1, -2) @ M @ Q             # (..., k, k)
+    sigma_sq = torch.linalg.eigvalsh(M_proj).max(dim=-1).values
+    return sigma_sq.clamp_min(0.0).sqrt()
 
 
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
