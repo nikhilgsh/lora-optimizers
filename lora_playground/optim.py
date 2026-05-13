@@ -179,21 +179,31 @@ def _sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
     smaller_m = m <= n
     k = m if smaller_m else n
     expected_shape = (*batch, k)
+    # Deterministic fallback: M·ones (smaller_m=True) or M^T·ones — gives
+    # near-perfect overlap with the dominant singular vector for typical
+    # SPD/Gauss-like factor matrices.
+    if smaller_m:
+        ones_n = torch.ones(*batch, n, device=Mf.device, dtype=torch.float32)
+        v_fallback = (Mf @ ones_n.unsqueeze(-1)).squeeze(-1)
+    else:
+        ones_m = torch.ones(*batch, m, device=Mf.device, dtype=torch.float32)
+        v_fallback = (Mf.transpose(-2, -1) @ ones_m.unsqueeze(-1)).squeeze(-1)
     if (v_init is None
             or v_init.shape != expected_shape
             or v_init.device != Mf.device
             or v_init.dtype != torch.float32):
-        # Deterministic init: M·ones (smaller_m=True) or M^T·ones — gives
-        # near-perfect overlap with the dominant singular vector for
-        # typical SPD/Gauss-like factor matrices.
-        if smaller_m:
-            ones_n = torch.ones(*batch, n, device=Mf.device, dtype=torch.float32)
-            v = (Mf @ ones_n.unsqueeze(-1)).squeeze(-1)
-        else:
-            ones_m = torch.ones(*batch, m, device=Mf.device, dtype=torch.float32)
-            v = (Mf.transpose(-2, -1) @ ones_m.unsqueeze(-1)).squeeze(-1)
+        v = v_fallback
     else:
-        v = v_init
+        # Sticky-zero guard: if a previous step ran with M ≈ 0 (e.g. chord-tight
+        # whiten at LoRA step 1 with Init[A] has u_A = 0 because gA = 0 when
+        # B = 0), the stored warm-start vector is zero. Power-iter preserves
+        # zero across iterations, so the next call would return σ = 0 even when
+        # M is nonzero — and downstream divisions by sigma+eps explode u_A and
+        # collapse dA. Per-batch fallback to deterministic init when warm-start
+        # is degenerate.
+        v_norm = v_init.norm(dim=-1, keepdim=True)
+        degenerate = v_norm <= eps
+        v = torch.where(degenerate, v_fallback, v_init)
     v = v / (v.norm(dim=-1, keepdim=True) + eps)
     if smaller_m:
         for _ in range(n_iters):
@@ -3779,6 +3789,31 @@ class AdamPolarProductLoRA(Optimizer):
             "rms_scale_A": float(uA_norm / gA_norm),
             "rms_scale_B": float(uB_norm / gB_norm),
         }
+        # σ_max optimizer-vs-exact probe. ``sigma_{A,B}_t`` is the optimizer's
+        # internal warm-start power-iter estimate that feeds the chord-tight ρ
+        # (s_AB = σ_A_opt + σ_B_opt). Compare against the exact value via the
+        # already-computed Gram eigenvalue. A persistent ~0 in `_optim` while
+        # `_exact` is nonzero is the sticky-zero warm-start failure that froze
+        # A in chord-tight whiten + Init[A] runs prior to the
+        # `_sigma_max_power_iter_batched` v_init degeneracy guard.
+        if sigma_A_t is not None and sa_max == sa_max:
+            import math as _m
+            sigma_A_exact = float(_m.sqrt(max(sa_max, 0.0)))
+            sigma_A_opt = float(sigma_A_t)
+            rec["sigma_A_opt"] = sigma_A_opt
+            rec["sigma_A_exact"] = sigma_A_exact
+            rec["sigma_A_relerr"] = (
+                abs(sigma_A_opt - sigma_A_exact) / max(sigma_A_exact, 1e-30)
+            )
+        if sigma_B_t is not None and sb_max == sb_max:
+            import math as _m
+            sigma_B_exact = float(_m.sqrt(max(sb_max, 0.0)))
+            sigma_B_opt = float(sigma_B_t)
+            rec["sigma_B_opt"] = sigma_B_opt
+            rec["sigma_B_exact"] = sigma_B_exact
+            rec["sigma_B_relerr"] = (
+                abs(sigma_B_opt - sigma_B_exact) / max(sigma_B_exact, 1e-30)
+            )
 
         # Muon+ premise probe (arXiv:2602.21545 §2): after orthogonal-
         # ization, per-row/per-col ℓ₂ norms of geo_{A,B} have high
