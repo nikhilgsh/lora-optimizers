@@ -210,31 +210,41 @@ def _sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
     return sigma, v
 
 
-def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12):
-    """Exact σ_max for a non-symmetric rank-r product via Cholesky+eigvalsh.
+def _sigma_max_chol_eigvalsh(G_outer, G_inner, eps=1e-12, n_iters=8):
+    """σ_max for a non-symmetric rank-r product via power iteration.
 
     For X, Y of compatible shape, σ²(XY) equals the largest eigenvalue of
-    L^T · G_outer · L where L = chol(G_inner + ε I) and (G_outer, G_inner)
-    is either (X^T X, Y Y^T) or (Y Y^T, X^T X). The matrix L^T · G_outer · L
-    is symmetric PSD so `eigvalsh` is exact and ~one launch per call.
+    M = G_inner · G_outer where (G_outer, G_inner) is either (X^T X, Y Y^T)
+    or (Y Y^T, X^T X). Power iteration on M converges to the top
+    eigenvalue (real and positive since M is similar to the symmetric PSD
+    G_inner^(1/2) G_outer G_inner^(1/2)).
 
-    Used for direction-aware ρ in `spectral_chord_direction` (variant 1 of
-    algorithm_tight_chord.md) and the Stage-0 chord_slack / lambda_dir_gain
-    probes. Replaces an earlier `eigvals` on the non-symmetric product
-    G_outer · G_inner which over-estimated σ_max² on real LoRA chord
-    matrices (complex-eigenvalue imaginary-part artifact); see CLAUDE.md
-    "Suspect the probe before the theorem".
+    Replaces the original Cholesky + eigvalsh implementation, which is
+    "exact" but cuSOLVER-bound: at r=256 with n_pairs=112, the batched
+    eigvalsh kernel-launch overhead is ~1.5 s/call (3 such calls per step
+    in chord-direction → ~4.5 s/step regression). Power iter at n_iters=8
+    is sub-percent accurate on well-conditioned PSD pairs and runs in
+    O(n_iters · r²) per pair via bmm.
+
+    Name retained for call-site compatibility. The `eps` arg is also
+    retained (now unused — power-iter has no Cholesky to regularize).
 
     Supports leading batch dims on both inputs.
     """
-    last = G_inner.shape[-1]
-    diag = G_inner.diagonal(dim1=-2, dim2=-1).abs().mean(dim=-1, keepdim=True)
-    diag_load = (eps * diag.clamp_min(1e-30)).unsqueeze(-1)
-    I_r = torch.eye(last, dtype=G_inner.dtype, device=G_inner.device)
-    damped = G_inner + diag_load * I_r
-    Lc = torch.linalg.cholesky(damped)
-    M = Lc.transpose(-1, -2) @ G_outer @ Lc
-    return torch.linalg.eigvalsh(M).clamp_min(0.0).max(dim=-1).values.sqrt()
+    del eps  # legacy arg, no longer needed
+    *batch_dims, r = G_outer.shape[:-1]
+    v = torch.ones(*batch_dims, r,
+                   dtype=G_outer.dtype, device=G_outer.device)
+    v = v / (v.norm(dim=-1, keepdim=True) + 1e-30)
+    for _ in range(n_iters):
+        Gv = (G_outer @ v.unsqueeze(-1)).squeeze(-1)
+        Mv = (G_inner @ Gv.unsqueeze(-1)).squeeze(-1)
+        v = Mv / (Mv.norm(dim=-1, keepdim=True) + 1e-30)
+    # Rayleigh quotient: σ² = v^T (G_inner G_outer) v.
+    Gv = (G_outer @ v.unsqueeze(-1)).squeeze(-1)
+    Mv = (G_inner @ Gv.unsqueeze(-1)).squeeze(-1)
+    sigma_sq = (v * Mv).sum(dim=-1).clamp_min(0.0)
+    return sigma_sq.sqrt()
 
 
 def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
@@ -2974,6 +2984,7 @@ class AdamPolarProductLoRA(Optimizer):
         lr = self.param_groups[0]["lr"]
         timer = getattr(self, "_step_timer", None)
 
+        diag_records = []
         for gs in self.group_state:
             N = gs['N']
             indices = gs['indices']
@@ -3273,6 +3284,89 @@ class AdamPolarProductLoRA(Optimizer):
                 dA_prev = dA
                 dB_prev = dB
 
+            # Basic-tier diagnostics on probe steps: slice per-pair from the
+            # batched 3D buffers and call the shared _emit_basic_diagnostics
+            # helper. Lets the batched path stay on probe steps without
+            # falling back to per-pair (case-(a) of _batched_path_eligible).
+            is_probe_step = (
+                self.log_basic_diagnostics
+                and step_count % self.diagnostics_every == 0
+            )
+            if is_probe_step:
+                # Recover per-pair geo_*, uA_norm, uB_norm, gA_norm, gB_norm
+                # for the frob branch (not exposed by unwhiten_rescale_frob_batched).
+                if self.magnitude_rule not in ("spectral_chord",
+                                               "spectral_chord_tight",
+                                               "spectral_chord_direction"):
+                    geo_A_diag = SB_half_inv_k @ P_A
+                    geo_B_diag = P_B @ SA_half_inv_k
+                    uA_norm_b = u_A_eff.flatten(-2).norm(dim=-1)        # (N,)
+                    uB_norm_b = u_B_eff.flatten(-2).norm(dim=-1)        # (N,)
+                    gA_norm_b = geo_A_diag.flatten(-2).norm(dim=-1) + 1e-30
+                    gB_norm_b = geo_B_diag.flatten(-2).norm(dim=-1) + 1e-30
+                    op_geoA_b_diag = None
+                    op_geoB_b_diag = None
+                    sigma_A_b_diag = None
+                    sigma_B_b_diag = None
+                else:
+                    geo_A_diag = geo_A
+                    geo_B_diag = geo_B
+                    # uA_norm/uB_norm follow per-pair convention: rho (or lam)
+                    # for chord variants, since the unit-polar-norm has
+                    # absorbed the original Adam magnitude into the rescale.
+                    if self.magnitude_rule == "spectral_chord_direction":
+                        uA_norm_b = lam.detach()
+                        uB_norm_b = lam.detach()
+                    else:
+                        uA_norm_b = rho.detach()
+                        uB_norm_b = rho.detach()
+                    # op_geoA/op_geoB are (N,1,1); flatten to (N,) for per-pair.
+                    op_geoA_b_diag = op_geoA.squeeze(-1).squeeze(-1)
+                    op_geoB_b_diag = op_geoB.squeeze(-1).squeeze(-1)
+                    gA_norm_b = op_geoA_b_diag
+                    gB_norm_b = op_geoB_b_diag
+                    sigma_A_b_diag = sigma_A
+                    sigma_B_b_diag = sigma_B
+
+                picard_coeff_b = (picard_coeff_s.squeeze(-1).squeeze(-1)
+                                  if picard_coeff_s is not None else None)
+                s_AB_b = s_AB if self.magnitude_rule in (
+                    "spectral_chord_tight", "spectral_chord_direction"
+                ) else None
+
+                for k_pair in range(N):
+                    gi = indices[k_pair]
+                    state_k = self.pair_state[gi]
+                    rec = self._emit_basic_diagnostics(
+                        state=state_k,
+                        A=A_list[k_pair], B=B_list[k_pair],
+                        A_f=A_f[k_pair], B_f=B_f[k_pair],
+                        u_A=u_A[k_pair], u_B=u_B[k_pair],
+                        dA=dA[k_pair], dB=dB[k_pair],
+                        gA=gs['gA_stack'][k_pair], gB=gs['gB_stack'][k_pair],
+                        SA_half_inv=SA_half_inv_k[k_pair],
+                        SB_half_inv=SB_half_inv_k[k_pair],
+                        geo_A=geo_A_diag[k_pair], geo_B=geo_B_diag[k_pair],
+                        sigma_A_t=(sigma_A_b_diag[k_pair]
+                                   if sigma_A_b_diag is not None else None),
+                        sigma_B_t=(sigma_B_b_diag[k_pair]
+                                   if sigma_B_b_diag is not None else None),
+                        op_geoA=(op_geoA_b_diag[k_pair]
+                                 if op_geoA_b_diag is not None else None),
+                        op_geoB=(op_geoB_b_diag[k_pair]
+                                 if op_geoB_b_diag is not None else None),
+                        uA_norm=uA_norm_b[k_pair],
+                        uB_norm=uB_norm_b[k_pair],
+                        gA_norm=gA_norm_b[k_pair],
+                        gB_norm=gB_norm_b[k_pair],
+                        picard_coeff_t=(picard_coeff_b[k_pair]
+                                        if picard_coeff_b is not None else None),
+                        rho=(rho[k_pair] if rho is not None else None),
+                        s_AB=(s_AB_b[k_pair] if s_AB_b is not None else None),
+                        lr=lr,
+                    )
+                    diag_records.append(rec)
+
             # Apply via `torch._foreach_*`: one multi-tensor kernel each for
             # add and zero, instead of 4N per-pair launches. ~4 ms saved
             # per step at OLMo r=64.
@@ -3285,6 +3379,11 @@ class AdamPolarProductLoRA(Optimizer):
                 torch._foreach_add_(B_list, list(dB_native.unbind(0)))
                 torch._foreach_zero_([A.grad for A in A_list])
                 torch._foreach_zero_([B.grad for B in B_list])
+
+        if self.log_basic_diagnostics and diag_records:
+            step_count_any = self.pair_state[0]['step']
+            if step_count_any % self.diagnostics_every == 0:
+                _emit_optim_diagnostics(step_count_any, diag_records)
 
     @torch.no_grad()
     def _step_per_pair(self, closure=None):
@@ -3300,10 +3399,16 @@ class AdamPolarProductLoRA(Optimizer):
                 raise ValueError("Gradients are required for AdamPolarProductLoRA update.")
             state = self.pair_state[i]
             state['step'] += 1
-            # Diagnostics-only sentinel; chord-tight / chord-direction assign
-            # s_AB but other magnitude rules don't. _emit_basic_diagnostics
-            # takes it as a kwarg unconditionally.
+            # Diagnostics-only sentinels; chord variants assign these but the
+            # frob / default branch doesn't. _emit_basic_diagnostics takes
+            # them as kwargs unconditionally.
             s_AB = None
+            sigma_A_t = None
+            sigma_B_t = None
+            op_geoA = None
+            op_geoB = None
+            rho = None
+            picard_coeff_t = None
 
             gA = A.grad.float()
             gB = B.grad.float()
