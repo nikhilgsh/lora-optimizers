@@ -25,7 +25,8 @@ if [[ -z "${SWEEP_SCOPE:-}" ]]; then
     echo "              r_extension (r != 16), loraplus_family, svd_oracle," >&2
     echo "              diagnostics, lin_scaled_investigation, polar_family," >&2
     echo "              winner_rerun, pilot, legacy," >&2
-    echo "              tight_chord_paper, phase_L, longhorizon_1b" >&2
+    echo "              tight_chord_paper, phase_L, longhorizon_1b," >&2
+    echo "              repack_baseline, lr_extension" >&2
     echo "" >&2
     echo "See lora_playground/manifest.py for the full schema." >&2
     exit 1

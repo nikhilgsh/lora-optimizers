@@ -43,7 +43,7 @@ fi
 
 python train_lora.py \
     --data_dir data/opc_sft_stage2_all_packed_seq2048 \
-    --data_pipeline_version packed_v1 \
+    --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \
     --max_seq_length 2048 \
     --attn_implementation sdpa \
     --device cuda \
