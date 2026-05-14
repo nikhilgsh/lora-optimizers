@@ -217,45 +217,48 @@ def sigma_max_krylov_chol(G_outer, G_inner, eps=1e-6,
 
 
 def sigma_max_power_iter_nonsym(G_outer, G_inner, v_init=None, n_iters=16,
-                                 k_sub=5, eps=1e-30):
-    """σ_max(XY) by power iter on N = G_outer · G_inner (r×r, non-symmetric).
+                                 eps=1e-30):
+    """σ_max(XY) by plain power iter on N = G_outer · G_inner (r×r, non-symmetric).
 
-    For X, Y with G_outer = X^T X, G_inner = Y Y^T, the matrix
-    N = G_outer · G_inner is r×r and non-symmetric, but its eigenvalues are
-    real and non-negative (N is similar to the symmetric PSD matrix
-    G_outer^{1/2} · G_inner · G_outer^{1/2}). The largest eigenvalue of N
-    equals σ_max²(XY).
+    For X, Y with G_outer = X^T X, G_inner = Y Y^T, the matrix N is r×r
+    and non-symmetric, but its eigenvalues are real and non-negative (N
+    is similar to the symmetric PSD G_outer^{1/2} · G_inner · G_outer^{1/2}).
+    The largest eigenvalue of N equals σ_max²(XY).
 
-    Power iter on N converges at rate (|λ₂(N)| / |λ₁(N)|)^T = (σ_2/σ_1)^{2T}
-    — same as on the Cholesky-formed symmetric M = L^T G_outer L. Per-iter
-    cost is also identical: r² matvec. **What we save: the Cholesky
-    factorization** (~1 batched chol per call), which is the fragility
-    point in `sigma_max_krylov_chol` under bf16 noise.
+    Algorithm: form N once, then power iter v ← N v / ‖N v‖ for n_iters.
+    Return σ_max(XY) ≈ √‖N v‖ from the Rayleigh quotient on the converged
+    final iterate (unit-norm v ⇒ ‖N v‖ ≈ λ_max(N) at convergence).
+    Convergence rate (|λ_2|/|λ_1|)^T per matvec — at n_iters=16 with
+    typical chord-direction spectra this gives <1e-3 rel-error.
 
-    Last-k Krylov acceleration (Su 2026 idea) reuses the last `k_sub`
-    iterates: QR-orthonormalize → solve a tiny (k_sub × k_sub) eigvalsh
-    for accuracy several orders of magnitude tighter than the final
-    iterate alone. Cheap; matches the krylov-chol pattern.
+    Why not the Krylov last-k projection trick? It seemed cheap and tight
+    (smaller k_sub × k_sub eigvals on the projection of N onto the
+    last-k iterates' QR basis) but fails in practice: when power iter has
+    fully converged, the last-k iterates are nearly parallel to the
+    dominant eigenvector, the k_sub × k_sub projection has repeated
+    eigenvalues, and cuSOLVER's iterative eigvals raises
+    `_LinAlgError: ill-conditioned or repeated eigenvalues`. Observed
+    crashing the optimizer at chord-direction k=3 r=64 lr=1e-2 step
+    ~3800. The plain Rayleigh quotient on the final iterate is robust
+    and accurate enough.
 
-    Robust to rank-deficient G_inner — there is no damping or
-    factorization; σ_max(XY) is always finite by submultiplicativity,
-    even when G_inner is singular.
+    Robust to rank-deficient G_inner — no damping, no factorization;
+    σ_max(XY) is always finite by submultiplicativity even when G_inner
+    is singular.
 
     Args:
         G_outer: (..., r, r) SPD. = X^T X.
         G_inner: (..., r, r) SPD (possibly rank-deficient). = Y Y^T.
         v_init: optional warm-start vector of shape (..., r).
-        n_iters: number of N matvecs (default 16, matches krylov-chol).
-        k_sub: number of trailing iterates for Krylov projection.
+        n_iters: number of N matvecs (default 16).
 
     Returns:
-        (sigma, v_new): σ_max(XY) and updated dominant eigenvector of N
-        for warm-starting next call.
+        (sigma, v_new): σ_max(XY) and converged dominant eigenvector of N
+        for warm-starting the next call.
     """
     N = G_outer @ G_inner                              # (..., r, r) non-symmetric
     batch_shape = N.shape[:-2]
     r = N.shape[-1]
-    k_eff = min(k_sub, r)
     if (v_init is None
             or v_init.shape != (*batch_shape, r)
             or v_init.device != N.device
@@ -264,22 +267,12 @@ def sigma_max_power_iter_nonsym(G_outer, G_inner, v_init=None, n_iters=16,
     else:
         v = v_init
     v = v / (v.norm(dim=-1, keepdim=True) + eps)
-    history = []
-    for it in range(n_iters):
+    for _ in range(n_iters):
         v = (N @ v.unsqueeze(-1)).squeeze(-1)
         v = v / (v.norm(dim=-1, keepdim=True) + eps)
-        if it >= n_iters - k_eff:
-            history.append(v)
-    # Krylov last-k projection. Note: N is non-symmetric, but its real-
-    # positive spectrum means we can still project onto Q and take the
-    # max eigenvalue magnitude of the (k_sub × k_sub) projection.
-    V = torch.stack(history, dim=-1)                   # (..., r, k)
-    Q, _ = torch.linalg.qr(V, mode='reduced')          # (..., r, k)
-    N_proj = Q.transpose(-1, -2) @ N @ Q               # (..., k, k) — small, non-sym
-    # eigvals returns complex; take real part (eigenvalues of similar N are
-    # real-positive). For non-symmetric small (k×k) matrix, this is fine —
-    # the kernel-storm concern is at (..., r, r) for r ≥ 64, not k ~ 5.
-    sigma_sq = torch.linalg.eigvals(N_proj).real.max(dim=-1).values
+    # Rayleigh quotient: ‖N v‖ ≈ λ_max(N) = σ²_max(XY) for converged unit v.
+    Nv = (N @ v.unsqueeze(-1)).squeeze(-1)
+    sigma_sq = Nv.norm(dim=-1)
     return sigma_sq.clamp_min(0.0).sqrt(), v
 
 

@@ -24,7 +24,8 @@ if [[ -z "${SWEEP_SCOPE:-}" ]]; then
     echo "Known scopes: ext_compare, muon_family, all_optimizers (r=16 only)," >&2
     echo "              r_extension (r != 16), loraplus_family, svd_oracle," >&2
     echo "              diagnostics, lin_scaled_investigation, polar_family," >&2
-    echo "              winner_rerun, pilot, legacy" >&2
+    echo "              winner_rerun, pilot, legacy," >&2
+    echo "              tight_chord_paper, phase_L, longhorizon_1b" >&2
     echo "" >&2
     echo "See lora_playground/manifest.py for the full schema." >&2
     exit 1
@@ -122,7 +123,7 @@ manifest = {
     "scope": scope,
     "purpose": os.environ.get("SWEEP_PURPOSE", ""),
     # Default-tag the data pipeline version. Per-run cfg events carry the
-    # authoritative value (set by `--data_pipeline_version`); this is just
+    # authoritative value (set by --data_pipeline_version on train.py); this is just
     # a sweep-level hint for analysis filters. Override via env var if a
     # sweep deliberately mixes versions.
     "data_pipeline_version": os.environ.get(

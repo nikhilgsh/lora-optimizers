@@ -2518,7 +2518,8 @@ class AdamPolarProductLoRA(Optimizer):
                  exact_chord=False,
                  magnitude_rule="adam_frobenius",
                  disable_whitening=False,
-                 precond_delta_relative=False):
+                 precond_delta_relative=False,
+                 log_non_finite=False):
         named = collect_lora_pairs_named(model, adapter_name)
         if not named:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2529,6 +2530,13 @@ class AdamPolarProductLoRA(Optimizer):
         self.pair_names = [n for _, _, n in named]
         self.delta = delta
         self.precond_delta_relative = bool(precond_delta_relative)
+        # `log_non_finite`: when True, run the top-of-step per-pair
+        # (A, B, grad_A, grad_B) isfinite check AND the end-of-step
+        # chain-of-intermediates check. Both add measurable overhead at
+        # high rank (~10% total wall at r=256, ~448 + ~20*N isfinite
+        # kernel launches per step). Default OFF; turn on for
+        # NaN-debugging runs.
+        self.log_non_finite = bool(log_non_finite)
         self.eps = eps
         self.beta1, self.beta2 = betas
         self.ns_steps = ns_steps
@@ -2961,22 +2969,25 @@ class AdamPolarProductLoRA(Optimizer):
         # non-finite entries BEFORE consuming gradients. Identifies which
         # pair / which tensor went bad at the moment of failure, and dumps
         # the prior step's per-pair stats so the precursor state is
-        # captured. Unconditional (always on) — the cost is 4 `isfinite`
-        # reductions per pair per step, microseconds at LoRA r=256.
+        # captured. Gated on `log_non_finite` because the kernel-launch
+        # cost (~448 isfinite reductions at r=256, plus the end-of-step
+        # chain check below) compounds to ~10% wall overhead. Default OFF;
+        # turn on with --log_non_finite for NaN-debugging runs.
         step_now = (next(iter(self.pair_state.values())).get('step', 0) + 1
                     if self.pair_state else 1)
-        for i, (A, B) in enumerate(self.pairs):
-            gA, gB = A.grad, B.grad
-            checks = {
-                "A": bool(~torch.isfinite(A).all()) if A.numel() else False,
-                "B": bool(~torch.isfinite(B).all()) if B.numel() else False,
-                "grad_A": bool(~torch.isfinite(gA).all()) if gA is not None else False,
-                "grad_B": bool(~torch.isfinite(gB).all()) if gB is not None else False,
-            }
-            if any(checks.values()):
-                name = self.pair_names[i] if i < len(self.pair_names) else f"pair_{i}"
-                last_diag = self.pair_state.get(i, {}).get('last_diag')
-                _emit_non_finite_event(step_now, i, name, checks, last_diag)
+        if self.log_non_finite:
+            for i, (A, B) in enumerate(self.pairs):
+                gA, gB = A.grad, B.grad
+                checks = {
+                    "A": bool(~torch.isfinite(A).all()) if A.numel() else False,
+                    "B": bool(~torch.isfinite(B).all()) if B.numel() else False,
+                    "grad_A": bool(~torch.isfinite(gA).all()) if gA is not None else False,
+                    "grad_B": bool(~torch.isfinite(gB).all()) if gB is not None else False,
+                }
+                if any(checks.values()):
+                    name = self.pair_names[i] if i < len(self.pair_names) else f"pair_{i}"
+                    last_diag = self.pair_state.get(i, {}).get('last_diag')
+                    _emit_non_finite_event(step_now, i, name, checks, last_diag)
 
         diag_records = []
         for gs in self.group_state:
@@ -3311,11 +3322,13 @@ class AdamPolarProductLoRA(Optimizer):
 
             # Chain-of-intermediates non-finite check. Emits a single
             # `non_finite_intermediate` event if any intermediate at this
-            # group went non-finite. Negligible cost (~20 isfinite reductions
-            # over batched tensors). Catches the failure at the link where it
-            # was born, not after it propagates to A/B at the start of the
-            # next step.
-            _emit_non_finite_chain(
+            # group went non-finite. ~20 isfinite reductions over batched
+            # tensors. Catches the failure at the link where it was born,
+            # not after it propagates to A/B at the start of the next step.
+            # Gated on log_non_finite — adds ~5-10% wall on top of the
+            # top-of-step check.
+            if self.log_non_finite:
+              _emit_non_finite_chain(
                 step_count,
                 {
                     "u_A": u_A, "u_B": u_B,
@@ -7598,6 +7611,7 @@ def build_optimizer(
     precond_gamma: float = 0.5,
     precond_ema_beta: float = 0.99,
     precond_delta: float = 1e-6,
+    log_non_finite: bool = False,
     psi_inner_iters: int = 1,
     psi_momentum: float = 0.9,
     psi_rho: float = 0.01,
@@ -7787,6 +7801,7 @@ def build_optimizer(
             polar_method=polar_method,
             core_remix_alpha=polar_core_remix_alpha,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -7809,6 +7824,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-soap-polar-product-lora":
         return AdamSOAPPolarProductLoRA(
@@ -7831,6 +7847,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adafactor-polar-product-lora":
         return AdaFactorPolarProductLoRA(
@@ -7851,6 +7868,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "sign-momentum-polar-product-lora":
         return SignMomentumPolarProductLoRA(
@@ -7871,6 +7889,7 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
@@ -7888,6 +7907,7 @@ def build_optimizer(
             picard_iters=2,
             end_rms_align=True,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord":
         # Substitution 1' (algorithm.md §6.1): replace Frobenius-Adam-magnitude
@@ -7917,6 +7937,7 @@ def build_optimizer(
             polar_method=polar_method,
             magnitude_rule="spectral_chord",
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight":
         # Tight chord-spectral rule (algorithm.md §6.1, exact-root variant):
@@ -7944,6 +7965,7 @@ def build_optimizer(
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-exact":
         # Chord-tight magnitude rule + exact-chord direction iteration.
@@ -7978,6 +8000,7 @@ def build_optimizer(
             magnitude_rule="spectral_chord_tight",
             exact_chord=True,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening":
         # Whitening-importance ablation: chord-tight with S_A^{-1/2} = S_B^{-1/2} = I.
@@ -8007,6 +8030,7 @@ def build_optimizer(
             magnitude_rule="spectral_chord_tight",
             disable_whitening=True,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-direction":
         # Variant 1 of algorithm_tight_chord.md: direction-aware ρ in place
@@ -8037,6 +8061,7 @@ def build_optimizer(
             polar_method=polar_method,
             magnitude_rule="spectral_chord_direction",
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-exact-chord":
         # Variational target is the actual ΔW = (B+ΔB)(A+ΔA) - BA, not its
@@ -8065,6 +8090,7 @@ def build_optimizer(
             polar_method=polar_method,
             exact_chord=True,
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-clip-product-lora":
         # Clip operator + RMS-align (no gauge/lift). Mirrors baseline
@@ -8082,6 +8108,7 @@ def build_optimizer(
             picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             operator_type="clip",
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-clip-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -8096,6 +8123,7 @@ def build_optimizer(
             picard_alpha=picard_alpha,
             operator_type="clip",
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-clip-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
@@ -8109,6 +8137,7 @@ def build_optimizer(
             picard_iters=2, end_rms_align=True,
             operator_type="clip",
             precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-gauge":
         return AdamPolarProductLoRAGauge(

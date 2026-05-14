@@ -64,6 +64,8 @@ EXCLUDED_COMMITS: dict[str, str] = {
     "91122ce": "r64_chord_postfix_validation runs systematically +0.01 above "
                "seed cluster from later commits; subtle regression in "
                "precond_delta_relative kwarg threading",
+    "e05b80e": "precond_delta_relative=True interpreted as absolute δ; "
+               "fixed in ef6b3bc",
 }
 
 

@@ -58,10 +58,11 @@ def format_example_with_boundary(example):
         )
     if "prompt" in example and "response" in example:
         return example["prompt"].strip() + "\n", example["response"].strip()
-    if {"instruction", "input", "output"}.issubset(example):
+    if "instruction" in example and "output" in example:
         pieces = [f"Instruction:\n{example['instruction']}"]
-        if str(example["input"]).strip():
-            pieces.append(f"Input:\n{example['input']}")
+        inp = example.get("input")
+        if isinstance(inp, str) and inp.strip():
+            pieces.append(f"Input:\n{inp}")
         prompt = "\n\n".join(pieces) + "\n\nResponse:\n"
         return prompt, example["output"]
     # No clean boundary available — treat whole text as response (no prompt
@@ -84,10 +85,11 @@ def format_example(example):
         return f"{example['prompt'].strip()}\n{example['response'].strip()}"
     if "prompt" in example and isinstance(example["prompt"], str):
         return example["prompt"]
-    if {"instruction", "input", "output"}.issubset(example):
+    if "instruction" in example and "output" in example:
         pieces = [f"Instruction:\n{example['instruction']}"]
-        if str(example["input"]).strip():
-            pieces.append(f"Input:\n{example['input']}")
+        inp = example.get("input")
+        if isinstance(inp, str) and inp.strip():
+            pieces.append(f"Input:\n{inp}")
         pieces.append(f"Response:\n{example['output']}")
         return "\n\n".join(pieces)
     for key in ("text", "content", "code"):
@@ -204,13 +206,14 @@ def tokenize_splits_with_boundary(train, eval_dataset, tokenizer, args):
             out_pl.append(prompt_len)
         return {"input_ids": out_ids, "prompt_len": out_pl}
 
+    num_proc = getattr(args, "tokenize_num_proc", None) or None
     train_tok = train.map(
         tok, batched=True, remove_columns=train.column_names,
-        desc="Tokenizing train (with boundary)",
+        desc="Tokenizing train (with boundary)", num_proc=num_proc,
     )
     eval_tok = eval_dataset.map(
         tok, batched=True, remove_columns=eval_dataset.column_names,
-        desc="Tokenizing eval (with boundary)",
+        desc="Tokenizing eval (with boundary)", num_proc=num_proc,
     )
     return train_tok, eval_tok
 
@@ -416,6 +419,14 @@ def make_parser():
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--target_eval_loss", type=float, default=None)
+    parser.add_argument(
+        "--abort_on_nan_eval", action=argparse.BooleanOptionalAction,
+        default=True,
+        help="If True (default), terminate the run on the first eval where "
+             "eval_loss is non-finite (NaN/Inf). Avoids burning GPU on dead "
+             "runs that have gone permanently non-finite. Disable with "
+             "--no-abort_on_nan_eval if you want to keep training through "
+             "transient NaNs (e.g. debugging recovery dynamics).")
     parser.add_argument("--precond_gamma", type=float, default=0.5,
                         help="Fractional power for PSI-LoRA/KFAC-LoRA K-FAC scaling.")
     parser.add_argument("--precond_ema_beta", type=float, default=0.99,
@@ -460,6 +471,16 @@ def make_parser():
                              "presence of non-finite output. Used to diagnose higham failures "
                              "(NaN at high r, drift) post-mortem. Cheap (~5%% wall on diagnostic "
                              "cadence). Off by default.")
+    parser.add_argument("--log_non_finite", action="store_true",
+                        help="Emit per-step `non_finite_detected` (top-of-step "
+                             "per-pair A/B/grad isfinite check) and "
+                             "`non_finite_intermediate` (end-of-step chain "
+                             "check across u_A/SA^{-1/2}/X_A/P_A/geo_A/dA/...) "
+                             "events for the polar-product family. Identifies "
+                             "WHICH pair / WHICH chain intermediate first goes "
+                             "non-finite. ~10%% wall overhead at r=256 from "
+                             "the ~448+~20*N isfinite kernel launches per step. "
+                             "Default OFF; turn on for NaN-debugging runs.")
     parser.add_argument("--precond_refresh_every", type=int, default=1,
                         help="K-step cadence for refreshing the per-pair Gram-preconditioner cache "
                              "(adam-scaled-lora, adam-lin-lora, adam-polar-product-lora, "
@@ -828,6 +849,7 @@ def main():
         precond_refresh_every=args.precond_refresh_every,
         precond_method=args.precond_method,
         precond_delta_relative=args.precond_delta_relative,
+        log_non_finite=args.log_non_finite,
         higham_iters=args.higham_iters,
         picard_alpha=args.picard_alpha,
         picard_iters_override=args.picard_iters_override,
@@ -985,7 +1007,7 @@ def main():
     model.train()
 
     for step in range(1, args.max_steps + 1):
-        step_loss, step_tokens, train_iter = run_one_train_step(
+        step_loss, step_tokens, train_iter, norm_stats = run_one_train_step(
             model, optimizer, train_iter, train_loader,
             grad_accum_steps=args.grad_accum_steps,
             max_grad_norm=args.max_grad_norm,
@@ -1010,6 +1032,12 @@ def main():
                 "tokens": total_tokens,
                 "lr": scheduler.get_last_lr()[0],
             })
+            if norm_stats:
+                log_event({
+                    "event": "train_norms",
+                    "step": step,
+                    **norm_stats,
+                })
             if wandb_run is not None:
                 wandb_run.log(
                     {"train_loss": window_loss_sum / max(window_tokens, 1)},

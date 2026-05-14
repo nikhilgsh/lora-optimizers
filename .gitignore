@@ -36,6 +36,10 @@ logs/
 disbatch_logs/
 slurm_logs/
 
+# submit.sh launcher stdout dumped in the cwd it was invoked from
+# (the authoritative job logs live under logs/<group>/run_info/logs/).
+slurm-*.out
+
 # Auto-generated SLURM resize artifacts
 slurm_job_*_resize.sh
 slurm_job_*_resize.csh

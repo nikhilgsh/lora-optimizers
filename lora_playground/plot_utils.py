@@ -15,6 +15,7 @@ way is uniform by construction.
 from __future__ import annotations
 
 import json
+import math
 import shlex
 from pathlib import Path
 from typing import Callable, Iterable
@@ -999,23 +1000,77 @@ def _normalize_ref_curve(entry):
     return entry  # already 7-tuple with std_evs
 
 
-def _eta_sweep_points(reference_runs, optimizer: str):
+def _eta_sweep_points(reference_runs, optimizer: str,
+                      *,
+                      homogeneous_axes: tuple = ("max_steps", "lora_r"),
+                      raise_on_mixed: bool = True):
     """Per-η (η, mean_final, std_final, n) points for `optimizer` in
     `reference_runs`. Multi-seed runs at the same η are aggregated.
-    Used to overlay the LR-sweep curve of the baseline; the std is consumed
-    by `plot_eta_vs_final` to render vertical seed-σ error bars.
-    Single-seed cells have ``std=0`` and render bar-less.
+
+    Robustness: ENFORCES that every lr-bucket is homogeneous on the
+    `homogeneous_axes` (default: ``max_steps``, ``lora_r``). Mixing runs
+    from different experimental regimes (e.g. a `max_steps=9000` phase_L
+    sweep into a canonical `max_steps=4000` reference) is a silent
+    data-pollution failure — it manifests as huge std on the error bars
+    and wildly inflated/zigzag reference curves, which were one of THE
+    recurring "where did this number come from?" bugs.
+
+    On a mixed bucket, raise ``ValueError`` with the specific
+    (lr, axis, values) detail so callers add the missing filter to
+    their ``load_runs(where=...)`` call. Set ``raise_on_mixed=False``
+    to downgrade to a stderr warning (only use this when you genuinely
+    want cross-regime comparison — almost never the right answer).
     """
     import statistics
+    import sys
     from collections import defaultdict
-    buckets: dict[float, list[float]] = defaultdict(list)
+    buckets: dict[float, list[tuple]] = defaultdict(list)
     for c, e in reference_runs:
         if c.get("optimizer") != optimizer:
             continue
-        buckets[float(c["lr"])].append(e[-1]["eval_loss"])
+        # Store (eval_loss, axis_signature, log_group) so we can both
+        # aggregate AND detect cross-regime contamination.
+        axis_sig = tuple(_hashable(c.get(k)) for k in homogeneous_axes)
+        buckets[float(c["lr"])].append(
+            (e[-1]["eval_loss"], axis_sig, c.get("log_group", "?"))
+        )
+
+    # Homogeneity audit: each lr must have one and only one axis signature.
+    mixed = []
+    for lr in sorted(buckets):
+        sigs = {entry[1] for entry in buckets[lr]}
+        if len(sigs) > 1:
+            details = {}
+            for sig in sigs:
+                groups = {entry[2] for entry in buckets[lr] if entry[1] == sig}
+                details[sig] = sorted(groups)
+            mixed.append((lr, details))
+    if mixed:
+        lines = [
+            f"_eta_sweep_points: cross-regime pollution detected for "
+            f"optimizer={optimizer!r}, homogeneous_axes={list(homogeneous_axes)}:"
+        ]
+        for lr, det in mixed[:5]:
+            lines.append(f"  lr={lr:.0e}:")
+            for sig, groups in det.items():
+                lines.append(
+                    f"    {dict(zip(homogeneous_axes, sig))!r} ← "
+                    f"log_groups={groups}"
+                )
+        lines.append(
+            "Fix: add the missing axis to your load_runs(where=...) "
+            "filter, e.g. `'max_steps': 4000`. To intentionally mix "
+            "regimes, pass raise_on_mixed=False or filter "
+            "homogeneous_axes=()."
+        )
+        msg = "\n".join(lines)
+        if raise_on_mixed:
+            raise ValueError(msg)
+        print(msg, file=sys.stderr)
+
     points = []
     for lr in sorted(buckets):
-        ys = buckets[lr]
+        ys = [entry[0] for entry in buckets[lr]]
         mean = sum(ys) / len(ys)
         std = statistics.stdev(ys) if len(ys) > 1 else 0.0
         points.append((lr, mean, std, len(ys)))
@@ -1332,22 +1387,18 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
 
     in_range_losses = []
     groups = sorted({group_key_fn(c) for c, _ in runs})
-    raw_losses = [e[-1]["eval_loss"] for c, e in runs]
-    y_cap = (min(raw_losses) + 0.15) if raw_losses else float("inf")
 
-    # Surface points clipped by y_cap (above the visible window but below the
-    # divergence threshold). Silent NaN-clipping was a recurring source of
-    # "where's my data?" confusion. Both stdout (for CI / log) and a visual
-    # out-of-range triangle at the top of the panel (for at-a-glance reading).
-    clipped = [(group_key_fn(c), c["lr"], e[-1]["eval_loss"])
-               for c, e in runs if e[-1]["eval_loss"] > y_cap]
-    if clipped:
-        print(f"  [clipped from left panel y_cap={y_cap:.3f}] {len(clipped)} run(s):")
-        for g, lr, fl in sorted(clipped):
-            print(f"    {g} η={lr:.0e} final={fl:.4f}")
-
+    # ── PASS 1: aggregate per-group (no clamping yet) ─────────────────────
+    # Two-pass design: we need to know `hi` (the visible top of the y-axis,
+    # computed from in_range_losses) BEFORE we pick a y_cap for clamping
+    # OOR / diverged points. With the old single-pass design y_cap was
+    # set to `min(raw_losses) + 0.15` upfront, which could exceed `hi`
+    # (for tight in-range clusters), pushing hollow markers off-screen.
+    # The two-pass version pins y_cap just below `hi`, guaranteeing
+    # markers are visible without inflating the axis.
     import statistics as _stats
     from collections import defaultdict as _dd
+    group_agg = []  # [(g, xs, means, stds, is_oor_finite, style_dict)]
     for g in groups:
         # Aggregate per-lr across seeds: (lr → list of eval_losses).
         by_lr: dict[float, list[float]] = _dd(list)
@@ -1355,9 +1406,17 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
             if group_key_fn(c) != g:
                 continue
             by_lr[float(c["lr"])].append(e[-1]["eval_loss"])
+        # Fold diverged runs (NaN-final / max>thresh / early-killed) for
+        # THIS group into the same aggregation, sentinel = +∞. They flow
+        # through the OOR clamping path → hollow marker on the SAME
+        # colored connecting line.
+        if diverged_runs:
+            for c, e in diverged_runs:
+                if group_key_fn(c) != g:
+                    continue
+                by_lr[float(c["lr"])].append(float("inf"))
         if not by_lr:
             continue
-        # Per-lr aggregate: (lr, mean, std, n). std=0 for single-seed.
         agg = sorted(
             (lr, sum(ys)/len(ys),
              _stats.stdev(ys) if len(ys) > 1 else 0.0,
@@ -1367,24 +1426,70 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         xs = [p[0] for p in agg]
         means = [p[1] for p in agg]
         stds = [p[2] for p in agg]
-        # Clamp to y_cap for connecting line.
-        ys_clamped = [min(m, y_cap) for m in means]
-        is_oor = [m > y_cap for m in means]
+        # Two flavors of "out-of-range":
+        #   non-finite (NaN / +∞ sentinel from diverged_runs) — ALWAYS OOR
+        #   finite-but-above-y_cap — decided per-group later once y_cap set
+        is_nonfinite = [not (math.isfinite(m)) for m in means]
+        in_range_losses.extend(m for m, nf in zip(means, is_nonfinite) if not nf)
+        is_adamw = g in adamw_group_keys
+        style = dict(
+            color=BASELINE_COLOR if is_adamw else color_map.get(g, "grey"),
+            marker=BASELINE_MARKER if is_adamw else marker_map.get(g, "o"),
+            ls=BASELINE_LS_CURVE if is_adamw else linestyle_map.get(g, "-"),
+            lw=BASELINE_LW_CURVE if is_adamw else LINE_WIDTH,
+            zorder=BASELINE_ZORDER if is_adamw else 5,
+            is_adamw=is_adamw,
+        )
+        group_agg.append((g, xs, means, stds, is_nonfinite, style))
+
+    # ── compute y-axis bounds before pass 2 ──────────────────────────────
+    if in_range_losses or all_losses:
+        lo = min(in_range_losses + all_losses) - 0.005
+        hi = (max(in_range_losses) if in_range_losses
+               else max(all_losses)) + 0.01
+        hi = min(hi + 0.005, lo + 0.16)
+    else:
+        lo, hi = 0.0, 1.0
+    # y_cap = clamping height for OOR / diverged. Just inside the axis top,
+    # but never below max(in_range) (else legit in-range points would get
+    # clipped). With a comfortable in-range cluster the hollow marker sits
+    # ~1 marker-radius above the top of the in-range cloud.
+    if in_range_losses:
+        max_in_range = max(in_range_losses)
+        y_cap = max(max_in_range + 0.003, hi - 0.006)
+    else:
+        y_cap = hi - 0.006
+
+    # Surface in-range points clipped by y_cap (rare — only when a finite
+    # mean is above the cap). Kept as a "where's my data?" sentinel that
+    # used to fire often; with the new y_cap≈hi-pad it should be near-zero.
+    clipped = []
+    for g, xs, means, stds, is_nonfinite, _style in group_agg:
+        for lr, m, nf in zip(xs, means, is_nonfinite):
+            if not nf and m > y_cap:
+                clipped.append((g, lr, m))
+    if clipped:
+        print(f"  [clipped from left panel y_cap={y_cap:.3f}] {len(clipped)} run(s):")
+        for g, lr, fl in sorted(clipped):
+            print(f"    {g} η={lr:.0e} final={fl:.4f}")
+
+    # ── PASS 2: render lines + markers ───────────────────────────────────
+    for g, xs, means, stds, is_nonfinite, style in group_agg:
+        ys_clamped = [y_cap if (nf or m > y_cap) else m
+                      for m, nf in zip(means, is_nonfinite)]
+        is_oor = [nf or m > y_cap for m, nf in zip(means, is_nonfinite)]
         if normalize_x_to_optimum and any(not o for o in is_oor):
             in_pairs = [(xs[i], means[i]) for i, o in enumerate(is_oor) if not o]
             eta_star = min(in_pairs, key=lambda p: p[1])[0]
             if eta_star > 0:
                 xs = [x / eta_star for x in xs]
-        is_adamw = g in adamw_group_keys
-        color = BASELINE_COLOR if is_adamw else color_map.get(g, "grey")
-        marker = BASELINE_MARKER if is_adamw else marker_map.get(g, "o")
-        ls = BASELINE_LS_CURVE if is_adamw else linestyle_map.get(g, "-")
-        lw = BASELINE_LW_CURVE if is_adamw else LINE_WIDTH
-        zorder = BASELINE_ZORDER if is_adamw else 5
+        color, marker, ls, lw, zorder, is_adamw = (
+            style["color"], style["marker"], style["ls"],
+            style["lw"], style["zorder"], style["is_adamw"])
         # Connecting line through clamped means.
         ax.plot(xs, ys_clamped, color=color, lw=lw, ls=ls, zorder=zorder,
                 label=f"{g} (baseline)" if is_adamw else g)
-        # In-range mean markers + ±σ error bars (zero σ on single-seed cells
+        # In-range markers + ±σ error bars (zero σ on single-seed cells
         # → caps collapse to the marker, visually identical to a plain marker).
         in_idx = [i for i, o in enumerate(is_oor) if not o]
         if in_idx:
@@ -1396,14 +1501,13 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                 ls="", zorder=zorder + 1,
                 capsize=4, capthick=lw * 0.6, elinewidth=lw * 0.6,
             )
-        # Hollow markers for out-of-range (clamped) means.
+        # Hollow markers for OOR / diverged means (sit at y_cap, inside hi).
         oor_x = [xs[i] for i, o in enumerate(is_oor) if o]
         oor_y = [ys_clamped[i] for i, o in enumerate(is_oor) if o]
         if oor_x:
             ax.plot(oor_x, oor_y, color=color, marker=marker,
                     markersize=MARKER_SIZE + 4, markerfacecolor="none",
                     markeredgewidth=2.2, ls="", zorder=zorder + 2)
-        in_range_losses.extend(means[i] for i in in_idx)
 
     ax.set_xscale("log")
     ax.set_xlabel(r"$\eta / \eta^\star$ (log)" if normalize_x_to_optimum else "η (log)",
@@ -1422,45 +1526,14 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         hi = min(hi + 0.005, lo + 0.16)
         ax.set_ylim(lo, hi)
 
-    # Diverged-run markers — show NaN/early-killed runs at the top of the
-    # axis with an X so the user can see "this lr was tested and blew up"
-    # without reading stdout. Without this they'd just be missing from the
-    # plot. Renders per-(group, lr) pair found in `diverged_runs`.
-    if diverged_runs:
-        # Establish y position: top of the current ylim (set later but we
-        # use y_cap as a reasonable proxy here; otherwise the very top of
-        # what'd be visible).
-        y_div = y_cap
-        # Group by (group_key, lr) so duplicates (same lr at multiple seeds)
-        # render as one marker.
-        seen = set()
-        for cfg, evs in diverged_runs:
-            g = group_key_fn(cfg)
-            lr = float(cfg["lr"])
-            if (g, lr) in seen:
-                continue
-            seen.add((g, lr))
-            color = (BASELINE_COLOR if g in adamw_group_keys
-                     else color_map.get(g, "grey"))
-            # If we normalized the x-axis to η/η★, use the same η★ as the
-            # non-diverged points of this group; otherwise raw lr.
-            x_lr = lr
-            if normalize_x_to_optimum:
-                grp_keep_lrs = [float(c["lr"]) for c, e in runs
-                                if group_key_fn(c) == g]
-                grp_keep_losses = [e[-1]["eval_loss"] for c, e in runs
-                                   if group_key_fn(c) == g]
-                if grp_keep_losses:
-                    eta_star = grp_keep_lrs[
-                        min(range(len(grp_keep_losses)),
-                            key=lambda i: grp_keep_losses[i])
-                    ]
-                    if eta_star > 0:
-                        x_lr = lr / eta_star
-            ax.plot([x_lr], [y_div], color=color, marker="X",
-                    markersize=MARKER_SIZE + 6, ls="",
-                    markeredgecolor="black", markeredgewidth=1.2,
-                    zorder=20)
+    # Diverged runs are folded into the per-group aggregation above
+    # (sentinel +∞ → clamped to y_cap → hollow marker on the same colored
+    # connecting line). Hollow markers sit at y_cap; if y_cap > hi (tight
+    # in-range data), they're clipped at the axis top — the colored
+    # connecting line still rises off the top of the panel, signalling
+    # the diverged points. A follow-up TODO is to compute y_cap from hi
+    # in a two-pass aggregate so the markers are guaranteed visible
+    # without expanding hi.
     if legend:
         ax.legend(**_legend_kw(len(groups)))
 

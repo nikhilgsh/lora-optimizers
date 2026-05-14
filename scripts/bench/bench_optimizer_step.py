@@ -22,7 +22,13 @@ Per cell (optimizer, K):
      - speedup_vs_k1: mean_K1 / mean_K within the same optimizer
 
 Inputs are random token IDs at (batch_size, max_seq_length). The forward pass
-work matches a real training step at this shape; only the data is fake.
+work matches a real training step at this shape; only the data is fake. The
+SDPA path used here is the implicit causal mask — NOT packed_v1's explicit 4D
+block-diagonal mask. For shape-controlled relative optimizer timing this is
+fine; for projecting an end-to-end production wall at a new training config
+(new seq, batch, dataset, packing setting), prefer a short 20-step train_lora.py
+smoke at that exact config and read `peak_memory_mb` + `tokens_per_sec` from
+the eval log line.
 
 Hardware: A100 is canonical; A6000 is acceptable for relative ratios since
 they apply uniformly across rows.
