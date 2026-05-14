@@ -1,0 +1,490 @@
+{
+  "timestamp_iso": "2026-05-14T10:19:22-04:00",
+  "logs_root": "/mnt/home/nghosh/lora/logs",
+  "summary": {
+    "backfilled": 50,
+    "skipped_inflight": 0,
+    "skipped_already_new_schema": 0,
+    "skipped_unparseable_cfg": 0,
+    "errors": 0,
+    "uncertain_runs": 13
+  },
+  "records": [
+    {
+      "path": "logs/adafactor_polar_r16_diag_2k/run_info/logs/log_0.out",
+      "group": "adafactor_polar_r16_diag_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "81e20a441f8137bf29167a23aa00ad7701006f0a44d77916c6b5b18505d63feb",
+      "sha256_new": "53a1bb32b25a1abdae81e3c28b9871f5d5428e9fe2643be778a714c87500c715"
+    },
+    {
+      "path": "logs/adafactor_polar_r16_diag_2k/run_info/logs/log_1.out",
+      "group": "adafactor_polar_r16_diag_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "b722d67a15fc057e99f76bf5382015c45f15ebb8efa5665a227b5dacb55d47fe",
+      "sha256_new": "dd3c4069e6f3836ea2373cf711e323d17e4ea1ea42880b4f68ed61ac802fc6ea"
+    },
+    {
+      "path": "logs/adafactor_polar_r16_diag_2k/run_info/logs/log_2.out",
+      "group": "adafactor_polar_r16_diag_2k",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "8945412105bcac70f51a3e56ee69a8a3b76191ca9b572b7a88a4f641e9a6cc6f",
+      "sha256_new": "464eed661b129e8ef5341413cf964f2a0f8850cb599248323f35ecfc52feef6f"
+    },
+    {
+      "path": "logs/adafactor_polar_r16_diag_2k/run_info/logs/log_3.out",
+      "group": "adafactor_polar_r16_diag_2k",
+      "log_filename": "log_3.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "b266e0eb5fa47f8ebbf59f7943a050b7f049884c8f5ecea9910fb21832639f6e",
+      "sha256_new": "50ee248c504f942d622235493a420710f6511bcdc14b860bc5d6a4def4776e99"
+    },
+    {
+      "path": "logs/adafactor_polar_r64_2k/run_info/logs/log_0.out",
+      "group": "adafactor_polar_r64_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "41ad0d41fc982b6e5a3fd6945cbe25d95aa655ab26bb70883e7b0b3efe412d7b",
+      "sha256_new": "58dd55c4fa6162dbc02ae7502cdd659f781ea026720e665aa541597ccf54fe71"
+    },
+    {
+      "path": "logs/adafactor_polar_r64_2k/run_info/logs/log_1.out",
+      "group": "adafactor_polar_r64_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "e01153f16b58490a989a63d6118059f93f6dda36eab89e0d4c8408a41d59c6f5",
+      "sha256_new": "a29c79145d0c5bd1492c7328d98a39b77c2f23e08d4ac7ea10ea02bd6d0a14a1"
+    },
+    {
+      "path": "logs/adafactor_polar_r64_2k/run_info/logs/log_2.out",
+      "group": "adafactor_polar_r64_2k",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "cc86b86afbc4a852681e15e99311712179b30002ea446e7efc79c406c74c5e99",
+      "sha256_new": "df5375db0dc0202907f01844cc8f40dea7eb4b5d7d50fc249799d38e45f665f3"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_0.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "7c1c4ea132f601a5083aca1d04540bf61e90cbbcd0fe6d4fe58d1a8a5a2667f2",
+      "sha256_new": "af7c79205cc8c7d38a4f884066c347546822677e9ce8533f6d06268e1f7180f7"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_1.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "a9ff4f3d9b83f1a8932e653c3df18de5ac0c46118e4654f6a172c40d682a8cd4",
+      "sha256_new": "fa2b0b9ace25127722874b525c2f48f2846e538812319936073543e28329ae2a"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_2.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "007d9cf3557a30eb7e785ca6c40f1b455678933311530577492e46a10d638506",
+      "sha256_new": "fe2a3a9124dd30f85bb72fcfeea77479817ec36e5e8a3c6e8f0f5a410cc81f33"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_3.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_3.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "4e855436bd7266e7330d1d02f6e017b88880ba57df10eb11b1837240d2013ba8",
+      "sha256_new": "02e235f6a28b9ce45fc465c2379ccc3ba8cc8a7a6fdfb511525b41723af92e83"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_4.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_4.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "7719f3df473f47035cefa2db2f9cc0f1bb7bffe147e8edefd5855bd14ece2dab",
+      "sha256_new": "22741ee44eafb2c9d485eaf393dd3a357ccf251a491eccd1b71b0c699ece0f24"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_5.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_5.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "f3c1a0a6b21a64c3409f389370fd9c3463c21bc8976e91f928d2ac483060d5fb",
+      "sha256_new": "aba36e8fb29fd2eee20744c5f2e59c4f794938b9dcb7d0617a4a8b1340569036"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_6.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_6.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "eaa43a1cf7d4d99d582458fce35913d7f31dfa93538ccb19af686cbca2523115",
+      "sha256_new": "410203eedf199f0aecb098fdf87dea7c8771c230dcee4d1090bfe62b5b724c6a"
+    },
+    {
+      "path": "logs/adafactor_pure_r16_r64_2k/run_info/logs/log_7.out",
+      "group": "adafactor_pure_r16_r64_2k",
+      "log_filename": "log_7.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "b9d48c408418da35aea78ed449305482615bf8968686a44ad6fb059342afa491",
+      "sha256_new": "9f2b038d3a43f5a3caad72f0b089716ff84d015cbd099574b6313e38370f6161"
+    },
+    {
+      "path": "logs/adam_muon_4k_r16r64_blackwell/run_info/logs/log_0.out",
+      "group": "adam_muon_4k_r16r64_blackwell",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 1,
+      "uncertain_fields": [],
+      "sha256_original": "a05869e4a8071049ca69bc9adf4e3f795a944d7001549231fc13ce90ce0667b6",
+      "sha256_new": "6e6933933ea291a04f5de482b685e5dab584563955cc23d90648926524126408"
+    },
+    {
+      "path": "logs/adam_muon_4k_r16r64_blackwell/run_info/logs/log_1.out",
+      "group": "adam_muon_4k_r16r64_blackwell",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 1,
+      "uncertain_fields": [],
+      "sha256_original": "1ba5cea12af9ae2f5d5fdd7575c9626733a8562086c978aa33a11fc8e6bbe522",
+      "sha256_new": "b871e3b1cfe7cec24ea2aa458c1bc3eb516aa51d740186e55bd0630d53990886"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_0.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "0cc7d00469f4f129f2bfadf341ebc1ff5c286ab1c467f25876c531b8a596e776",
+      "sha256_new": "f80ea104e274768bf1a3a98286c8dcf672a3639da10692496eecaa1851b38c6b"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_1.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "34cfef527681de76d11d7c0dd749baa4b63772936af69db933136feeda578ef7",
+      "sha256_new": "c6264c858037bf3a88ee1b54b70db110f904dcebe87d79489e92e72f0574ce58"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_2.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "1d6db4abeea5a98a6dcaf75081e5c6872245b65387688cae158515a1da04c331",
+      "sha256_new": "506cfe06a87338b58bf83d2847f72b8ab810c1a8106a1ad8553623fe02b17ed3"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_3.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_3.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "30a5f816041d09239088a31b2011b244fff997eb3748f110ff10cea4cca5bfb5",
+      "sha256_new": "e0daa25ca9e7aad6c134e41ce803a669ca50fd730ffa9980958631d071a1d879"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_4.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_4.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "ef95f1028a85967a534ddfe33a669a00aecb49a3fcdbca20267196adf07eb4c9",
+      "sha256_new": "5e05ac08dcabb6eccfe3d0436a9c2d9579670a08c6cff9cdc90717200ce8a817"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_5.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_5.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "722361aba06df3df438504fbaa56d932a3cf025be4eaf3d60d6a34d24abf722f",
+      "sha256_new": "8cb6ff4fc61a75556e6a9406a59945ba4241b5720b7897c55bcbd0a2cf299558"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_6.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_6.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "b0e9ce479cd52bb799836fff57d07a2576bf12e745e244437a98c9fd22f18233",
+      "sha256_new": "78d0c90cbb61832be69fd184c8a36be5d628676b7196dbe8922208ef4d09b34b"
+    },
+    {
+      "path": "logs/adam_muon_500/run_info/logs/log_7.out",
+      "group": "adam_muon_500",
+      "log_filename": "log_7.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "50d3d48decabffa9b0793f7ddb180a3bdcbe7a83bea2dba8731547b73769f8af",
+      "sha256_new": "df1b25b19d0708c7c098058a0a747327cb3b766ac69fbcd25e26427d2a687f9d"
+    },
+    {
+      "path": "logs/adam_muon_clean_2k/run_info/logs/log_0.out",
+      "group": "adam_muon_clean_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "9d54ab34bff1eb0d624b4144d27b10dd4660f433aa1186ce8f457be59a25da95",
+      "sha256_new": "a75a14e0df10e2c4480929b3124fae3b1921d0368315dbbea43e59ca16107a4c"
+    },
+    {
+      "path": "logs/adam_muon_clean_2k/run_info/logs/log_1.out",
+      "group": "adam_muon_clean_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "8eece0547d4966f28ced8daebc41bef44a8f36cdbf7e89fdf1a419b1a13eecb9",
+      "sha256_new": "be7987ce97d63d0b6b586b1f2e9bd85584899f9fd60998ac0a17f6da3e434b51"
+    },
+    {
+      "path": "logs/adam_muon_clean_2k/run_info/logs/log_2.out",
+      "group": "adam_muon_clean_2k",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "14291157c89e83ad1caca44eaf2d124758046ca5d7ae3aafbe7934cfc6623714",
+      "sha256_new": "a491dc7f27710b5c60c6f4cbeba84a5704d808ec4cef5207ac4240a4e5a3981c"
+    },
+    {
+      "path": "logs/adam_muon_clean_2k/run_info/logs/log_3.out",
+      "group": "adam_muon_clean_2k",
+      "log_filename": "log_3.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "9e09708dec561d95937a560e8a55636e1756e3b321d83b964eb429e2a72c84f8",
+      "sha256_new": "f7dff7bddb81787c5874f64a8ff6c2f84c1110d59066c6b3bd5a144017b44b5a"
+    },
+    {
+      "path": "logs/adam_muon_clean_2k/run_info/logs/log_4.out",
+      "group": "adam_muon_clean_2k",
+      "log_filename": "log_4.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "27f448e69d1a426f84c94b613839ae6514743a562d794828a1ec8162a83fff2f",
+      "sha256_new": "59e73716ec012fcf6b8b480cee8350a1f1052e27b99eb8f7a5fae44632f6365d"
+    },
+    {
+      "path": "logs/adam_muon_clean_2k/run_info/logs/log_5.out",
+      "group": "adam_muon_clean_2k",
+      "log_filename": "log_5.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "8cc5a6e27ebc713febeba9b95f46abc9a562571a6f6a1834d1ab53a0daafdab3",
+      "sha256_new": "dec084fa6e8f05e3574701dabd973f71923e33c30f2d3e2d5bb1b8a390a795a6"
+    },
+    {
+      "path": "logs/adam_muon_extend_500/run_info/logs/log_0.out",
+      "group": "adam_muon_extend_500",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "e1540bfc461ae68e6a0378513006b45e84cbc76a5c47eb514993a4aff3b37ea8",
+      "sha256_new": "9779e9754011be90cc0a767c4d5812542ab0f67a0d57ef316cb6de38c3d3e5f9"
+    },
+    {
+      "path": "logs/adam_muon_extend_500/run_info/logs/log_1.out",
+      "group": "adam_muon_extend_500",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "b0f8e995b7aac19b1c59d4790311cc3283c51b79005076ae186466f6d61306f4",
+      "sha256_new": "09a833668cacc2b3c6854e8521256bf9b4ce8fb096017c952032da2e3dd9130e"
+    },
+    {
+      "path": "logs/adam_muon_extend_500/run_info/logs/log_2.out",
+      "group": "adam_muon_extend_500",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "1601541e376c6049c334dcf8362d7020d164fecb41d6429f1cdbf4ed22410542",
+      "sha256_new": "538433e9243709535e40977cab945c42ce2ce916c94a642bd3ddf4d1400454f8"
+    },
+    {
+      "path": "logs/adam_muon_extend_500/run_info/logs/log_3.out",
+      "group": "adam_muon_extend_500",
+      "log_filename": "log_3.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "c5ff684787b99e0db61634107f9a7eab7787bb4a3350621ea9ecfe216dde7bb1",
+      "sha256_new": "1c6dfec07c05b04f1848f2a8e304e13d509c03675126eb6f9595618c4d1a7f6c"
+    },
+    {
+      "path": "logs/adam_muon_m4_extension_2k/run_info/logs/log_0.out",
+      "group": "adam_muon_m4_extension_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "36011692c0a20c2f56fa33466d2df20f67c8758aa2276ed2a79555240cc73c92",
+      "sha256_new": "2fc2ac0fe9de387467ffcb78facff94f8a41c7927e3cc12d3b9e591fae0b5b54"
+    },
+    {
+      "path": "logs/adam_muon_m4_extension_2k/run_info/logs/log_1.out",
+      "group": "adam_muon_m4_extension_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "3aba5d92bb2b36eb23f3ee52015c57712f0ddb20e978913d178fb1336717823e",
+      "sha256_new": "c6a81914da8855a381291b41fdb7a069e677aeeb9da91082dfe39f52f7831d54"
+    },
+    {
+      "path": "logs/adam_muon_r64_m4_2k/run_info/logs/log_0.out",
+      "group": "adam_muon_r64_m4_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "35dfdf12c0d3eed75edc433ed1820ee4bb17f6f903353cd66b550e5a0aae35ba",
+      "sha256_new": "f84ee5ec76a9ab905292a711c4fd4b1fe81e9ee62c3346decb67fa46206e0f13"
+    },
+    {
+      "path": "logs/adam_muon_r64_m4_2k/run_info/logs/log_1.out",
+      "group": "adam_muon_r64_m4_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "a1947ea889f5dd6025a819b6508a248edceee7b4e6f98aff0af1f5749b57d400",
+      "sha256_new": "a522eba7463d3c3155b3c2d47c43efd09ccb668a35943ff629f848bb297b29ca"
+    },
+    {
+      "path": "logs/adam_muon_r64_m4_2k/run_info/logs/log_2.out",
+      "group": "adam_muon_r64_m4_2k",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "79980e0f7d0a2f5d3ac882e29828be384cfd82966087716ab26f7dd90ce2743c",
+      "sha256_new": "a26dc493f9366dc38335922d583287e79325afb2017f167236cb239e42d642e8"
+    },
+    {
+      "path": "logs/adam_muon_r64_m4_lowlr_2k/run_info/logs/log_0.out",
+      "group": "adam_muon_r64_m4_lowlr_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "7487c02f15e53cd9e39defee032a53756d3c7697efdab2bee01e1b49b21c729d",
+      "sha256_new": "190388670704b696d246b1963c9192ca97f4a92e6660f13a127f7f528520c49d"
+    },
+    {
+      "path": "logs/adam_muon_r64_m4_lowlr_2k/run_info/logs/log_1.out",
+      "group": "adam_muon_r64_m4_lowlr_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "843fffe5f1b8402b4af8b553705ec4e59536b4c7c3a0f52722e439c6a7e7727f",
+      "sha256_new": "c4b73e519c199b6ede8dcba09335c3c91a613b70c447a901e8245540ede1edf6"
+    },
+    {
+      "path": "logs/adam_muon_winner_2k/run_info/logs/log_0.out",
+      "group": "adam_muon_winner_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "ce79fe2e385b7a8eff4c59b5b68ced82e0b6886e679ee03b45756da99daab2dc",
+      "sha256_new": "077df128c51dce8847c037bd6cae58dc3b34e27d34c3adbfd82a6bf6378530fd"
+    },
+    {
+      "path": "logs/adam_muon_winner_2k/run_info/logs/log_1.out",
+      "group": "adam_muon_winner_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [],
+      "sha256_original": "293576d4faa1a0089a05a30dd505e46350946de43358f6946c3f5382e8445261",
+      "sha256_new": "6ef8b9bc0d537226f9adcf2631f74555676a30090febce14374b4f9c4cad3636"
+    },
+    {
+      "path": "logs/adam_polar_product_coupled_endrms_2k/run_info/logs/log_0.out",
+      "group": "adam_polar_product_coupled_endrms_2k",
+      "log_filename": "log_0.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "2604b31a569a0fff004fe7cdcadc866896db583daba1dd2cfa451c6d3facdd44",
+      "sha256_new": "0e80a93f8fed40eba06713e9758efb77b66d9233f90dfb17a8e898c06c60c87d"
+    },
+    {
+      "path": "logs/adam_polar_product_coupled_endrms_2k/run_info/logs/log_1.out",
+      "group": "adam_polar_product_coupled_endrms_2k",
+      "log_filename": "log_1.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "f0c13159c1957efbd62e7a7421b2802b1e27c4095433d624653e50a0776e654d",
+      "sha256_new": "1a2f4f6d01a9b7a0c893d57ecf3e478de84d03acdae8cfe0ff9e1ac101b9fe90"
+    },
+    {
+      "path": "logs/adam_polar_product_coupled_endrms_2k/run_info/logs/log_2.out",
+      "group": "adam_polar_product_coupled_endrms_2k",
+      "log_filename": "log_2.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "1924ea9888fe0d5ab615cdef82fb75c5b99aadf2fb63a5079065d2bb6258bde9",
+      "sha256_new": "a9e54f8a8e4b3cb7b78653dafd24e39747f0139862105f5dac1af7c14ac11750"
+    },
+    {
+      "path": "logs/adam_polar_product_coupled_endrms_2k/run_info/logs/log_3.out",
+      "group": "adam_polar_product_coupled_endrms_2k",
+      "log_filename": "log_3.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "7320013cabb75915e93826827ea1ce223dceca4127df76722ce674d664df531a",
+      "sha256_new": "40b1179e1931899c7fd089f6590188f57f446444c2863cf9db8ec4036ec5dae0"
+    },
+    {
+      "path": "logs/adam_polar_product_coupled_endrms_2k/run_info/logs/log_4.out",
+      "group": "adam_polar_product_coupled_endrms_2k",
+      "log_filename": "log_4.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "2d2fdee8705b550adf6aa072e5147d6d51d8552a3cfc8fe90a37e8423667bdb8",
+      "sha256_new": "b3045b54079cf40e163115ef032f840b909fd8bd654a32c6606f7d9095e830aa"
+    },
+    {
+      "path": "logs/adam_polar_product_coupled_endrms_2k/run_info/logs/log_5.out",
+      "group": "adam_polar_product_coupled_endrms_2k",
+      "log_filename": "log_5.out",
+      "cfg_line_index": 0,
+      "uncertain_fields": [
+        "effective_picard_iters"
+      ],
+      "sha256_original": "3ad0807b6bc777b33dafe04d217e16dcb4a10e1761223d90bc4d0e316d515259",
+      "sha256_new": "bdff72c451a5287005531ed9f29361a49e1be44a7e0fc2758a11c378a2764858"
+    }
+  ]
+}
