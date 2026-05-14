@@ -608,18 +608,22 @@ def load_runs(
             # Phase 1 schema: legacy attestation policy. NOTE: per the
             # Phase-4 policy revision (treat untracked files as audit-only,
             # not load-bearing), the legacy auto-exclude on untracked files
-            # is removed here for consistency. Attestation against
-            # (group, log_filename, diff_sha) is the only check.
-            if cfg.get("git_diff_sha") is None:
-                # Legacy-dirty pre-Phase-1 runs (no diff_sha): accept at face value.
+            # is removed for consistency. Attestation against
+            # (group, log_filename, diff_sha) drives the resolution.
+            # Attestation lookup also handles "manual relabel": entries
+            # with null git_diff_sha match Phase-2-backfilled runs that have
+            # no diff_sha — a human asserts the effective commit explicitly.
+            attestation = lookup_attestation(
+                log_group, log_filename, cfg.get("git_diff_sha"),
+            )
+            if attestation is not None:
+                effective_commit = attestation.treat_as_commit
+            elif cfg.get("git_diff_sha") is None:
+                # Legacy-dirty, no attestation: accept at face value
+                # (we have no information to do better).
                 effective_commit = cfg.get("git_commit")
             else:
-                attestation = lookup_attestation(
-                    log_group, log_filename, cfg.get("git_diff_sha"),
-                )
-                if attestation is None:
-                    return True, "unattested dirty tree"
-                effective_commit = attestation.treat_as_commit
+                return True, "unattested dirty tree"
         else:
             effective_commit = cfg.get("git_commit")
 
