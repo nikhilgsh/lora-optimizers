@@ -802,6 +802,14 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     # consume them to decide whether a run is includable, but dedup must not
     # split otherwise-identical runs across these axes.
     "git_dirty", "git_diff_sha", "git_untracked_files",
+    # Phase 4 (2026-05-14): execution-scope provenance. These drive the
+    # loader's exclusion / auto-resolve decisions but don't define the
+    # series. Two runs with different execution_source_sha may resolve to
+    # the same effective_commit; their algorithmic identity is captured
+    # by `optimizer` / `lr` / `seed` / etc. and not by these provenance
+    # fields. Exclude from dedup.
+    "execution_source_sha", "execution_source_paths",
+    "execution_source_dirty", "execution_env", "execution_env_sha",
     # Loader-assigned per-run identifier; see loader._enrich_cfg.
     "run_id", "_log_filename",
     "wandb_project", "wandb_run_name",

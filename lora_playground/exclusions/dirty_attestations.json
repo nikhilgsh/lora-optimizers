@@ -7,14 +7,120 @@
     "Schema: list of {group, log_filename, git_diff_sha, treat_as_commit, reason}.",
     "",
     "Loader behavior (see lora_playground/loader.py _evaluate_new_layer):",
-    "- cfg.git_dirty=False                          → use cfg.git_commit",
-    "- cfg.git_dirty=True, git_diff_sha is None     → LEGACY-DIRTY escape:",
+    "- cfg.git_dirty=False                          \u2192 use cfg.git_commit",
+    "- cfg.git_dirty=True, git_diff_sha is None     \u2192 LEGACY-DIRTY escape:",
     "    accept at face value, use cfg.git_commit. Applies to runs older",
     "    than Phase-1 cfg-event enrichment (2026-05-14).",
-    "- cfg.git_dirty=True, git_untracked_files set  → EXCLUDED (untracked",
+    "- cfg.git_dirty=True, git_untracked_files set  \u2192 EXCLUDED (untracked",
     "    files defeat content addressing; attestation cannot vouch).",
-    "- cfg.git_dirty=True, attested                 → use treat_as_commit.",
-    "- cfg.git_dirty=True, unattested               → EXCLUDED."
+    "- cfg.git_dirty=True, attested                 \u2192 use treat_as_commit.",
+    "- cfg.git_dirty=True, unattested               \u2192 EXCLUDED."
   ],
-  "entries": []
+  "entries": [
+    {
+      "group": "chord_tight_r256_k3_lr3e-2_eps_rel_1e-2_redo_4k_blackwell",
+      "log_filename": "log_0.out",
+      "git_diff_sha": "f3f11ca01fab455a9fc9cd285fee46948b9dabd979c8484f83c9dcd7a3512445",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r256_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_0.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r256_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_2.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r256_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_4.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r256_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_5.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r256_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_6.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r256_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_7.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_0.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_1.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_2.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_3.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_4.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_5.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_6.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r64_k3_eps_rel_sweep_4k_blackwell",
+      "log_filename": "log_7.out",
+      "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
+      "treat_as_commit": "9446ffb",
+      "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    }
+  ]
 }

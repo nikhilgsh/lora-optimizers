@@ -552,16 +552,22 @@ def load_runs(
     _excluded_counts: dict[str, int] = {}
 
     def _evaluate_new_layer(cfg: dict) -> tuple[bool, str | None]:
-        """Code-correctness + run-quality exclusion. The Python `manifest.py`
-        legacy registries are deleted; all exclusion data now lives in
-        `lora_playground/exclusions/*.json` plus the invariants DSL.
+        """Code-correctness + run-quality exclusion. Three schema branches
+        determine how dirty trees are resolved:
 
-        Dirty-tree handling:
-          - clean tree → invariants checked against cfg.git_commit
-          - dirty + untracked files → exclude (no content addressing possible)
-          - dirty + no untracked + attested → invariants checked against
-            attestation.treat_as_commit
-          - dirty + no untracked + unattested → exclude
+          Phase 4 cfgs (have `execution_source_sha`):
+            content-hash auto-resolve. Searches descendants of cfg.git_commit
+            for a commit C whose tree-restricted-to-execution_source_paths
+            matches the recorded execution_source_sha. If found, invariants
+            run against C. If not, exclude with reason.
+
+          Phase 1 cfgs (have `git_dirty` / `git_diff_sha`, no execution_source_sha):
+            legacy attestation policy. Dirty runs need a dirty_attestations
+            entry keyed by (group, log_filename, diff_sha). Untracked files
+            in this schema auto-exclude unless attested.
+
+          Pre-Phase 1 cfgs (neither):
+            treat as clean at cfg.git_commit.
         """
         # Per-run quality exclusion always takes precedence.
         log_group = cfg.get("log_group")
@@ -577,22 +583,37 @@ def load_runs(
         excluded, reason = _new_is_buggy_eps_rel(cfg)
         if excluded:
             return True, reason
-        # Dirty-tree resolution.
-        if cfg.get("git_dirty"):
-            # Legacy escape hatch: pre-Phase-1 runs don't carry per-run
-            # diff_sha (it didn't exist). For them, `git_dirty` was set
-            # during Phase-2 backfill from the manifest, which is a
-            # sweep-level signal — useful but not content-addressed. We
-            # accept legacy-dirty runs at face value, treating them as
-            # if at cfg.git_commit. New runs (post Phase 1) emit
-            # git_diff_sha; for those we enforce the attestation policy.
-            if cfg.get("git_diff_sha") is None:
-                # Legacy-dirty: accept, use cfg.git_commit.
+
+        # ── Schema dispatch for dirty-tree resolution ────────────────────
+        if cfg.get("execution_source_sha") is not None:
+            # Phase 4 schema: content-hash auto-resolve.
+            if not cfg.get("execution_source_dirty"):
                 effective_commit = cfg.get("git_commit")
             else:
-                if cfg.get("git_untracked_files"):
-                    return True, ("dirty tree with untracked files: "
-                                  "cannot be content-addressed for attestation")
+                from .execution_scope import auto_resolve_by_content, project_root
+                resolved = auto_resolve_by_content(
+                    base_commit=cfg["git_commit"],
+                    paths=cfg["execution_source_paths"],
+                    target_source_sha=cfg["execution_source_sha"],
+                    project_root=project_root(),
+                )
+                if resolved is None:
+                    return True, (
+                        "execution source hash not found in descendant "
+                        "commits within search bounds; either commit your "
+                        "at-submission state, or add a dirty_attestation"
+                    )
+                effective_commit = resolved
+        elif cfg.get("git_dirty"):
+            # Phase 1 schema: legacy attestation policy. NOTE: per the
+            # Phase-4 policy revision (treat untracked files as audit-only,
+            # not load-bearing), the legacy auto-exclude on untracked files
+            # is removed here for consistency. Attestation against
+            # (group, log_filename, diff_sha) is the only check.
+            if cfg.get("git_diff_sha") is None:
+                # Legacy-dirty pre-Phase-1 runs (no diff_sha): accept at face value.
+                effective_commit = cfg.get("git_commit")
+            else:
                 attestation = lookup_attestation(
                     log_group, log_filename, cfg.get("git_diff_sha"),
                 )
@@ -601,6 +622,7 @@ def load_runs(
                 effective_commit = attestation.treat_as_commit
         else:
             effective_commit = cfg.get("git_commit")
+
         # Code-correctness invariants.
         excluded, name, inv_reason = evaluate_invariants(
             cfg, effective_commit, _is_ancestor,

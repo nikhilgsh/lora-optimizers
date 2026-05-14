@@ -974,14 +974,42 @@ def main():
         )
 
     dirty_state = git_dirty_state()
+    # Phase 4: content-hash-based execution provenance. Scoped to the AST
+    # closure starting at train_lora.py; insensitive to notebook/loader/docs
+    # edits. The whole-tree `dirty_state` above stays in the cfg event as
+    # audit-only.
+    from .execution_scope import (
+        compute_execution_provenance,
+        get_or_bootstrap_snapshot,
+        project_root as _project_root,
+    )
+    _snapshot, _snapshot_sha = get_or_bootstrap_snapshot()
+    _exec_provenance = compute_execution_provenance(
+        entry_path=_project_root() / "train_lora.py",
+        project_root=_project_root(),
+        snapshot=_snapshot,
+        snapshot_sha=_snapshot_sha,
+        git_commit=git_commit(),
+    )
     log_event(
         {
             "event": "config",
             "command": " ".join(shlex.quote(arg) for arg in sys.argv),
             "git_commit": git_commit(),
+            # Phase 1 fields — kept as AUDIT-ONLY metadata after Phase 4.
+            # These represent whole-tree dirtiness, which is too coarse to
+            # drive exclusion (notebook edits flag dirty here). The loader
+            # consults `execution_source_*` below for the load-bearing
+            # decision instead.
             "git_dirty": dirty_state["git_dirty"],
             "git_diff_sha": dirty_state["git_diff_sha"],
             "git_untracked_files": dirty_state["git_untracked_files"],
+            # Phase 4: load-bearing execution-scope provenance.
+            "execution_source_sha": _exec_provenance["execution_source_sha"],
+            "execution_source_paths": _exec_provenance["execution_source_paths"],
+            "execution_source_dirty": _exec_provenance["execution_source_dirty"],
+            "execution_env": _exec_provenance["execution_env"],
+            "execution_env_sha": _exec_provenance["execution_env_sha"],
             "device": str(device),
             "training_mode": args.training_mode,
             "optimizer": effective_optimizer,
