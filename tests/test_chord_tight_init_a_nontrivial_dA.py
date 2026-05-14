@@ -42,6 +42,14 @@ def _make_optim(A, B, monkeypatch):
         O, "collect_lora_pairs",
         lambda model, adapter_name=None: [(A, B)],
     )
+    monkeypatch.setattr(
+        U, "collect_lora_pairs_named",
+        lambda model, adapter_name=None: [(A, B, "test_pair_0")],
+    )
+    monkeypatch.setattr(
+        O, "collect_lora_pairs_named",
+        lambda model, adapter_name=None: [(A, B, "test_pair_0")],
+    )
     return O.AdamPolarProductLoRA(
         model=None, lr=1e-2, delta=1e-6, eps=1e-8, betas=(0.9, 0.999),
         ns_steps=5, precond_method="higham", higham_iters=10,
@@ -128,6 +136,10 @@ def test_sigma_max_opt_vs_exact_logged(monkeypatch):
                         lambda model, adapter_name=None: [(A, B)])
     monkeypatch.setattr(O, "collect_lora_pairs",
                         lambda model, adapter_name=None: [(A, B)])
+    monkeypatch.setattr(U, "collect_lora_pairs_named",
+                        lambda model, adapter_name=None: [(A, B, "test_pair_0")])
+    monkeypatch.setattr(O, "collect_lora_pairs_named",
+                        lambda model, adapter_name=None: [(A, B, "test_pair_0")])
     opt = O.AdamPolarProductLoRA(
         model=None, lr=1e-2, delta=1e-6, eps=1e-8, betas=(0.9, 0.999),
         ns_steps=5, precond_method="higham", higham_iters=10,

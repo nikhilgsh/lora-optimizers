@@ -865,6 +865,7 @@ def test_adam_polar_product_logs_finite_step_diagnostics(capsys):
         lr=1e-2,
         picard_iters=2,
         log_basic_diagnostics=True,
+        log_heavy_diagnostics=True,
         diagnostics_every=1,
     )
 
@@ -910,7 +911,8 @@ def test_local_model_score_emitted_at_picard_2():
     target = torch.randn(3, 8)
     opt = AdamPolarProductLoRA(
         m, lr=1e-2, picard_iters=2,
-        log_basic_diagnostics=True, diagnostics_every=1,
+        log_basic_diagnostics=True, log_heavy_diagnostics=True,
+        diagnostics_every=1,
     )
     loss = ((m(x) - target) ** 2).mean()
     loss.backward()
@@ -932,8 +934,9 @@ def test_local_model_score_emitted_at_picard_2():
 def test_local_model_score_diagnostic_does_not_change_step():
     """Adding the local-model score diagnostic must be a pure observation —
     the applied step must be bit-identical to a non-instrumented run with
-    the same seed and config."""
-    def run(log):
+    the same seed and config. Toggle log_heavy_diagnostics with
+    log_basic_diagnostics fixed True so both runs take the same code path."""
+    def run(heavy):
         torch.manual_seed(7)
         m = TinyLoRAModel(d_in=8, d_out=6, r=4)
         with torch.no_grad():
@@ -945,7 +948,8 @@ def test_local_model_score_diagnostic_does_not_change_step():
         target = torch.randn(3, 8)
         opt = AdamPolarProductLoRA(
             m, lr=1e-2, picard_iters=2,
-            log_basic_diagnostics=log, diagnostics_every=1,
+            log_basic_diagnostics=True, log_heavy_diagnostics=heavy,
+            diagnostics_every=1,
         )
         loss = ((m(x) - target) ** 2).mean()
         loss.backward()
@@ -958,14 +962,8 @@ def test_local_model_score_diagnostic_does_not_change_step():
     off = run(False)
     on = run(True)
     for n in off:
-        # log_basic_diagnostics=False routes through `_step_batched` (production
-        # hot path with bf16 NS); log_basic_diagnostics=True falls through to
-        # `_step_per_pair` (fp32 NS). The polar map differs at bf16
-        # precision (~1e-3 relative) so the algorithmic claim
-        # "instrumentation does not change the applied step" survives
-        # only within bf16 working precision.
-        assert torch.allclose(off[n], on[n], atol=5e-4, rtol=5e-4), (
-            f"{n} differs with log_diagnostics flag; instrumentation changed step"
+        assert torch.equal(off[n], on[n]), (
+            f"{n} differs with log_heavy_diagnostics flag; instrumentation changed step"
         )
 
 
