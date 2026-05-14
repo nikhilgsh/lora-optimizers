@@ -105,6 +105,7 @@ def pack_documents(
     docs: list[_Doc] | list[dict],
     seq_length: int,
     pad_token_id: int,
+    drop_zero_supervision_slots: bool = True,
 ) -> list[dict]:
     """Greedy first-fit pack a stream of tokenized documents into
     `seq_length`-wide slots. Each slot is a dict with input_ids, labels,
@@ -113,20 +114,38 @@ def pack_documents(
 
     Docs longer than seq_length after tokenization should already have
     been truncated upstream; we assert here defensively.
+
+    `drop_zero_supervision_slots` (default True, packed_v1.1 contract):
+    discard any flushed slot whose labels are all -100 (every token is
+    either prompt or pad). Such slots would feed `model(**batch)` a
+    fully-masked supervision window, which HuggingFace's masked
+    cross-entropy reduces to NaN (mean over zero kept positions). The
+    NaN flows through `.backward()` and silently pollutes Adam moments
+    for the LoRA factors. Filtering at pack time eliminates the failure
+    mode at the data source so the training loop doesn't need a
+    per-step skip branch (the kernel-side skip remains as defense-in-depth).
+    See `docs/notes/polar_product/r256_lr1e-2_eps_rel_nan_handoff.md`.
     """
     out: list[dict] = []
+    dropped = 0
     cur_ids: list[int] = []
     cur_labels: list[int] = []
     cur_pos: list[int] = []
     cur_doc_lens: list[int] = []
 
     def flush():
-        nonlocal cur_ids, cur_labels, cur_pos, cur_doc_lens
+        nonlocal cur_ids, cur_labels, cur_pos, cur_doc_lens, dropped
         if not cur_ids:
             return
         n_pad = seq_length - len(cur_ids)
         ids = cur_ids + [pad_token_id] * n_pad
         labels = cur_labels + [-100] * n_pad
+        if drop_zero_supervision_slots and not any(l != -100 for l in labels):
+            # Every label is the ignore-index: no supervised token in this
+            # slot. Drop it; the slot would compute NaN cross-entropy.
+            cur_ids, cur_labels, cur_pos, cur_doc_lens = [], [], [], []
+            dropped += 1
+            return
         pos = cur_pos + list(range(n_pad))
         out.append({
             "input_ids": ids,
@@ -165,6 +184,9 @@ def pack_documents(
         cur_pos.extend(range(L))
         cur_doc_lens.append(L)
     flush()
+    if drop_zero_supervision_slots and dropped:
+        print(f"  [pack_documents] dropped {dropped} zero-supervision slot(s) "
+              f"out of {len(out) + dropped} total ({dropped/(len(out)+dropped):.2%})")
     return out
 
 

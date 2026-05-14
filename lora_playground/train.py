@@ -49,7 +49,7 @@ from .training_kernel import (
 
 
 TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore", "ucv")
-DATA_PIPELINE_VERSIONS = ("packed_v1", "unpacked_v0")
+DATA_PIPELINE_VERSIONS = ("packed_v1.1", "packed_v1", "unpacked_v0")
 
 
 def format_example_with_boundary(example):
@@ -366,17 +366,20 @@ def make_parser():
     parser.add_argument(
         "--data_pipeline_version",
         choices=DATA_PIPELINE_VERSIONS,
-        default="packed_v1",
-        help="Data pipeline. 'packed_v1' (default): train side packs "
-             "tokenized docs into static seq_length slots with doc-aware "
-             "SDPA mask + per-doc position_ids reset, eval pads each doc "
-             "to seq_length; prompt-masked loss (labels=-100 on prompt). "
-             "'unpacked_v0': legacy DataCollatorForLanguageModeling path "
-             "(dynamic shapes, no prompt mask, no doc-aware attention). "
-             "All pre-2026-05-08 logs are unpacked_v0; new runs default to "
-             "packed_v1. Boundary is recorded in the cfg event so the "
-             "loader can filter by version. See "
-             "docs/notes/polar_product/data_pipeline_followups.md.",
+        default="packed_v1.1",
+        help="Data pipeline. 'packed_v1.1' (current default, 2026-05-14): "
+             "same as packed_v1 but drops zero-supervision packed slots at "
+             "pack time (slots whose labels are all -100 would produce NaN "
+             "cross-entropy means and pollute Adam moments). 'packed_v1': "
+             "train side packs tokenized docs into static seq_length slots "
+             "with doc-aware SDPA mask + per-doc position_ids reset, eval "
+             "pads each doc to seq_length; prompt-masked loss (labels=-100 "
+             "on prompt). 'unpacked_v0': legacy DataCollatorForLanguageModeling "
+             "path (dynamic shapes, no prompt mask, no doc-aware attention). "
+             "All pre-2026-05-08 logs are unpacked_v0; runs 2026-05-08..14 "
+             "are packed_v1; new runs default to packed_v1.1. Boundary "
+             "recorded in cfg event so the loader can filter by version. "
+             "See docs/notes/polar_product/data_pipeline_followups.md.",
     )
     parser.add_argument("--max_steps", type=int, default=500)
     parser.add_argument(

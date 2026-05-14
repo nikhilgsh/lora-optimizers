@@ -60,6 +60,45 @@ def _make_doc(L, prompt_len=0, vocab=64, seed=0):
     return {"input_ids": ids, "prompt_len": prompt_len}
 
 
+def test_pack_documents_drops_zero_supervision_slot():
+    """packed_v1.1 contract: a slot consisting entirely of prompt-masked
+    tokens (every label = -100) is discarded, because such a slot would
+    compute NaN cross-entropy in HF's masked CE."""
+    seq_length = 16
+    pad_id = 0
+    # Two docs whose prompts fill them entirely, packed alone or together
+    # into a single slot — every position is masked.
+    all_prompt = [_make_doc(L=8, prompt_len=8, seed=1),
+                  _make_doc(L=6, prompt_len=6, seed=2)]
+    # Plus one healthy doc to verify good slots survive.
+    healthy = [_make_doc(L=10, prompt_len=2, seed=3)]
+    docs = all_prompt + healthy
+    packs = pack_documents(docs, seq_length=seq_length, pad_token_id=pad_id,
+                           drop_zero_supervision_slots=True)
+    # Healthy slot must survive; the all-prompt slot(s) must be dropped.
+    assert len(packs) == 1, (
+        f"expected only the healthy slot to survive; got {len(packs)} slots"
+    )
+    surviving = packs[0]
+    assert any(l != -100 for l in surviving["labels"]), (
+        "surviving slot has no supervised tokens — filter let a zero-sup slot through"
+    )
+
+
+def test_pack_documents_filter_opt_out():
+    """Setting drop_zero_supervision_slots=False preserves legacy
+    behavior — all-prompt slots are emitted unchanged."""
+    seq_length = 16
+    pad_id = 0
+    docs = [_make_doc(L=8, prompt_len=8, seed=1)]
+    packs_kept = pack_documents(docs, seq_length=seq_length, pad_token_id=pad_id,
+                                drop_zero_supervision_slots=False)
+    assert len(packs_kept) == 1, "opt-out path should keep the all-prompt slot"
+    assert all(l == -100 for l in packs_kept[0]["labels"]), (
+        "all-prompt slot should have every label = -100"
+    )
+
+
 def test_pack_documents_shape_constancy():
     seq_length = 16
     pad_id = 0
