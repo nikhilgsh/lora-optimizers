@@ -290,7 +290,41 @@ def run_one_train_step(
         step_loss += float(outputs.loss.detach()) * tokens
         step_tokens += tokens
 
+    # Pre-step global norm probe — covers every optimizer (param + raw grad
+    # L2, count of non-finite grad entries) regardless of optimizer family.
+    # Caller decides whether to emit the returned dict; computation is cheap
+    # (one foreach_norm pass over trainable params).
+    norm_stats = _compute_global_norms(train_model)
+
     if max_grad_norm and max_grad_norm > 0:
         torch.nn.utils.clip_grad_norm_(train_model.parameters(), max_grad_norm)
     optimizer.step()
-    return step_loss, step_tokens, train_iter
+    return step_loss, step_tokens, train_iter, norm_stats
+
+
+def _compute_global_norms(model: nn.Module) -> dict:
+    """Global L2 norm of trainable params and their gradients, plus a
+    count of non-finite grad entries. Returns a dict (may be empty if
+    no trainable params have grads, e.g. the very first step before
+    backward). Cost: one foreach pass over trainable params; microseconds
+    on LoRA-sized parameter sets."""
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        return {}
+    grads = [p.grad for p in params if p.grad is not None]
+    out = {
+        "param_l2": float(torch.norm(torch.stack(
+            [p.detach().float().norm() for p in params]))),
+        "n_params_with_grad": len(grads),
+    }
+    if grads:
+        out["grad_l2"] = float(torch.norm(torch.stack(
+            [g.detach().float().norm() for g in grads])))
+        # Count non-finite ENTRIES across all grad tensors, not the number
+        # of grad tensors that contain any non-finite. (Earlier version
+        # used .any() which under-reported the count by orders of magnitude
+        # — capped at the number of trainable params, not entries.)
+        n_nonfinite = int(sum(
+            (~torch.isfinite(g)).sum().item() for g in grads))
+        out["n_non_finite_grads"] = n_nonfinite
+    return out

@@ -3705,12 +3705,19 @@ class AdamPolarProductLoRA(Optimizer):
                         gB_norm = op_geoB
                         uA_norm = rho.detach() if rho.dim() > 0 else rho
                         uB_norm = rho.detach() if rho.dim() > 0 else rho
-                if self.end_rms_align:
+                if self.end_rms_align and self.magnitude_rule == "adam_frobenius":
                     # Override the pipeline's RMS-align: rescale to the
                     # ORIGINAL Adam-direction norm rather than ‖u_A_eff‖.
                     # Re-expose uA_norm / gA_norm / rms_scale_A consistently
                     # so the diagnostics block below still reflects what
                     # was actually applied.
+                    # GATED on adam_frobenius: under chord-magnitude rules
+                    # (spectral_chord / spectral_chord_tight / chord_direction)
+                    # the dA/dB above already carry the chord rescale; running
+                    # end_rms_align would silently OVERWRITE that with a
+                    # frob-magnitude step. The batched path is structurally
+                    # not eligible for the (k>1, end_rms_align=True) combo,
+                    # so this guard only affects the per-pair path.
                     gA_norm = geo_A.norm() + 1e-30
                     gB_norm = geo_B.norm() + 1e-30
                     uA_norm = uA_norm_orig
@@ -4994,6 +5001,8 @@ class AdamPolarProductLoRAGauge(Optimizer):
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
                  picard_iters=1,
+                 precond_method="eigh", higham_iters=10,
+                 precond_delta_relative=False,
                  log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -5009,6 +5018,9 @@ class AdamPolarProductLoRAGauge(Optimizer):
         self.picard_iters = int(picard_iters)
         if self.picard_iters < 1:
             raise ValueError("picard_iters must be >= 1")
+        self.precond_method = precond_method
+        self.higham_iters = int(higham_iters)
+        self.precond_delta_relative = bool(precond_delta_relative)
         self.log_basic_diagnostics = bool(log_basic_diagnostics)
         self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
@@ -5063,14 +5075,20 @@ class AdamPolarProductLoRAGauge(Optimizer):
                 # signal, but we update both for symmetry — A's update is
                 # tiny and goes through the well-conditioned S_A^{-1/2}).
                 S_A = spdify(A_f @ A_f.T, self.delta)
-                SA_half_inv = _spd_inv_half(S_A, eps=self.delta, method="eigh")
+                SA_half_inv = _spd_inv_half(S_A, eps=self.delta,
+                                            method=self.precond_method,
+                                            higham_iters=self.higham_iters,
+                                            eps_relative=self.precond_delta_relative)
                 if b_norm < 1e-8:
                     SB_half_inv = (self.delta ** -0.5) * torch.eye(
                         r, dtype=torch.float32, device=A_f.device,
                     )
                 else:
                     S_B = spdify(B_f.T @ B_f, self.delta)
-                    SB_half_inv = _spd_inv_half(S_B, eps=self.delta, method="eigh")
+                    SB_half_inv = _spd_inv_half(S_B, eps=self.delta,
+                                                method=self.precond_method,
+                                                higham_iters=self.higham_iters,
+                                                eps_relative=self.precond_delta_relative)
                 X_B = u_B @ SA_half_inv
                 P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
                 geo_B = P_B @ SA_half_inv
@@ -5287,6 +5305,8 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
                  picard_iters=1,
+                 precond_method="eigh", higham_iters=10,
+                 precond_delta_relative=False,
                  log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -5302,6 +5322,9 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
         self.picard_iters = int(picard_iters)
         if self.picard_iters < 1:
             raise ValueError("picard_iters must be >= 1")
+        self.precond_method = precond_method
+        self.higham_iters = int(higham_iters)
+        self.precond_delta_relative = bool(precond_delta_relative)
         self.log_basic_diagnostics = bool(log_basic_diagnostics)
         self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
@@ -5356,14 +5379,20 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
                 # is skipped at fallback (cross-coupling target undefined
                 # when B≈0).
                 S_A = spdify(A_f @ A_f.T, self.delta)
-                SA_half_inv = _spd_inv_half(S_A, eps=self.delta, method="eigh")
+                SA_half_inv = _spd_inv_half(S_A, eps=self.delta,
+                                            method=self.precond_method,
+                                            higham_iters=self.higham_iters,
+                                            eps_relative=self.precond_delta_relative)
                 if b_norm < 1e-8:
                     SB_half_inv = (self.delta ** -0.5) * torch.eye(
                         r, dtype=torch.float32, device=A_f.device,
                     )
                 else:
                     S_B = spdify(B_f.T @ B_f, self.delta)
-                    SB_half_inv = _spd_inv_half(S_B, eps=self.delta, method="eigh")
+                    SB_half_inv = _spd_inv_half(S_B, eps=self.delta,
+                                                method=self.precond_method,
+                                                higham_iters=self.higham_iters,
+                                                eps_relative=self.precond_delta_relative)
                 X_B = u_B @ SA_half_inv
                 P_B = _newton_schulz(X_B, nsteps=self.ns_steps)
                 geo_B = P_B @ SA_half_inv
@@ -5535,7 +5564,8 @@ class AdamuonPolarProductLoRA(Optimizer):
                  adapter_name=None, lora_plus_multiplier=1.0,
                  log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=1,
-                 precond_method="eigh", higham_iters=10):
+                 precond_method="eigh", higham_iters=10,
+                 precond_delta_relative=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -5554,6 +5584,7 @@ class AdamuonPolarProductLoRA(Optimizer):
         self.precond_refresh_every = precond_refresh_every
         self.precond_method = precond_method
         self.higham_iters = higham_iters
+        self.precond_delta_relative = bool(precond_delta_relative)
 
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
@@ -5600,10 +5631,12 @@ class AdamuonPolarProductLoRA(Optimizer):
                 state['SA_half_inv'] = _spd_inv_half(
                     A.float() @ A.float().T, eps=self.delta,
                     method=self.precond_method, higham_iters=self.higham_iters,
+                    eps_relative=self.precond_delta_relative,
                 )
                 state['SB_half_inv'] = _spd_inv_half(
                     B.float().T @ B.float(), eps=self.delta,
                     method=self.precond_method, higham_iters=self.higham_iters,
+                    eps_relative=self.precond_delta_relative,
                 )
             SA_half_inv = state['SA_half_inv']
             SB_half_inv = state['SB_half_inv']
@@ -7564,7 +7597,7 @@ def build_optimizer(
     svd_niter: int = 4,
     precond_gamma: float = 0.5,
     precond_ema_beta: float = 0.99,
-    precond_delta: float = 1e-5,
+    precond_delta: float = 1e-6,
     psi_inner_iters: int = 1,
     psi_momentum: float = 0.9,
     psi_rho: float = 0.01,
@@ -7733,13 +7766,13 @@ def build_optimizer(
         )
     if optimizer_type == "polar-product-lora":
         return PolarProductLoRA(
-            model, lr=lr, delta=1e-6, ns_steps=muon_ns_steps,
+            model, lr=lr, delta=precond_delta, ns_steps=muon_ns_steps,
         )
     if optimizer_type == "adam-polar-product-lora":
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(beta1, beta2),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7748,7 +7781,7 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
-            picard_iters=1,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             polar_norm_dir=polar_norm_dir,
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
@@ -7781,7 +7814,7 @@ def build_optimizer(
         return AdamSOAPPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7797,12 +7830,13 @@ def build_optimizer(
             polar_norm_dir=polar_norm_dir,
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adafactor-polar-product-lora":
         return AdaFactorPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7816,12 +7850,13 @@ def build_optimizer(
             polar_norm_dir=polar_norm_dir,
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "sign-momentum-polar-product-lora":
         return SignMomentumPolarProductLoRA(
             model, lr=lr,
             betas=(beta1, beta2),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -7835,12 +7870,13 @@ def build_optimizer(
             polar_norm_dir=polar_norm_dir,
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -8011,7 +8047,7 @@ def build_optimizer(
         return AdamPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -8036,7 +8072,7 @@ def build_optimizer(
         # whether spectrum-preservation helps when cross-coupling is NOT
         # absorbed by a gauge constraint.
         return AdamPolarProductLoRA(
-            model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+            model, lr=lr, betas=(0.9, 0.999), delta=precond_delta, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -8049,7 +8085,7 @@ def build_optimizer(
         )
     if optimizer_type == "adam-clip-product-lora-coupled":
         return AdamPolarProductLoRA(
-            model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+            model, lr=lr, betas=(0.9, 0.999), delta=precond_delta, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -8063,7 +8099,7 @@ def build_optimizer(
         )
     if optimizer_type == "adam-clip-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
-            model, lr=lr, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+            model, lr=lr, betas=(0.9, 0.999), delta=precond_delta, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -8078,11 +8114,14 @@ def build_optimizer(
         return AdamPolarProductLoRAGauge(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            precond_delta_relative=precond_delta_relative,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
@@ -8090,11 +8129,14 @@ def build_optimizer(
         return AdamPolarProductLoRAGauge(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 2,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            precond_delta_relative=precond_delta_relative,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
@@ -8102,11 +8144,14 @@ def build_optimizer(
         return AdamPolarProductLoRAClipGauge(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            precond_delta_relative=precond_delta_relative,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
@@ -8114,11 +8159,14 @@ def build_optimizer(
         return AdamPolarProductLoRAClipGauge(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             picard_iters=picard_iters_override if picard_iters_override is not None else 2,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            precond_delta_relative=precond_delta_relative,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
         )
@@ -8265,7 +8313,7 @@ def build_optimizer(
         return AdamuonPolarProductLoRA(
             model, lr=lr,
             betas=(0.9, 0.999),
-            delta=1e-6,
+            delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
             sign_stabilize=True,
@@ -8275,6 +8323,7 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             precond_method=precond_method,
             higham_iters=higham_iters,
+            precond_delta_relative=precond_delta_relative,
         )
     if optimizer_type == "adamuon-lora":
         return AdaMuonLoRA(

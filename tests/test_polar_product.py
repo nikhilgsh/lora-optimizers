@@ -864,7 +864,7 @@ def test_adam_polar_product_logs_finite_step_diagnostics(capsys):
         m,
         lr=1e-2,
         picard_iters=2,
-        log_diagnostics=True,
+        log_basic_diagnostics=True,
         diagnostics_every=1,
     )
 
@@ -895,7 +895,7 @@ def test_adam_polar_product_logs_finite_step_diagnostics(capsys):
 # ---- Step 1 (local-model score diagnostic) ---------------------------------
 
 def test_local_model_score_emitted_at_picard_2():
-    """When log_diagnostics=True at picard_iters=2, the local-model
+    """When log_basic_diagnostics=True at picard_iters=2, the local-model
     variational score for k=1 and k=2 candidates must be emitted on probe
     steps. Sign of (k2 − k1) is the per-pair selector signal."""
     torch.manual_seed(7)
@@ -910,7 +910,7 @@ def test_local_model_score_emitted_at_picard_2():
     target = torch.randn(3, 8)
     opt = AdamPolarProductLoRA(
         m, lr=1e-2, picard_iters=2,
-        log_diagnostics=True, diagnostics_every=1,
+        log_basic_diagnostics=True, diagnostics_every=1,
     )
     loss = ((m(x) - target) ** 2).mean()
     loss.backward()
@@ -945,7 +945,7 @@ def test_local_model_score_diagnostic_does_not_change_step():
         target = torch.randn(3, 8)
         opt = AdamPolarProductLoRA(
             m, lr=1e-2, picard_iters=2,
-            log_diagnostics=log, diagnostics_every=1,
+            log_basic_diagnostics=log, diagnostics_every=1,
         )
         loss = ((m(x) - target) ** 2).mean()
         loss.backward()
@@ -958,8 +958,8 @@ def test_local_model_score_diagnostic_does_not_change_step():
     off = run(False)
     on = run(True)
     for n in off:
-        # log_diagnostics=False routes through `_step_batched` (production
-        # hot path with bf16 NS); log_diagnostics=True falls through to
+        # log_basic_diagnostics=False routes through `_step_batched` (production
+        # hot path with bf16 NS); log_basic_diagnostics=True falls through to
         # `_step_per_pair` (fp32 NS). The polar map differs at bf16
         # precision (~1e-3 relative) so the algorithmic claim
         # "instrumentation does not change the applied step" survives
@@ -1387,7 +1387,7 @@ def test_anderson_accelerates_convergence():
     # plain take the batched path (bf16 NS) while accel takes per-pair (fp32),
     # and the bf16/fp32 noise floor masks Anderson's contraction signal.
     original_eligible = AdamPolarProductLoRA._batched_path_eligible
-    AdamPolarProductLoRA._batched_path_eligible = lambda self: False
+    AdamPolarProductLoRA._batched_path_eligible = lambda self, is_probe_step=False: False
     try:
         ref = _picard_step_outputs(picard_iters=30, anderson_m=0)
         plain_k = _picard_step_outputs(picard_iters=8, anderson_m=0)
