@@ -597,18 +597,25 @@ def collect_lora_pairs(model, adapter_name=None):
     Returns:
         List[Tuple[Tensor, Tensor]]
     """
-    pairs = []
-    for _, mod in model.named_modules():
+    return [(A, B) for A, B, _ in collect_lora_pairs_named(model, adapter_name)]
+
+
+def collect_lora_pairs_named(model, adapter_name=None):
+    """Same as collect_lora_pairs but each entry is (A, B, name) with name
+    being the LoRA module's dotted path. Used by per-pair NaN-trigger
+    logging to identify which layer went non-finite."""
+    triples = []
+    for mod_name, mod in model.named_modules():
         if hasattr(mod, "lora_A") and hasattr(mod, "lora_B"):
             try:
                 keys = [adapter_name] if adapter_name else list(mod.lora_A.keys())
                 for k in keys:
                     if k in mod.lora_A and k in mod.lora_B:
-                        A = mod.lora_A[k].weight  # (r, in), original dtype
-                        B = mod.lora_B[k].weight  # (out, r), original dtype
-                        pairs.append((A, B))
+                        A = mod.lora_A[k].weight
+                        B = mod.lora_B[k].weight
+                        triples.append((A, B, f"{mod_name}[{k}]"))
                 continue
             except Exception:
                 if hasattr(mod.lora_A, "weight") and hasattr(mod.lora_B, "weight"):
-                    pairs.append((mod.lora_A.weight, mod.lora_B.weight))
-    return pairs
+                    triples.append((mod.lora_A.weight, mod.lora_B.weight, mod_name))
+    return triples

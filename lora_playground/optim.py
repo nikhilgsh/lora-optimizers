@@ -8,6 +8,7 @@ from torch.optim import AdamW, Optimizer, SGD
 
 from .utils import (
     collect_lora_pairs,
+    collect_lora_pairs_named,
     collect_ucv_triples,
     f_lorsum,
     lorsum,
@@ -123,14 +124,27 @@ from .spectral import (
 )
 
 
-def _spd_inv_half(H, eps, method="eigh", higham_iters=10):
-    """Dispatch (H + eps·I)^{-1/2}: 'eigh' uses spd_frac_power_inv; 'higham' uses
-    Newton-Schulz (no eigh, ~10× faster on (r×r) at r=256 due to no kernel-launch
-    storm). Caller can swap between them via precond_method=... at construction."""
+def _spd_inv_half(H, eps, method="eigh", higham_iters=10, eps_relative=False):
+    """Dispatch (H + eps_eff·I)^{-1/2}: 'eigh' uses spd_frac_power_inv; 'higham'
+    uses Newton-Schulz. When eps_relative=True, the effective damping is
+    eps·λ_max(H) (σ_max-relative) instead of absolute eps."""
     if method == "eigh":
-        return spd_frac_power_inv(H, gamma=0.5, eps=eps)
+        eps_eff = eps
+        if eps_relative:
+            # Cheap λ_max via 3 power iters (matches the higham path's
+            # internal estimate); inexpensive at r ≤ 256.
+            n = H.shape[-1]
+            v = torch.ones(n, dtype=H.dtype, device=H.device)
+            v = v / v.norm().clamp(min=1e-30)
+            for _ in range(3):
+                v = H @ v
+                nv = v.norm().clamp(min=1e-30)
+                v = v / nv
+            eps_eff = float(eps) * float(nv)
+        return spd_frac_power_inv(H, gamma=0.5, eps=eps_eff)
     if method == "higham":
-        return spd_inv_sqrt_higham(H, n_iters=higham_iters, eps=eps)
+        return spd_inv_sqrt_higham(H, n_iters=higham_iters, eps=eps,
+                                    eps_relative=eps_relative)
     raise ValueError(f"Unknown precond_method '{method}' (expected 'eigh' or 'higham').")
 
 
@@ -268,6 +282,87 @@ def _is_main_process() -> bool:
         return is_main()
     except Exception:
         return True
+
+
+def _emit_non_finite_chain(step_count, intermediates, pair_names_in_group,
+                           group_global_indices):
+    """Emit a single `non_finite_intermediate` event at the end of a step if
+    ANY intermediate in the optimizer's computation chain went non-finite.
+    For each affected intermediate, lists which pair indices (global) carry
+    the non-finite values. First emission per run pinpoints where in the
+    chain the NaN was born.
+
+    `intermediates` is a dict {name: tensor_or_scalar_or_None}. Tensors are
+    expected to be either:
+      - shape (N, ...): batched per pair in the group; we reduce all-but-
+        the-first dim with isfinite.all and report pair-local indices.
+      - shape (N,): per-pair scalar.
+      - shape (): scalar (group-wide).
+    """
+    if not _is_main_process():
+        return
+    pair_local_bad = {}    # {name: [local_idx, ...]}
+    scalar_bad = {}         # {name: True} for group-wide scalars
+    for name, t in intermediates.items():
+        if t is None:
+            continue
+        if not isinstance(t, torch.Tensor):
+            t = torch.as_tensor(t)
+        if t.numel() == 0:
+            continue
+        finite = torch.isfinite(t)
+        if t.dim() == 0:
+            if not bool(finite):
+                scalar_bad[name] = True
+        elif t.dim() == 1:
+            mask = ~finite
+            if mask.any():
+                pair_local_bad[name] = mask.nonzero(as_tuple=True)[0].tolist()
+        else:
+            mask = (~finite).flatten(1).any(dim=1)
+            if mask.any():
+                pair_local_bad[name] = mask.nonzero(as_tuple=True)[0].tolist()
+    if not pair_local_bad and not scalar_bad:
+        return
+    # Translate per-intermediate local indices → global pair info.
+    where = {}
+    for name, local_idxs in pair_local_bad.items():
+        where[name] = [
+            {"local": int(li),
+             "global": int(group_global_indices[li]),
+             "pair_name": pair_names_in_group[li]
+                 if li < len(pair_names_in_group) else f"pair_{li}"}
+            for li in local_idxs
+        ]
+    for name in scalar_bad:
+        where[name] = "group_scalar"
+    payload = {
+        "event": "non_finite_intermediate",
+        "step": int(step_count),
+        "where": where,
+    }
+    print(json.dumps(payload, sort_keys=True, default=float), flush=True)
+
+
+def _emit_non_finite_event(step_count, pair_index, pair_name,
+                           where, last_diag):
+    """Emit one JSONL `non_finite_detected` event identifying a LoRA pair
+    that has non-finite entries in one of its tensors at the *start* of an
+    optimizer step. `where` is a dict `{tensor_name: bool}` indicating
+    which tensors went bad (A/B/grad_A/grad_B). `last_diag` is the
+    previous step's per-pair diagnostic record (or None). Always emitted
+    on rank 0 — this is a fault signal, not a probe."""
+    if not _is_main_process():
+        return
+    payload = {
+        "event": "non_finite_detected",
+        "step": int(step_count),
+        "pair_index": int(pair_index),
+        "pair_name": pair_name,
+        "where": where,
+        "prev_diag": last_diag,
+    }
+    print(json.dumps(payload, sort_keys=True, default=float), flush=True)
 
 
 def _emit_optim_diagnostics(step_count, per_pair_records):
@@ -2424,12 +2519,14 @@ class AdamPolarProductLoRA(Optimizer):
                  magnitude_rule="adam_frobenius",
                  disable_whitening=False,
                  precond_delta_relative=False):
-        pairs = collect_lora_pairs(model, adapter_name)
-        if not pairs:
+        named = collect_lora_pairs_named(model, adapter_name)
+        if not named:
             raise ValueError("No LoRA (A,B) tensors found on model.")
+        pairs = [(A, B) for A, B, _ in named]
         params = [p for A, B in pairs for p in (A, B)]
         super().__init__([{"params": params, "lr": lr}], {})
         self.pairs = pairs
+        self.pair_names = [n for _, _, n in named]
         self.delta = delta
         self.precond_delta_relative = bool(precond_delta_relative)
         self.eps = eps
@@ -2860,6 +2957,27 @@ class AdamPolarProductLoRA(Optimizer):
         lr = self.param_groups[0]["lr"]
         timer = getattr(self, "_step_timer", None)
 
+        # NaN-trigger detector: scan every pair's (A, B, grad_A, grad_B) for
+        # non-finite entries BEFORE consuming gradients. Identifies which
+        # pair / which tensor went bad at the moment of failure, and dumps
+        # the prior step's per-pair stats so the precursor state is
+        # captured. Unconditional (always on) — the cost is 4 `isfinite`
+        # reductions per pair per step, microseconds at LoRA r=256.
+        step_now = (next(iter(self.pair_state.values())).get('step', 0) + 1
+                    if self.pair_state else 1)
+        for i, (A, B) in enumerate(self.pairs):
+            gA, gB = A.grad, B.grad
+            checks = {
+                "A": bool(~torch.isfinite(A).all()) if A.numel() else False,
+                "B": bool(~torch.isfinite(B).all()) if B.numel() else False,
+                "grad_A": bool(~torch.isfinite(gA).all()) if gA is not None else False,
+                "grad_B": bool(~torch.isfinite(gB).all()) if gB is not None else False,
+            }
+            if any(checks.values()):
+                name = self.pair_names[i] if i < len(self.pair_names) else f"pair_{i}"
+                last_diag = self.pair_state.get(i, {}).get('last_diag')
+                _emit_non_finite_event(step_now, i, name, checks, last_diag)
+
         diag_records = []
         for gs in self.group_state:
             N = gs['N']
@@ -2923,9 +3041,11 @@ class AdamPolarProductLoRA(Optimizer):
                             from .utils import spd_inv_sqrt_higham_batched
                             gs['SA_half_inv'].copy_(spd_inv_sqrt_higham_batched(
                                 SA_grams, n_iters=self.higham_iters, eps=self.delta,
+                                eps_relative=self.precond_delta_relative,
                             ))
                             gs['SB_half_inv'].copy_(spd_inv_sqrt_higham_batched(
                                 SB_grams, n_iters=self.higham_iters, eps=self.delta,
+                                eps_relative=self.precond_delta_relative,
                             ))
                         else:
                             for k in range(N):
@@ -2933,11 +3053,13 @@ class AdamPolarProductLoRA(Optimizer):
                                     SA_grams[k], eps=self.delta,
                                     method=self.precond_method,
                                     higham_iters=self.higham_iters,
+                                    eps_relative=self.precond_delta_relative,
                                 )
                                 gs['SB_half_inv'][k] = _spd_inv_half(
                                     SB_grams[k], eps=self.delta,
                                     method=self.precond_method,
                                     higham_iters=self.higham_iters,
+                                    eps_relative=self.precond_delta_relative,
                                 )
             SA_half_inv = gs['SA_half_inv']
             SB_half_inv = gs['SB_half_inv']
@@ -3068,23 +3190,27 @@ class AdamPolarProductLoRA(Optimizer):
                                 SA_half_inv_k = spd_inv_sqrt_higham_batched(
                                     SA_grams_k, n_iters=self.higham_iters,
                                     eps=self.delta,
+                                    eps_relative=self.precond_delta_relative,
                                 )
                                 SB_half_inv_k = spd_inv_sqrt_higham_batched(
                                     SB_grams_k, n_iters=self.higham_iters,
                                     eps=self.delta,
+                                    eps_relative=self.precond_delta_relative,
                                 )
                             else:
                                 SA_half_inv_k = torch.stack([
                                     _spd_inv_half(
                                         SA_grams_k[k_pair], eps=self.delta,
                                         method=self.precond_method,
-                                        higham_iters=self.higham_iters)
+                                        higham_iters=self.higham_iters,
+                                        eps_relative=self.precond_delta_relative)
                                     for k_pair in range(N)])
                                 SB_half_inv_k = torch.stack([
                                     _spd_inv_half(
                                         SB_grams_k[k_pair], eps=self.delta,
                                         method=self.precond_method,
-                                        higham_iters=self.higham_iters)
+                                        higham_iters=self.higham_iters,
+                                        eps_relative=self.precond_delta_relative)
                                     for k_pair in range(N)])
                         else:
                             # Compute-bound chain matmul; bmm vs per-pair was
@@ -3183,6 +3309,33 @@ class AdamPolarProductLoRA(Optimizer):
                 dA_prev = dA
                 dB_prev = dB
 
+            # Chain-of-intermediates non-finite check. Emits a single
+            # `non_finite_intermediate` event if any intermediate at this
+            # group went non-finite. Negligible cost (~20 isfinite reductions
+            # over batched tensors). Catches the failure at the link where it
+            # was born, not after it propagates to A/B at the start of the
+            # next step.
+            _emit_non_finite_chain(
+                step_count,
+                {
+                    "u_A": u_A, "u_B": u_B,
+                    "SA_half_inv": SA_half_inv_k, "SB_half_inv": SB_half_inv_k,
+                    "sigma_A": locals().get('sigma_A'),
+                    "sigma_B": locals().get('sigma_B'),
+                    "rho": locals().get('rho'),
+                    "picard_coeff_s": locals().get('picard_coeff_s'),
+                    "u_A_eff": u_A_eff, "u_B_eff": u_B_eff,
+                    "X_A": locals().get('X_A'), "X_B": locals().get('X_B'),
+                    "P_A": locals().get('P_A'), "P_B": locals().get('P_B'),
+                    "geo_A": locals().get('geo_A'), "geo_B": locals().get('geo_B'),
+                    "op_geoA_b": locals().get('op_geoA_b'),
+                    "op_geoB_b": locals().get('op_geoB_b'),
+                    "dA": dA, "dB": dB,
+                },
+                pair_names_in_group=[self.pair_names[gi] for gi in indices],
+                group_global_indices=list(indices),
+            )
+
             # Basic-tier diagnostics on probe steps: slice per-pair from the
             # batched 3D buffers and call the shared _emit_basic_diagnostics
             # helper. Lets the batched path stay on probe steps without
@@ -3265,6 +3418,9 @@ class AdamPolarProductLoRA(Optimizer):
                         lr=lr,
                     )
                     diag_records.append(rec)
+                    # Cache so the next step's NaN-trigger event can
+                    # reference the immediately-prior per-pair state.
+                    self.pair_state[gi]['last_diag'] = rec
 
             # Apply via `torch._foreach_*`: one multi-tensor kernel each for
             # add and zero, instead of 4N per-pair launches. ~4 ms saved
@@ -3336,10 +3492,12 @@ class AdamPolarProductLoRA(Optimizer):
                         state['SA_half_inv'] = _spd_inv_half(
                             A.float() @ A.float().T, eps=self.delta,
                             method=self.precond_method, higham_iters=self.higham_iters,
+                            eps_relative=self.precond_delta_relative,
                         )
                         state['SB_half_inv'] = _spd_inv_half(
                             B.float().T @ B.float(), eps=self.delta,
                             method=self.precond_method, higham_iters=self.higham_iters,
+                            eps_relative=self.precond_delta_relative,
                         )
             SA_half_inv = state['SA_half_inv']
             SB_half_inv = state['SB_half_inv']
@@ -3463,10 +3621,12 @@ class AdamPolarProductLoRA(Optimizer):
                             SA_half_inv_k = _spd_inv_half(
                                 A_eff @ A_eff.T, eps=self.delta,
                                 method=self.precond_method, higham_iters=self.higham_iters,
+                                eps_relative=self.precond_delta_relative,
                             )
                             SB_half_inv_k = _spd_inv_half(
                                 B_eff.T @ B_eff, eps=self.delta,
                                 method=self.precond_method, higham_iters=self.higham_iters,
+                                eps_relative=self.precond_delta_relative,
                             )
                         else:
                             if picard_coeff_t is not None:
