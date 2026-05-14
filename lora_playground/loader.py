@@ -550,6 +550,12 @@ def load_runs(
         is_buggy_eps_rel as _new_is_buggy_eps_rel,
     )
     _excluded_counts: dict[str, int] = {}
+    # Per-reason example list: (group, log_filename) pairs, capped per reason.
+    # Surfaces "which sweep got hit" in the loader summary; a user
+    # investigating "why is my group empty?" can grep the summary print
+    # for the group name instead of enumerating registries by hand.
+    _excluded_examples: dict[str, list[tuple[str, str]]] = {}
+    _EXAMPLES_PER_REASON = 3
 
     def _evaluate_new_layer(cfg: dict) -> tuple[bool, str | None]:
         """Code-correctness + run-quality exclusion. Three schema branches
@@ -641,11 +647,20 @@ def load_runs(
     # disagreement set has been reviewed; the JSON commit_exclusions
     # reproduces every legacy entry's effect by construction.
     _user_filter = filter_fn
+    # Pool of cfg keys seen during filtering (used by where-key validation
+    # post-merge: tracking BEFORE the user_filter rejects on missing keys
+    # tells us "does this key exist anywhere in the candidate pool?").
+    _seen_cfg_keys: set[str] = set()
     def _wrapped_filter(cfg: dict) -> bool:
         excluded, reason = _evaluate_new_layer(cfg)
         if excluded:
             _excluded_counts[reason] = _excluded_counts.get(reason, 0) + 1
+            ex = _excluded_examples.setdefault(reason, [])
+            if len(ex) < _EXAMPLES_PER_REASON:
+                ex.append((cfg.get("log_group") or "?",
+                           cfg.get("_log_filename") or "?"))
             return False
+        _seen_cfg_keys.update(cfg.keys())
         if _user_filter is not None:
             return _user_filter(cfg)
         return True
@@ -694,9 +709,32 @@ def load_runs(
 
     if _excluded_counts:
         total = sum(_excluded_counts.values())
-        summary = "; ".join(f"{n} for {reason!r}"
-                            for reason, n in sorted(_excluded_counts.items()))
-        print(f"  [loader] excluded {total} run(s): {summary}")
+        parts: list[str] = []
+        for reason, n in sorted(_excluded_counts.items()):
+            ex = _excluded_examples.get(reason, [])
+            ex_str = ", ".join(f"{g}/{lf}" for g, lf in ex)
+            more = max(0, n - len(ex))
+            tail = f" (e.g. {ex_str}" + (f", +{more} more" if more else "") + ")" if ex else ""
+            parts.append(f"{n} for {reason!r}{tail}")
+        print(f"  [loader] excluded {total} run(s): " + "; ".join(parts))
+
+    # where-key validation: if the user filtered on a field that doesn't
+    # appear in ANY non-excluded cfg in the loaded pool, the result is
+    # silently empty. Warn so typos ('datset' for 'dataset_name') surface
+    # loudly. We check against `_seen_cfg_keys` (collected pre-user-filter)
+    # so legitimate value-misses don't fire the warning.
+    if where and _seen_cfg_keys:
+        resolved_keys = {_WHERE_FIELD_ALIASES.get(k, k) for k in where.keys()}
+        unknown = sorted(k for k in resolved_keys if k not in _seen_cfg_keys)
+        if unknown:
+            warnings.warn(
+                f"load_runs: where-key(s) {unknown!r} do not appear in any "
+                f"cfg in the candidate pool ({len(_seen_cfg_keys)} unique "
+                f"fields seen). Possible typo or filtering on a field that "
+                f"doesn't exist for this dataset. Known cfg keys (sample): "
+                f"{sorted(_seen_cfg_keys)[:20]}...",
+                stacklevel=2,
+            )
 
 
     if warn_cross_commit and runs:
@@ -743,6 +781,7 @@ class RunInventory:
     groups_loaded: tuple[str, ...]             # subset that contributes runs
     groups_orphaned: tuple[str, ...]           # populated, no manifest or empty scope
     groups_no_run_info: tuple[str, ...]        # logs/<group>/ exists with files but no run_info/ — invisible to load_manifests
+    groups_all_excluded: tuple[tuple[str, str], ...]  # (group, dominant_reason) — manifested + populated, but every run is exclusion-dropped
     optimizers_unknown: tuple[str, ...]        # in logs but not in OPTIM_COLORS
     coverage: tuple[CoverageRow, ...]
 
@@ -791,10 +830,60 @@ def inventory_runs(logs_root: str | None = None) -> RunInventory:
     rows: dict[tuple[str, int, float], dict] = {}
     seen_optimizers: set[str] = set()
     contributing_groups: set[str] = set()
+    # Per-group exclusion audit: re-run the exclusion chain on every
+    # (group, run) and flag groups where ALL runs are exclusion-dropped.
+    # This catches the "valid manifest + populated .out + every run on a
+    # blanket-excluded commit" failure mode that's invisible to the
+    # orphan / no_run_info / unknown-optimizer audits.
+    from .invariants import evaluate_invariants
+    from .run_exclusions import is_run_excluded
+    from .commit_exclusions import (
+        is_commit_excluded as _ic_excluded,
+        is_buggy_eps_rel as _ic_buggy_eps_rel,
+    )
+    def _group_dominant_exclusion(cfgs: list[dict]) -> str | None:
+        """Returns the most common exclusion reason if EVERY cfg is
+        excluded, else None. Defensive against per-cfg variation: we want
+        to surface a single representative reason in the inventory output.
+        """
+        reasons: list[str] = []
+        for cfg in cfgs:
+            ex, r = is_run_excluded(cfg.get("log_group"), cfg.get("_log_filename"))
+            if ex:
+                reasons.append(r); continue
+            ex, r = _ic_excluded(cfg.get("git_commit"))
+            if ex:
+                reasons.append(r); continue
+            ex, r = _ic_buggy_eps_rel(cfg)
+            if ex:
+                reasons.append(r); continue
+            ex, name, inv_reason = evaluate_invariants(
+                cfg, cfg.get("git_commit"), _is_ancestor)
+            if ex:
+                reasons.append(f"invariant {name}: {inv_reason}"); continue
+            return None  # at least one run admitted — group is fine
+        if not reasons:
+            return None
+        # Most-common reason (Counter would import, just use dict count).
+        counts: dict[str, int] = {}
+        for r in reasons:
+            counts[r] = counts.get(r, 0) + 1
+        return max(counts.items(), key=lambda kv: kv[1])[0]
+
+    groups_all_excluded: list[tuple[str, str]] = []
+
     for group in live_groups:
         if not has_runs(group, logs_root):
             continue
-        for cfg, evs in load_sweep(group, logs_root):
+        # Capture the raw cfg list once so we can both feed the coverage
+        # loop AND run the all-excluded audit without re-parsing.
+        group_runs = load_sweep(group, logs_root)
+        group_cfgs = [cfg for cfg, evs in group_runs if evs]
+        if group_cfgs:
+            dom = _group_dominant_exclusion(group_cfgs)
+            if dom is not None:
+                groups_all_excluded.append((group, dom))
+        for cfg, evs in group_runs:
             if not evs:
                 continue
             optimizer = cfg.get("optimizer", "?")
@@ -854,6 +943,7 @@ def inventory_runs(logs_root: str | None = None) -> RunInventory:
         groups_loaded=tuple(sorted(contributing_groups)),
         groups_orphaned=tuple(orphaned),
         groups_no_run_info=tuple(no_run_info),
+        groups_all_excluded=tuple(sorted(groups_all_excluded)),
         optimizers_unknown=optimizers_unknown,
         coverage=tuple(coverage),
     )
@@ -875,6 +965,12 @@ def render_inventory(inv: RunInventory) -> str:
         lines.append(f"NO run_info/ ({len(inv.groups_no_run_info)}) — files present but missing run_info/ dir, invisible to load_runs:")
         for g in inv.groups_no_run_info:
             lines.append(f"  {g}")
+
+    if inv.groups_all_excluded:
+        lines.append("")
+        lines.append(f"ALL RUNS EXCLUDED ({len(inv.groups_all_excluded)}) — valid manifest + .out files, but every run dropped by exclusion chain:")
+        for g, reason in inv.groups_all_excluded:
+            lines.append(f"  {g}: {reason}")
 
     if inv.optimizers_unknown:
         lines.append("")

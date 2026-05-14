@@ -559,3 +559,108 @@ def test_load_runs_enriches_returned_cfgs(tmp_path: Path):
     assert "_derived" in enriched_cfg
     assert enriched_cfg["_derived"]["effective_inner_polar"] == "svd_exact"
     assert "effective_picard_iters" in enriched_cfg["_derived"]
+
+
+# ─── exclusion observability: per-group surfacing ─────────────────────────────
+#
+# Regression for the Phase L silent-drop: runs at a blanket-excluded commit
+# were dropped with no per-group indication. inventory_runs.groups_all_excluded
+# must name the group + dominant reason; the load_runs summary print must
+# include a per-reason example list.
+
+def test_inventory_surfaces_blanket_excluded_group(tmp_path: Path, monkeypatch):
+    """A group whose every run is on a blanket-excluded commit shows up in
+    groups_all_excluded with the dominant exclusion reason."""
+    logs = tmp_path / "logs"
+    # Inject a synthetic blanket exclusion at runtime so the test doesn't
+    # depend on the real commit_exclusions.json contents.
+    from lora_playground import commit_exclusions as cx_mod
+    monkeypatch.setattr(
+        cx_mod, "COMMIT_EXCLUSIONS",
+        [("badcom1", "synthetic test exclusion")],
+    )
+
+    cfg = _cfg("adamw", 3e-4)
+    cfg["git_commit"] = "badcom1abc"
+    _write_group(logs, "g_blanket_excluded", {"scope": ["all_optimizers"]},
+                 [(cfg, _evs((2000, 0.76)))])
+    cfg_ok = _cfg("adamw", 3e-4)
+    cfg_ok["git_commit"] = "goodcomm"
+    _write_group(logs, "g_ok", {"scope": ["all_optimizers"]},
+                 [(cfg_ok, _evs((2000, 0.76)))])
+
+    inv = inventory_runs(str(logs))
+    # The blanket-excluded group surfaces with reason.
+    excluded_dict = dict(inv.groups_all_excluded)
+    assert "g_blanket_excluded" in excluded_dict, (
+        f"expected g_blanket_excluded in inventory.groups_all_excluded; "
+        f"got {inv.groups_all_excluded}"
+    )
+    assert "synthetic test exclusion" in excluded_dict["g_blanket_excluded"]
+    # The OK group must NOT appear in groups_all_excluded.
+    assert "g_ok" not in excluded_dict
+    # render_inventory output mentions the group name and reason.
+    text = render_inventory(inv)
+    assert "g_blanket_excluded" in text
+    assert "ALL RUNS EXCLUDED" in text
+
+
+def test_load_runs_summary_includes_group_examples(tmp_path: Path, monkeypatch, capsys):
+    """The exclusion summary print must name an example (group, log_filename)
+    so a user can identify which sweep got swept up."""
+    logs = tmp_path / "logs"
+    from lora_playground import commit_exclusions as cx_mod
+    monkeypatch.setattr(
+        cx_mod, "COMMIT_EXCLUSIONS",
+        [("badcom1", "synthetic blanket exclusion")],
+    )
+    cfg = _cfg("adamw", 3e-4)
+    cfg["git_commit"] = "badcom1abc"
+    _write_group(logs, "phase_L_test", {"scope": ["all_optimizers"]},
+                 [(cfg, _evs((2000, 0.76)))])
+
+    runs = load_runs(where={"optimizer": "adamw"}, logs_root=str(logs))
+    out = capsys.readouterr().out
+    assert "phase_L_test" in out, (
+        f"summary print missing group name; got: {out!r}"
+    )
+    # The exclusion blocks user filter from seeing the run.
+    assert len(runs) == 0
+
+
+def test_load_runs_warns_on_unknown_where_key(tmp_path: Path):
+    """A typo'd where-key (field absent from every cfg) issues a warning
+    instead of silently returning empty results."""
+    logs = tmp_path / "logs"
+    _write_group(logs, "g", {"scope": ["all_optimizers"]}, [
+        (_cfg("adamw", 3e-4), _evs((2000, 0.76))),
+    ])
+    import warnings as _warn
+    with _warn.catch_warnings(record=True) as caught:
+        _warn.simplefilter("always")
+        load_runs(where={"datset": "anything"}, logs_root=str(logs),
+                  warn_cross_commit=False)
+        msgs = [str(w.message) for w in caught]
+    assert any("datset" in m for m in msgs), (
+        f"expected typo-key warning; got: {msgs}"
+    )
+
+
+def test_load_runs_no_warning_on_legit_value_miss(tmp_path: Path):
+    """Filtering on a real cfg key with a value that just doesn't match
+    must NOT trigger the typo warning (only key-absence does)."""
+    logs = tmp_path / "logs"
+    _write_group(logs, "g", {"scope": ["all_optimizers"]}, [
+        (_cfg("adamw", 3e-4, lora_r=16), _evs((2000, 0.76))),
+    ])
+    import warnings as _warn
+    with _warn.catch_warnings(record=True) as caught:
+        _warn.simplefilter("always")
+        runs = load_runs(where={"lora_r": 999}, logs_root=str(logs),
+                         warn_cross_commit=False)
+        msgs = [str(w.message) for w in caught]
+    assert runs == []
+    # lora_r is a real cfg field; warning should NOT fire.
+    assert not any("lora_r" in m and "typo" in m.lower() for m in msgs), (
+        f"unexpected typo warning on legit value miss: {msgs}"
+    )

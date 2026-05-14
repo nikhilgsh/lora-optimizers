@@ -27,14 +27,18 @@
     {
       "commit_prefix": "76fcd3f",
       "reason": "polar-k3 regression at r256 rerun / rsweep"
-    },
+    }
+  ],
+  "_removed": [
     {
       "commit_prefix": "91122ce",
-      "reason": "r64_chord_postfix_validation runs systematically +0.01 above seed cluster from later commits; subtle regression in precond_delta_relative kwarg threading. Specific affected sweep also enumerated in run_exclusions.json."
+      "reason_when_removed": "narrowed to per-run exclusion in run_exclusions.json; the original entry was a blanket whose own text already pointed at run_exclusions as the correct narrow tool.",
+      "removed_at": "2026-05-14"
     },
     {
       "commit_prefix": "e05b80e",
-      "reason": "precond_delta_relative=True interpreted as absolute δ; fixed in ef6b3bc. (Non-ε_rel runs at this commit may be unaffected by the specific bug but the legacy registry blanket-excluded; preserved for behavioral equivalence.)"
+      "reason_when_removed": "narrowed: the precond_delta_relative bug at this commit is already caught by Invariant(lambda_max_fix_for_eps_rel, requires_ancestor=9677abe) which post-dates the earlier ef6b3bc fix. Non-ε_rel runs at e05b80e (e.g. Phase L AdamW + chord-tight) are unaffected and were swept up by the blanket.",
+      "removed_at": "2026-05-14"
     }
   ]
 }
