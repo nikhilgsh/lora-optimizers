@@ -708,6 +708,13 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         elif obj.get("event") == "lora_init_override":
             init_override_mode = obj.get("mode")
     if config is not None and evals:
+        # Loader-assigned: the cfg event itself does not carry a run_id;
+        # we synthesize one from the disk path here so downstream RUN_EXCLUSIONS
+        # and DIRTY_ATTESTATIONS lookups have a stable per-run key. Note this
+        # IS stored on cfg (underscore-prefixed to match the convention for
+        # loader-injected fields); _enrich_cfg later promotes a public
+        # `run_id` tuple alongside `log_group`.
+        config["_log_filename"] = log_path.name
         config.setdefault("lr", evals[0]["lr"])
         cmd = config.get("command", "")
         lp = parse_flag(cmd, "--lora_plus_multiplier")
@@ -789,6 +796,14 @@ def has_runs(group: str, logs_root: str = "../logs") -> bool:
 # ``_optim_steps`` differences — see git log for 2026-05-06 fix).
 RUNTIME_FIELDS: frozenset[str] = frozenset({
     "git_commit", "command", "log_group",
+    # Provenance fields (Phase 1 cfg-event enrichment, 2026-05-14): dirty-tree
+    # state captured at submission. The values themselves don't affect
+    # algorithmic behavior; the loader's invariants/dirty_attestations layers
+    # consume them to decide whether a run is includable, but dedup must not
+    # split otherwise-identical runs across these axes.
+    "git_dirty", "git_diff_sha", "git_untracked_files",
+    # Loader-assigned per-run identifier; see loader._enrich_cfg.
+    "run_id", "_log_filename",
     "wandb_project", "wandb_run_name",
     "device", "tf32", "no_tf32",
     # Diagnostic toggles (none affect optimizer math). Both the current
@@ -797,6 +812,7 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     "log_basic_diagnostics", "log_heavy_diagnostics",
     "log_optim_diagnostics", "no-log_optim_diagnostics",
     "optim_diagnostics_every",
+    "diagnostics",   # canonical block (Phase 1, 2026-05-14)
     "profile_steps", "profile_dir",
     "_optim_steps",
     "train_file", "eval_file",

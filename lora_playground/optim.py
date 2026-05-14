@@ -60,6 +60,73 @@ def _is_json_safe(v) -> bool:
     return False
 
 
+# ─── shared effective-config resolvers ────────────────────────────────────────
+#
+# `_polar_pipeline._polar_op` short-circuits across `polar_sigma_power` and
+# `polar_method`. Two consumers need the resolved truth: the runtime dispatch
+# inside `_polar_op` (which method to actually call) and the per-run cfg event
+# `optimizer_effective` block (which method to record on disk). Both call the
+# resolver below — single source of truth, no drift surface.
+def resolve_effective_inner_polar(
+    polar_sigma_power,
+    polar_method,
+    *,
+    optimizer_class_name=None,
+):
+    """Resolve the canonical name of the polar operator for given kwargs.
+
+    Returns one of:
+      {"method": "svd_exact",     "label": "svd_exact"}
+      {"method": "sigma_power",   "sigma_power": float,
+                                  "label": "sigma_power(p=<float>)"}
+      {"method": "ns_hybrid",     "label": "ns_hybrid"}
+      {"method": "polar_express", "label": "polar_express"}
+      {"method": "ns",            "label": "ns"}
+      None  — no polar pipeline applies for this optimizer
+
+    Precedence (highest first):
+      polar_sigma_power == 0.0   → svd_exact
+      polar_sigma_power != None  → sigma_power(p=…)
+      polar_method ∈ {ns, ns_hybrid, polar_express} → that string
+      optimizer_class_name implies a polar-product variant → "ns" (legacy
+        fallback for cfgs missing polar_method; the runtime always sets it)
+      otherwise → None
+    """
+    psp = polar_sigma_power
+    if psp is not None and psp != "None":
+        try:
+            psp_f = float(psp)
+        except (TypeError, ValueError):
+            psp_f = None
+        if psp_f is not None:
+            if psp_f == 0.0:
+                return {"method": "svd_exact", "label": "svd_exact"}
+            return {
+                "method": "sigma_power",
+                "sigma_power": psp_f,
+                "label": f"sigma_power(p={psp_f})",
+            }
+    if polar_method in {"ns", "ns_hybrid", "polar_express"}:
+        return {"method": polar_method, "label": polar_method}
+    if optimizer_class_name:
+        norm = optimizer_class_name.lower().replace("_", "").replace("-", "")
+        if "polarproduct" in norm:
+            return {"method": "ns", "label": "ns"}
+    return None
+
+
+def optimizer_effective_config(opt) -> dict:
+    """Call `opt.effective_config()` if the method exists, else return {}.
+
+    Module-level helper rather than a base-class method — `torch.optim.Optimizer`
+    is third-party and we don't monkey-patch it. Project-owned subclasses that
+    define short-circuit precedence (currently the AdamPolarProductLoRA family
+    and the Gauge variants) implement `effective_config(self) -> dict`.
+    """
+    fn = getattr(opt, "effective_config", None)
+    return fn() if callable(fn) else {}
+
+
 def optimizer_config_dict(opt) -> dict:
     """Resolved-hyperparameter snapshot of `opt` via __init__ introspection.
 
@@ -2844,6 +2911,22 @@ class AdamPolarProductLoRA(Optimizer):
                 AdamPolarProductLoRA._muon_plus_norm(M, "col", eps), "row", eps)
         raise ValueError(direction)
 
+    def effective_config(self) -> dict:
+        """Resolved behavioral fields for the cfg event `optimizer_effective`
+        block. Calls the shared `resolve_effective_inner_polar` so the loader
+        and the runtime cannot drift. Inherited by subclasses; override only
+        if a subclass changes the precedence (none currently do).
+        """
+        out: dict = {"effective_picard_iters": int(self.picard_iters)}
+        eff = resolve_effective_inner_polar(
+            getattr(self, "polar_sigma_power", None),
+            getattr(self, "polar_method", "ns"),
+            optimizer_class_name=type(self).__name__,
+        )
+        if eff is not None:
+            out["effective_inner_polar"] = eff["label"]
+        return out
+
     def _polar_pipeline(self, u_A, u_B, SA_half_inv, SB_half_inv, lr):
         """One pass of the polar-product update + RMS-align.
 
@@ -2864,15 +2947,21 @@ class AdamPolarProductLoRA(Optimizer):
         psp = getattr(self, "polar_sigma_power", None)
         pm = getattr(self, "polar_method", "ns")
         timer = getattr(self, "_step_timer", None)
+        eff = resolve_effective_inner_polar(
+            psp, pm, optimizer_class_name=type(self).__name__,
+        )
+        eff_method = eff["method"] if eff is not None else "ns"
 
         def _polar_op(X):
             if op == "clip":
                 return _clip_R_equal(X)
-            if psp is not None:
-                return self._sigma_power_polar(X, psp)
-            if pm == "ns_hybrid":
+            if eff_method == "svd_exact":
+                return self._sigma_power_polar(X, 0.0)
+            if eff_method == "sigma_power":
+                return self._sigma_power_polar(X, eff["sigma_power"])
+            if eff_method == "ns_hybrid":
                 return _newton_schulz_hybrid_deepseek(X, total_steps=max(self.ns_steps, 10))
-            if pm == "polar_express":
+            if eff_method == "polar_express":
                 return _polar_express(X, nsteps=self.ns_steps)
             return _newton_schulz(X, nsteps=self.ns_steps)
 
@@ -5302,6 +5391,14 @@ class AdamPolarProductLoRAGauge(Optimizer):
                 'step': 0,
             }
 
+    def effective_config(self) -> dict:
+        """Gauge variant uses Newton-Schulz unconditionally — no polar_method
+        or polar_sigma_power knobs to short-circuit."""
+        return {
+            "effective_picard_iters": int(self.picard_iters),
+            "effective_inner_polar": "ns",
+        }
+
     @torch.no_grad()
     def step(self, closure=None):
         if closure is not None:
@@ -5605,6 +5702,14 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
                 'v_B': torch.zeros_like(B, dtype=torch.float32),
                 'step': 0,
             }
+
+    def effective_config(self) -> dict:
+        """ClipGauge variant uses Newton-Schulz polar unconditionally (the
+        clip path is operator-level, not polar-method-level)."""
+        return {
+            "effective_picard_iters": int(self.picard_iters),
+            "effective_inner_polar": "ns",
+        }
 
     @torch.no_grad()
     def step(self, closure=None):

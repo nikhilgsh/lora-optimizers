@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -33,7 +34,12 @@ from .mfu import (
     device_peak_tflops,
     flops_per_token_for_mode,
 )
-from .optim import OPTIMIZER_CHOICES, build_optimizer, optimizer_config_dict
+from .optim import (
+    OPTIMIZER_CHOICES,
+    build_optimizer,
+    optimizer_config_dict,
+    optimizer_effective_config,
+)
 from .training_kernel import (
     batch_to_device,
     build_peft_model,
@@ -272,6 +278,65 @@ def git_commit():
     except Exception:
         return None
     return result.stdout.strip()
+
+
+def _git_diff_text() -> str | None:
+    """Return `git diff HEAD --no-ext-diff` text, or None if git is unavailable
+    or the call fails. Covers staged + unstaged tracked-file changes; untracked
+    files are reported separately via `_git_untracked_files`.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD", "--no-ext-diff"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        return None
+    return result.stdout
+
+
+def _git_untracked_files() -> list[str]:
+    """Sorted list of untracked file paths reported by git. Empty list when
+    clean or git is unavailable. Excludes ignored files (no -i flag).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        return []
+    files = [line for line in result.stdout.splitlines() if line]
+    files.sort()
+    return files
+
+
+def git_dirty_state() -> dict:
+    """Return {git_dirty, git_diff_sha, git_untracked_files} for the cfg event.
+
+    git_dirty is True iff tracked-file diffs are non-empty OR untracked files
+    exist. git_diff_sha is the sha256 of `git diff HEAD --no-ext-diff` (None
+    when there are no tracked diffs). git_untracked_files is the sorted path
+    list (NOT contents); attestation refuses to vouch for runs with non-empty
+    untracked because content addressing wouldn't be sound.
+    """
+    diff_text = _git_diff_text()
+    diff_sha = None
+    if diff_text:
+        diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+    untracked = _git_untracked_files()
+    dirty = bool(diff_text) or bool(untracked)
+    return {
+        "git_dirty": dirty,
+        "git_diff_sha": diff_sha,
+        "git_untracked_files": untracked,
+    }
 
 
 def log_event(payload):
@@ -908,11 +973,15 @@ def main():
             resume="never",
         )
 
+    dirty_state = git_dirty_state()
     log_event(
         {
             "event": "config",
             "command": " ".join(shlex.quote(arg) for arg in sys.argv),
             "git_commit": git_commit(),
+            "git_dirty": dirty_state["git_dirty"],
+            "git_diff_sha": dirty_state["git_diff_sha"],
+            "git_untracked_files": dirty_state["git_untracked_files"],
             "device": str(device),
             "training_mode": args.training_mode,
             "optimizer": effective_optimizer,
@@ -971,6 +1040,22 @@ def main():
             "precond_delta": args.precond_delta,
             "precond_delta_relative": args.precond_delta_relative,
             "optimizer_config": optimizer_config_dict(optimizer),
+            # Short-circuit-resolved effective behavior, emitted by the
+            # optimizer instance itself (the authority on what its math
+            # actually does). Empty {} for optimizers without short-circuit
+            # precedence; populated for the polar-product family with
+            # `effective_inner_polar` and `effective_picard_iters`.
+            "optimizer_effective": optimizer_effective_config(optimizer),
+            # Diagnostics flags under canonical names. The loader's read-side
+            # alias chain (log_optim_diagnostics → log_basic_diagnostics,
+            # log_diagnostics → log_basic_diagnostics, diagnostics_every →
+            # optim_diagnostics_every) exists only for legacy cfgs; new
+            # runs always emit these canonical keys.
+            "diagnostics": {
+                "basic": bool(args.log_basic_diagnostics),
+                "heavy": bool(args.log_heavy_diagnostics),
+                "every": int(args.optim_diagnostics_every),
+            },
             # Future-proofing: blanket dump of every CLI flag so analysis
             # never has to wait for a manual cfg event update when a new
             # flag is added. Named fields above remain for backward compat.
