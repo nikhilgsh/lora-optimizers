@@ -1,0 +1,74 @@
+{
+  "_doc": [
+    "Per-run quality exclusions. Each entry says 'this specific run is unusable",
+    "for a reason that cannot be expressed as a cfg predicate' (truncation,",
+    "contamination, supersession). Code-correctness exclusions belong in",
+    "lora_playground/invariants.py (predicate + git-ancestor check).",
+    "",
+    "Schema: list of objects with {group, log_filename, reason}.",
+    "Add an entry by appending here, then rerun the verdict-disagreement",
+    "check (scripts/_verify_backfill_equivalence or load_runs in a notebook)."
+  ],
+  "entries": [
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_00.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; runs systematically +0.01 above seed cluster from descendants of ef6b3bc. Legacy registry entry blanket-excluded commit 91122ce; we narrow to the affected group since the bug surface was specific to this validation sweep."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_01.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_02.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_03.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_04.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_05.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_06.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_07.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_08.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_09.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_10.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    },
+    {
+      "group": "r64_chord_postfix_validation_4k_blackwell",
+      "log_filename": "log_11.out",
+      "reason": "Superseded by later chord-tight runs at the same cfg; +0.01 above seed cluster. See log_00 entry."
+    }
+  ]
+}

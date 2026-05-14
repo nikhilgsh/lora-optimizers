@@ -290,6 +290,15 @@ def _enrich_cfg(cfg: dict) -> dict:
     ``polar_sigma_power=0.0`` is the canonical example — the effective
     inner polar is "svd_exact", not "ns").
     """
+    # Loader-assigned run_id: (log_group, log_filename) tuple. `log_group` is
+    # mutated onto cfg by merge_runs; `_log_filename` is set by load_run. The
+    # cfg event itself never carries run_id — it's derived from disk path so
+    # the registry keys for RUN_EXCLUSIONS / DIRTY_ATTESTATIONS are stable
+    # against any future field-name renaming in the cfg event.
+    group = cfg.get("log_group")
+    fname = cfg.get("_log_filename")
+    if group is not None and fname is not None:
+        cfg["run_id"] = (group, fname)
     if cfg.get("optimizer_config") is None:
         cfg["optimizer_config"] = _backfill_optimizer_config(cfg)
     opt_cfg = cfg["optimizer_config"]
@@ -315,10 +324,25 @@ def _enrich_cfg(cfg: dict) -> dict:
     if cfg.get("optim_diagnostics_every") is None:
         cfg["optim_diagnostics_every"] = opt_cfg.get("diagnostics_every")
     derived: dict[str, Any] = {}
-    derived["effective_inner_polar"] = _derive_effective_inner_polar(cfg, opt_cfg)
-    k, k_certain = _derive_effective_picard_iters(cfg, opt_cfg)
-    derived["effective_picard_iters"] = k
-    derived["effective_picard_iters_certain"] = k_certain
+    # Prefer the cfg-emitted `optimizer_effective` block (Phase 1 emit for new
+    # runs, Phase 2 backfill for legacy). Fall back to the forensic _derive_*
+    # path only when the field is missing (in-flight runs that started before
+    # Phase 1 and haven't been re-backfilled). Once all in-flight runs are
+    # done and re-backfilled, the forensic fallback is deletable.
+    opt_eff = cfg.get("optimizer_effective") or {}
+    if "effective_inner_polar" in opt_eff:
+        derived["effective_inner_polar"] = opt_eff["effective_inner_polar"]
+    else:
+        derived["effective_inner_polar"] = _derive_effective_inner_polar(cfg, opt_cfg)
+    if "effective_picard_iters" in opt_eff:
+        derived["effective_picard_iters"] = opt_eff["effective_picard_iters"]
+        derived["effective_picard_iters_certain"] = True
+    else:
+        k, k_certain = _derive_effective_picard_iters(cfg, opt_cfg)
+        derived["effective_picard_iters"] = k
+        derived["effective_picard_iters_certain"] = k_certain
+    k = derived["effective_picard_iters"]
+    k_certain = derived["effective_picard_iters_certain"]
     # Promote canonical resolved-values to top-level scalars. `series_id`
     # and `_denylist_key` only see top-level non-underscore-prefixed
     # scalars; if the canonical lives only under `_derived`, two cfgs
@@ -518,15 +542,81 @@ def load_runs(
     # rows at the plot layer and inflate the seed-σ band. Backfilling
     # here makes the keys agree so the dedup tiebreak (newest group,
     # longest trajectory) picks one canonical run per seed.
-    from .manifest import is_commit_excluded
+    from .invariants import evaluate_invariants
+    from .run_exclusions import is_run_excluded
+    from .dirty_attestations import lookup_attestation
+    from .commit_exclusions import (
+        is_commit_excluded as _new_is_commit_excluded,
+        is_buggy_eps_rel as _new_is_buggy_eps_rel,
+    )
     _excluded_counts: dict[str, int] = {}
 
-    # Wrap filter_fn to also drop runs at commits in EXCLUDED_COMMITS.
-    # Tally excluded-by-reason so the load surfaces a one-line summary
-    # rather than silently dropping potentially load-bearing data.
+    def _evaluate_new_layer(cfg: dict) -> tuple[bool, str | None]:
+        """Code-correctness + run-quality exclusion. The Python `manifest.py`
+        legacy registries are deleted; all exclusion data now lives in
+        `lora_playground/exclusions/*.json` plus the invariants DSL.
+
+        Dirty-tree handling:
+          - clean tree → invariants checked against cfg.git_commit
+          - dirty + untracked files → exclude (no content addressing possible)
+          - dirty + no untracked + attested → invariants checked against
+            attestation.treat_as_commit
+          - dirty + no untracked + unattested → exclude
+        """
+        # Per-run quality exclusion always takes precedence.
+        log_group = cfg.get("log_group")
+        log_filename = cfg.get("_log_filename")
+        excluded, reason = is_run_excluded(log_group, log_filename)
+        if excluded:
+            return True, reason
+        # Blanket-commit exclusion (JSON-backed commit_exclusions.json).
+        excluded, reason = _new_is_commit_excluded(cfg.get("git_commit"))
+        if excluded:
+            return True, reason
+        # ε_rel-specific buggy commits (eps_rel_buggy_commits.json).
+        excluded, reason = _new_is_buggy_eps_rel(cfg)
+        if excluded:
+            return True, reason
+        # Dirty-tree resolution.
+        if cfg.get("git_dirty"):
+            # Legacy escape hatch: pre-Phase-1 runs don't carry per-run
+            # diff_sha (it didn't exist). For them, `git_dirty` was set
+            # during Phase-2 backfill from the manifest, which is a
+            # sweep-level signal — useful but not content-addressed. We
+            # accept legacy-dirty runs at face value, treating them as
+            # if at cfg.git_commit. New runs (post Phase 1) emit
+            # git_diff_sha; for those we enforce the attestation policy.
+            if cfg.get("git_diff_sha") is None:
+                # Legacy-dirty: accept, use cfg.git_commit.
+                effective_commit = cfg.get("git_commit")
+            else:
+                if cfg.get("git_untracked_files"):
+                    return True, ("dirty tree with untracked files: "
+                                  "cannot be content-addressed for attestation")
+                attestation = lookup_attestation(
+                    log_group, log_filename, cfg.get("git_diff_sha"),
+                )
+                if attestation is None:
+                    return True, "unattested dirty tree"
+                effective_commit = attestation.treat_as_commit
+        else:
+            effective_commit = cfg.get("git_commit")
+        # Code-correctness invariants.
+        excluded, name, inv_reason = evaluate_invariants(
+            cfg, effective_commit, _is_ancestor,
+        )
+        if excluded:
+            return True, f"invariant {name}: {inv_reason}"
+        return False, None
+
+    # Apply the new exclusion layer (invariants + run_exclusions +
+    # dirty_attestations + commit_exclusions). The Phase-3 dual-output mode
+    # against the legacy Python registries is removed now that the
+    # disagreement set has been reviewed; the JSON commit_exclusions
+    # reproduces every legacy entry's effect by construction.
     _user_filter = filter_fn
     def _wrapped_filter(cfg: dict) -> bool:
-        excluded, reason = is_commit_excluded(cfg.get("git_commit"))
+        excluded, reason = _evaluate_new_layer(cfg)
         if excluded:
             _excluded_counts[reason] = _excluded_counts.get(reason, 0) + 1
             return False
@@ -580,7 +670,8 @@ def load_runs(
         total = sum(_excluded_counts.values())
         summary = "; ".join(f"{n} for {reason!r}"
                             for reason, n in sorted(_excluded_counts.items()))
-        print(f"  [loader] excluded {total} run(s) from stale commits: {summary}")
+        print(f"  [loader] excluded {total} run(s): {summary}")
+
 
     if warn_cross_commit and runs:
         commits: dict[str, int] = {}

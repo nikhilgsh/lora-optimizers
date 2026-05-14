@@ -1,0 +1,40 @@
+{
+  "_doc": [
+    "Blanket per-commit exclusions. Each entry says 'this commit is bad —",
+    "exclude any run whose cfg.git_commit starts with `commit_prefix`.'",
+    "",
+    "Use this only when:",
+    "1. We know a commit produced incorrect output, AND",
+    "2. We CANNOT pin the bug to a cfg-predicate (e.g. an invariant of the",
+    "   form 'cfgs matching X require fix-commit Y as ancestor').",
+    "",
+    "Prefer `invariants.py` predicates when possible — they generalize to",
+    "future commits with the same property. Reach for commit_exclusions only",
+    "when a bug was specific to a commit in a way you cannot characterize.",
+    "",
+    "Schema: list of {commit_prefix, reason}. The loader matches by prefix",
+    "(`cfg.git_commit.startswith(commit_prefix)`), so 7-char shorts are fine."
+  ],
+  "entries": [
+    {
+      "commit_prefix": "8f1a493",
+      "reason": "chord-tight algorithmic regression; fixed in later commit"
+    },
+    {
+      "commit_prefix": "d620841",
+      "reason": "chord-tight regression at rsweep / polar_r256_diag"
+    },
+    {
+      "commit_prefix": "76fcd3f",
+      "reason": "polar-k3 regression at r256 rerun / rsweep"
+    },
+    {
+      "commit_prefix": "91122ce",
+      "reason": "r64_chord_postfix_validation runs systematically +0.01 above seed cluster from later commits; subtle regression in precond_delta_relative kwarg threading. Specific affected sweep also enumerated in run_exclusions.json."
+    },
+    {
+      "commit_prefix": "e05b80e",
+      "reason": "precond_delta_relative=True interpreted as absolute δ; fixed in ef6b3bc. (Non-ε_rel runs at this commit may be unaffected by the specific bug but the legacy registry blanket-excluded; preserved for behavioral equivalence.)"
+    }
+  ]
+}

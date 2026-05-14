@@ -1,0 +1,20 @@
+{
+  "_doc": [
+    "Dirty-tree attestations. Each entry says: for this specific run on a",
+    "dirty tree (identified by git_diff_sha), treat the code as if at",
+    "`treat_as_commit` for invariant purposes.",
+    "",
+    "Schema: list of {group, log_filename, git_diff_sha, treat_as_commit, reason}.",
+    "",
+    "Loader behavior (see lora_playground/loader.py _evaluate_new_layer):",
+    "- cfg.git_dirty=False                          → use cfg.git_commit",
+    "- cfg.git_dirty=True, git_diff_sha is None     → LEGACY-DIRTY escape:",
+    "    accept at face value, use cfg.git_commit. Applies to runs older",
+    "    than Phase-1 cfg-event enrichment (2026-05-14).",
+    "- cfg.git_dirty=True, git_untracked_files set  → EXCLUDED (untracked",
+    "    files defeat content addressing; attestation cannot vouch).",
+    "- cfg.git_dirty=True, attested                 → use treat_as_commit.",
+    "- cfg.git_dirty=True, unattested               → EXCLUDED."
+  ],
+  "entries": []
+}
