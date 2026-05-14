@@ -161,6 +161,73 @@ def sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
     return sigma, v
 
 
+def lambda_max_power_iter_psd_batched(H, v_init=None, n_iters=8, eps=1e-30):
+    """Estimate λ_max(H) for symmetric PSD matrices with robust deterministic starts.
+
+    This is the critical scaling primitive for Newton-Schulz inverse square
+    roots. A single deterministic start such as ``H @ ones`` can have tiny or
+    zero overlap with the top eigendirection, making the scale underestimate
+    λ_max and pushing NS out of its basin. We therefore run a small bundle of
+    deterministic starts in parallel and keep the largest Rayleigh quotient.
+
+    H: (..., n, n), symmetric PSD. Returns (lam: (...,), v: (..., n)).
+    """
+    if H.numel() == 0:
+        return torch.zeros(H.shape[:-2], device=H.device, dtype=torch.float32), None
+    Hf = H.float() if H.dtype != torch.float32 else H
+    Hf = 0.5 * (Hf + Hf.transpose(-2, -1))
+    *batch, n, _ = Hf.shape
+    batch_shape = tuple(batch)
+
+    starts = []
+    if (v_init is not None
+            and v_init.shape == (*batch_shape, n)
+            and v_init.device == Hf.device
+            and v_init.dtype == torch.float32):
+        starts.append(v_init)
+
+    idx = torch.arange(n, device=Hf.device, dtype=torch.float32)
+    ones = torch.ones(*batch_shape, n, device=Hf.device, dtype=torch.float32)
+    alt = torch.where((idx.to(torch.int64) % 2) == 0, 1.0, -1.0)
+    ramp = idx - idx.mean()
+    # Four deterministic pseudo-random Rademacher starts. They are generated
+    # algebraically so the result is reproducible without touching RNG state.
+    pseudo = []
+    for j in range(4):
+        phase = torch.sin((idx + 1.0) * (12.9898 + 7.233 * j))
+        pseudo.append(torch.where(phase >= 0, 1.0, -1.0))
+    starts.extend([
+        ones,
+        alt.expand(*batch_shape, n),
+        ramp.expand(*batch_shape, n),
+        *(p.expand(*batch_shape, n) for p in pseudo),
+    ])
+
+    diag = Hf.diagonal(dim1=-2, dim2=-1)
+    max_diag_idx = diag.argmax(dim=-1)
+    one_hot = torch.nn.functional.one_hot(max_diag_idx, num_classes=n).to(torch.float32)
+    starts.append(one_hot)
+
+    V = torch.stack(starts, dim=-1)                  # (..., n, n_starts)
+    V = V / V.norm(dim=-2, keepdim=True).clamp_min(eps)
+    for _ in range(n_iters):
+        V = Hf @ V
+        V = V / V.norm(dim=-2, keepdim=True).clamp_min(eps)
+
+    HV = Hf @ V
+    rayleigh = (V * HV).sum(dim=-2).clamp_min(0.0)   # (..., n_starts)
+    lam, which = rayleigh.max(dim=-1)
+    best = torch.gather(
+        V, dim=-1,
+        index=which.unsqueeze(-1).unsqueeze(-1).expand(*batch_shape, n, 1),
+    ).squeeze(-1)
+    # Cheap PSD lower bounds. These should usually be below the Rayleigh
+    # estimate; keeping them guards degenerate starts and near-zero matrices.
+    lam = torch.maximum(lam, diag.max(dim=-1).values.clamp_min(0.0))
+    lam = torch.maximum(lam, diag.sum(dim=-1).clamp_min(0.0) / max(n, 1))
+    return lam.clamp_min(eps), best
+
+
 # ─── Shape B: σ_max of a product XY via Gram form ────────────────────────────
 
 

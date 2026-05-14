@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from .spectral import lambda_max_power_iter_psd_batched
+
 
 # Debug-only probe for the higham coupled-NS preconditioner. Default off;
 # `train_lora.py --debug_higham_residual` flips it on. When enabled, every
@@ -13,7 +15,7 @@ from torch import nn
 # estimate + presence of non-finite output. Used for the integration test
 # at high r where compound numerical drift / power-iteration underestimate
 # can produce non-SPD output and downstream NaN.
-HIGHAM_DEBUG = {"enabled": False, "step": 0}
+HIGHAM_DEBUG = {"enabled": False, "step": 0, "call": 0}
 
 
 def _higham_emit_residual(Z, H, lam_max, n_iters, eps, where):
@@ -30,11 +32,19 @@ def _higham_emit_residual(Z, H, lam_max, n_iters, eps, where):
         diff = ZHZ - I
         # Per-matrix Frobenius residual; flatten last 2 dims and norm.
         res = diff.flatten(-2).norm(dim=-1)
-        non_finite_Z = (~torch.isfinite(Z)).any().item()
+        finite_by_matrix = torch.isfinite(Z).flatten(-2).all(dim=-1)
+        non_finite_Z = (~finite_by_matrix).any().item()
+        bad_indices = (~finite_by_matrix).nonzero(as_tuple=False).flatten()[:16].tolist()
+        res_for_argmax = torch.nan_to_num(res, nan=float("inf"), posinf=float("inf"))
+        residual_argmax = int(res_for_argmax.reshape(-1).argmax())
+        lam_flat = lam_max.reshape(-1)
+        diag_max = H.diagonal(dim1=-2, dim2=-1).amax(dim=-1)
+        diag_flat = diag_max.reshape(-1)
         rec = {
             "event": "higham_residual",
             "where": where,
             "step": HIGHAM_DEBUG["step"],
+            "call": HIGHAM_DEBUG["call"],
             "n_iters": n_iters,
             "eps": eps,
             "n": int(n),
@@ -44,8 +54,15 @@ def _higham_emit_residual(Z, H, lam_max, n_iters, eps, where):
             "residual_min": float(res.min()),
             "lam_max_min": float(lam_max.min()),
             "lam_max_max": float(lam_max.max()),
+            "diag_max_min": float(diag_max.min()),
+            "diag_max_max": float(diag_max.max()),
+            "residual_argmax": residual_argmax,
+            "lam_max_at_residual_argmax": float(lam_flat[residual_argmax]),
+            "diag_max_at_residual_argmax": float(diag_flat[residual_argmax]),
             "non_finite_Z": bool(non_finite_Z),
+            "non_finite_indices": [int(i) for i in bad_indices],
         }
+        HIGHAM_DEBUG["call"] += 1
         print(json.dumps(rec, sort_keys=True), flush=True)
 
 
@@ -144,35 +161,21 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_rel
     eye = torch.eye(n, dtype=H.dtype, device=H.device)
     batch_shape = H.shape[:-2]
     if eps_relative:
-        # Cheap λ_max estimate on RAW H (before damping) via one power iter
-        # so the effective eps scales with H's natural magnitude.
-        ones = torch.ones(*batch_shape, n, dtype=H.dtype, device=H.device)
-        v0 = (H @ ones.unsqueeze(-1)).squeeze(-1)
-        v0 = v0 / v0.norm(dim=-1, keepdim=True).clamp(min=1e-30)
-        for _ in range(2):
-            v0 = (H @ v0.unsqueeze(-1)).squeeze(-1)
-            nv0 = v0.norm(dim=-1, keepdim=True).clamp(min=1e-30)
-            v0 = v0 / nv0
-        lam_max_raw = nv0.squeeze(-1).unsqueeze(-1).unsqueeze(-1)  # (..., 1, 1)
-        H = H + (eps * lam_max_raw) * eye
+        # λ_max on RAW H (before damping) sets scale-invariant damping.
+        # Use the shared PSD spectral primitive; a single H@ones start can
+        # miss the top eigendirection and under-scale the Higham iteration.
+        lam_max_raw, _ = lambda_max_power_iter_psd_batched(
+            H, n_iters=max(n_power_iter, 8),
+        )
+        lam_max_raw = lam_max_raw.unsqueeze(-1).unsqueeze(-1)
+        H = H + (eps * lam_max_raw).clamp_min(1e-12) * eye
     else:
         H = H + eps * eye
     eye_b = eye.expand_as(H)
 
-    # Power iteration for λ_max(H) per batch element. v: (..., n).
-    # Deterministic init: H @ ones (= row sums, dominant in the leading
-    # eigenvector for typical SPD H). Avoids the non-determinism of a
-    # randn init which produced a different preconditioner per call —
-    # an issue for production reproducibility.
-    batch_shape = H.shape[:-2]
-    ones = torch.ones(*batch_shape, n, dtype=H.dtype, device=H.device)
-    v = (H @ ones.unsqueeze(-1)).squeeze(-1)
-    v = v / v.norm(dim=-1, keepdim=True).clamp(min=eps)
-    for _ in range(n_power_iter):
-        v = (H @ v.unsqueeze(-1)).squeeze(-1)        # (..., n)
-        nv = v.norm(dim=-1, keepdim=True).clamp(min=eps)
-        v = v / nv
-    lam_max = nv.squeeze(-1)                          # (...,)
+    lam_max, _ = lambda_max_power_iter_psd_batched(
+        H, n_iters=max(n_power_iter, 8),
+    )
 
     s = lam_max.unsqueeze(-1).unsqueeze(-1)           # (..., 1, 1)
     Y = H / s
@@ -221,29 +224,20 @@ def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_relative=Fa
     n = H_raw.shape[0]
     if eps_relative:
         # λ_max estimate on raw H to set effective damping = eps * λ_max.
-        v0 = H_raw @ torch.ones(n, dtype=H_raw.dtype, device=H_raw.device)
-        v0 = v0 / v0.norm().clamp(min=1e-30)
-        for _ in range(2):
-            v0 = H_raw @ v0
-            nv0 = v0.norm().clamp(min=1e-30)
-            v0 = v0 / nv0
-        eps_eff = float(eps) * float(nv0)
+        lam_raw, _ = lambda_max_power_iter_psd_batched(
+            H_raw.unsqueeze(0), n_iters=max(n_power_iter, 8),
+        )
+        eps_eff = max(float(eps) * float(lam_raw[0]), 1e-12)
     else:
         eps_eff = float(eps)
     H = spdify(H_raw, eps_eff)
     eye = torch.eye(n, dtype=H.dtype, device=H.device)
 
-    # Estimate λ_max(H) via power iteration. This is the only O(n²) cost beyond
-    # the NS iters; tight scaling is critical for quadratic convergence.
-    # Deterministic init (H @ ones, dominant in the leading eigenvector for
-    # typical SPD H); see batched version for the reproducibility rationale.
-    v = H @ torch.ones(n, dtype=H.dtype, device=H.device)
-    v = v / v.norm().clamp(min=1e-30)
-    for _ in range(n_power_iter):
-        v = H @ v
-        nv = v.norm().clamp(min=1e-30)
-        v = v / nv
-    lam_max = nv  # ≥ λ_max, tight after a few iters
+    # Estimate λ_max(H). Tight scaling is critical for quadratic convergence.
+    lam_max, _ = lambda_max_power_iter_psd_batched(
+        H.unsqueeze(0), n_iters=max(n_power_iter, 8),
+    )
+    lam_max = lam_max[0]
 
     # Y_0 = H / λ_max has spectrum in (0, 1]; iteration converges quadratically.
     s = lam_max

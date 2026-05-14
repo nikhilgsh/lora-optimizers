@@ -257,12 +257,13 @@ def run_one_train_step(
     grad_accum_steps: int,
     max_grad_norm: float | None,
     device: torch.device,
-) -> tuple[float, int, Iterator]:
+) -> tuple[float, int, Iterator, dict]:
     """One macro-step of training (train.py only).
 
     Sequence:
       zero_grad(set_to_none=True)
-      → grad_accum × (next-batch, fwd, scaled bwd)
+      → grad_accum × (next-batch, fwd, scaled bwd), skipping batches with
+        zero supervised tokens
       → optional grad-clip
       → optimizer.step()
 
@@ -277,6 +278,7 @@ def run_one_train_step(
     optimizer.zero_grad(set_to_none=True)
     step_loss = 0.0
     step_tokens = 0
+    skipped_zero_token_microbatches = 0
     for _ in range(grad_accum_steps):
         try:
             batch = next(train_iter)
@@ -285,16 +287,31 @@ def run_one_train_step(
             batch = next(train_iter)
         batch = batch_to_device(batch, device)
         tokens = count_tokens(batch)
+        if tokens == 0:
+            # Cross-entropy over an all-ignored-label batch is NaN in HF
+            # causal-LM heads. It contributes no supervised objective, so skip
+            # the forward/backward pass instead of poisoning the loss window.
+            skipped_zero_token_microbatches += 1
+            continue
         outputs = train_model(**batch)
         (outputs.loss / grad_accum_steps).backward()
         step_loss += float(outputs.loss.detach()) * tokens
         step_tokens += tokens
+
+    if step_tokens == 0:
+        raise RuntimeError(
+            "All gradient-accumulation microbatches had zero supervised tokens; "
+            "cannot take an optimizer step."
+        )
 
     # Pre-step global norm probe — covers every optimizer (param + raw grad
     # L2, count of non-finite grad entries) regardless of optimizer family.
     # Caller decides whether to emit the returned dict; computation is cheap
     # (one foreach_norm pass over trainable params).
     norm_stats = _compute_global_norms(train_model)
+    if skipped_zero_token_microbatches:
+        norm_stats = dict(norm_stats)
+        norm_stats["skipped_zero_token_microbatches"] = skipped_zero_token_microbatches
 
     if max_grad_norm and max_grad_norm > 0:
         torch.nn.utils.clip_grad_norm_(train_model.parameters(), max_grad_norm)

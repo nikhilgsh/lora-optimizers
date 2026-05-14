@@ -9,6 +9,7 @@ from lora_playground.utils import (
     spd_inv_sqrt_higham,
     spd_inv_sqrt_higham_batched,
 )
+from lora_playground.spectral import lambda_max_power_iter_psd_batched
 
 
 def _spd_batch(N, n, seed=0):
@@ -53,3 +54,36 @@ def test_batched_handles_arbitrary_leading_dims():
     H = _spd_batch(N=12, n=16).reshape(3, 4, 16, 16)
     Z = spd_inv_sqrt_higham_batched(H, n_iters=5)
     assert Z.shape == H.shape
+
+
+def test_psd_lambda_estimator_handles_top_vector_orthogonal_to_ones():
+    """Regression for the old Higham scale estimate.
+
+    A single deterministic ``H @ ones`` start can have zero top-eigenvector
+    overlap. The shared PSD estimator uses multiple deterministic starts, so
+    it still recovers the dominant scale.
+    """
+    n = 32
+    top = torch.ones(n)
+    top[1::2] = -1
+    top = top / top.norm()
+    H = torch.eye(n)
+    H = H + 999.0 * torch.outer(top, top)
+    lam, _ = lambda_max_power_iter_psd_batched(H.unsqueeze(0), n_iters=8)
+    rel = abs(float(lam[0]) - 1000.0) / 1000.0
+    assert rel < 1e-3
+
+
+def test_higham_batched_survives_top_vector_orthogonal_to_ones():
+    n = 32
+    top = torch.ones(n)
+    top[1::2] = -1
+    top = top / top.norm()
+    H = torch.eye(n)
+    H = H + 999.0 * torch.outer(top, top)
+    Z = spd_inv_sqrt_higham_batched(
+        H.unsqueeze(0), n_iters=10, eps=1e-2, eps_relative=True,
+    )[0]
+    H_damped = H + 1e-2 * 1000.0 * torch.eye(n)
+    rel = (Z @ H_damped @ Z - torch.eye(n)).norm() / (n ** 0.5)
+    assert rel < 1e-3

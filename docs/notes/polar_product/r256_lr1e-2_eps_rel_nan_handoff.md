@@ -1,12 +1,44 @@
-# Handoff: r=256 chord-tight k=3 lr=1e-2 ε_rel=1e-2 NaN
+# r=256 chord-tight k=3 lr=1e-2 $\epsilon_{\mathrm{rel}}=10^{-2}$ NaN
 
-Unresolved NaN failure in the chord-tight (whiten) k=3 optimizer at LoRA rank
-r=256, learning rate 1e-2, with relative damping ε_rel=1e-2. Three mechanism
-hypotheses have been tried and rejected against the data; root cause is not
-yet identified.
+## Current status
 
-This doc lists measurements (with sources), rejected hypotheses (with reasons),
-and what's needed for verification.
+Resolved for this cell in the 2026-05-14 diagnostic rerun: replacing Higham's
+local `H @ ones` $\lambda_{\max}$ estimate with the shared spectral PSD
+estimator made the run complete the full 4k-step horizon.
+
+Evidence:
+- Code change: `lora_playground/spectral.py::lambda_max_power_iter_psd_batched`
+  plus `lora_playground/utils.py::spd_inv_sqrt_higham_batched`.
+- Regression tests: `python -m pytest tests/test_training_kernel_zero_token.py
+  tests/test_spd_inv_sqrt_batched.py tests/test_spd_inv_sqrt_higham.py
+  tests/test_eps_relative_propagation.py tests/test_optimizer_config_dict.py
+  tests/test_polar_product_batched_equivalence.py
+  tests/test_sigma_max_power_iter.py -x -q` -> `126 passed in 21.65s`.
+- SLURM rerun:
+  `SWEEP_SCOPE="diagnostics,polar_family" SWEEP_PURPOSE="Debug r=256 lr=1e-2 eps_rel NaN after Higham lambda estimator fix; per-pair stats, higham residuals, and failure snapshots enabled." FORCE_OVERLAP=1 COMPILE=0 WANDB_MODE=offline DEBUG_OPT_STATE_EVERY=1 DEBUG_SNAPSHOT_LIMIT=8 ./slurm_scripts/submit.sh params/chord_tight_r256_k3_lr1e-2_eps_rel_1e-2.json chord_tight_r256_lr1e-2_eps_rel_nan_debug_lambdafix_blackwell 1 scripts/sweep/sweep_4k_eps_rel_damping_k3_chain_debug.sh slurm_scripts/sbatch_blackwell.sh`
+- Job: `6403364`, completed `0:0` in `04:04:34` on `workergpu174`.
+- Log: `logs/chord_tight_r256_lr1e-2_eps_rel_nan_debug_lambdafix_blackwell/run_info/logs/log_0.out`.
+- Full-log audit: `eval_loss` decreased from `0.5940107470` at step 200 to
+  `0.5065902933` at step 4000; `higham_residual` events = 24000;
+  `optimizer_pair_stats` events = 12000; no `non_finite_detected`,
+  `non_finite_intermediate`, `optimizer_debug_snapshot`, or `abort_on_nan_eval`
+  events; no snapshot `.pt` files were written.
+
+The original failing pair, pair 9
+(`base_model.model.model.layers.1.self_attn.v_proj[default]`), stayed finite
+across the old failure window. At steps 1680, 1690, 1700, and 1710, its
+`SA_half_inv`, `SB_half_inv`, `u_B`, and `dA/dB` were all finite.
+
+One separate issue surfaced during the rerun: some `train_step` loss windows
+were `NaN`, while `train_norms` reported finite gradients and eval stayed
+finite. Scanning the packed training data found 1443 zero-supervision packed
+slots (`min_labels = 0`), so shuffled all-zero supervised-token microbatches
+can make HF's ignored-label mean loss `NaN` without producing non-finite
+gradients. `lora_playground/training_kernel.py::run_one_train_step` now skips
+zero-token microbatches and logs `skipped_zero_token_microbatches`.
+
+The sections below preserve the original failure measurements and the rejected
+hypotheses that motivated the diagnostic rerun.
 
 ## 1. Setup
 
@@ -186,12 +218,12 @@ have the floor `δ_X = max(δ_min, ε_rel × σ_max)`. That IS a bug per the doc
 only at literal Init[A] step 0 with σ_max(SB) = 0, which is moot because at
 that step Δ_A = 0 anyway (the doc says so in §5.1).
 
-## 4. What's measurable and still UNKNOWN
+## 4. What was unknown before the rerun
 
-The chain check at step 1690 shows `u_B` and `SA_half_inv` (and downstream) all
-non-finite for pair 9. The mechanism that connects "step 1690 START: grads
-finite, A finite, B finite" to "step 1690 END: SA_half_inv NaN, u_B NaN" is
-not deducible from currently-logged diagnostics:
+The original chain check at step 1690 showed `u_B` and `SA_half_inv` (and
+downstream) all non-finite for pair 9. Before the diagnostic rerun, the
+mechanism connecting "step 1690 START: grads finite, A finite, B finite" to
+"step 1690 END: SA_half_inv NaN, u_B NaN" was not deducible from the old logs:
 
 - `u_B = (m_B / bc1) / (sqrt(v_B / bc2) + eps)`. For this to be NaN at step
   1690, either `m_B[pair 9]` or `v_B[pair 9]` was NaN at the start of step
@@ -209,34 +241,29 @@ not deducible from currently-logged diagnostics:
 So the chain "what was the value of m_B[9] / v_B[9] at step 1690 start? what
 was σ_max(SA_9)?" cannot be reconstructed from this run's logs.
 
-## 5. Suggested verification
+## 5. Verification rerun
 
-To resolve which intermediate first becomes non-finite, a re-run is needed with
-finer-grain instrumentation. Concretely, instrument the optimizer to emit at
-EVERY step:
+The diagnostic rerun emitted the requested per-pair Adam-state magnitudes,
+per-pair spectral scales, Higham residual summaries, and failure snapshots
+would have been written on the first non-finite optimizer chain event.
 
-1. Per-pair Adam state magnitudes: `|m_B[pair]|_max`, `|v_B[pair]|_max` (forward
-   from `_step_batched` AFTER the m/v update, BEFORE forming u_B). One float
-   per pair per step.
-2. Per-pair `σ_max(SA[pair])`, `σ_max(SB[pair])` from the actual power-iter
-   used in `spd_inv_sqrt_higham_batched` (which already computes them in the
-   `eps_relative` branch). Currently these values are computed and discarded.
-3. Per-pair Higham residual `‖ZHZ − I‖_F` per call (already available via
-   `--debug_higham_residual`).
+Result:
+- No optimizer non-finite event appeared through step 4000.
+- No Higham output was non-finite (`non_finite_Z=false` for every
+  `higham_residual` event).
+- Maximum Higham residual over the run was `0.0386018269`.
+- Maximum finite `SA_half_inv_absmax` was `3.9350075722`.
+- `SB_half_inv_absmax` had the expected large init-time value from zero
+  `B`; after step 100 its maximum was `23.8679180145`, and after step 1000
+  its maximum was `15.6085662842`.
+- Final step-4000 eval: `eval_loss = 0.5065902933`, `peak_memory_mb =
+  14526.20996`, `tokens_per_sec = 807.40448`.
 
-Then re-run the failing cell. Look at pair 9 specifically across steps
-1680-1700. Specifically:
-
-- If `|v_B[9]|_max` is much larger than `|v_B[other_pairs]|_max` at some step
-  before 1690, that's grad accumulation diverging on this pair → root cause
-  is upstream (grad magnitudes).
-- If `σ_max(SA_9)` differs sharply from the aggregate `SA_max_max` at step 1680,
-  that pair is a spectral outlier and per-pair damping might be miscomputed.
-- If Higham residual on pair 9's SA call spikes at step 1690 specifically, NS
-  is the culprit.
-
-The instrumentation cost is ~6 extra floats per pair per step. At r=256 with
-~112 pairs, that's ~700 floats/step ≈ 5 KB/step extra log volume. Cheap.
+This supports the Higham scaling estimate as the root cause of the original
+optimizer NaN: the previous `H @ ones` start could underestimate
+$\lambda_{\max}$ when the top eigendirection had little overlap with the
+ones vector, while the new spectral PSD helper uses multiple deterministic
+starts and survived the same cell to completion.
 
 ## 6. What the codebase looks like
 
@@ -245,12 +272,12 @@ The instrumentation cost is ~6 extra floats per pair per step. At r=256 with
   `_emit_non_finite_chain` and `_emit_non_finite_event` for the existing
   diagnostic emit points.
 - `lora_playground/utils.py`: `spd_inv_sqrt_higham_batched` is the actual
-  damped inverse-sqrt kernel. The `eps_relative` branch is at lines 142-157
-  (verified by `tests/test_eps_relative_propagation.py`).
+  damped inverse-sqrt kernel. The `eps_relative` branch is verified by
+  `tests/test_eps_relative_propagation.py`.
 - `lora_playground/training_kernel.py`: per-step training loop. Top-of-step
   `non_finite_detected` and end-of-step `non_finite_intermediate` are emitted
-  from inside `_step_batched`; the `train_norms` event is emitted from
-  training_kernel.
+  from inside `_step_batched`; the `train_norms` payload is computed in
+  `training_kernel` and emitted by `train.py`.
 - `docs/notes/polar_product/init_damping_math.md`: theoretical analysis of the
   chord-tight + damping scheme. §5.3 has the relative damping formula
   including the `δ_min` floor; §6 has the η-scaling argument that predicts

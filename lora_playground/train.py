@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import shlex
 import subprocess
@@ -195,12 +196,10 @@ def tokenize_splits_with_boundary(train, eval_dataset, tokenizer, args):
             if len(full) > args.max_seq_length:
                 # Truncate from the response side. If even the prompt is
                 # too long, the doc has 0 response tokens and contributes
-                # 0 loss → effectively dropped. Capping prompt_len at the
-                # truncated length keeps `labels = -100` everywhere in that
-                # case (no garbage gradient).
+                # no supervised objective.
                 full = full[: args.max_seq_length]
             prompt_len = min(len(prompt_ids), len(full))
-            if len(full) == 0:
+            if len(full) == 0 or prompt_len >= len(full):
                 continue
             out_ids.append(full)
             out_pl.append(prompt_len)
@@ -481,6 +480,22 @@ def make_parser():
                              "non-finite. ~10%% wall overhead at r=256 from "
                              "the ~448+~20*N isfinite kernel launches per step. "
                              "Default OFF; turn on for NaN-debugging runs.")
+    parser.add_argument("--debug_optimizer_state", action="store_true",
+                        help="Emit verbose per-pair optimizer scalar telemetry "
+                             "for the polar-product batched path. Debug-only; "
+                             "one JSON event per shape group per selected step.")
+    parser.add_argument("--debug_optimizer_state_every", type=int, default=1,
+                        help="Step cadence for --debug_optimizer_state.")
+    parser.add_argument("--debug_snapshot_dir", default=None,
+                        help="Directory for optimizer non-finite .pt snapshots. "
+                             "When set, the polar-product optimizer saves the "
+                             "offending pair's tensors on a non-finite chain event.")
+    parser.add_argument("--debug_snapshot_limit", type=int, default=8,
+                        help="Maximum optimizer debug snapshots to write per run.")
+    parser.add_argument("--debug_abort_on_non_finite", action="store_true",
+                        help="After writing optimizer debug snapshots, raise on "
+                             "the first non-finite optimizer intermediate instead "
+                             "of continuing a dead run.")
     parser.add_argument("--precond_refresh_every", type=int, default=1,
                         help="K-step cadence for refreshing the per-pair Gram-preconditioner cache "
                              "(adam-scaled-lora, adam-lin-lora, adam-polar-product-lora, "
@@ -850,6 +865,11 @@ def main():
         precond_method=args.precond_method,
         precond_delta_relative=args.precond_delta_relative,
         log_non_finite=args.log_non_finite,
+        debug_optimizer_state=args.debug_optimizer_state,
+        debug_optimizer_state_every=args.debug_optimizer_state_every,
+        debug_snapshot_dir=args.debug_snapshot_dir,
+        debug_snapshot_limit=args.debug_snapshot_limit,
+        debug_abort_on_non_finite=args.debug_abort_on_non_finite,
         higham_iters=args.higham_iters,
         picard_alpha=args.picard_alpha,
         picard_iters_override=args.picard_iters_override,
@@ -1097,6 +1117,13 @@ def main():
                     {k: v for k, v in eval_payload.items() if k not in ("event",)},
                     step=step,
                 )
+            if args.abort_on_nan_eval and not math.isfinite(eval_loss):
+                log_event({
+                    "event": "abort_on_nan_eval",
+                    "step": step,
+                    "eval_loss": eval_loss,
+                })
+                break
             if args.target_eval_loss is not None and eval_loss <= args.target_eval_loss:
                 break
 

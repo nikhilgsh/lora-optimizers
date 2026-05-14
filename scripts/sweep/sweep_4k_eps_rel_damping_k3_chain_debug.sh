@@ -8,11 +8,13 @@
 #
 # Positional args (must match params JSON key order):
 #   1: lr  2: optimizer  3: lora_plus_multiplier  4: seed  5: lora_r
+#   6: precond_delta / ε_rel
 lr=${1:-3e-2}
 optimizer=${2:-adam-polar-product-lora-coupled-spectral-chord-tight}
 lora_plus_multiplier=${3:-1.0}
 seed=${4:-0}
 lora_r=${5:-256}
+precond_delta=${6:-1e-2}
 
 wandb_args=()
 if [ -n "${WANDB_PROJECT:-}" ]; then
@@ -20,9 +22,13 @@ if [ -n "${WANDB_PROJECT:-}" ]; then
 fi
 
 compile_args=()
-if [ "${COMPILE:-1}" = "1" ]; then
+if [ "${COMPILE:-0}" = "1" ]; then
     compile_args=(--compile)
 fi
+
+snapshot_root=${DEBUG_SNAPSHOT_ROOT:-logs/debug_snapshots/chord_tight_k3_eps_rel}
+snapshot_dir="${snapshot_root}/lr${lr}_r${lora_r}_eps${precond_delta}_seed${seed}_${SLURM_JOB_ID:-local}_$$"
+mkdir -p "$snapshot_dir"
 
 python train_lora.py \
     --data_dir data/magicoder_seq512_70k_packed \
@@ -43,8 +49,15 @@ python train_lora.py \
     --precond_method higham \
     --picard_iters_override 3 \
     --precond_delta_relative \
-    --precond_delta 1e-2 \
+    --precond_delta "$precond_delta" \
     --log_basic_diagnostics \
     --optim_diagnostics_every 20 \
     --train_loss_every 10 \
+    --log_non_finite \
+    --debug_higham_residual \
+    --debug_optimizer_state \
+    --debug_optimizer_state_every "${DEBUG_OPT_STATE_EVERY:-1}" \
+    --debug_snapshot_dir "$snapshot_dir" \
+    --debug_snapshot_limit "${DEBUG_SNAPSHOT_LIMIT:-8}" \
+    --debug_abort_on_non_finite \
     "${wandb_args[@]}"

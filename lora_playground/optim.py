@@ -300,7 +300,7 @@ def _emit_non_finite_chain(step_count, intermediates, pair_names_in_group,
       - shape (): scalar (group-wide).
     """
     if not _is_main_process():
-        return
+        return None
     pair_local_bad = {}    # {name: [local_idx, ...]}
     scalar_bad = {}         # {name: True} for group-wide scalars
     for name, t in intermediates.items():
@@ -323,7 +323,7 @@ def _emit_non_finite_chain(step_count, intermediates, pair_names_in_group,
             if mask.any():
                 pair_local_bad[name] = mask.nonzero(as_tuple=True)[0].tolist()
     if not pair_local_bad and not scalar_bad:
-        return
+        return None
     # Translate per-intermediate local indices → global pair info.
     where = {}
     for name, local_idxs in pair_local_bad.items():
@@ -342,6 +342,7 @@ def _emit_non_finite_chain(step_count, intermediates, pair_names_in_group,
         "where": where,
     }
     print(json.dumps(payload, sort_keys=True, default=float), flush=True)
+    return where
 
 
 def _emit_non_finite_event(step_count, pair_index, pair_name,
@@ -361,6 +362,61 @@ def _emit_non_finite_event(step_count, pair_index, pair_name,
         "pair_name": pair_name,
         "where": where,
         "prev_diag": last_diag,
+    }
+    print(json.dumps(payload, sort_keys=True, default=float), flush=True)
+
+
+def _tensor_absmax_by_pair(t):
+    if t is None:
+        return None
+    if not isinstance(t, torch.Tensor) or t.numel() == 0:
+        return None
+    return t.detach().abs().flatten(1).amax(dim=1)
+
+
+def _tensor_norm_by_pair(t):
+    if t is None:
+        return None
+    if not isinstance(t, torch.Tensor) or t.numel() == 0:
+        return None
+    return t.detach().flatten(1).norm(dim=1)
+
+
+def _tensor_finite_by_pair(t):
+    if t is None:
+        return None
+    if not isinstance(t, torch.Tensor) or t.numel() == 0:
+        return None
+    return torch.isfinite(t.detach()).flatten(1).all(dim=1)
+
+
+def _json_list_from_tensor(t):
+    if t is None:
+        return None
+    if not isinstance(t, torch.Tensor):
+        return t
+    t_cpu = t.detach().cpu()
+    if t_cpu.dtype == torch.bool:
+        return [bool(x) for x in t_cpu.reshape(-1).tolist()]
+    return [float(x) for x in t_cpu.reshape(-1).tolist()]
+
+
+def _emit_optimizer_pair_stats(step_count, group_id, group_global_indices,
+                               pair_names_in_group, stats):
+    """Emit per-pair scalar debug telemetry for one shape group."""
+    if not _is_main_process():
+        return
+    payload = {
+        "event": "optimizer_pair_stats",
+        "step": int(step_count),
+        "group_id": int(group_id),
+        "pair_indices": [int(i) for i in group_global_indices],
+        "pair_names": list(pair_names_in_group),
+        "stats": {
+            k: _json_list_from_tensor(v)
+            for k, v in stats.items()
+            if v is not None
+        },
     }
     print(json.dumps(payload, sort_keys=True, default=float), flush=True)
 
@@ -2519,7 +2575,12 @@ class AdamPolarProductLoRA(Optimizer):
                  magnitude_rule="adam_frobenius",
                  disable_whitening=False,
                  precond_delta_relative=False,
-                 log_non_finite=False):
+                 log_non_finite=False,
+                 debug_optimizer_state=False,
+                 debug_optimizer_state_every=1,
+                 debug_snapshot_dir=None,
+                 debug_snapshot_limit=8,
+                 debug_abort_on_non_finite=False):
         named = collect_lora_pairs_named(model, adapter_name)
         if not named:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2537,6 +2598,12 @@ class AdamPolarProductLoRA(Optimizer):
         # kernel launches per step). Default OFF; turn on for
         # NaN-debugging runs.
         self.log_non_finite = bool(log_non_finite)
+        self.debug_optimizer_state = bool(debug_optimizer_state)
+        self.debug_optimizer_state_every = max(1, int(debug_optimizer_state_every))
+        self.debug_snapshot_dir = debug_snapshot_dir
+        self.debug_snapshot_limit = int(debug_snapshot_limit)
+        self.debug_abort_on_non_finite = bool(debug_abort_on_non_finite)
+        self._debug_snapshots_written = 0
         self.eps = eps
         self.beta1, self.beta2 = betas
         self.ns_steps = ns_steps
@@ -2904,6 +2971,95 @@ class AdamPolarProductLoRA(Optimizer):
                 return False
         return True
 
+    def _save_debug_snapshot(self, *, reason, step_count, group_state,
+                             local_idx, global_idx, tensors, scalars=None,
+                             where=None):
+        if not self.debug_snapshot_dir:
+            return None
+        if self._debug_snapshots_written >= self.debug_snapshot_limit:
+            return None
+        if not _is_main_process():
+            return None
+
+        os.makedirs(self.debug_snapshot_dir, exist_ok=True)
+        pair_name = self.pair_names[global_idx] if global_idx < len(self.pair_names) else f"pair_{global_idx}"
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in pair_name)[-160:]
+        path = os.path.join(
+            self.debug_snapshot_dir,
+            f"step{int(step_count):06d}_pair{int(global_idx):03d}_{reason}_{safe_name}.pt",
+        )
+
+        def _slice_value(v):
+            if v is None:
+                return None
+            if isinstance(v, torch.Tensor):
+                td = v.detach()
+                if td.dim() > 0 and td.shape[0] == group_state['N']:
+                    td = td[local_idx]
+                return td.to("cpu")
+            if isinstance(v, (float, int, bool, str)):
+                return v
+            return str(v)
+
+        A_f = group_state.get('A_stack')
+        B_f = group_state.get('B_stack')
+        payload_tensors = {}
+        for name, value in tensors.items():
+            sliced = _slice_value(value)
+            if sliced is not None:
+                payload_tensors[name] = sliced
+        if A_f is not None:
+            A_local = A_f[local_idx].detach()
+            payload_tensors["SA_gram_recomputed"] = (A_local @ A_local.T).to("cpu")
+        if B_f is not None:
+            B_local = B_f[local_idx].detach()
+            payload_tensors["SB_gram_recomputed"] = (B_local.T @ B_local).to("cpu")
+
+        payload_scalars = {}
+        for name, value in (scalars or {}).items():
+            sliced = _slice_value(value)
+            if isinstance(sliced, torch.Tensor):
+                if sliced.numel() == 1:
+                    payload_scalars[name] = float(sliced)
+                else:
+                    payload_tensors[f"scalar_tensor_{name}"] = sliced
+            elif sliced is not None:
+                payload_scalars[name] = sliced
+
+        torch.save({
+            "reason": reason,
+            "step": int(step_count),
+            "pair_index": int(global_idx),
+            "local_index": int(local_idx),
+            "group_id": int(group_state['gid']),
+            "pair_name": pair_name,
+            "where": where,
+            "optimizer_hparams": {
+                "lr": self.param_groups[0]["lr"],
+                "delta": self.delta,
+                "precond_delta_relative": self.precond_delta_relative,
+                "precond_method": self.precond_method,
+                "higham_iters": self.higham_iters,
+                "picard_iters": self.picard_iters,
+                "magnitude_rule": self.magnitude_rule,
+                "beta1": self.beta1,
+                "beta2": self.beta2,
+                "eps": self.eps,
+            },
+            "scalars": payload_scalars,
+            "tensors": payload_tensors,
+        }, path)
+        self._debug_snapshots_written += 1
+        print(json.dumps({
+            "event": "optimizer_debug_snapshot",
+            "step": int(step_count),
+            "pair_index": int(global_idx),
+            "pair_name": pair_name,
+            "reason": reason,
+            "path": path,
+        }, sort_keys=True), flush=True)
+        return path
+
     @torch.no_grad()
     def step(self, closure=None):
         if closure is not None:
@@ -2914,10 +3070,20 @@ class AdamPolarProductLoRA(Optimizer):
         # and batched everywhere else. The optimizer step count is tracked
         # per LoRA pair; any pair's count works since all advance in lockstep.
         is_probe_step = False
+        next_step = (
+            next(iter(self.pair_state.values())).get('step', 0) + 1
+            if self.pair_state else 0
+        )
         if self.log_basic_diagnostics and self.pair_state:
-            any_state = next(iter(self.pair_state.values()))
-            next_step = any_state.get('step', 0) + 1
             is_probe_step = (next_step % self.diagnostics_every == 0)
+        if self.precond_method == "higham":
+            try:
+                from .utils import HIGHAM_DEBUG
+                if HIGHAM_DEBUG["enabled"]:
+                    HIGHAM_DEBUG["step"] = int(next_step)
+                    HIGHAM_DEBUG["call"] = 0
+            except Exception:
+                pass
         eligible = self._batched_path_eligible(is_probe_step=is_probe_step)
         # Per-step timing probe (env-gated; off in production by default).
         # Emits one JSON event per step with path taken and wall time.
@@ -3320,6 +3486,76 @@ class AdamPolarProductLoRA(Optimizer):
                 dA_prev = dA
                 dB_prev = dB
 
+            chain_tensors = {
+                "u_A": u_A, "u_B": u_B,
+                "SA_half_inv": SA_half_inv_k, "SB_half_inv": SB_half_inv_k,
+                "sigma_A": locals().get('sigma_A'),
+                "sigma_B": locals().get('sigma_B'),
+                "rho": locals().get('rho'),
+                "picard_coeff_s": locals().get('picard_coeff_s'),
+                "u_A_eff": u_A_eff, "u_B_eff": u_B_eff,
+                "X_A": locals().get('X_A'), "X_B": locals().get('X_B'),
+                "P_A": locals().get('P_A'), "P_B": locals().get('P_B'),
+                "geo_A": locals().get('geo_A'), "geo_B": locals().get('geo_B'),
+                "op_geoA_b": locals().get('op_geoA_b'),
+                "op_geoB_b": locals().get('op_geoB_b'),
+                "dA": dA, "dB": dB,
+            }
+
+            stats = None
+            if (
+                self.debug_optimizer_state
+                and step_count % self.debug_optimizer_state_every == 0
+            ):
+                stats = {
+                    "A_norm": _tensor_norm_by_pair(A_f),
+                    "B_norm": _tensor_norm_by_pair(B_f),
+                    "gA_absmax": _tensor_absmax_by_pair(gs['gA_stack']),
+                    "gB_absmax": _tensor_absmax_by_pair(gs['gB_stack']),
+                    "mA_absmax": _tensor_absmax_by_pair(gs['m_A']),
+                    "mB_absmax": _tensor_absmax_by_pair(gs['m_B']),
+                    "vA_absmax": _tensor_absmax_by_pair(gs['v_A']),
+                    "vB_absmax": _tensor_absmax_by_pair(gs['v_B']),
+                    "uA_absmax": _tensor_absmax_by_pair(u_A),
+                    "uB_absmax": _tensor_absmax_by_pair(u_B),
+                    "uA_eff_absmax": _tensor_absmax_by_pair(u_A_eff),
+                    "uB_eff_absmax": _tensor_absmax_by_pair(u_B_eff),
+                    "SA_half_inv_absmax": _tensor_absmax_by_pair(SA_half_inv_k),
+                    "SB_half_inv_absmax": _tensor_absmax_by_pair(SB_half_inv_k),
+                    "SA_half_inv_finite": _tensor_finite_by_pair(SA_half_inv_k),
+                    "SB_half_inv_finite": _tensor_finite_by_pair(SB_half_inv_k),
+                    "dA_absmax": _tensor_absmax_by_pair(dA),
+                    "dB_absmax": _tensor_absmax_by_pair(dB),
+                    "dA_norm": _tensor_norm_by_pair(dA),
+                    "dB_norm": _tensor_norm_by_pair(dB),
+                    "sigma_A": locals().get('sigma_A'),
+                    "sigma_B": locals().get('sigma_B'),
+                    "rho": locals().get('rho'),
+                    "picard_coeff": (
+                        picard_coeff_s.squeeze(-1).squeeze(-1)
+                        if picard_coeff_s is not None else None
+                    ),
+                    "op_geoA": locals().get('op_geoA_b'),
+                    "op_geoB": locals().get('op_geoB_b'),
+                    "SA_lammax_from_sigma": (
+                        sigma_A * sigma_A if locals().get('sigma_A') is not None else None
+                    ),
+                    "SB_lammax_from_sigma": (
+                        sigma_B * sigma_B if locals().get('sigma_B') is not None else None
+                    ),
+                    "SA_diag_max": A_f.pow(2).sum(dim=-1).amax(dim=-1),
+                    "SB_diag_max": B_f.pow(2).sum(dim=-2).amax(dim=-1),
+                    "SA_trace": A_f.pow(2).sum(dim=(-1, -2)),
+                    "SB_trace": B_f.pow(2).sum(dim=(-1, -2)),
+                }
+                _emit_optimizer_pair_stats(
+                    step_count,
+                    group_id=gs['gid'],
+                    group_global_indices=list(indices),
+                    pair_names_in_group=[self.pair_names[gi] for gi in indices],
+                    stats=stats,
+                )
+
             # Chain-of-intermediates non-finite check. Emits a single
             # `non_finite_intermediate` event if any intermediate at this
             # group went non-finite. ~20 isfinite reductions over batched
@@ -3327,27 +3563,45 @@ class AdamPolarProductLoRA(Optimizer):
             # not after it propagates to A/B at the start of the next step.
             # Gated on log_non_finite — adds ~5-10% wall on top of the
             # top-of-step check.
+            bad_where = None
             if self.log_non_finite:
-              _emit_non_finite_chain(
-                step_count,
-                {
-                    "u_A": u_A, "u_B": u_B,
-                    "SA_half_inv": SA_half_inv_k, "SB_half_inv": SB_half_inv_k,
-                    "sigma_A": locals().get('sigma_A'),
-                    "sigma_B": locals().get('sigma_B'),
-                    "rho": locals().get('rho'),
-                    "picard_coeff_s": locals().get('picard_coeff_s'),
-                    "u_A_eff": u_A_eff, "u_B_eff": u_B_eff,
-                    "X_A": locals().get('X_A'), "X_B": locals().get('X_B'),
-                    "P_A": locals().get('P_A'), "P_B": locals().get('P_B'),
-                    "geo_A": locals().get('geo_A'), "geo_B": locals().get('geo_B'),
-                    "op_geoA_b": locals().get('op_geoA_b'),
-                    "op_geoB_b": locals().get('op_geoB_b'),
-                    "dA": dA, "dB": dB,
-                },
-                pair_names_in_group=[self.pair_names[gi] for gi in indices],
-                group_global_indices=list(indices),
-            )
+                bad_where = _emit_non_finite_chain(
+                    step_count,
+                    chain_tensors,
+                    pair_names_in_group=[self.pair_names[gi] for gi in indices],
+                    group_global_indices=list(indices),
+                )
+            if bad_where:
+                bad_locals = set()
+                for entries in bad_where.values():
+                    if isinstance(entries, list):
+                        bad_locals.update(int(e["local"]) for e in entries)
+                for local_bad in sorted(bad_locals):
+                    self._save_debug_snapshot(
+                        reason="non_finite_intermediate",
+                        step_count=step_count,
+                        group_state=gs,
+                        local_idx=local_bad,
+                        global_idx=indices[local_bad],
+                        tensors={
+                            **chain_tensors,
+                            "A": A_f,
+                            "B": B_f,
+                            "gA": gs['gA_stack'],
+                            "gB": gs['gB_stack'],
+                            "m_A": gs['m_A'],
+                            "m_B": gs['m_B'],
+                            "v_A": gs['v_A'],
+                            "v_B": gs['v_B'],
+                        },
+                        scalars=stats or {},
+                        where=bad_where,
+                    )
+                if self.debug_abort_on_non_finite:
+                    raise RuntimeError(
+                        f"Non-finite optimizer intermediate at step {step_count}; "
+                        f"snapshot_dir={self.debug_snapshot_dir!r}"
+                    )
 
             # Basic-tier diagnostics on probe steps: slice per-pair from the
             # batched 3D buffers and call the shared _emit_basic_diagnostics
@@ -7612,6 +7866,11 @@ def build_optimizer(
     precond_ema_beta: float = 0.99,
     precond_delta: float = 1e-6,
     log_non_finite: bool = False,
+    debug_optimizer_state: bool = False,
+    debug_optimizer_state_every: int = 1,
+    debug_snapshot_dir: str | None = None,
+    debug_snapshot_limit: int = 8,
+    debug_abort_on_non_finite: bool = False,
     psi_inner_iters: int = 1,
     psi_momentum: float = 0.9,
     psi_rho: float = 0.01,
@@ -7802,6 +8061,11 @@ def build_optimizer(
             core_remix_alpha=polar_core_remix_alpha,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -7825,6 +8089,11 @@ def build_optimizer(
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-soap-polar-product-lora":
         return AdamSOAPPolarProductLoRA(
@@ -7848,6 +8117,11 @@ def build_optimizer(
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adafactor-polar-product-lora":
         return AdaFactorPolarProductLoRA(
@@ -7869,6 +8143,11 @@ def build_optimizer(
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "sign-momentum-polar-product-lora":
         return SignMomentumPolarProductLoRA(
@@ -7890,6 +8169,11 @@ def build_optimizer(
             polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
@@ -7908,6 +8192,11 @@ def build_optimizer(
             end_rms_align=True,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord":
         # Substitution 1' (algorithm.md §6.1): replace Frobenius-Adam-magnitude
@@ -7938,6 +8227,11 @@ def build_optimizer(
             magnitude_rule="spectral_chord",
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight":
         # Tight chord-spectral rule (algorithm.md §6.1, exact-root variant):
@@ -7966,6 +8260,11 @@ def build_optimizer(
             magnitude_rule="spectral_chord_tight",
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-exact":
         # Chord-tight magnitude rule + exact-chord direction iteration.
@@ -8001,6 +8300,11 @@ def build_optimizer(
             exact_chord=True,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening":
         # Whitening-importance ablation: chord-tight with S_A^{-1/2} = S_B^{-1/2} = I.
@@ -8031,6 +8335,11 @@ def build_optimizer(
             disable_whitening=True,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-direction":
         # Variant 1 of algorithm_tight_chord.md: direction-aware ρ in place
@@ -8062,6 +8371,11 @@ def build_optimizer(
             magnitude_rule="spectral_chord_direction",
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-coupled-exact-chord":
         # Variational target is the actual ΔW = (B+ΔB)(A+ΔA) - BA, not its
@@ -8091,6 +8405,11 @@ def build_optimizer(
             exact_chord=True,
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-clip-product-lora":
         # Clip operator + RMS-align (no gauge/lift). Mirrors baseline
@@ -8109,6 +8428,11 @@ def build_optimizer(
             operator_type="clip",
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-clip-product-lora-coupled":
         return AdamPolarProductLoRA(
@@ -8124,6 +8448,11 @@ def build_optimizer(
             operator_type="clip",
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-clip-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
@@ -8138,6 +8467,11 @@ def build_optimizer(
             operator_type="clip",
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
         )
     if optimizer_type == "adam-polar-product-lora-gauge":
         return AdamPolarProductLoRAGauge(
