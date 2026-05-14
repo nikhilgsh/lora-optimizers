@@ -712,7 +712,7 @@ def main():
         eval_dataset = load_from_disk(os.path.join(args.data_dir, "eval"))
     else:
         train_raw, eval_raw = load_splits(args)
-        if args.data_pipeline_version == "packed_v1":
+        if args.data_pipeline_version.startswith("packed_v1"):
             train_dataset, eval_dataset = tokenize_splits_with_boundary(
                 train_raw, eval_raw, tokenizer, args,
             )
@@ -721,26 +721,51 @@ def main():
                 train_raw, eval_raw, tokenizer, args,
             )
 
-    # Under packed_v1, run offline greedy packing on the train side.
-    # Eval stays per-doc (one doc per row, padded to seq_length at
-    # collation time) — keeps eval-loss semantics commensurable with
-    # held-out per-token CE on the doc distribution.
+    # Under packed_v1+, the train dataset is packed-slot rows: each row
+    # has `input_ids`, `labels`, `position_ids`, `doc_lens` all at length
+    # seq_length (except doc_lens which is variable). Two routes:
+    #
+    #   (a) packed_v1.1+ (preferred): the on-disk cache is ALREADY packed
+    #       at prepare_data time. train.py skips re-packing.
+    #   (b) packed_v1 legacy: cache holds per-doc rows; pack at startup.
+    #       Wastes CPU per run + non-deterministic slot ordering across
+    #       seeds. Kept for backward compat loading of pre-2026-05-14
+    #       caches.
+    #
+    # Detection: a pre-packed cache has the `labels` column; an unpacked
+    # cache has only `input_ids` + `prompt_len`.
     docs_per_slot_mean = None
-    if args.data_pipeline_version == "packed_v1":
-        n_docs_pre = len(train_dataset)
-        train_dataset = pack_train_dataset(
-            train_dataset,
-            seq_length=args.max_seq_length,
-            pad_token_id=tokenizer.pad_token_id,
+    is_packed_pipeline = args.data_pipeline_version.startswith("packed_v1")
+    if is_packed_pipeline:
+        cache_is_prepacked = (
+            "labels" in train_dataset.column_names
+            and "position_ids" in train_dataset.column_names
         )
-        n_slots = len(train_dataset)
-        docs_per_slot_mean = (n_docs_pre / max(n_slots, 1)) if n_slots else None
-        if is_main():
-            print(
-                f"# packed_v1: {n_docs_pre} docs → {n_slots} slots "
-                f"(mean {docs_per_slot_mean:.2f} docs/slot @ seq={args.max_seq_length})",
-                flush=True,
+        if cache_is_prepacked:
+            n_slots = len(train_dataset)
+            if is_main():
+                print(
+                    f"# {args.data_pipeline_version}: cache pre-packed at "
+                    f"prepare_data time ({n_slots} slots @ seq={args.max_seq_length})",
+                    flush=True,
+                )
+        else:
+            n_docs_pre = len(train_dataset)
+            train_dataset = pack_train_dataset(
+                train_dataset,
+                seq_length=args.max_seq_length,
+                pad_token_id=tokenizer.pad_token_id,
             )
+            n_slots = len(train_dataset)
+            docs_per_slot_mean = (n_docs_pre / max(n_slots, 1)) if n_slots else None
+            if is_main():
+                print(
+                    f"# {args.data_pipeline_version}: {n_docs_pre} docs → "
+                    f"{n_slots} slots at train-time pack (mean "
+                    f"{docs_per_slot_mean:.2f} docs/slot @ seq={args.max_seq_length}). "
+                    f"Prefer a packed cache (packed_v1.1+) to avoid this re-pack.",
+                    flush=True,
+                )
 
     # Single-pass invariant: all training in this project must be one epoch
     # or less. Multi-epoch sweeps mix capacity-to-fit-the-subset effects with
@@ -758,7 +783,7 @@ def main():
     units_consumed = (
         args.max_steps * args.batch_size * args.grad_accum_steps * world_size
     )
-    unit_name = "slot" if args.data_pipeline_version == "packed_v1" else "sample"
+    unit_name = "slot" if args.data_pipeline_version.startswith("packed_v1") else "sample"
     if units_consumed > len(train_dataset) and not getattr(args, "allow_multi_epoch", False):
         n_units = len(train_dataset)
         msg = (
@@ -768,7 +793,7 @@ def main():
             f"{n_units:,} {unit_name}s "
             f"(~{units_consumed / max(n_units, 1):.2f} epochs). "
         )
-        if args.data_pipeline_version == "packed_v1" and docs_per_slot_mean is not None:
+        if args.data_pipeline_version.startswith("packed_v1") and docs_per_slot_mean is not None:
             msg += (
                 f"Note: under packed_v1, {n_units:,} slots ≈ "
                 f"{int(n_units * docs_per_slot_mean):,} docs (mean "
@@ -783,7 +808,7 @@ def main():
     # Collators: packed_v1 uses PackingCollator (train, pre-packed slots)
     # + PadToMaxCollator (eval, per-doc pad-to-max for static shape under
     # compile). unpacked_v0 keeps the legacy dynamic-shape path.
-    if args.data_pipeline_version == "packed_v1":
+    if args.data_pipeline_version.startswith("packed_v1"):
         # Mask dtype tracks the model dtype so additive 4D mask casts
         # cleanly inside SDPA. bf16 model → bf16 mask; fp32 model → fp32.
         mask_dtype = torch.bfloat16 if use_bf16 else torch.float32

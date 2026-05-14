@@ -37,6 +37,7 @@ from datasets import concatenate_datasets, load_dataset
 from lora_playground.train import (
     DATA_PIPELINE_VERSIONS,
     load_splits,
+    pack_train_dataset,
     select_prefix,
     tokenize_splits,
     tokenize_splits_with_boundary,
@@ -104,9 +105,12 @@ def main():
     parser.add_argument(
         "--data_pipeline_version",
         choices=DATA_PIPELINE_VERSIONS,
-        default="packed_v1",
-        help="Tokenization schema. packed_v1 emits per-doc input_ids + "
-             "prompt_len for downstream packing; unpacked_v0 emits a "
+        default="packed_v1.1",
+        help="Tokenization schema. packed_v1.1 (default) tokenizes per-doc, "
+             "then runs the offline greedy pack (drops zero-supervision slots) "
+             "so train.py reads slots directly. packed_v1 emits per-doc rows "
+             "and defers packing to train startup (legacy; non-deterministic "
+             "across seeds, wastes CPU per run). unpacked_v0 emits a "
              "single tokenized text column (legacy).",
     )
     args = parser.parse_args()
@@ -129,7 +133,7 @@ def main():
     print(f"  train: {len(train_raw)} examples, eval: {len(eval_raw)} examples")
 
     print(f"Tokenizing (data_pipeline_version={args.data_pipeline_version}) ...")
-    if args.data_pipeline_version == "packed_v1":
+    if args.data_pipeline_version.startswith("packed_v1"):
         train_tok, eval_tok = tokenize_splits_with_boundary(
             train_raw, eval_raw, tokenizer, args,
         )
@@ -138,6 +142,24 @@ def main():
             train_raw, eval_raw, tokenizer, args,
         )
     print(f"  train tokens columns: {train_tok.column_names}")
+
+    # packed_v1.1: pre-pack the train side here, so train.py reads slots
+    # directly (no per-run startup re-pack, deterministic slot ordering
+    # across seeds). pack_train_dataset applies the zero-supervision-slot
+    # filter (packed_v1.1 default). Eval stays per-doc — PadToMaxCollator
+    # pads each doc to seq_length at batch time.
+    if args.data_pipeline_version == "packed_v1.1":
+        n_docs = len(train_tok)
+        print(f"Pre-packing train side ({n_docs} docs → slots @ seq={args.max_seq_length}) ...")
+        train_tok = pack_train_dataset(
+            train_tok,
+            seq_length=args.max_seq_length,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+        n_slots = len(train_tok)
+        print(f"  packed: {n_docs} docs → {n_slots} slots "
+              f"(mean {n_docs/max(n_slots,1):.2f} docs/slot)")
+        print(f"  train slot columns: {train_tok.column_names}")
 
     train_out = os.path.join(args.out_dir, "train")
     eval_out = os.path.join(args.out_dir, "eval")

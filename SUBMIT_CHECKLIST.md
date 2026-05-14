@@ -1,17 +1,18 @@
 # Phase L re-baseline + LR-extension — submission checklist
 
-Status as of 2026-05-14 (prep complete, ready to submit):
+Status as of 2026-05-14:
 
 - ✅ Loader fix committed (`bf2a5b8`): Phase L runs now load via `load_runs`.
-- ✅ Pack-time zero-supervision filter committed (`69a7646`): `packed_v1.1` is the new default.
-- ✅ Audit confirmed the previous training-time skip was NOT live at Phase L commit `e05b80e`.
+- ✅ Pack-time zero-supervision filter committed (`69a7646`): `packed_v1.1`.
+- 🔄 **Refactor in progress**: packing moved from train-time to prepare_data-time so the Arrow cache holds pre-packed slots. train.py detects pre-packed caches and skips the runtime pack. Existing `data/opc_sft_stage2_all_packed_seq2048/` archived to `_v1.0/`; canonical path being regenerated as packed-slot Arrow.
+- ⚠️ **Earlier sbatch submission was cancelled** (jobs 6407007–6407010). The sbatches that ran at submission time used the train-time-packing path; cancelled to avoid wasted GPU + non-deterministic slot ordering. Sbatches now in `slurm_pending/_holding/` pending re-smoke against the new cache.
+- ✅ Audit confirmed the previous training-time zero-token-microbatch skip was NOT live at Phase L commit `e05b80e`.
 - ✅ Params files written: `params/{adamw,chord_tight}_phase_L_lrsweep_1b_r64_{repack,extension}.json`.
-- ✅ Sbatches queued in `slurm_pending/`:
-  - `adamw_phase_L_lrsweep_r64_repack_blackwell.sbatch` (3 GPUs, 10h, re-baseline)
-  - `chord_tight_phase_L_lrsweep_r64_repack_blackwell.sbatch` (3 GPUs, 10h, re-baseline)
-  - `adamw_phase_L_lrsweep_r64_extension_blackwell.sbatch` (2 GPUs, 10h, extension)
-  - `chord_tight_phase_L_lrsweep_r64_extension_blackwell.sbatch` (2 GPUs, 10h, extension)
-- ✅ Pre-flight smokes (5 steps each, no compile) passed on local GPU at all 4 new η values: 1e-3, 3e-3 (AdamW); 1e-1, 3e-1 (chord-tight). `data_pipeline_version=packed_v1.1` confirmed in each smoke's config event.
+
+### Remaining prep (Claude is doing this autonomously):
+1. Finish cache regeneration (`prepare_data.py --data_pipeline_version packed_v1.1`).
+2. Re-run 4 pre-flight smokes against the new cache; confirm `train.py` reads pre-packed slots (no "docs → slots" line in the smoke output).
+3. Move sbatches from `slurm_pending/_holding/` back to `slurm_pending/`.
 
 ## What to submit, in order
 
