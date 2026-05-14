@@ -10,140 +10,93 @@ The lag is **whiten-specific** (no-whiten doesn't show it) and
 Final losses at 4k are essentially equal across whiten / no-whiten / direction
 once each cell's optimum lr is found; the lag is purely early-time.
 
-## Hypothesized mechanism: wasted dA in B's small-σ subspace
+## Empirical fingerprint at r=256 step 80, lr-best per cell
 
-The loss depends on `B·A` (the LoRA product). A change `dA` perturbs the loss
-through `B·dA`. SVD B = U_B Σ_B V_B^T: components of dA aligned with
-V_B-directions where σ_i(B) is small produce small `B·dA` — those updates are
-**invisible to the loss**.
-
-Chord-tight whiten preconditions `dA ∝ SB^{-1/2} · P_A` where
-`SB^{-1/2} = V_B · D · V_B^T` and `D_i = (σ_i(B)² + δ)^{-1/2}`. **The largest
-entries of D fall on B's smallest singular values** — the whitening operation
-preferentially amplifies dA in exactly the directions where B can't transmit
-the update to the loss.
-
-**Why r=256 specifically:** at r=256 Init[A] (B=0 at step 0), B is severely
-rank-deficient throughout early training. From the existing diagnostic
-trajectories (commit `d2b0ebb`, group `r256_chord_whiten_k1_lrsweep_4k_blackwell`,
-lr=1e-2):
-
-| step | r=64 whiten stable_rank_B/r | r=256 whiten stable_rank_B/r |
-|---|---|---|
-| 80   | 0.385 (24.6/64)  | 0.143 (36.5/256) |
-| 480  | 0.428            | 0.165            |
-| 960  | 0.435            | 0.174            |
-
-At r=64, B uses ~40% of its rank early. At r=256, only ~14-17%. The remaining
-~83% of r=256 B-modes have σ_i(B) ≈ 0, regularized only by absolute δ=1e-6 →
-`(0² + δ)^{-1/2}` ≈ 1000× amplification factor on dA in those directions.
-
-## Order-of-magnitude estimate
-
-At r=256 Init[A] whiten with default δ=1e-6, σ_max(B) ≈ 0.5, 36 active modes
-above √δ, 220 near-null modes below:
-
-- `‖dA‖_F² ≈ ρ²·trace(SB^{-1}) ≈ ρ²·220/δ` (dominated by null modes)
-- `‖B·dA‖_F² ≈ ρ²·δ·36` (only active modes survive the suppression by B)
-- Predicted ratio `‖B·dA‖_F / ‖dA‖_F ≈ √(36·δ²/220) ≈ δ·√(36/220) ≈ 4·10⁻⁷`
-
-For no-whiten r=256 (`dA = -ρ·P_A`, no preconditioning):
-
-- `‖dA‖_F ≈ ρ·√r = 16ρ`
-- `‖B·dA‖_F ≤ σ_max(B)·‖dA‖_F ≈ 0.5·16ρ = 8ρ`
-- Predicted ratio `≈ 0.5`
-
-**Predicted ratio gap:** ~10⁻⁶ (whiten) vs ~0.5 (no-whiten) — six orders of
-magnitude. If the mechanism is right, the new probe `frac_dA_through_B` will
-show this gap directly.
-
-## Why Init[AB] doesn't fix it
-
-Init[AB] sets B ~ N(0, 1/√r), giving B full random rank at step 0. By the
-mechanism, this should ELIMINATE the wasted-dA problem (no near-null modes).
-
-Empirically (group `r256_chord_whiten_k1_initAB_4k_blackwell`, lr=1e-2):
-
-| step | Init[A] | Init[AB] | Δ |
+| field | whiten (lr=1e-2) | no-whiten (lr=3e-3) | AdamW (lr=1e-4) |
 |---|---|---|---|
-| 200 | 0.6054 | 0.6157 | +0.010 (AB worse) |
-| 800 | 0.5656 | 0.5812 | +0.016 |
-| 2400 | 0.5285 | 0.5462 | +0.018 |
+| eval_loss | 0.6054 | 0.5950 | 0.5926 |
+| `cos_A_median` (dA vs plain Adam direction) | **0.538** | 0.977 | — |
+| `stable_rank_B_median / r` | **14%** (36/256) | 55% (141/256) | — |
+| `sat_frac_tight_A_median` | 0.815 | 0.012 | — |
+| `norm_B_median` | 2.04 | 9.25 | — |
+| `gamma_A_median` (Picard cross-term) | 1.149 | 0.255 | — |
 
-Init[AB] is uniformly **worse**, not better. Reading `stable_rank_B/r` at the
-same step: Init[A] = 0.14-0.17 (rank-deficient as expected), Init[AB] = 0.48-0.55
-(rank-rich as expected). So the mechanism's premise holds (Init[AB] has rich B),
-but the empirical outcome is opposite. This means Init[AB] has its own,
-separate penalty — most likely **random B is misaligned with the loss-optimal
-B-subspace**, and the optimizer must un-rotate the random init before progress.
-That penalty is persistent (visible at every step) and outweighs the gain from
-avoiding wasted dA.
+Most striking: **whiten's dA is rotated 60° from plain Adam direction; no-whiten's is essentially aligned.** This is the load-bearing distortion the loss curve is reading.
 
-So Init[AB] solves one problem and introduces a worse one. Not a fix candidate.
+## Load-bearing mechanism
 
-## Proposed fix: σ_max-relative damping (ε_rel)
+`SB^{-1/2}` inverts B's emphasis, and the Adam direction is naturally aligned with B's emphasis. So whitening rotates dA *against* the gradient signal.
 
-Default damping is absolute `δ = 1e-6`. Change to relative:
-`δ_eff = ε_rel · σ_max(SB)` (the `--precond_delta_relative` flag, with
-`--precond_delta` setting ε_rel).
+1. **Gradient signal direction.** `∂L/∂A = B^T · (∂L/∂output)`. The row-space of `gA` (and `u_A`) is naturally aligned with col(B) — directions where B has support.
+2. **Effect of `SB^{-1/2}` on u_A.** `SB^{-1/2} = V_B · D · V_B^T` with `D_i = (σ_i(B)² + δ)^{-1/2}`. The largest entries of D fall on B's smallest singular values — opposite to where the gradient signal sits. So `SB^{-1/2}·u_A` rotates u_A *away* from B's strong modes, *toward* B's weak modes.
+3. **NS doesn't undo it.** `polar(SB^{-1/2}·u_A) ≠ SB^{-1/2}·polar(u_A)`. The polar of the rotated input has its own rotated singular vector basis; multiplying by `SB^{-1/2}` again to "unwhiten" gives `geo_A = SB^{-1/2}·polar(SB^{-1/2}·u_A) ≠ polar(u_A)`. The two `SB^{-1/2}`'s don't compose to identity through the non-linear polar. (NS itself produces a near-perfect polar in both whiten and no-whiten — `cos_polar_clip_A_median ≈ 0.92` in both at r=256 step 80, `xunc_A_smax = 1.0` confirming NS input is correctly normalized. NS quality is not the failure mode; what differs is the post-polar `SB^{-1/2}·P_A` reshaping and chord rescaling.)
+4. **Net dA direction.** dA ends up at a substantial angle from `polar(u_A)` — from where plain Adam would point.
 
-With σ_max(B) ≈ 0.5 (σ_max(SB) ≈ 0.25), the null-mode amplification becomes
-`(σ_max(SB) · ε_rel)^{-1/2}`:
+**Why r=64 doesn't show it, r=256 does:** the anisotropy of `SB^{-1/2}` is bounded by `√(σ_max(B)²+δ) / √(σ_min(B)²+δ)`. At r=64 step 80 with B using ~40% of its rank, the spread ratio is small (~few). At r=256 with B using ~14% of its rank, the spread ratio is ~340 at default damping. Larger spread → more rotation of `u_A` by `SB^{-1/2}` → larger angular displacement of dA from gradient direction.
 
-| ε_rel | δ_eff | null-mode amp | active-mode perturbation |
-|---|---|---|---|
-| 1e-6 (default abs)  | 1e-6  | ~1000× | negligible |
-| 1e-4 (weak rel)     | 2.5e-5 | ~200×  | ~0.01% |
-| 1e-3                | 2.5e-4 | ~63×   | ~0.1%  |
-| **1e-2 (sweet)**    | **2.5e-3** | **~20×** | **~1%** |
-| 1e-1 (aggressive)   | 2.5e-2 | ~6×    | ~10%   |
+**Why this is whiten-specific:** no-whiten skips `SB^{-1/2}` entirely. `dA = -ρ · polar(u_A)` has no rotation away from Adam direction.
 
-ε_rel = 1e-2 reduces null-mode amplification ~50× while only perturbing the
-active spectrum by ~1%. Should substantially shrink the wasted-dA problem.
+## Math correction (prior version overstated the magnitude effect)
 
-## Test plan
+An earlier version of this note claimed `‖dA‖_F² ≈ ρ²·trace(SB^{-1})` and derived an order-of-magnitude "wasted dA" gap. That formula is wrong. The actual chord-tight update is
 
-Cells added to `slurm_pending/contam_rerun_initAB_extend_4k_blackwell.sbatch`:
-
-| cell | r | optimizer | k | lr | init | δ | ε_rel mode |
-|---|---|---|---|---|---|---|---|
-| 11 | 256 | whiten | 1 | 1e-2 | A (zero) | 1e-3 | on |
-| 12 | 256 | whiten | 1 | 1e-2 | A (zero) | 1e-2 | on |
-| 13 | 256 | whiten | 1 | 1e-2 | A (zero) | 1e-1 | on |
-
-All at HEAD post-fix. New diagnostic `frac_dA_through_B = ‖B·dA‖_F / ‖dA‖_F`
-logged per probe step (every 80 steps); same for `frac_dB_through_A`.
-
-**Predictions:**
-1. At ε_rel = 1e-6 (existing baseline at lr=1e-2, group
-   `r256_chord_whiten_k1_lrsweep_4k_blackwell` cell 1), `frac_dA_through_B`
-   should be ≪ 1e-4 in early steps.
-2. At ε_rel = 1e-2, `frac_dA_through_B` should rise toward the no-whiten
-   r=256 value (~0.5).
-3. Early-time eval loss should improve monotonically with ε_rel within
-   `[1e-3, 1e-2]`; at 1e-1 the active-mode perturbation may start to cost
-   something.
-4. Final loss at 4k should match or beat the default-damping baseline
-   (0.5117) for some ε_rel.
-
-## Diagnostic implementation
-
-`_emit_basic_diagnostics` in `lora_playground/optim.py` now logs:
-
-```python
-B_dA = B @ dA       # shape (d_out, d_in)
-dB_A = dB @ A       # shape (d_out, d_in)
-rec["frac_dA_through_B"] = ‖B·dA‖_F / (‖dA‖_F + 1e-30)
-rec["frac_dB_through_A"] = ‖dB·A‖_F / (‖dB‖_F + 1e-30)
+```
+dA = -(ρ / σ_max(geo_A)) · geo_A
 ```
 
-Cost: 2 bmm + 4 Frobenius norms per pair per probe step. Negligible at
-default `optim_diagnostics_every=80`.
+— renormalized so `σ_max(dA) = ρ`. So `‖dA‖_F = ρ·√(stable_rank(geo_A)) ≤ ρ·√r`, independent of `trace(SB^{-1})`. The renormalization step cancels any "blow-up" of `dA` magnitude from `SB^{-1/2}` amplification.
 
-## Sticky-zero bug not relevant here
+What `SB^{-1/2}` actually does is reshape dA's **direction** (the spectrum/anisotropy of `geo_A` after renormalization), not its overall magnitude. The load-bearing effect is the angular rotation described above, not a magnitude inflation.
 
-The chord-tight whiten r=256 lag predates the warm-start sticky-zero bug
-(commit `766b016`, 2026-05-12 20:52). The observed lag is in old data at
-commit `d2b0ebb` (2026-05-12 20:03), before warm-start was introduced.
-The lag is a real algorithmic property of chord-tight whiten + rank-deficient
-B, not a bug artifact.
+## ε_rel damping does not fix the dominant distortion
+
+`ε_rel` (σ_max-relative damping) reduces `SB^{-1/2}`'s eigenvalue spread:
+
+| ε_rel | δ_eff at σ_max(SB)≈0.25 | spread ratio |
+|---|---|---|
+| 1e-6 (default abs) | 1e-6 | ~340 |
+| 1e-3 | ~2.5e-4 | ~34 |
+| 1e-2 | ~2.5e-3 | ~11 |
+| 1e-1 | ~2.5e-2 | ~3.4 |
+
+But reducing the spread doesn't change the *direction* in which `SB^{-1/2}` rotates — only the magnitude of rotation. And `SB^{-1/2}`'s anti-B-emphasis structure is preserved at any spread.
+
+Empirical: ε_rel = 1e-3 at r=256 whiten lr=1e-2 (partial data through step 800):
+| step | whiten default | whiten ε_rel=1e-3 | Δ |
+|---|---|---|---|
+| 200 | 0.6054 | 0.6036 | −0.0018 |
+| 400 | 0.5889 | 0.5875 | −0.0013 |
+| 600 | 0.5751 | 0.5747 | −0.0004 |
+| 800 | 0.5656 | 0.5654 | −0.0002 |
+
+The improvement is ~0 in the region the lag matters. The no-whiten baseline at step 800 is 0.5601 — ε_rel damping closes 0.0002 of a 0.0055 gap. Not the fix.
+
+## Diagnostic probe (added)
+
+`_emit_basic_diagnostics` now logs two fields per pair per probe step:
+
+```
+frac_dA_through_B = ‖B·dA‖_F / (‖dA‖_F + ε)
+frac_dB_through_A = ‖dB·A‖_F / (‖dB‖_F + ε)
+```
+
+These measure "fraction of the per-factor update that actually reaches the LoRA forward product." Combined with `cos_A` (already logged), they characterize the whitening-induced rotation of A's update.
+
+Useful for future analysis — won't decide the chord-tight whiten lag question on its own.
+
+## Fix candidates (named, not yet tested)
+
+The mechanism points away from "tune ε_rel" and toward "change which preconditioner you whiten with":
+
+- **Rank-deficiency-aware bypass.** Detect `stable_rank_B / r < threshold` and skip `SB^{-1/2}` for that step (fall back to no-whiten). Threshold tuning needed.
+- **Co-aligned preconditioner.** Replace `SB^{-1/2}` with `(SB + ε·I)^{1/2}` (co-emphasizes B's strong modes) or with the projector onto col(B). This co-aligns dA with the gradient direction instead of inverting.
+- **Hybrid.** Linear interpolation `α·I + (1−α)·SB^{-1/2}` with α set by rank-deficiency. α=1 reduces to no-whiten; α=0 reduces to full whiten.
+
+These have theoretical justifications worth working out before implementation. The current ε_rel sweep cells in v2 will give a clean answer on whether damping helps (it does not, per partial data); the next investigation step would be one of these alternative preconditioners on a small (r=256, whiten k=1, lr=1e-2) ablation.
+
+## Note on bug interaction
+
+The chord-tight whiten r=256 lag predates the sticky-zero warm-start bug
+(`766b016`, 2026-05-12 20:52). The observed lag is in pre-bug data at commit
+`d2b0ebb`, so it's a real algorithmic property of chord-tight whiten +
+rank-deficient B, not a bug artifact.
