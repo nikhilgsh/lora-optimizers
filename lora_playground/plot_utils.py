@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shlex
 from pathlib import Path
 from typing import Callable, Iterable
@@ -753,39 +754,106 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
 _LOAD_SWEEP_CACHE: dict[tuple[str, str], tuple[tuple, list[tuple[dict, list[dict]]]]] = {}
 
 
+_TASK_FILE_RE = re.compile(r"^log_(\d+)\.out(?:\.resume_\d+)?$")
+
+
+def _task_files(log_dir: Path) -> dict[str, list[Path]]:
+    """Group `log_NN.out` and any `log_NN.out.resume_K` siblings by task
+    index `NN`. Returned dict is `{task_idx: [files...]}` with files in
+    deterministic order (resume_K-suffixed last, sorted by K)."""
+    bucket: dict[str, list[Path]] = {}
+    for p in log_dir.iterdir():
+        m = _TASK_FILE_RE.match(p.name)
+        if not m:
+            continue
+        bucket.setdefault(m.group(1), []).append(p)
+    for idx, files in bucket.items():
+        # Original `.out` first, then `.resume_K` by K ascending — so the
+        # later-run segments are the LAST to feed events through dedup,
+        # which means under any "first occurrence wins" rule they get
+        # preference for overlapping steps (segments are step-disjoint
+        # by design, but tolerate overlap).
+        def _sort_key(p: Path):
+            if p.name.endswith(".out"):
+                return (0, 0)
+            return (1, int(p.name.rsplit(".resume_", 1)[1]))
+        files.sort(key=_sort_key)
+    return bucket
+
+
+def _merge_segments(segments: list[tuple[dict | None, list[dict]]]) -> tuple[dict | None, list[dict]]:
+    """Merge per-file (cfg, evs) into a single (cfg, evs) for one task.
+
+    cfg: take the FIRST non-None cfg (original run's config event is the
+      canonical one; resumes re-emit the same config). Later resumes that
+      changed `command` would already have different deny-list keys and
+      be filtered by the loader's exclusion layer if intentional.
+    evs: union sorted by step, deduping by step (latest segment wins).
+    """
+    cfg = next((c for c, _ in segments if c is not None), None)
+    by_step: dict[int, dict] = {}
+    for _, evs in segments:
+        for ev in evs:
+            by_step[int(ev["step"])] = ev
+    merged = [by_step[s] for s in sorted(by_step)]
+    return cfg, merged
+
+
 def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[dict]]]:
     """Load all runs for a sweep group. Returns list of (cfg, evs).
 
-    Cached by the per-file (mtime, size) signature of the group's .out
-    files; in-flight files invalidate naturally as they grow. Returned
-    cfgs are shallow-copied per call so downstream mutation
-    (``merge_runs`` writing ``log_group``, ``_enrich_cfg`` writing
-    ``_derived``) doesn't poison cached entries.
+    A "run" is one disBatch task index. Per task, events are merged across
+    `log_NN.out` and any sibling `log_NN.out.resume_K` files written by
+    submit.sh's pre-submit log rotation when a wall-killed run is resubmitted
+    with checkpoint resume.
+
+    Cached by the per-file (mtime, size) signature of the group's log files;
+    in-flight files invalidate naturally as they grow. Returned cfgs are
+    shallow-copied per call so downstream mutation (``merge_runs`` writing
+    ``log_group``, ``_enrich_cfg`` writing ``_derived``) doesn't poison
+    cached entries.
     """
     log_dir = Path(f"{logs_root}/{group}/run_info/logs")
     if not log_dir.exists():
         return []
-    files = sorted(log_dir.glob("*.out"))
-    sig = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in files)
+    tasks = _task_files(log_dir)
+    # Cache signature: every file's (name, mtime, size). The resume_K
+    # suffixes get rotated atomically by submit.sh, which is one renames-event
+    # — invalidates the cache by changed name.
+    all_files = sorted(
+        (f for files in tasks.values() for f in files), key=lambda p: p.name
+    )
+    sig = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in all_files)
     cache_key = (logs_root, group)
     cached = _LOAD_SWEEP_CACHE.get(cache_key)
     if cached is not None and cached[0] == sig:
         return [(dict(cfg), evs) for cfg, evs in cached[1]]
+
     runs = []
-    for f in files:
-        cfg, evs = load_run(f)
+    for task_idx in sorted(tasks):
+        segments = [load_run(f) for f in tasks[task_idx]]
+        cfg, evs = _merge_segments(segments)
         if cfg is not None and evs:
+            # Surface the canonical filename (newest segment) so the
+            # exclusion / attestation layers find this task by its current
+            # name, not by the first segment's `.out` (which might be a
+            # `log_NN.out.resume_0` after rotation).
+            cfg["_log_filename"] = tasks[task_idx][-1].name
             runs.append((cfg, evs))
     _LOAD_SWEEP_CACHE[cache_key] = (sig, runs)
     return [(dict(cfg), evs) for cfg, evs in runs]
 
 
 def has_runs(group: str, logs_root: str = "../logs") -> bool:
-    """True if the group has at least one populated .out file."""
+    """True if the group has at least one populated `log_NN.out` (or any
+    `log_NN.out.resume_K` sibling)."""
     log_dir = Path(f"{logs_root}/{group}/run_info/logs")
     if not log_dir.exists():
         return False
-    return any(f.stat().st_size > 0 for f in log_dir.glob("*.out"))
+    return any(
+        _TASK_FILE_RE.match(p.name) and p.stat().st_size > 0
+        for p in log_dir.iterdir()
+    )
 
 
 # Cfg fields that legitimately differ between otherwise-identical runs (run
@@ -1827,11 +1895,24 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
         _min_step = _infer_min_step(runs) or CANONICAL_HORIZON
     if reference_runs is not None and _min_step is not None:
         n_before = len(reference_runs)
-        reference_runs = [(c, e) for c, e in reference_runs
-                          if e and e[-1]["step"] >= _min_step]
-        n_dropped = n_before - len(reference_runs)
-        if n_dropped:
-            print(f"  [auto] filtered {n_dropped} partial reference run(s) below min_step={_min_step}")
+        complete = [(c, e) for c, e in reference_runs
+                    if e and e[-1]["step"] >= _min_step]
+        baseline_complete = [r for r in complete
+                             if r[0].get("optimizer") == baseline_optimizer]
+        if baseline_complete:
+            reference_runs = complete
+            n_dropped = n_before - len(reference_runs)
+            if n_dropped:
+                print(f"  [auto] filtered {n_dropped} partial reference run(s) below min_step={_min_step}")
+        else:
+            # No complete baseline at this horizon — keep partial baseline runs
+            # so the figure still renders with a (possibly in-flight) reference.
+            partial_baseline = [r for r in reference_runs
+                                if r[0].get("optimizer") == baseline_optimizer]
+            if partial_baseline:
+                last = max(e[-1]["step"] for _, e in partial_baseline if e)
+                print(f"  [auto] no {baseline_optimizer!r} reference reached "
+                      f"min_step={_min_step}; using partial baseline (last step={last})")
 
     if reference_runs is None:
         hlines, ref_curves, eta_sweeps = [], [], []

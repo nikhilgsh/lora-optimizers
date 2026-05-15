@@ -604,12 +604,26 @@ def load_runs(
                     project_root=project_root(),
                 )
                 if resolved is None:
-                    return True, (
-                        "execution source hash not found in descendant "
-                        "commits within search bounds; either commit your "
-                        "at-submission state, or add a dirty_attestation"
+                    # Phase 4 auto-resolve failed. Fall through to Phase-1
+                    # manual attestation: a human can vouch that the dirty
+                    # diff is non-load-bearing at runtime (e.g. opt-in CLI
+                    # flags not invoked by this sweep), keyed by (group,
+                    # log_filename, git_diff_sha). Without this fallback,
+                    # Phase-4 runs are stuck whenever the at-submission tree
+                    # is never committed — which is the common case for
+                    # untracked-file dirt that gets cleaned up later.
+                    attestation = lookup_attestation(
+                        log_group, log_filename, cfg.get("git_diff_sha"),
                     )
-                effective_commit = resolved
+                    if attestation is None:
+                        return True, (
+                            "execution source hash not found in descendant "
+                            "commits within search bounds; either commit your "
+                            "at-submission state, or add a dirty_attestation"
+                        )
+                    effective_commit = attestation.treat_as_commit
+                else:
+                    effective_commit = resolved
         elif cfg.get("git_dirty"):
             # Phase 1 schema: legacy attestation policy. NOTE: per the
             # Phase-4 policy revision (treat untracked files as audit-only,

@@ -33,6 +33,14 @@ if [[ -z "${SWEEP_SCOPE:-}" ]]; then
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ── Dirty-tree refusal ───────────────────────────────────────────────────────
+# Refuse if load-bearing code (lora_playground/*.py, train_lora.py, sweep/
+# sbatch shell wrappers) has uncommitted changes. Without this guard, the
+# manifest records git_dirty=true and the loader silently excludes the runs.
+# Override with FORCE_DIRTY=1.
+REPO_DIR="${REPO_DIR}" "${REPO_DIR}/scripts/check_clean_tree.sh"
+
 PARAM_FILE="$1"
 GROUP="$2"
 N_GPUS="$3"
@@ -82,6 +90,64 @@ python ~/hp_scaling/generate_task_file.py \
     --full_tasks=True \
     --add_logs=True \
     --log_dir="${RUN_DIR}/logs"
+
+# ── Checkpoint injection ─────────────────────────────────────────────────────
+# Each generated task line looks like:
+#   sweep.sh <args...> > /…/logs/log_NN.out 2> /…/logs/log_NN.err
+# Inject a per-task `CHECKPOINT_DIR=<RUN_DIR>/checkpoints/task_NN` env-var
+# prefix so the train.py invocation under the sweep wrapper picks up
+# --checkpoint_dir + --resume_from (idempotent: first run finds empty dir,
+# resume picks the latest ckpt_step{N}). Opt out with NO_CHECKPOINTS=1.
+if [[ -z "${NO_CHECKPOINTS:-}" ]]; then
+    python - <<PYEOF
+import re
+from pathlib import Path
+tasks_path = Path("${RUN_DIR}/tasks")
+ckpt_root = Path("${RUN_DIR}/checkpoints")
+ckpt_root.mkdir(parents=True, exist_ok=True)
+out_lines = []
+for line in tasks_path.read_text().splitlines():
+    if not line.strip():
+        out_lines.append(line)
+        continue
+    m = re.search(r"log_(\d+)\.out", line)
+    if not m:
+        out_lines.append(line)
+        continue
+    nn = m.group(1)
+    task_ckpt = ckpt_root / f"task_{nn}"
+    # Prepend per-task env var so it scopes to this command only. disBatch
+    # runs each line via /bin/sh -c, which honors leading KEY=value tokens.
+    out_lines.append(f"CHECKPOINT_DIR={task_ckpt} {line}")
+tasks_path.write_text("\n".join(out_lines) + "\n")
+PYEOF
+fi
+
+# ── Pre-submit log rotation ──────────────────────────────────────────────────
+# If a `log_NN.out` already exists from a prior wall-killed run on the same
+# group, rotate it to `log_NN.out.resume_K` (K = next available) before
+# disBatch creates fresh log_NN.out files. The loader's load_sweep merges
+# events across log_NN.out + log_NN.out.resume_K siblings, so the partial
+# trajectory survives the resubmit.
+python - <<PYEOF
+import re
+from pathlib import Path
+log_dir = Path("${RUN_DIR}/logs")
+for src in sorted(log_dir.glob("log_*.out")):
+    if not re.fullmatch(r"log_\d+\.out", src.name):
+        continue
+    if src.stat().st_size == 0:
+        continue  # nothing worth keeping
+    base = src.name
+    k = 0
+    while (log_dir / f"{base}.resume_{k}").exists():
+        k += 1
+    src.rename(log_dir / f"{base}.resume_{k}")
+    # Also rotate the paired .err.
+    err = src.with_suffix(".err")
+    if err.exists() and err.stat().st_size > 0:
+        err.rename(log_dir / f"{base.replace('.out', '.err')}.resume_{k}")
+PYEOF
 
 echo "Task file (${RUN_DIR}/tasks):"
 cat "${RUN_DIR}/tasks"

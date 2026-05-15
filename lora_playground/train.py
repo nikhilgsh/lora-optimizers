@@ -19,6 +19,12 @@ from transformers import (
     set_seed,
 )
 
+from .checkpoint import (
+    ckpt_dir_for_step,
+    load_checkpoint,
+    prune_checkpoints,
+    save_checkpoint,
+)
 from .data import PackingCollator, PadToMaxCollator, pack_documents
 from .distributed import (
     all_reduce_mean,
@@ -647,6 +653,41 @@ def make_parser():
                              "then rescale to ‖u‖_F. 'row_col'/'col_row' = composed.")
     parser.add_argument("--wandb_project", default=None, help="W&B project name. Omit to disable W&B.")
     parser.add_argument("--wandb_run_name", default=None, help="W&B run name. Auto-generated from key params if omitted.")
+    parser.add_argument(
+        "--checkpoint_dir", default=None,
+        help="Directory for step-continuous checkpoints (one `ckpt_step{N}` "
+             "subdir per save). If unset, no checkpoints written. Use with "
+             "--resume_from to recover from SLURM wall-timeouts. Not "
+             "bitwise-resumable (sampler reseeds via (seed, step) after resume).",
+    )
+    parser.add_argument(
+        "--checkpoint_every", type=int, default=None,
+        help="Save cadence in steps. Default = --eval_every (one save per "
+             "eval). Set higher (e.g. 1000) to save less often than eval — "
+             "useful for long runs where save I/O is non-trivial. The final "
+             "step always saves regardless of this cadence.",
+    )
+    parser.add_argument(
+        "--checkpoint_keep_last", type=int, default=2,
+        help="Keep this many most-recent checkpoints; delete older. Default 2 "
+             "= one as a stable fallback, one in-flight. Set 0 to keep all.",
+    )
+    parser.add_argument(
+        "--keep_checkpoints", action="store_true",
+        help="By default, the checkpoint dir is deleted after the run reaches "
+             "--max_steps (or --target_eval_loss). Pass this flag to retain "
+             "checkpoints for later inspection or warm-start use. Failed/"
+             "aborted runs (NaN abort, etc.) always retain checkpoints "
+             "regardless of this flag.",
+    )
+    parser.add_argument(
+        "--resume_from", default=None,
+        help="Path to a specific checkpoint dir, OR a parent dir containing "
+             "`ckpt_step{N}` children (auto-picks the latest). Idempotent: if "
+             "the path doesn't exist or has no checkpoints, runs from step 1. "
+             "Lets the same launch command work on first submission and on "
+             "resubmission after wall-timeout.",
+    )
     return parser
 
 
@@ -1152,13 +1193,41 @@ def main():
         )
         profiler.start()
 
+    # Resume from checkpoint if requested. Idempotent: missing path / empty
+    # dir returns None, so the same launch command works on first submission
+    # and on resubmission after wall-timeout. Resume MUST happen after
+    # optimizer / scheduler construction (they're the load targets) but before
+    # any RNG / sampler initialization that depends on (seed, step).
+    resume_state = None
+    resume_segment = 0
+    if args.resume_from is not None:
+        resume_state = load_checkpoint(
+            args.resume_from,
+            bare_model=bare_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+        )
+        if resume_state is not None:
+            resume_segment = resume_state["resume_segment"] + 1
+            log_event({
+                "event": "resume",
+                "resumed_from_step": resume_state["step"],
+                "resumed_from_total_tokens": resume_state["total_tokens"],
+                "resume_segment": resume_segment,
+                "ckpt_path": resume_state["ckpt_path"],
+            })
+            # Reseed so the post-resume sampler advances to a new
+            # deterministic position. Continuous in expectation, not bitwise.
+            set_seed(args.seed + resume_state["step"])
+    start_step = (resume_state["step"] + 1) if resume_state else 1
+
     # Under DDP, set_epoch on the DistributedSampler ensures different shuffle
     # ordering across epochs (only matters if we ever multi-epoch; the project
     # invariant is 1-pass so this is just a forward-compat call).
     if train_sampler is not None:
-        train_sampler.set_epoch(0)
+        train_sampler.set_epoch(resume_segment)
     train_iter = iter(train_loader)
-    total_tokens = 0
+    total_tokens = resume_state["total_tokens"] if resume_state else 0
     eval_elapsed = 0.0
     # Windowed train-loss accumulator for `train_step` events.
     window_loss_sum = 0.0
@@ -1167,7 +1236,24 @@ def main():
     start = time.perf_counter()
     model.train()
 
-    for step in range(1, args.max_steps + 1):
+    if start_step > args.max_steps:
+        log_event({
+            "event": "resume_already_complete",
+            "step": resume_state["step"],
+            "max_steps": args.max_steps,
+        })
+
+    # Checkpoint cadence: default to --eval_every (one save per eval). User
+    # can override to e.g. 1000 to save less often than eval.
+    ckpt_every = args.checkpoint_every or args.eval_every
+
+    # Tracked across the loop: an early-break via --abort_on_nan_eval flips
+    # this so end-of-run cleanup is skipped (preserve checkpoints for
+    # debugging). Natural max_steps completion AND target_eval_loss hits are
+    # treated as "complete" — checkpoints get deleted by default.
+    run_completed_cleanly = True
+
+    for step in range(start_step, args.max_steps + 1):
         step_loss, step_tokens, train_iter, norm_stats = run_one_train_step(
             model, optimizer, train_iter, train_loader,
             grad_accum_steps=args.grad_accum_steps,
@@ -1224,8 +1310,14 @@ def main():
             # divide by) or when peak lookup failed (unknown GPU). On
             # contended GPUs the number is meaningless — only trust under
             # exclusive allocation.
-            mean_step_time = train_elapsed / max(step, 1)
-            mean_tokens_per_step = total_tokens / max(step, 1)
+            # Use post-resume segment counters so MFU reflects current
+            # throughput, not "ratio of segment-elapsed to absolute-step".
+            _seg_steps_for_mfu = step - start_step + 1
+            _seg_tokens_for_mfu = total_tokens - (
+                resume_state["total_tokens"] if resume_state else 0
+            )
+            mean_step_time = train_elapsed / max(_seg_steps_for_mfu, 1)
+            mean_tokens_per_step = _seg_tokens_for_mfu / max(_seg_steps_for_mfu, 1)
             if device.type == "cuda" and mfu_peak_tflops is not None:
                 mfu = compute_mfu(
                     n_params=mfu_n_params,
@@ -1236,6 +1328,14 @@ def main():
                 )
             else:
                 mfu = None
+            # `train_elapsed_sec` and `tokens_per_sec` reflect the
+            # POST-RESUME segment only (timer starts at loop entry). For
+            # cumulative wall, subscribe to per-resume segments via
+            # `resume_segment` + the loader's stitching.
+            segment_steps = step - start_step + 1
+            segment_tokens = total_tokens - (
+                resume_state["total_tokens"] if resume_state else 0
+            )
             eval_payload = {
                 "event": "eval",
                 "step": step,
@@ -1244,7 +1344,8 @@ def main():
                 "tokens": total_tokens,
                 "train_elapsed_sec": train_elapsed,
                 "eval_sec": eval_sec,
-                "tokens_per_sec": total_tokens / max(train_elapsed, 1e-9),
+                "tokens_per_sec": segment_tokens / max(train_elapsed, 1e-9),
+                "resume_segment": resume_segment,
                 "peak_memory_mb": peak_memory_mb,
                 "lr": scheduler.get_last_lr()[0],
                 "mfu": mfu,
@@ -1264,14 +1365,76 @@ def main():
                     "step": step,
                     "eval_loss": eval_loss,
                 })
+                run_completed_cleanly = False
                 break
             if args.target_eval_loss is not None and eval_loss <= args.target_eval_loss:
                 break
+
+        # Checkpoint save. Cadence is `--checkpoint_every` if set, else
+        # `--eval_every` so the default matches the eval+save coupling.
+        # The final step always saves regardless. Save AFTER the eval block
+        # so target_eval_loss / NaN-abort breaks bypass the save; that
+        # preserves the "abort retains checkpoints" semantic of `--keep_*`.
+        if (
+            args.checkpoint_dir is not None
+            and is_main()
+            and (step % ckpt_every == 0 or step == args.max_steps)
+        ):
+            try:
+                save_checkpoint(
+                    ckpt_dir_for_step(args.checkpoint_dir, step),
+                    bare_model=bare_model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    step=step,
+                    total_tokens=total_tokens,
+                    resume_segment=resume_segment,
+                    cfg_snapshot={"command": " ".join(
+                        shlex.quote(a) for a in sys.argv
+                    )},
+                )
+                if args.checkpoint_keep_last and args.checkpoint_keep_last > 0:
+                    prune_checkpoints(
+                        args.checkpoint_dir, args.checkpoint_keep_last
+                    )
+            except Exception as e:
+                log_event({
+                    "event": "checkpoint_save_failed",
+                    "step": step,
+                    "error": f"{type(e).__name__}: {e}",
+                })
 
     if profiler is not None:
         profiler.stop()
     if wandb_run is not None:
         wandb_run.finish()
+
+    # End-of-run checkpoint cleanup. Successful completion deletes the
+    # checkpoint dir (it's no longer needed for resume) unless the user
+    # opted in via --keep_checkpoints. NaN-abort / target_eval_loss runs
+    # are treated as "not cleanly complete" — for the early-target case
+    # this is conservative, but the checkpoints are still useful as a
+    # warm-start so retaining them costs only disk.
+    if (
+        args.checkpoint_dir is not None
+        and is_main()
+        and run_completed_cleanly
+        and not args.keep_checkpoints
+    ):
+        import shutil
+        try:
+            shutil.rmtree(args.checkpoint_dir)
+            log_event({
+                "event": "checkpoints_cleaned",
+                "checkpoint_dir": args.checkpoint_dir,
+            })
+        except OSError as e:
+            log_event({
+                "event": "checkpoint_cleanup_failed",
+                "checkpoint_dir": args.checkpoint_dir,
+                "error": f"{type(e).__name__}: {e}",
+            })
+
     # Tear down the distributed process group if we initialized one. No-op
     # in single-process mode.
     dist_cleanup()

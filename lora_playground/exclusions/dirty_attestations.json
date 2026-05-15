@@ -27,13 +27,6 @@
   ],
   "entries": [
     {
-      "group": "chord_tight_r256_lr1e-2_eps_rel_nan_debug_lambdafix_blackwell",
-      "log_filename": "log_0.out",
-      "git_diff_sha": null,
-      "treat_as_commit": "9677abe",
-      "reason": "lambdafix re-run: the working tree had the lambda_max fix hand-patched but it wasn't committed before this sweep started. cfg.git_commit (9f2b2b9) is pre-fix; the actual code that ran is equivalent to 9677abe (where the fix later landed). Phase-2 backfill set git_dirty=True from the manifest but couldn't capture diff_sha retroactively. Manual relabel: treat as at 9677abe so the lambda_max_fix_for_eps_rel invariant passes."
-    },
-    {
       "group": "chord_tight_r256_k3_lr3e-2_eps_rel_1e-2_redo_4k_blackwell",
       "log_filename": "log_0.out",
       "git_diff_sha": "f3f11ca01fab455a9fc9cd285fee46948b9dabd979c8484f83c9dcd7a3512445",
@@ -137,6 +130,62 @@
       "git_diff_sha": "627016ac5ebfb8d15ca179ef48f96737a1206cdf19641b4d5862ce3f8f4d9147",
       "treat_as_commit": "9446ffb",
       "reason": "In-flight chord-tight eps_rel sweep submitted during Phase-1 cfg-event-enrichment development session. The recorded diff_sha hashes the Phase-1 tracked-file changes in optim.py / train.py / plot_utils.py that landed as commit 9446ffb. Untracked files at the time were non-code artifacts (params JSON, scaffolding, loader-side scripts/tests) that do not affect optimizer behavior. Attestation is one-time; future runs use Phase-4 execution_source_sha auto-resolve."
+    },
+    {
+      "group": "chord_tight_r32_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_0.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "chord_tight_r32_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_1.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "chord_tight_r32_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_2.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "chord_tight_r32_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_3.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "chord_tight_r128_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_0.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "chord_tight_r128_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_1.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "chord_tight_r128_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_2.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "chord_tight_r128_k3_eps_rel_1e-2_4k_blackwell",
+      "log_filename": "log_3.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "953a11b",
+      "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
     }
   ]
 }
