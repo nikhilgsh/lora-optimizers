@@ -1,7 +1,7 @@
 """Diagnostic-snapshot stash tests for AdamPolarProductLoRA.
 
 Verifies that with `optimizer.snapshot_pair_tensors = True`, the batched step
-writes A_pre, B_pre, u_A_pre, u_B_pre clones into pair_state with the right
+writes A, B, u_A, u_B clones into pair_state with the right
 shapes and values, and that save_checkpoint round-trips them.
 
 CPU-only; reuses the toy fixtures from test_checkpoint.py.
@@ -48,13 +48,13 @@ def test_snapshot_off_by_default(tmp_path):
     x = torch.randn(2, 8); y = torch.randn(2, 8)
     _step_once(model.inner, opt, x, y)
     for ps in opt.pair_state.values():
-        for key in ("A_pre", "B_pre", "u_A_pre", "u_B_pre"):
+        for key in ("A", "B", "u_A", "u_B"):
             assert key not in ps, f"unexpected snapshot key {key} when flag off"
 
 
 def test_snapshot_stash_shapes_and_values(tmp_path):
     """With the flag on, pair_state[i] gains the 4 stash keys with the right
-    shapes; A_pre / B_pre match the pre-step values bitwise."""
+    shapes; A / B match the pre-step values bitwise."""
     torch.manual_seed(0)
     model = _PeftLikeWrapper(_ToyModel())
     opt = _make_optimizer(model.inner, _OPT)
@@ -65,25 +65,25 @@ def test_snapshot_stash_shapes_and_values(tmp_path):
     _step_once(model.inner, opt, x, y)
 
     assert len(opt.pair_state) == len(pre_AB)
-    for i, (A_pre_ref, B_pre_ref) in enumerate(pre_AB):
+    for i, (A_ref, B_ref) in enumerate(pre_AB):
         ps = opt.pair_state[i]
-        for key in ("A_pre", "B_pre", "u_A_pre", "u_B_pre"):
+        for key in ("A", "B", "u_A", "u_B"):
             assert key in ps, f"missing snapshot key {key} at pair {i}"
             assert isinstance(ps[key], torch.Tensor)
             assert ps[key].dtype == torch.float32
-        assert ps["A_pre"].shape == A_pre_ref.shape
-        assert ps["B_pre"].shape == B_pre_ref.shape
-        assert ps["u_A_pre"].shape == A_pre_ref.shape
-        assert ps["u_B_pre"].shape == B_pre_ref.shape
-        # A_pre, B_pre must match the values fed into the step (bitwise).
-        assert torch.equal(ps["A_pre"], A_pre_ref), \
-            f"A_pre at pair {i} does not match pre-step A"
-        assert torch.equal(ps["B_pre"], B_pre_ref), \
-            f"B_pre at pair {i} does not match pre-step B"
+        assert ps["A"].shape == A_ref.shape
+        assert ps["B"].shape == B_ref.shape
+        assert ps["u_A"].shape == A_ref.shape
+        assert ps["u_B"].shape == B_ref.shape
+        # A, B must match the values fed into the step (bitwise).
+        assert torch.equal(ps["A"], A_ref), \
+            f"A at pair {i} does not match pre-step A"
+        assert torch.equal(ps["B"], B_ref), \
+            f"B at pair {i} does not match pre-step B"
 
 
 def test_snapshot_u_pre_matches_adam_rms_formula():
-    """u_A_pre / u_B_pre should equal m_hat / (sqrt(v_hat) + eps), computed
+    """u_A / u_B should equal m_hat / (sqrt(v_hat) + eps), computed
     from the post-step m_A, v_A and the current step counter. This pins the
     stash to its definition before σ_max normalization."""
     torch.manual_seed(0)
@@ -103,9 +103,9 @@ def test_snapshot_u_pre_matches_adam_rms_formula():
         u_A_grp = (gs["m_A"] / bc1) / ((gs["v_A"] / bc2).sqrt() + eps)
         u_B_grp = (gs["m_B"] / bc1) / ((gs["v_B"] / bc2).sqrt() + eps)
         for j, gi in enumerate(indices):
-            assert torch.allclose(opt.pair_state[gi]["u_A_pre"], u_A_grp[j],
+            assert torch.allclose(opt.pair_state[gi]["u_A"], u_A_grp[j],
                                   atol=1e-6, rtol=1e-6)
-            assert torch.allclose(opt.pair_state[gi]["u_B_pre"], u_B_grp[j],
+            assert torch.allclose(opt.pair_state[gi]["u_B"], u_B_grp[j],
                                   atol=1e-6, rtol=1e-6)
 
 
@@ -137,7 +137,7 @@ def test_snapshot_save_load_round_trip(tmp_path):
     assert info is not None
     for i, src_ps in src_opt.pair_state.items():
         dst_ps = dst_opt.pair_state[i]
-        for key in ("A_pre", "B_pre", "u_A_pre", "u_B_pre"):
+        for key in ("A", "B", "u_A", "u_B"):
             assert key in dst_ps, f"snapshot key {key} not restored at pair {i}"
             assert torch.equal(dst_ps[key], src_ps[key]), \
                 f"snapshot key {key} drifted after load at pair {i}"

@@ -1426,8 +1426,8 @@ def main():
                 break
 
         # Diagnostic snapshot save. Fires AFTER the step (and after eval) so
-        # the optimizer's pair_state holds the freshly-stashed A_pre, B_pre,
-        # u_A_pre, u_B_pre. Save dir is <snapshot_dir>/step_{label} where
+        # the optimizer's pair_state holds the freshly-stashed A, B (§9
+        # factor inputs) and u_A, u_B (Adam-RMS direction, pre-σmax). Save dir is <snapshot_dir>/step_{label} where
         # label = 0 for the special-case step-0 request, else the step index.
         # Independent of --checkpoint_keep_last pruning.
         if (
@@ -1464,7 +1464,7 @@ def main():
                 })
             finally:
                 for ps in optimizer.pair_state.values():
-                    for k in ("A_pre", "B_pre", "u_A_pre", "u_B_pre"):
+                    for k in ("A", "B", "u_A", "u_B"):
                         ps.pop(k, None)
                 optimizer.snapshot_pair_tensors = False
 

@@ -2672,10 +2672,12 @@ class AdamPolarProductLoRA(Optimizer):
         self.debug_abort_on_non_finite = bool(debug_abort_on_non_finite)
         self._debug_snapshots_written = 0
         # Per-step diagnostic stash flag. When True for a single step, the
-        # batched path writes pre-step A, B and pre-σmax u_A, u_B clones into
-        # pair_state under keys "A_pre"/"B_pre"/"u_A_pre"/"u_B_pre". Consumed
-        # by --snapshot_steps in train.py; train.py clears the stash after
-        # save_checkpoint and resets the flag to False.
+        # batched path writes the §9 inputs into pair_state under keys
+        # "A" / "B" (the factors fed INTO the step, before the in-place
+        # update) and "u_A" / "u_B" (the Adam-RMS direction, before σ_max
+        # re-normalization). Consumed by --snapshot_steps in train.py;
+        # train.py clears the stash after save_checkpoint and resets the
+        # flag to False.
         self.snapshot_pair_tensors = False
         self.eps = eps
         self.beta1, self.beta2 = betas
@@ -3270,12 +3272,13 @@ class AdamPolarProductLoRA(Optimizer):
             gs['gB_stack'] = torch.stack([B.grad for B in B_list]).float()
 
             # Diagnostic snapshot stash (gated). A/B here are the values the
-            # §9 step is about to consume — pre-update. Clone the per-pair
-            # float32 slices into pair_state for save_checkpoint to pick up.
+            # §9 step is about to consume — they're the algorithm inputs at
+            # this step. Clone the per-pair float32 slices into pair_state
+            # for save_checkpoint to pick up.
             if self.snapshot_pair_tensors:
                 for j, gi in enumerate(indices):
-                    self.pair_state[gi]['A_pre'] = gs['A_stack'][j].detach().clone()
-                    self.pair_state[gi]['B_pre'] = gs['B_stack'][j].detach().clone()
+                    self.pair_state[gi]['A'] = gs['A_stack'][j].detach().clone()
+                    self.pair_state[gi]['B'] = gs['B_stack'][j].detach().clone()
 
             step_count = self.pair_state[indices[0]]['step']
 
@@ -3295,8 +3298,8 @@ class AdamPolarProductLoRA(Optimizer):
             # at lines further down rescales u_A, u_B in place.
             if self.snapshot_pair_tensors:
                 for j, gi in enumerate(indices):
-                    self.pair_state[gi]['u_A_pre'] = u_A[j].detach().clone()
-                    self.pair_state[gi]['u_B_pre'] = u_B[j].detach().clone()
+                    self.pair_state[gi]['u_A'] = u_A[j].detach().clone()
+                    self.pair_state[gi]['u_B'] = u_B[j].detach().clone()
 
             # Precond refresh. precond_method='higham' uses batched
             # `spd_inv_sqrt_higham_batched` (one bmm sequence over all pairs in
