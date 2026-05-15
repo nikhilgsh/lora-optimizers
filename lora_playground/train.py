@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import torch
 from datasets import DatasetDict, load_dataset, load_from_disk
@@ -688,6 +689,18 @@ def make_parser():
              "Lets the same launch command work on first submission and on "
              "resubmission after wall-timeout.",
     )
+    parser.add_argument(
+        "--snapshot_steps", default="",
+        help="Comma-separated step indices at which to write a diagnostic "
+             "snapshot (pre-step A, B and pre-σmax u_A, u_B per pair, plus "
+             "the standard pair_state/group_state). Snapshots are written to "
+             "<snapshot_dir>/step_{N} and are never pruned. Empty = disabled.",
+    )
+    parser.add_argument(
+        "--snapshot_dir", default=None,
+        help="Directory for diagnostic snapshots. Required when "
+             "--snapshot_steps is non-empty.",
+    )
     return parser
 
 
@@ -1247,6 +1260,33 @@ def main():
     # can override to e.g. 1000 to save less often than eval.
     ckpt_every = args.checkpoint_every or args.eval_every
 
+    # Diagnostic snapshot driver. The optimizer carries a flag
+    # `snapshot_pair_tensors` that, when True for one step, stashes pre-step
+    # A, B and pre-σmax u_A, u_B into pair_state. We flip it on right before
+    # the step and write the snapshot dir right after, then clear the stash.
+    # Step 0 (if requested) is handled in-loop by triggering on step 1 and
+    # naming the snapshot dir step_0 — pre-step A, B at step 1 IS the init
+    # state, and u_A_pre at step 1 is the first Adam direction.
+    snapshot_step_set: set[int] = set()
+    snapshot_step0_requested = False
+    if args.snapshot_steps:
+        toks = [t.strip() for t in args.snapshot_steps.split(",") if t.strip()]
+        snapshot_step_set = {int(t) for t in toks}
+        snapshot_step0_requested = 0 in snapshot_step_set
+        snapshot_step_set.discard(0)
+        if args.snapshot_dir is None:
+            raise ValueError(
+                "--snapshot_steps requires --snapshot_dir"
+            )
+    optimizer_supports_snapshot = hasattr(optimizer, "snapshot_pair_tensors")
+    if snapshot_step_set and not optimizer_supports_snapshot:
+        log_event({
+            "event": "snapshot_unsupported_optimizer",
+            "optimizer": type(optimizer).__name__,
+        })
+        snapshot_step_set = set()
+        snapshot_step0_requested = False
+
     # Tracked across the loop: an early-break via --abort_on_nan_eval flips
     # this so end-of-run cleanup is skipped (preserve checkpoints for
     # debugging). Natural max_steps completion AND target_eval_loss hits are
@@ -1254,6 +1294,21 @@ def main():
     run_completed_cleanly = True
 
     for step in range(start_step, args.max_steps + 1):
+        # Diagnostic snapshot: flip the optimizer's stash flag before the step
+        # so it captures A_pre, B_pre, u_A_pre, u_B_pre into pair_state for
+        # the in-flight step. snapshot_label names the output subdir:
+        #   - step ∈ snapshot_step_set → label = step
+        #   - step == 1 and step-0 was requested → label = 0 (init state +
+        #     first Adam direction)
+        snapshot_label = None
+        if optimizer_supports_snapshot:
+            if step in snapshot_step_set:
+                optimizer.snapshot_pair_tensors = True
+                snapshot_label = step
+            elif step == 1 and snapshot_step0_requested:
+                optimizer.snapshot_pair_tensors = True
+                snapshot_label = 0
+
         step_loss, step_tokens, train_iter, norm_stats = run_one_train_step(
             model, optimizer, train_iter, train_loader,
             grad_accum_steps=args.grad_accum_steps,
@@ -1369,6 +1424,49 @@ def main():
                 break
             if args.target_eval_loss is not None and eval_loss <= args.target_eval_loss:
                 break
+
+        # Diagnostic snapshot save. Fires AFTER the step (and after eval) so
+        # the optimizer's pair_state holds the freshly-stashed A_pre, B_pre,
+        # u_A_pre, u_B_pre. Save dir is <snapshot_dir>/step_{label} where
+        # label = 0 for the special-case step-0 request, else the step index.
+        # Independent of --checkpoint_keep_last pruning.
+        if (
+            snapshot_label is not None
+            and args.snapshot_dir is not None
+            and is_main()
+        ):
+            snap_path = Path(args.snapshot_dir) / f"step_{snapshot_label}"
+            try:
+                save_checkpoint(
+                    snap_path,
+                    bare_model=bare_model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    step=step,
+                    total_tokens=total_tokens,
+                    resume_segment=resume_segment,
+                    cfg_snapshot={"command": " ".join(
+                        shlex.quote(a) for a in sys.argv
+                    )},
+                )
+                log_event({
+                    "event": "snapshot_saved",
+                    "step": step,
+                    "label": snapshot_label,
+                    "path": str(snap_path),
+                })
+            except Exception as e:
+                log_event({
+                    "event": "snapshot_save_failed",
+                    "step": step,
+                    "label": snapshot_label,
+                    "error": f"{type(e).__name__}: {e}",
+                })
+            finally:
+                for ps in optimizer.pair_state.values():
+                    for k in ("A_pre", "B_pre", "u_A_pre", "u_B_pre"):
+                        ps.pop(k, None)
+                optimizer.snapshot_pair_tensors = False
 
         # Checkpoint save. Cadence is `--checkpoint_every` if set, else
         # `--eval_every` so the default matches the eval+save coupling.

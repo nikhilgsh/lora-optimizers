@@ -123,6 +123,35 @@ tasks_path.write_text("\n".join(out_lines) + "\n")
 PYEOF
 fi
 
+# ── Snapshot dir injection (opt-in via SNAPSHOTS=1) ──────────────────────────
+# Mirrors the CHECKPOINT_DIR block above. Each generated task line gets a
+# per-task `SNAPSHOT_DIR=<RUN_DIR>/snapshots/task_NN` env-var prefix so the
+# launcher's --snapshot_dir flag picks it up. Snapshots are NOT subject to
+# checkpoint pruning or end-of-run cleanup; the dir survives for downstream
+# analysis. Opt-in only because most sweeps don't need it.
+if [[ "${SNAPSHOTS:-0}" = "1" ]]; then
+    python - <<PYEOF
+import re
+from pathlib import Path
+tasks_path = Path("${RUN_DIR}/tasks")
+snap_root = Path("${RUN_DIR}/snapshots")
+snap_root.mkdir(parents=True, exist_ok=True)
+out_lines = []
+for line in tasks_path.read_text().splitlines():
+    if not line.strip():
+        out_lines.append(line)
+        continue
+    m = re.search(r"log_(\d+)\.out", line)
+    if not m:
+        out_lines.append(line)
+        continue
+    nn = m.group(1)
+    task_snap = snap_root / f"task_{nn}"
+    out_lines.append(f"SNAPSHOT_DIR={task_snap} {line}")
+tasks_path.write_text("\n".join(out_lines) + "\n")
+PYEOF
+fi
+
 # ── Pre-submit log rotation ──────────────────────────────────────────────────
 # If a `log_NN.out` already exists from a prior wall-killed run on the same
 # group, rotate it to `log_NN.out.resume_K` (K = next available) before
