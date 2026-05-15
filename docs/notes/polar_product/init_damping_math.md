@@ -1,7 +1,7 @@
 # A μA-style note on chord-tight LoRA: initialization schemes and damping
 
 **Author:** internal note, intended as input to a sanity check.
-**Goal:** derive, in the style of Hayou–Vyas–Yang (μP) and Chen–Villar–Hayou (μA), how the *chord-tight polar-product* LoRA optimizer interacts with three initialization schemes (Init[A], Init[B], Init[AB] with PiSSA-style residual) and two damping schemes (absolute, σ_max-relative). The note is self-contained: it restates the algorithm, derives per-step output increments under each (init, damping) combination, and gives predictions for what should be observed empirically across rank `r`.
+**Goal:** derive, in the style of Hayou–Vyas–Yang (μP) and Chen–Villar–Hayou (μA), how the *chord-tight polar-product* LoRA optimizer interacts with three initialization schemes (Init[A], Init[B], Init[AB] with PiSSA-style residual) and two damping schemes (absolute, σ_max-relative). The note is self-contained: it restates the algorithm and derives per-step output-increment scalings under each (init, damping) combination. Empirical optimum claims are intentionally out of scope.
 
 The reader is assumed to know Adam and the basic LoRA factorization. No prior knowledge of μA, μP, or the chord-tight algorithm is required.
 
@@ -14,23 +14,32 @@ The reader is assumed to know Adam and the basic LoRA factorization. No prior kn
 Fine-tune a frozen weight $W^\star \in \mathbb{R}^{n_{\text{out}} \times n_{\text{in}}}$ by adding a low-rank correction:
 
 $$
-\bar W \;=\; W^\star \;+\; \frac{\alpha}{r}\, B A,
+\bar W \;=\; W^\star \;+\; \mu\, B A,
 \qquad
+\mu := \frac{\alpha_{\mathrm{PEFT}}}{r},
+\tag{1.1}
+$$
+
+where $\alpha_{\mathrm{PEFT}}$ is the `lora_alpha` value used by PEFT. In the notation of Chen--Villar--Hayou (μA), their LoRA multiplier $\alpha$ is this note's effective multiplier $\mu$, not PEFT's `lora_alpha`.
+
+The factors are
+
+$$
 A \in \mathbb{R}^{r \times n_{\text{in}}},\
 B \in \mathbb{R}^{n_{\text{out}} \times r},
 \qquad r \ll \min(n_{\text{in}}, n_{\text{out}}).
 $$
 
-For simplicity take $n_{\text{in}} = n_{\text{out}} = n$ (the typical attention QKV/O setting at hidden size $n$) and the convention $\alpha = r$, so $\bar W = W^\star + BA$. Only $A, B$ are trained; $W^\star$ is frozen.
+For simplicity take $n_{\text{in}} = n_{\text{out}} = n$ (the typical attention QKV/O setting at hidden size $n$). The current project default is $\alpha_{\mathrm{PEFT}}=r$, hence $\mu=1$ and $\bar W = W^\star + BA$. Sections 2--6.3 first analyze this $\mu=1$ case; §6.4 restores $\mu$ to solve the rank-cancellation question. Only $A, B$ are trained; $W^\star$ is frozen.
 
 On an input vector $Z \in \mathbb{R}^n$ to this layer:
 
 $$
-\bar Z \;=\; W^\star Z + BAZ,
+\bar Z \;=\; W^\star Z + \mu BAZ,
 \qquad
 Z_A := AZ \in \mathbb{R}^r,
 \qquad
-Z_B := B Z_A = BAZ \in \mathbb{R}^n.
+Z_B := \mu B Z_A = \mu BAZ \in \mathbb{R}^n.
 $$
 
 $Z_B$ is the *LoRA contribution* to the layer output. The objective is to understand how each fine-tuning step changes $Z_B$.
@@ -68,12 +77,12 @@ Assumption (standard for μP/μA, Li et al. Assumption 4.1):
 Then the factor gradients are
 
 $$
-g_A = B^\top d\bar Z\, Z^\top \;\in\; \mathbb{R}^{r \times n},
+g_A = \mu\, B^\top d\bar Z\, Z^\top \;\in\; \mathbb{R}^{r \times n},
 \qquad
-g_B = d\bar Z\,(AZ)^\top \;\in\; \mathbb{R}^{n \times r}.
+g_B = \mu\, d\bar Z\,(AZ)^\top \;\in\; \mathbb{R}^{n \times r}.
 $$
 
-For $u_A = \text{sign}(g_A)$ to have $\Theta(1)$ entries, $g_A$ needs $\Theta(1)$ entries. This holds whenever $\gamma[B_{ij}] = -1/2$: each entry of $B^\top d\bar Z$ is a length-$n$ random-sign sum of $\Theta(n^{-1/2}) \cdot \Theta(1)$ terms, hence $\Theta(1)$ by CLT. Same for the $A$-side gradient.
+For positive $\mu$, the SignSGD directions are unchanged by $\mu$ because $\operatorname{sign}(\mu g)=\operatorname{sign}(g)$. For $u_A = \text{sign}(g_A)$ to have $\Theta(1)$ entries, $B^\top d\bar Z$ needs $\Theta(1)$ entries. This holds whenever $\gamma[B_{ij}] = -1/2$: each entry of $B^\top d\bar Z$ is a length-$n$ random-sign sum of $\Theta(n^{-1/2}) \cdot \Theta(1)$ terms, hence $\Theta(1)$ by CLT. Same for the $A$-side gradient.
 
 ### 1.4 Reduction to a single layer
 
@@ -103,7 +112,7 @@ One step on layer pair $(A, B)$ at step $t$:
    \rho \;=\; \frac{-s + \sqrt{s^2 + 4\eta}}{2}.
    \tag{2.1}
    $$
-   The free hyperparameter $\eta$ is the *spectral step size* — the per-step cap on $\|\Delta W\|_2$. The radius $\rho$ is chosen so that this cap holds with equality under submultiplicativity (Proposition 3 of `algorithm_tight_chord.md`).
+   The free hyperparameter $\eta$ is the *spectral step size* — for $\mu=1$, the per-step cap on $\|\Delta W\|_2$ from the LoRA product update. With general $\mu$, it is the cap on the unscaled $BA$ product and the effective model-weight cap is $\mu\eta$ (§6.4). The radius $\rho$ is chosen so that this cap holds with equality under submultiplicativity (Proposition 3 of `algorithm_tight_chord.md`).
 
 4. **Whitening.** Compute
    $$
@@ -157,6 +166,8 @@ Which regime holds depends on $\gamma[\eta]$ vs $2\gamma[s]$.
 ---
 
 ## 3. Per-step output increment
+
+In this section set $\mu=1$. For general positive $\mu$, the factor update directions and $\rho$ are unchanged under the SignSGD abstraction, while the LoRA output increment is multiplied by $\mu$. Section 6.4 restores this scalar explicitly.
 
 Define
 
@@ -220,7 +231,7 @@ $$
 
 ### 3.4 The combinatorial constant: $\sqrt r$ vs $r$ (conditional)
 
-Equations (3.2)–(3.5) take the $r$-fold inner sums to cancel by random-sign CLT, contributing a constant factor of $\sqrt{r}$. This is correct when the per-row sign patterns in $\Delta A$, $\Delta B$, $A_t$, $B_t$ are decorrelated. Under the μA derivation for plain SignSGD (Chen–Villar–Hayou Thm 4.3) the factor gradient is an *outer product* $g_A = \alpha B^\top d\bar Z\,Z^\top$, so $\operatorname{sign}(g_A)$ factorizes as $\operatorname{sign}(B^\top d\bar Z)_k \cdot \operatorname{sign}(Z)_j$ — a rank-1 sign pattern. The same row-direction reappears in $\Delta A$ and (via accumulation) in $A_t$ at the next step, breaking sign-decorrelation in the $\sum_k$ contraction; the resulting bound is $\Theta(r)$ rather than $\Theta(\sqrt r)$. This is the mechanism by which μA produces $\eta \propto r^{-1/2}$ for plain SignSGD at Init[A] $\alpha = 1$ (Cor 4.4).
+Equations (3.2)–(3.5) take the $r$-fold inner sums to cancel by random-sign CLT, contributing a constant factor of $\sqrt{r}$. This is correct when the per-row sign patterns in $\Delta A$, $\Delta B$, $A_t$, $B_t$ are decorrelated. Under the μA derivation for plain SignSGD (Chen–Villar–Hayou Thm 4.3) the factor gradient is an *outer product* $g_A = \alpha B^\top d\bar Z\,Z^\top$, so $\operatorname{sign}(g_A)$ factorizes as $\operatorname{sign}(B^\top d\bar Z)_k \cdot \operatorname{sign}(Z)_j$ — a rank-1 sign pattern. The same row-direction reappears in $\Delta A$ and (via accumulation) in $A_t$ at the next step, breaking sign-decorrelation in the $\sum_k$ contraction; the resulting bound is $\Theta(r)$ rather than $\Theta(\sqrt r)$. This is the mechanism by which μA produces $\eta \propto r^{-1/2}$ for plain SignSGD at Init[A] with effective multiplier $\alpha = 1$ (Cor 4.4).
 
 For chord-tight, $u_A = \operatorname{sign}(g_A)$ inherits the same rank-1 factorization pre-polar. The question is whether the chord-tight $\Delta A$ — obtained from $u_A$ via $(S_B + \delta_B I)^{-1/2}$ premultiplication and then the polar map — preserves that structure or destroys it.
 
@@ -228,7 +239,7 @@ For chord-tight, $u_A = \operatorname{sign}(g_A)$ inherits the same rank-1 facto
 
 **Conditional B (polar preserves sign-correlation).** If polar does not decorrelate — e.g. because the rank-1 part of $u_A$ dominates the polar output after whitening, or because the row span of $\operatorname{polar}(c_A)$ inherits Z-correlation — then chord-tight reproduces μA's $\Theta(r)$ combinatorics, and the equilibrium increment scales as $\rho^2 r / \sqrt n$.
 
-Resolving this requires either a direct small-$r$ calculation on $\operatorname{polar}$ of a sign-structured input, or a free-probability / Haar-approximation argument for the singular vectors of $c_A$. Neither is undertaken here. The two conditionals give different $r$-prescriptions for $\eta$ (§6.3), which is the testable consequence.
+Resolving this requires either a direct small-$r$ calculation on $\operatorname{polar}$ of a sign-structured input, or a free-probability / Haar-approximation argument for the singular vectors of $c_A$. Neither is undertaken here. The two conditionals give different *output-increment stability envelopes* for $\eta$ (§6.3). They should not be read as direct predictions of finite-grid validation-loss optima.
 
 ---
 
@@ -275,12 +286,12 @@ Both linear terms are present from step 0, unlike Init[A]/Init[B] where one is i
 Under Init[AB], at step 0,
 
 $$
-\bar W_0 - W^\star = B_0 A_0 = \text{rank-}r,\ \ \|B_0 A_0\|_2 = \Theta(1),\ \ \gamma[(B_0 A_0)_{ij}] = \tfrac{\gamma[r]}{2} - 1.
+\bar W_0 - W^\star = \mu B_0 A_0 = \text{rank-}r,\ \ \|\mu B_0 A_0\|_2 = \Theta(\mu),\ \ \gamma[(\mu B_0 A_0)_{ij}] = \gamma[\mu] + \tfrac{\gamma[r]}{2} - 1.
 $$
 
-The merged weight differs from pretrained $W^\star$ by a rank-$r$ matrix that is $\Theta(1)$ in operator norm and entry-wise $\Theta(\sqrt r / n)$.
+For the $\mu=1$ convention used in §§2--6.3, the merged weight differs from pretrained $W^\star$ by a rank-$r$ matrix that is $\Theta(1)$ in operator norm and entry-wise $\Theta(\sqrt r / n)$.
 
-**PiSSA-style residual** removes this: snapshot $\Delta W_0 := B_0 A_0$ at init, set $W^\star_{\text{frozen}} \leftarrow W^\star - \Delta W_0$. Then $\bar W_0 = W^\star_{\text{frozen}} + B_0 A_0 = W^\star$ exactly. Optimization proceeds in $(A, B)$ space; the *effective* delta from pretrained is $B A - B_0 A_0$, which vanishes at step 0 and evolves freely thereafter.
+**PiSSA-style residual** removes this: snapshot $\Delta W_0 := \mu B_0 A_0$ at init, set $W^\star_{\text{frozen}} \leftarrow W^\star - \Delta W_0$. Then $\bar W_0 = W^\star_{\text{frozen}} + \mu B_0 A_0 = W^\star$ exactly. Optimization proceeds in $(A, B)$ space; the *effective* delta from pretrained is $\mu(B A - B_0 A_0)$, which vanishes at step 0 and evolves freely thereafter.
 
 After subtract-init, the merged weight at $t = 0$ is **identical** to the standard Init[A] case. The asymptotic analysis of §3 continues to hold (it depends on $\sigma_A, \sigma_B, \alpha_t, \beta_t$ — properties of the **factors**, not of $W^\star_{\text{frozen}}$).
 
@@ -371,21 +382,181 @@ $$
 \tag{6.1}
 $$
 
-The interpretation: $\eta = \Theta(\sqrt n)$ is the largest spectral cap on $\|\Delta W\|_2$ whose $n$-exponent keeps the output increment stable under chord-tight's incoherent rank-$r$ updates. It is not the operator-norm scale of $W^\star$ (which is $\Theta(1)$ under fan-in-$1/n$ scaling), nor is it derived from a μP correspondence — it falls out of the fixed-point of (6.0) and the chord equation.
+The interpretation: $\eta = \Theta(\sqrt n)$ is the largest unscaled spectral cap whose $n$-exponent keeps the output increment stable under chord-tight's incoherent rank-$r$ updates when $\mu=1$. It is not the operator-norm scale of $W^\star$ (which is $\Theta(1)$ under fan-in-$1/n$ scaling), nor is it derived from a μP correspondence — it falls out of the fixed-point of (6.0) and the chord equation.
 
-### 6.3 Rank dependence: $n$-exponent vs $r$-constant (conditional)
+### 6.3 Rank dependence of the stability envelope
 
-**$n$-exponent.** If $r = \Theta(n^c)$ with $c \in [0, 1)$, the bilinear bound at the $\sqrt r$-CLT level becomes $\gamma[\delta_t^3] = 2\gamma[\rho] + (c - 1)/2$. Setting to zero: $\gamma[\rho] = (1-c)/4$, $\gamma[\eta] = (1-c)/2$. For fixed $r$ ($c = 0$): $\gamma[\eta] = 1/2$ unconditionally. **The $n$-exponent of $\eta$ is independent of $r$.** This is the genuinely $r$-invariant part of the prediction.
+The γ-analysis is an $n \to \infty$ calculation. It says how the output-increment stability envelope scales with width once an assumption about rank-mode combinatorics is fixed.
 
-**$r$-constant.** The constant-level prescription depends on which conditional from §3.4 holds:
+For fixed $r$, the $n$-exponent from §6.1 is still $\gamma[\eta]=1/2$. That is the only rank-invariance statement supported at the exponent level.
 
-- **Conditional A (polar decorrelates).** $\sqrt r$-CLT applies in (3.2)–(3.5). At equilibrium, $\delta_t^3 \sim \rho^2 \sqrt r / \sqrt n$. Stability $\delta_t^3 = \Theta(1)$ gives $\rho^2 \sim \sqrt n / \sqrt r$. Solving back through (2.1) at the equilibrium fixed point $\gamma[s] = \gamma[\rho]$, $\eta \asymp \rho^2 = n^{1/2}\, r^{-1/2}$.
+At the constant-in-$n$ level, the calculation depends on the contraction factor contributed by the rank dimension. A useful way to write the two conditionals from §3.4 is
 
-- **Conditional B (polar preserves μA sign-correlation).** The inner $\sum_k$ contractions give $\Theta(r)$ rather than $\Theta(\sqrt r)$. Equilibrium $\delta_t^3 \sim \rho^2 r / \sqrt n$; stability gives $\rho^2 \sim \sqrt n / r$, hence $\eta \asymp \rho^2 = n^{1/2}\, r^{-1}$.
+$$
+\delta_t^3 \sim \rho^2\,\frac{\sqrt{m_{\mathrm{eff}}}}{\sqrt n},
+\qquad 1 \le m_{\mathrm{eff}} \le r^2,
+\tag{6.2}
+$$
 
-In both conditionals the $n$-exponent of $\eta$ is $1/2$. The $r$-exponent is $-1/2$ under conditional A or $-1$ under conditional B.
+where $m_{\mathrm{eff}}\approx r$ corresponds to the $\sqrt r$-CLT case and $m_{\mathrm{eff}}\approx r^2$ is shorthand for the fully sign-correlated $\Theta(r)$ contraction. It is not necessarily the number of nonzero singular modes. At the equilibrium fixed point of the chord equation, $s\rho+\rho^2=\eta$ with $s=\Theta(\rho)$, so $\eta\asymp\rho^2$. Holding the output increment at $\Theta(1)$ therefore gives the *stability-envelope* scaling
 
-**Comparison with plain SignSGD.** μA Cor 4.4 for Init[A] $\alpha = 1$ gives the per-factor learning rate $\eta_{\text{Adam}} \asymp n^{-1/2}\, r^{-1/2}$. The $n$-exponent flip ($+1/2$ for chord-tight's spectral cap vs $-1/2$ for plain Adam's per-factor lr) is structural: $\eta$ here is a cap on $\|\Delta W\|_2$, not on factor entries. The $r$-exponents are directly comparable as predictions of how aggressively to shrink the corresponding step-size with rank. Conditional A matches μA on the $r$-axis; Conditional B is twice as aggressive.
+$$
+\eta_{\mathrm{stable}} \asymp n^{1/2}\,m_{\mathrm{eff}}^{-1/2}.
+\tag{6.3}
+$$
+
+This reproduces the earlier conditional cases:
+
+- **Polar decorrelates rank modes:** $m_{\mathrm{eff}}\approx r$, so $\eta_{\mathrm{stable}}\asymp n^{1/2}r^{-1/2}$.
+- **Polar preserves μA-style sign correlation:** the contraction behaves like $\Theta(r)$, equivalent to $m_{\mathrm{eff}}\approx r^2$, so $\eta_{\mathrm{stable}}\asymp n^{1/2}r^{-1}$.
+
+These are output-increment normalization laws under idealized assumptions, not validation-loss optimum laws. The mathematical implication is only: if the finite-rank optimum is governed by this equilibrium output-increment envelope, then its rank dependence must pass through the rank-contraction factor $m_{\mathrm{eff}}$. If the optimum is instead governed by transients, conditioning, numerical damping, or some other non-equilibrium mechanism, this calculation does not determine its rank dependence.
+
+For $\varepsilon_{\mathrm{rel}}$, the math gives an even weaker rank prediction. Relative damping sets the dimensionless ratio
+
+$$
+\delta_X / \sigma_{\max}(S_X)=\varepsilon_{\mathrm{rel}}
+$$
+
+up to the floor. No exponent-level argument here forces $\varepsilon_{\mathrm{rel}}$ to scale with $r$. Its best finite value depends on the Gram spectrum shape during the Init[A] transient: stable rank, tail eigenvalues, Picard coupling, and numerical floor behavior. This note therefore derives no mathematical rank-law for the optimal $\varepsilon_{\mathrm{rel}}$.
+
+### 6.4 Restoring the LoRA multiplier and solving rank cancellation
+
+Now restore the effective LoRA multiplier $\mu=\alpha_{\mathrm{PEFT}}/r$ from (1.1). Under the SignSGD abstraction with $\mu>0$, $\mu$ does not change the factor update directions. It only multiplies the LoRA output increment:
+
+$$
+\Delta Z_B^{(t)}(\mu)
+= \mu\left(
+B_t\,\Delta A^{(t)}Z
++ \Delta B^{(t)}A_tZ
++ \Delta B^{(t)}\Delta A^{(t)}Z
+\right).
+\tag{6.4}
+$$
+
+The chord-tight learning rate $\eta$ used in this note is the optimizer's cap for the unscaled product $BA$: $s\rho+\rho^2=\eta$. The effective spectral cap on the model weight contribution $\mu BA$ is therefore $\mu\eta$.
+
+At equilibrium, (6.3) becomes
+
+$$
+\mu\,\eta\,\frac{\sqrt{m_{\mathrm{eff}}}}{\sqrt n}
+\asymp 1,
+\qquad\text{hence}\qquad
+\eta_{\mathrm{stable}}
+\asymp n^{1/2}\,\mu^{-1}\,m_{\mathrm{eff}}^{-1/2}.
+\tag{6.5}
+$$
+
+Write $m_{\mathrm{eff}}\asymp r^q$ with $0\le q\le 2$, and write the PEFT multiplier as $\alpha_{\mathrm{PEFT}}\asymp r^p$. Since $\mu=\alpha_{\mathrm{PEFT}}/r\asymp r^{p-1}$,
+
+$$
+\eta_{\mathrm{stable}}
+\asymp n^{1/2}\,r^{1-p-q/2}.
+\tag{6.6}
+$$
+
+Thus the necessary rank-cancellation condition for the optimizer learning rate $\eta$ is
+
+$$
+\boxed{\quad
+p = 1-\frac{q}{2},
+\qquad
+\alpha_{\mathrm{PEFT}} \asymp r^{\,1-q/2},
+\qquad
+\mu \asymp r^{-q/2}.
+\quad}
+\tag{6.7}
+$$
+
+Under the standing chord-tight incoherence assumption from §3.4 (polar decorrelates rank modes), $m_{\mathrm{eff}}\asymp r$ so $q=1$. Then the rank-cancelling multiplier is
+
+$$
+\boxed{\quad
+\mu \asymp r^{-1/2},
+\qquad
+\alpha_{\mathrm{PEFT}} \asymp r^{1/2}.
+\quad}
+\tag{6.8}
+$$
+
+With the current project default $\alpha_{\mathrm{PEFT}}=r$ ($\mu=1$), the same calculation gives
+
+$$
+\eta_{\mathrm{stable}}\asymp n^{1/2}r^{-1/2}
+\qquad (m_{\mathrm{eff}}\asymp r).
+\tag{6.9}
+$$
+
+So under the mathematical assumptions used by the chord-tight derivation, the current $\alpha_{\mathrm{PEFT}}=r$ convention does **not** cancel rank. It leaves the same $r^{-1/2}$ learning-rate shrinkage as μA Init[A] with constant effective multiplier.
+
+The only ways for $\alpha_{\mathrm{PEFT}}=r$ to be rank-cancelling are outside the §3.4 decorrelated-rank calculation:
+
+- $m_{\mathrm{eff}}\asymp 1$ ($q=0$), meaning the output increment uses only $O(1)$ effective rank modes despite nominal rank $r$.
+- a different mechanism, outside this equilibrium SignSGD calculation, sets the validation optimum.
+
+If instead the μA-style sign correlation survives polar/whitening/Picard, then $m_{\mathrm{eff}}\asymp r^2$ ($q=2$), and the rank-cancelling condition becomes
+
+$$
+\mu\asymp r^{-1},
+\qquad
+\alpha_{\mathrm{PEFT}}\asymp 1.
+\tag{6.10}
+$$
+
+This is the direct μA Init[A], $\alpha=r^{-1}$ analogue. It is not the rank-cancelling choice under the decorrelated-rank chord-tight assumption; it is the choice for the fully sign-correlated alternative.
+
+For $\varepsilon_{\mathrm{rel}}$, this multiplier calculation gives no analogous rank-cancellation exponent. Relative damping is already defined by the dimensionless ratio
+
+$$
+\delta_X/\sigma_{\max}(S_X)=\varepsilon_{\mathrm{rel}},
+\tag{6.11}
+$$
+
+so the inverse-square-root filter is
+
+$$
+(S_X+\delta_X I)^{-1/2}
+= \sigma_{\max}(S_X)^{-1/2}
+\left(\widetilde S_X+\varepsilon_{\mathrm{rel}}I\right)^{-1/2},
+\qquad
+\widetilde S_X := S_X/\sigma_{\max}(S_X).
+\tag{6.12}
+$$
+
+Thus $\varepsilon_{\mathrm{rel}}$ is not tied to the overall scale of $A$ or $B$; that scale has been divided out. It is tied only to the **shape** of the normalized Gram spectrum
+
+$$
+\tilde\lambda_i^{(X)} := \lambda_i(S_X)/\lambda_{\max}(S_X) \in [0,1].
+\tag{6.13}
+$$
+
+A rank-invariant $\varepsilon_{\mathrm{rel}}$ is mathematically justified if the normalized spectra $\{\tilde\lambda_i^{(A)}\}$ and $\{\tilde\lambda_i^{(B)}\}$ are rank-stationary in the large-system regime being transferred across. Equivalently, for the modes that matter to the polar update, the tail scale
+
+$$
+q_{\tau}^{(X)}(r) := \text{$\tau$-quantile of }
+\{\lambda_i(S_X)/\lambda_{\max}(S_X)\}_{i=1}^r
+\tag{6.14}
+$$
+
+should be $\Theta(1)$ in $r$. Then any fixed $\varepsilon_{\mathrm{rel}}$ keeps the same damping threshold relative to the spectrum:
+
+$$
+\tilde\lambda_i \ll \varepsilon_{\mathrm{rel}}
+\quad\Rightarrow\quad \text{damped mode},
+\qquad
+\tilde\lambda_i \gg \varepsilon_{\mathrm{rel}}
+\quad\Rightarrow\quad \text{approximately undamped mode}.
+\tag{6.15}
+$$
+
+If instead the relevant tail scale decays as $q_{\tau}^{(X)}(r)\asymp r^{-b}$, then a rank-invariant damping *effect* requires
+
+$$
+\varepsilon_{\mathrm{rel}}(r) \asymp r^{-b}.
+\tag{6.16}
+$$
+
+Under the idealized decorrelated-rank chord-tight picture used above, the polar directions fill the rank-$r$ factor subspace with comparable singular values. In that case $S_A$ and $S_B$ have stable rank $\Theta(r)$ and normalized bulk eigenvalues of order one, so $b=0$ and $\varepsilon_{\mathrm{rel}}$ is rank-invariant at the exponent level. Under a low-effective-rank or sign-correlated alternative, the normalized tail can shrink with $r$; then $\varepsilon_{\mathrm{rel}}$ should shrink with that tail scale, and the γ-analysis alone does not determine the exponent $b$.
 
 ---
 
@@ -405,14 +576,18 @@ In both conditionals the $n$-exponent of $\eta$ is $1/2$. The $r$-exponent is $-
 | Step-0 efficiency | ✗ (only $\delta^2$) | ✗ (only $\delta^1$) | both linear $\Theta(n^{-1/4})$; $\delta^3$ dominates |
 | Initial $W$ matches $W^\star$ | yes ($BA = 0$) | yes ($BA = 0$) | yes (after subtract-init) |
 | Damping question first matters at | step 1 ($\Delta A$ uses $S_B$ small) | step 1 ($\Delta B$ uses $S_A$ small) | inert from step 0 |
-| Optimal $\eta$, $n$-exponent | $1/2$ | $1/2$ | $1/2$ |
-| Optimal $\eta$, $r$-exponent | $-1/2$ (cond. A) / $-1$ (cond. B) | same | same |
+| Stability-envelope $\eta$, $n$-exponent | $1/2$ | $1/2$ | $1/2$ |
+| Stability-envelope $\eta$, $r$-constant | conditional on $m_{\mathrm{eff}}$; not a validation-optimum law | same | same |
+| Rank-cancelling $\alpha_{\mathrm{PEFT}}$ if $m_{\mathrm{eff}}\asymp r$ | $\asymp r^{1/2}$ | same | same |
+| Rank-cancelling $\alpha_{\mathrm{PEFT}}$ if $m_{\mathrm{eff}}\asymp r^2$ | $\asymp 1$ | same | same |
 
 **Claims.**
 
-- **(C1)** $n$-exponent of optimal $\eta$ is $1/2$ for chord-tight under all three init schemes, independent of rank. This is unconditional (rests only on §6 fixed-point and $\gamma[r] = 0$).
-- **(C2)** $r$-exponent of optimal $\eta$ is conditional on whether the polar map breaks μA-style rank-1 sign factorization of $u_A$: $-1/2$ if it does (Conditional A, §3.4), $-1$ if it doesn't (Conditional B). Either way, $\eta$ shrinks with $r$ at the constant level — the spectral cap is *not* $r$-invariant.
+- **(C1)** The $n$-exponent of the chord-tight stability envelope is $1/2$ at fixed rank under all three init schemes. This is an asymptotic width statement, not a finite-grid validation optimum.
+- **(C2)** The constant-level $r$ dependence of the stability envelope is conditional on the rank-contraction factor $m_{\mathrm{eff}}$ (§6.3). This is not a claim that the validation-optimal spectral cap must shrink with rank.
 - **(C3)** *Post-step-0* trajectories of Init[A] + σ_max-relative damping and Init[AB] + (either damping) reach the same equilibrium $\gamma$-exponents from §6.1. The damping rule first matters at step 1 of Init[A], when $\Delta A^{(1)}$ uses the whitening of $S_B$ with $\sigma_{\max}(S_B) = \rho_0^2 \ll 1$. Relative damping keeps cap-to-bulk amplification at the fixed ratio $\varepsilon_{\text{rel}}^{-1/2}$ throughout the $\sigma_{\max}(S_B) \ll 1$ transient; absolute damping has cap-to-bulk ratio $(\sigma_{\max}(S_B)/\delta)^{1/2}$, which falls below $1$ when the spectrum shrinks below $\delta$, leaving the whitening operator dominated by the damping floor rather than the matrix structure. **C3 does not predict that step-0 *movement* matches** — at step 0, Init[A] has $\Delta A^{(0)} = 0$ and no bilinear term, while Init[AB] has $\Theta(1)$ bilinear movement; damping cannot recreate the missing terms.
+- **(C4)** Restoring the effective multiplier gives the rank-cancellation law $\alpha_{\mathrm{PEFT}}\asymp r^{1-q/2}$ when $m_{\mathrm{eff}}\asymp r^q$. Under the standing decorrelated-rank chord-tight assumption ($q=1$), the rank-cancelling choice is $\alpha_{\mathrm{PEFT}}\asymp r^{1/2}$, not the current $\alpha_{\mathrm{PEFT}}=r$.
+- **(C5)** Relative damping acts on the normalized Gram spectra $S_X/\sigma_{\max}(S_X)$. Under decorrelated-rank chord-tight dynamics with stable rank $\Theta(r)$ and order-one normalized spectral bulk, $\varepsilon_{\text{rel}}$ is rank-invariant at the exponent level. If the relevant normalized tail scale decays as $r^{-b}$, then preserving the same damping effect requires $\varepsilon_{\text{rel}}\asymp r^{-b}$.
 
 ---
 
@@ -427,11 +602,13 @@ In both conditionals the $n$-exponent of $\eta$ is $1/2$. The $r$-exponent is $-
 
 - $W^\star$: frozen pretrained weight, $n \times n$.
 - $A, B$: LoRA factors, $r \times n$ and $n \times r$ respectively.
-- $\bar W = W^\star + BA$: merged weight applied to layer input.
+- $\bar W = W^\star + \mu BA$: merged weight applied to layer input.
+- $\alpha_{\mathrm{PEFT}}$: PEFT `lora_alpha`.
+- $\mu = \alpha_{\mathrm{PEFT}}/r$: effective LoRA multiplier on $BA$; this is the quantity denoted $\alpha$ in the μA paper.
 - $Z, Z_B, Z_A$: layer input, LoRA output, intermediate ($AZ$).
 - $u_A, u_B$: Adam-corrected gradient directions (under SignSGD abstraction: entry-wise signs of $g_A, g_B$).
 - $\sigma_A = \sigma_{\max}(A), \sigma_B = \sigma_{\max}(B)$, $s = \sigma_A + \sigma_B$.
-- $\eta$: chord-tight spectral step size — the per-step cap on $\|\Delta W\|_2$. Independent hyperparameter.
+- $\eta$: chord-tight spectral step size — the per-step cap on the unscaled $BA$ product update. The effective cap on the model-weight contribution is $\mu\eta$.
 - $\rho$: tight-chord per-factor radius, defined by (2.1). Adapts to $\sigma_A, \sigma_B$.
 - $S_A = AA^\top, S_B = B^\top B$: $r \times r$ PSD Gram matrices.
 - $\delta_A, \delta_B$: damping in the whitened-inverse computation.

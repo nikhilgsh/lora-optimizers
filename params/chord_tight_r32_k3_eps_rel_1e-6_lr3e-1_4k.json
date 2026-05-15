@@ -1,0 +1,1 @@
+{"lr": ["3e-1"], "optimizer": ["adam-polar-product-lora-coupled-spectral-chord-tight"], "lora_plus_multiplier": ["1.0"], "seed": ["0"], "lora_r": ["32"], "precond_delta": ["1e-6"]}

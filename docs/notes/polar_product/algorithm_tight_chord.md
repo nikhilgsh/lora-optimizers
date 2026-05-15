@@ -1,15 +1,15 @@
 # A polar-product LoRA optimizer
 
-This document derives a low-rank adaptation (LoRA) optimizer from a variational program. The goal is exposition: state the program, solve it, and identify each piece of the resulting algorithm with a piece of the program. Every step — whitening, the cross-coupling correction, the Picard outer loop, the polar map, the magnitude radius — is derived; nothing is an empirical patch on top of a simpler algorithm.
+This document derives a low-rank adaptation (LoRA) optimizer from a variational program. The goal is exposition: state the program, solve it, and identify each piece of the resulting algorithm with a piece of the program. Every step — whitening, the cross-coupling correction, the block-Jacobi outer loop, the polar map, the magnitude radius — is derived; nothing is an empirical patch on top of a simpler algorithm.
 
-The derivation has two complementary halves, both stated in operator-norm geometry:
+The variational program is a single program in operator-norm geometry: a Frobenius coupling on the merged-weight tangent plus per-block-contribution caps on the operator norms of each factor's contribution. The derivation proceeds in two stages.
 
-1. A **direction program** (§§3–7) — a Frobenius coupling on the merged-weight tangent plus per-block-contribution caps on the operator norms of each factor's contribution. Block-coordinate descent on this program derives the cross-coupling correction (Lemma 1) and the whitening change of variable (Lemma 2). The clip prox solves the resulting whitened subproblem exactly (Proposition 1); a saturating-regime substitution (Proposition 2) replaces clip with polar. The Picard outer loop is the BCD iteration on the joint problem.
-2. A **magnitude program** (§8) — per-factor operator-norm caps on $\Delta A, \Delta B$ together with a chord trust region on the actual merged-weight change $\Delta W$. Submultiplicativity closes the program: the largest admissible per-factor radius $\rho$ is the unique positive root of $\rho^2 + s\rho = \eta$ where $s = \sigma_{\max}(A) + \sigma_{\max}(B)$.
+1. **Exact clipped solver (§§3–6).** Block-coordinate descent on the program derives the cross-coupling correction (Lemma 1) and the whitening change of variable (Lemma 2). The clip prox solves the resulting whitened subproblem exactly (Proposition 1). Block-Jacobi iteration on the joint problem (§6) gives **Algorithm 1**, an exact solver of the program for any choice of the per-block-contribution caps $\tau_A, \tau_B$.
+2. **Saturating-regime simplification (§§7–8).** Under a saturating hypothesis on the block-Jacobi trajectory (§7), clip becomes polar (Proposition 2), and a partial-isometry identity (Lemma 3) collapses the operator norms of the per-block contributions to *state-only* quantities depending on factor spectra alone. This lets $\tau_A, \tau_B$ be pinned a priori to enforce a chord trust region $\lVert\Delta W\rVert_2 \le \eta$ (Proposition 3). The closure produces **Algorithm 2**, the polar variant whose only magnitude hyperparameter is the spectral step size $\eta$. This is what we run.
 
 §2 begins with a **warmup**: the simplest spectral-cap LoRA program — per-factor caps with a linear cost and nothing else — whose closed-form solution is one polar map per factor and is essentially Muon applied independently to each LoRA factor. The warmup makes contact with what is already familiar; §§3–8 are what is gained by adding the Frobenius coupling and the chord trust region.
 
-§9 states the algorithm. §10 returns to the question of whether the two programs of §§3–7 and §8 can be unified into one program, and identifies the structural obstruction.
+§9 states Algorithm 2 (what we run) alongside Algorithm 1 (what it simplifies from).
 
 ## 1. Setup
 
@@ -125,7 +125,7 @@ Three pieces:
 - **Frobenius coupling.** $\frac{1}{2\eta}\lVert J\rVert_F^2$ is the only term coupling $\Delta A$ and $\Delta B$. It treats $J$ as the primary object: a step that produces a small first-order change in loss but a large $J$ pays a quadratic penalty.
 - **Per-block-contribution caps.** Each factor's contribution to the tangent — $B\Delta A$ and $\Delta B\,A$ — is capped separately in operator norm, with independent caps $\tau_A, \tau_B$. This is the geometrically natural cap: the relevant object is what the merged-weight update receives from each side, not the bare factor.
 
-The caps $\tau_A, \tau_B$ are left unspecified here. The §§3–7 derivation will produce one-parameter families of solutions $\Delta A^\star(\tau_A), \Delta B^\star(\tau_B)$, each proportional to a fixed unit direction; §8 will pick $\tau_A, \tau_B$ implicitly via a complementary program that pins the per-factor operator norms of $\Delta A, \Delta B$ on the chord trust region.
+The caps $\tau_A, \tau_B$ are free hyperparameters of program (1). §§4–6 give an exact solver of (1) for any choice of them (Algorithm 1). §§7–8 close the program: under a saturating-regime hypothesis (§7), the chord trust region $\lVert\Delta W\rVert_2 \le \eta$ pins $(\tau_A, \tau_B)$ to state-only functions of $(A, B, \eta)$ (§8), yielding Algorithm 2.
 
 ## 4. Block-coordinate decomposition
 
@@ -203,11 +203,11 @@ $$
 
 Equations (4) and (4′) define the per-block prox: from a corrected linear cost and a threshold, produce the optimal factor update.
 
-## 6. Picard outer loop
+## 6. Block-Jacobi outer loop: Algorithm 1
 
-The two subproblems share state — $\tilde u_A$ depends on $\Delta B$ and vice versa — so block-coordinate descent on the joint problem (1) alternates the solves.
+The two subproblems share state — $\tilde u_A$ depends on $\Delta B$ and vice versa — so the joint problem (1) is solved by alternating the two clip-prox solves. Both updates at outer iteration $n$ use the previous iterate $(n-1)$ of the *other* block (simultaneous rather than sequential); this is **block-Jacobi**, not block-Gauss-Seidel.
 
-**Algorithm R** (exact reference solver). Given $u_A, u_B, A, B, \tau_A, \tau_B$, and Picard count $k$:
+**Algorithm 1** (exact clipped solver). Given $u_A, u_B, A, B, \tau_A, \tau_B$, and block-Jacobi sweep count $k$:
 
 1. $\Delta A^{(0)} = \Delta B^{(0)} = 0$.
 
@@ -231,31 +231,41 @@ The two subproblems share state — $\tilde u_A$ depends on $\Delta B$ and vice 
 
 3. Return $(\Delta A^{(k)}, \Delta B^{(k)})$.
 
-Every fixed point is a global minimum of (1); when the iteration contracts, $k \to \infty$ converges to the joint optimum. Picard is *derived*: it is the BCD outer loop on (1), not an additional algorithmic choice.
+Every fixed point is a global minimum of (1); when the iteration contracts, $k \to \infty$ converges to the joint optimum. The block-Jacobi outer loop is *derived* — it is BCD on (1), not an additional algorithmic choice — and Algorithm 1 is the **exact single-program solver of (1)** at any fixed $(\tau_A, \tau_B)$. What remains, in §§7–8, is to close the program by picking $(\tau_A, \tau_B)$.
 
-## 7. Polar substitution: clip $\to$ polar
+## 7. Closing the program: the saturating regime
 
-The clip prox (4) solves (2) exactly for any $\tau_A > 0$, and similarly (4′) for any $\tau_B > 0$. We narrow attention to the **saturating regime**: each cap small enough that every singular value of the corresponding whitened cost exceeds it. There, clip becomes polar.
+Algorithm 1 is an exact solver of (1) at any given $(\tau_A, \tau_B)$. We want to *pin* these caps to a single spectral step size $\eta$ that controls the chord $\lVert\Delta W\rVert_2$. For that closure to work, we need $\lVert\Delta A^\star(\tau_A)\rVert_2$ to be a simple function of $\tau_A$ times something computable from $(A, B)$ alone — free of the block-Jacobi iterate. In general it is not: the clip prox output magnitude depends on the corrected $\tilde u_A^{(n)}$, which depends on $\Delta B^{(n-1)}$. Under a saturating hypothesis on the trajectory, it is.
 
 Write
 
 $$
-c_A \;:=\; S_B^{-1/2}\,\tilde u_A, \qquad c_B \;:=\; \tilde u_B\, S_A^{-1/2}
+c_A^{(n)} \;:=\; S_B^{-1/2}\,\tilde u_A^{(n)}, \qquad c_B^{(n)} \;:=\; \tilde u_B^{(n)}\, S_A^{-1/2}
 $$
 
-for the whitened costs of the $A$- and $B$-subproblems (cf. (4), (4′)).
+for the whitened costs at block-Jacobi iterate $n$.
+
+**Saturating-regime hypothesis (H).** For all $n = 1, \ldots, k$,
+
+$$
+\tau_A \;\le\; \eta\,\sigma_{\min}\!\bigl(c_A^{(n)}\bigr), \qquad
+\tau_B \;\le\; \eta\,\sigma_{\min}\!\bigl(c_B^{(n)}\bigr).
+\tag{H}
+$$
+
+This is a hypothesis on the *trajectory* of the block-Jacobi iteration, not on the initial inputs alone — both sides of each inequality move as $n$ advances. We assume (H) holds along the trajectory we care about ($n = 1, \ldots, k$) and derive the simplification it permits; what happens when it fails is discussed at the end of this section.
 
 **Definition 3 (polar map).** For $X = U \Sigma V^\top$, $\mathrm{polar}(X) := U V^\top$ — every singular value mapped to one, singular vectors preserved.
 
-**Proposition 2.** If $\tau_A \le \eta\,\sigma_{\min}(c_A)$, then $\mathrm{clip}_{\tau_A}(-\eta\, c_A) = -\tau_A\,\mathrm{polar}(c_A)$. Symmetrically for $\tau_B \le \eta\,\sigma_{\min}(c_B)$.
+**Proposition 2 (clip $\to$ polar under H).** If (H) holds at iterate $n$, then $\mathrm{clip}_{\tau_A}(-\eta\, c_A^{(n)}) = -\tau_A\,\mathrm{polar}(c_A^{(n)})$. Symmetrically for the $B$-side.
 
-*Proof.* Under the hypothesis, $\mathrm{clip}_{\tau_A}$ flattens every singular value of $-\eta\, c_A$ to $\tau_A$ and preserves singular vectors, giving $\tau_A\, U V^\top$. Polar is invariant under positive scaling and odd under negation. ∎
+*Proof.* Under (H), $\mathrm{clip}_{\tau_A}$ flattens every singular value of $-\eta\, c_A^{(n)}$ to $\tau_A$ and preserves singular vectors, giving $\tau_A\, U V^\top$. Polar is invariant under positive scaling and odd under negation. ∎
 
-Substituting into (4) and (4′) gives the saturating-regime exact solution
+Substituting into the clip-prox expressions of Proposition 1 gives, under (H), the iterate-wise solution
 
 $$
 \boxed{\quad
-\Delta A^\star(\tau_A) \;=\; -\tau_A\, D_A, \qquad \Delta B^\star(\tau_B) \;=\; -\tau_B\, D_B,
+\Delta A^\star(\tau_A) \;=\; -\tau_A\, D_A^{(n)}, \qquad \Delta B^\star(\tau_B) \;=\; -\tau_B\, D_B^{(n)},
 \quad}
 \tag{5}
 $$
@@ -263,96 +273,114 @@ $$
 with directions
 
 $$
-D_A \;:=\; S_B^{-1/2}\,\mathrm{polar}(c_A), \qquad D_B \;:=\; \mathrm{polar}(c_B)\, S_A^{-1/2}.
+D_A^{(n)} \;:=\; S_B^{-1/2}\,\mathrm{polar}\bigl(c_A^{(n)}\bigr), \qquad D_B^{(n)} \;:=\; \mathrm{polar}\bigl(c_B^{(n)}\bigr)\, S_A^{-1/2}.
 $$
 
-**Reading (5) geometrically.** The solutions $\{\Delta A^\star(\tau_A) : \tau_A > 0\}$ and $\{\Delta B^\star(\tau_B) : \tau_B > 0\}$ trace **rays** in directions $-D_A, -D_B$. The caps $\tau_A, \tau_B$ are positions along the rays; the directions $D_A, D_B$ are independent of them. So §§3–7 have produced
+The directions still depend on the iterate $n$ via $c_A^{(n)}, c_B^{(n)}$ — that is, on the cross-coupling correction — but the *operator norms* of these directions do not.
 
-- the **directions** $D_A, D_B$ (fully determined by the program), and
-- a **family of magnitudes** parameterized by $\tau_A, \tau_B$ (the program leaves these open).
+**Lemma 3 (factor-norm collapse).** Under (H), the operator norms of $D_A^{(n)}, D_B^{(n)}$ are state-only (independent of the block-Jacobi iterate):
 
-§8 will pick a point on the ray.
+$$
+\lVert D_A^{(n)}\rVert_2 \;=\; \lVert S_B^{-1/2}\rVert_2 \;=\; \bigl(\sigma_{\min}(B)^2 + \delta_B\bigr)^{-1/2},
+\qquad
+\lVert D_B^{(n)}\rVert_2 \;=\; \lVert S_A^{-1/2}\rVert_2 \;=\; \bigl(\sigma_{\min}(A)^2 + \delta_A\bigr)^{-1/2}.
+$$
+
+*Proof.* The polar factor $\mathrm{polar}(c_A^{(n)}) \in \mathbb{R}^{r \times d_{\text{in}}}$ has $r \le d_{\text{in}}$ and orthonormal rows, so $\mathrm{polar}(c_A^{(n)})\,\mathrm{polar}(c_A^{(n)})^\top = I_r$. Then
+
+$$
+\lVert S_B^{-1/2}\,\mathrm{polar}(c_A^{(n)})\rVert_2^2 \;=\; \sigma_{\max}\!\bigl(S_B^{-1/2}\,\mathrm{polar}\,\mathrm{polar}^\top\,S_B^{-1/2}\bigr) \;=\; \sigma_{\max}(S_B^{-1}) \;=\; \lVert S_B^{-1/2}\rVert_2^2.
+$$
+
+Symmetric for the $B$-side: $\mathrm{polar}(c_B^{(n)}) \in \mathbb{R}^{d_{\text{out}} \times r}$ has $r \le d_{\text{out}}$ and orthonormal columns, so $\mathrm{polar}(c_B^{(n)})^\top\,\mathrm{polar}(c_B^{(n)}) = I_r$, and the same calculation gives $\lVert D_B^{(n)}\rVert_2 = \lVert S_A^{-1/2}\rVert_2$. The damped-spectrum forms follow from $S_B = B^\top B + \delta_B I$ and likewise for $S_A$. ∎
+
+Lemma 3 is the key observation. The iterate-dependence of $D_A^{(n)}, D_B^{(n)}$ — driven by the cross-coupling correction — sits entirely in their *singular vectors* under (H), not in their norms. Consequently, $\lVert\Delta A^\star(\tau_A)\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$ at every iterate, a state-only function of $\tau_A$. This is exactly the property we needed: it lets the chord constraint be folded into program (1) as state-only caps, in §8.
+
+**When (H) fails.** Outside the saturating regime — when some singular direction of $c_A^{(n)}$ falls below $\tau_A/\eta$ — clip is no longer polar on that direction (clip leaves small singular values alone; polar lifts them to one). Lemma 3 then fails: $\lVert D_A^{(n)}\rVert_2$ can be strictly larger than $\lVert S_B^{-1/2}\rVert_2$ because polar inflates the small directions. Algorithm 2 (§9) uses polar unconditionally; in the non-saturating regime it ceases to be the exact solver of (1) and instead applies a uniform-spectrum prior on the whitened cost. The directions remain coherent; the exact single-program identification is what is lost.
 
 The polar map is computed via Newton–Schulz iteration: $X_0 = M / \lVert M\rVert_F$, $X_{i+1} = \tfrac{3}{2} X_i - \tfrac{1}{2} X_i X_i^\top X_i$. The iteration drives every singular value of $X_0$ toward one cubically; a small fixed number of iterations suffice on matrices of LoRA size.
 
-## 8. The magnitude program: tight chord
+## 8. The tight-chord radius and state-only caps
 
-§7 produced a ray $\Delta A^\star(\tau) = -\tau\, D_A$ — direction fixed, magnitude free in $\tau$. We still need to pick where on the ray to land. The natural quantity to control is the **chord** $\Delta W$ — the actual change in the merged weight, including the bilinear term $\Delta B\,\Delta A$ — since this is what the loss sees.
+Lemma 3 gives $\lVert\Delta A^\star(\tau_A)\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$ and $\lVert\Delta B^\star(\tau_B)\rVert_2 = \tau_B\,\lVert S_A^{-1/2}\rVert_2$ — state-only functions of $\tau_A, \tau_B$. We now use this to fold a chord trust region $\lVert\Delta W\rVert_2 \le \eta$ into program (1).
 
-**Magnitude program (T).** Set per-factor operator-norm caps and demand that the chord respect a trust region:
-
-$$
-\boxed{\quad
-\lVert \Delta A\rVert_2 \le \rho, \quad \lVert \Delta B\rVert_2 \le \rho, \quad \lVert \Delta W\rVert_2 \le \eta.
-\quad}
-\tag{6}
-$$
-
-The hyperparameter $\eta$ is a per-step cap on the operator norm of the merged-weight change — a spectral step size.
-
-**Proposition 3 (tight-chord radius).** The largest $\rho \ge 0$ satisfying (6), given $\sigma_A := \sigma_{\max}(A)$ and $\sigma_B := \sigma_{\max}(B)$, is
-
-$$
-\rho \;=\; \frac{-s + \sqrt{s^2 + 4\eta}}{2},
-\qquad s := \sigma_A + \sigma_B.
-\tag{7}
-$$
-
-*Proof.* By submultiplicativity,
+**Submultiplicative bound.** Set the per-factor operator norms equal: $\lVert\Delta A\rVert_2 = \lVert\Delta B\rVert_2 = \rho$. Then
 
 $$
 \lVert\Delta W\rVert_2 \;=\; \lVert B\Delta A + \Delta B A + \Delta B\,\Delta A\rVert_2
-\;\le\; \sigma_B\,\lVert\Delta A\rVert_2 + \sigma_A\,\lVert\Delta B\rVert_2 + \lVert\Delta B\rVert_2\,\lVert\Delta A\rVert_2.
+\;\le\; \sigma_B\,\rho + \sigma_A\,\rho + \rho^2 \;=\; s\rho + \rho^2,
+\qquad s := \sigma_{\max}(A) + \sigma_{\max}(B).
 $$
 
-With $\lVert\Delta A\rVert_2 = \lVert\Delta B\rVert_2 = \rho$ this simplifies to $s\rho + \rho^2$. Set this equal to $\eta$ and solve the quadratic $\rho^2 + s\rho - \eta = 0$ for the positive root. ∎
-
-**Picking a point on the rays.** §7 produced 1-parameter families $\Delta A^\star(\tau_A) = -\tau_A\, D_A$ and $\Delta B^\star(\tau_B) = -\tau_B\, D_B$ of saturating-regime solutions. Demand the per-factor caps of (T): $\lVert \Delta A\rVert_2 = \lVert \Delta B\rVert_2 = \rho$. Since $\lVert \Delta A^\star(\tau_A)\rVert_2 = \tau_A\,\lVert D_A\rVert_2$ and similarly for $B$, this fixes
+**Proposition 3 (tight-chord radius).** The largest $\rho \ge 0$ with $s\rho + \rho^2 \le \eta$ is
 
 $$
-\tau_A(\rho) \;=\; \frac{\rho}{\lVert D_A\rVert_2}, \qquad \tau_B(\rho) \;=\; \frac{\rho}{\lVert D_B\rVert_2}.
+\rho \;=\; \frac{-s + \sqrt{s^2 + 4\eta}}{2}.
+\tag{6}
 $$
 
-**$\tau_A, \tau_B$ are functions of $\rho$.** The §3 caps were left free; §8 closes the program by setting $\tau_A = \tau_A(\rho), \tau_B = \tau_B(\rho)$. The applied update is
+*Proof.* Solve the quadratic $\rho^2 + s\rho - \eta = 0$ for the positive root. ∎
+
+The hyperparameter $\eta$ is a per-step cap on the operator norm of the merged-weight change — a spectral step size.
+
+**State-only caps.** Demanding $\lVert\Delta A^\star(\tau_A)\rVert_2 = \lVert\Delta B^\star(\tau_B)\rVert_2 = \rho$ and applying Lemma 3 pins
 
 $$
 \boxed{\quad
-\mathrm dA \;=\; -\rho\,\frac{D_A}{\lVert D_A\rVert_2},
+\tau_A \;=\; \rho\,\lVert S_B^{-1/2}\rVert_2^{-1} \;=\; \rho\,\sqrt{\sigma_{\min}(B)^2 + \delta_B},
 \qquad
-\mathrm dB \;=\; -\rho\,\frac{D_B}{\lVert D_B\rVert_2}.
+\tau_B \;=\; \rho\,\sqrt{\sigma_{\min}(A)^2 + \delta_A}.
+\quad}
+\tag{7}
+$$
+
+Both $\rho$ (via Prop 3) and the right-hand sides of (7) depend only on the factor spectra $\sigma_{\max}(A), \sigma_{\max}(B), \sigma_{\min}(A), \sigma_{\min}(B)$ and the hyperparameters $\eta, \delta_A, \delta_B$. They are *iterate-independent*. Hence under (H), program (1) with these state-fixed caps is a **single program in $\eta$** whose exact solver is Algorithm 1 with the clip-to-polar substitution of Proposition 2 — i.e., Algorithm 2 (§9). The chord trust region $\lVert\Delta W\rVert_2 \le \eta$ is automatically saturated at every iterate.
+
+The applied update at outer iteration $n$ is
+
+$$
+\boxed{\quad
+\mathrm dA^{(n)} \;=\; -\tau_A\, D_A^{(n)} \;=\; -\rho\,\frac{D_A^{(n)}}{\lVert D_A^{(n)}\rVert_2},
+\qquad
+\mathrm dB^{(n)} \;=\; -\tau_B\, D_B^{(n)} \;=\; -\rho\,\frac{D_B^{(n)}}{\lVert D_B^{(n)}\rVert_2}.
 \quad}
 \tag{8}
 $$
 
-This guarantees $\lVert\mathrm dA\rVert_2 = \lVert\mathrm dB\rVert_2 = \rho$ exactly, hence $\lVert\Delta W\rVert_2 \le \eta$ by submultiplicativity, with no slack.
+The two equalities in each line are identical under (H) by Lemma 3. The form on the right (explicit normalize-then-scale-by-$\rho$) is what the implementation uses, since it does not require computing $\sigma_{\min}(B), \sigma_{\min}(A)$ separately — the normalization absorbs the state-only norm of $D^{(n)}$, however that norm is computed.
 
-**Saturating-regime check.** Prop 2's hypotheses were $\tau_A \le \eta\,\sigma_{\min}(c_A)$ and $\tau_B \le \eta\,\sigma_{\min}(c_B)$. Under $\tau_A = \tau_A(\rho), \tau_B = \tau_B(\rho)$ these become a state-dependent condition on $\rho$:
+**Sufficient condition for (H).** Combining (7) with the iterate-wise statement of (H):
 
 $$
-\rho \;\le\; \eta\,\min\bigl(\sigma_{\min}(c_A)\,\lVert D_A\rVert_2,\ \sigma_{\min}(c_B)\,\lVert D_B\rVert_2\bigr).
+\rho \;\le\; \eta\,\min\!\Bigl(\sigma_{\min}\!\bigl(c_A^{(n)}\bigr)\,\lVert S_B^{-1/2}\rVert_2,\ \ \sigma_{\min}\!\bigl(c_B^{(n)}\bigr)\,\lVert S_A^{-1/2}\rVert_2\Bigr)
+\quad\text{for } n = 1, \ldots, k.
 $$
 
-When this holds, (8) is the exact saturating-regime solver of program (1) at $(\tau_A(\rho), \tau_B(\rho))$ together with program (T). When it fails, $D_A, D_B$ remain coherent directions (uniform-spectrum prior in whitened coordinates) but are no longer the exact clip-prox solvers — the small singular directions of $c_A, c_B$ that clip would have left untouched are flattened by polar instead.
+When this holds along the trajectory, Algorithm 2 is the exact solver of program (1) with state-fixed caps (7). When it fails, the discussion at the end of §7 applies — the directions remain coherent but the exact single-program identification is lost.
 
-The hyperparameter $\eta$ has the meaning of a spectral step size: the user's bound on $\lVert\Delta W\rVert_2$ per step.
+## 9. Algorithm 2 (the polar variant — what we run)
 
-## 9. The algorithm
+Algorithm 2 is Algorithm 1 with clip replaced by polar (Prop 2) and with $(\tau_A, \tau_B)$ pinned via Prop 3 + Lemma 3 to state-only functions of $(A, B, \eta)$ — equation (7) of §8. Under hypothesis (H), it is the exact solver of program (1) at those caps. We present it directly in normalize-then-scale form (the right-hand side of (8)), which makes the chord-saturation invariant $\lVert\mathrm dA\rVert_2 = \lVert\mathrm dB\rVert_2 = \rho$ manifest and does not require computing $\sigma_{\min}(A), \sigma_{\min}(B)$ explicitly.
 
-**Hyperparameters:** Adam $\beta_1, \beta_2, \varepsilon$; Picard count $k$; Newton–Schulz iters $j$; preconditioner regularizer $\delta$; spectral step size $\eta$.
+**Hyperparameters:** Adam $\beta_1, \beta_2, \varepsilon$; block-Jacobi sweep count $k$; Newton–Schulz iters $j$; preconditioner regularizer $\varepsilon_{\text{rel}}$; spectral step size $\eta$.
 
 **Persistent state:** Adam moments $(m_A, v_A, m_B, v_B)$; step counter $t$; warm-started top singular vectors for $A, B$ (for power iteration).
 
-**Algorithm 1.** One step on layer pair $(A, B)$:
+**Algorithm 2.** One step on layer pair $(A, B)$:
 
 1. **Adam preconditioning.** Update first and second moments and form bias-corrected directions $u_A, u_B$ in the standard way.
 
 2. **Spectral preconditioners** (refreshed periodically; both $r \times r$):
    $$
-   S_A^{-1/2} = (A A^\top + \delta I)^{-1/2},
+   S_A^{-1/2} = (A A^\top + \delta_A I)^{-1/2},
    \qquad
-   S_B^{-1/2} = (B^\top B + \delta I)^{-1/2}.
+   S_B^{-1/2} = (B^\top B + \delta_B I)^{-1/2}.
    $$
-   The damping $\delta I$ is an implementation detail handling rank-deficient factors; the §5 derivation corresponds to $\delta = 0$.
+   The §5 derivation corresponds to $\delta_A = \delta_B = 0$; in practice $A, B$ can be near-singular (especially at init), so the implementation damps each side. We use the **scale-invariant parameterization**
+   $$
+   \delta_A \;=\; \varepsilon_{\text{rel}}\,\sigma_{\max}(A A^\top), \qquad \delta_B \;=\; \varepsilon_{\text{rel}}\,\sigma_{\max}(B^\top B),
+   $$
+   with a single dimensionless hyperparameter $\varepsilon_{\text{rel}} \in [0, 1)$. Eigenvalues of $A A^\top$ (resp. $B^\top B$) below $\varepsilon_{\text{rel}} \cdot \sigma_{\max}$ are effectively floored — interpreted as the spectrum fraction below which factor directions are treated as noise rather than signal. The parameterization is invariant under $A \to cA, B \to cB$ and carries the same meaning across LoRA rank $r$ and across training time, neither of which absolute $\delta$ achieves.
 
 3. **Top singular values** via warm-started power iteration:
    $$
@@ -365,7 +393,7 @@ The hyperparameter $\eta$ has the meaning of a spectral step size: the user's bo
    \rho \gets \tfrac{1}{2}\bigl(-s + \sqrt{s^2 + 4\eta}\bigr).
    $$
 
-5. **Picard cross-coupling loop.** Initialize $\mathrm dA = \mathrm dB = 0$. For $n = 1, \ldots, k$, run the three sub-steps below.
+5. **Block-Jacobi cross-coupling loop.** Initialize $\mathrm dA = \mathrm dB = 0$. For $n = 1, \ldots, k$, run the three sub-steps below.
 
    - **Cross-coupling correction.**
 
@@ -395,68 +423,17 @@ The hyperparameter $\eta$ has the meaning of a spectral step size: the user's bo
 
 The line-by-line correspondence with the variational program:
 
-| Algorithm 1 step | Variational source |
+| Algorithm 2 step | Variational source |
 |---|---|
-| Adam preconditioning ($u_A, u_B$) | Linear cost in (1) and (T) |
+| Adam preconditioning ($u_A, u_B$) | Linear cost in (1) |
 | Spectral preconditioners ($S_A^{-1/2}, S_B^{-1/2}$) | Whitening forced by Lemma 2 |
-| Tight-chord radius ($\rho$) | Magnitude program (T), Proposition 3 |
+| Tight-chord radius ($\rho$) | Chord constraint $\lVert\Delta W\rVert_2 \le \eta$ + Proposition 3 |
 | Cross-coupling correction ($\tilde u_A, \tilde u_B$) | Lemma 1 |
-| Directions $D_A, D_B$ (whiten + polar + unwhiten, composed) | Lemma 2 + Prop 1 + Prop 2 (saturating regime); rays of (5) |
-| Tight-chord rescale | (8) |
-| Picard outer loop | BCD on (1) |
+| Directions $D_A^{(n)}, D_B^{(n)}$ (whiten + polar + unwhiten) | Lemma 2 + Prop 1 + Prop 2 under (H); equation (5) |
+| Tight-chord rescale | Lemma 3 + state-only caps (7); equation (8) |
+| Block-Jacobi outer loop | BCD on (1) — Algorithm 1 |
 
-## 10. Toward a single program
-
-Algorithm 1 has three desirable features:
-
-- **(W)** *Whitening* — preconditioning by $S_A^{-1/2}, S_B^{-1/2}$.
-- **(C)** *Cross-coupling* — Picard correction via Lemma 1.
-- **(Ch)** *Chord control* — magnitude tied to $\lVert\Delta W\rVert_2 \le \eta$.
-
-The derivation uses **two** programs: (1) gives (W) and (C); (T) gives (Ch). Can a **single** program give all three?
-
-### The structural obstruction
-
-Two op-norm constraints are at play, on different objects:
-
-$$
-\lVert B\,\Delta A\rVert_2 \;\le\; \cdot \qquad\text{vs.}\qquad \lVert \Delta A\rVert_2 \;\le\; \cdot
-$$
-
-Each is needed for a different reason:
-
-- **Whitening (Lemma 2)** turns the constraint $\lVert B\,\Delta A\rVert_2 \le \tau$ in $\Delta A$-coords into $\lVert Y_A\rVert_2 \le \tau$ in whitened coords (clean op-norm ball ⇒ Mirsky's projection ⇒ clip prox). It needs the constraint on $\lVert B\,\Delta A\rVert_2$.
-- **Chord submultiplicativity** $\lVert\Delta W\rVert_2 \le \sigma_B \rho + \sigma_A\rho + \rho^2$ (Prop 3 proof) needs bounds on $\lVert\Delta A\rVert_2$ and $\lVert\Delta B\rVert_2$ to control the bilinear term $\lVert\Delta B\,\Delta A\rVert_2 \le \lVert\Delta B\rVert_2\,\lVert\Delta A\rVert_2$. The chord cannot be bounded without per-factor op-norm constraints.
-
-The two constraints are related ($\lVert B\,\Delta A\rVert_2 \le \sigma_{\max}(B)\,\lVert\Delta A\rVert_2$) but not interchangeable. No single op-norm constraint serves both roles.
-
-### Single-program options
-
-You have to give up at least one of (W), (C), (Ch):
-
-| Program | (W) | (C) | (Ch) | What it gives |
-|---|---|---|---|---|
-| **(1) + tangent t.r.** $\lVert J\rVert_2 \le \eta$ | ✓ | ✓ | ✗ | $\Delta A = -(\eta/2)\,D_A$ |
-| **(W)** of §2 (per-factor caps) | ✗ | ✗ | ✓ | $\Delta A = -\rho\,\mathrm{polar}(u_A)$ |
-| **(1) + per-factor cap** $\lVert\Delta A\rVert_2 \le \rho$ | partial | ✓ | ✓ | no closed form |
-
-**Tangent trust region.** Add $\lVert J\rVert_2 \le \eta$ to (1). By triangle inequality, $\lVert J\rVert_2 \le \lVert B\,\Delta A\rVert_2 + \lVert\Delta B\,A\rVert_2 \le \tau_A + \tau_B$, so $\tau_A = \tau_B = \eta/2$ enforces it. Substituting into (5) of §7 gives the explicit update
-
-$$
-\mathrm dA \;=\; -\tfrac{\eta}{2}\, D_A \;=\; -\tfrac{\eta}{2}\, S_B^{-1/2}\,\mathrm{polar}(c_A),
-\qquad
-\mathrm dB \;=\; -\tfrac{\eta}{2}\, D_B \;=\; -\tfrac{\eta}{2}\, \mathrm{polar}(c_B)\, S_A^{-1/2}.
-$$
-
-The cross-coupling correction (Lemma 1, via Picard) and whitening are unchanged — only the magnitude rule of step 5's last bullet is replaced. Single program, closed form, keeps (W) and (C). But it bounds the *tangent* $J$, not the chord $\Delta W = J + \Delta B\,\Delta A$. The bilinear term $\Delta B\,\Delta A$ is uncontrolled. Worse, the per-factor op-norm $\lVert\mathrm dA\rVert_2 = (\eta/2)\,\lVert D_A\rVert_2$ scales with $\sigma_{\max}(S_B^{-1/2}) \approx 1/\sigma_{\min}(B)$, so when $B$ becomes ill-conditioned the actual update can grow without bound — exactly the failure mode (Ch) was introduced to prevent.
-
-**Program (W).** Drop the Frobenius coupling. Two decoupled subproblems give $\Delta A = -\rho\,\mathrm{polar}(u_A)$ in closed form (Mirsky on a per-factor op-norm ball). $\rho$ pinned by tight-chord submultiplicativity. Single program with (Ch), but no (W) or (C) — this is Muon applied independently to each LoRA factor.
-
-**(1) with per-factor cap.** Replace the per-block-contribution cap by $\lVert\Delta A\rVert_2 \le \rho$ directly. Frobenius coupling still gives Lemmas 1 and 2 — but in whitened coords the constraint becomes $\lVert S_B^{-1/2} Y_A\rVert_2 \le \rho$, which is not an op-norm ball, so the clip prox of Proposition 1 no longer applies. No closed-form direction.
-
-### What we picked
-
-Algorithm 1 prefers (W) + (C) + (Ch), so it accepts two programs. The price is variational compactness; the gain is the chord-aware adaptive magnitude $\rho$. A unifying single program — perhaps a Riemannian metric on the LoRA manifold inducing both geometries simultaneously, or a primal-dual reformulation in $J$-space with a chord constraint and gauge-fixing regularizer — is left open.
+**Algorithm 1 (reference, not run).** Replace the polar step in 5b with the clip prox of Proposition 1 and drop the rescale in 5c (which is then redundant — the clip prox already returns the correct magnitude at the given $\tau$). Algorithm 1 is the exact single-program solver of (1) at any user-chosen $(\tau_A, \tau_B)$; we run Algorithm 2 because under (H) it coincides with Algorithm 1 at the chord-saturating caps (7), with the polar form avoiding an SVD per inner step.
 
 ## Appendix A. Properties of the tight-chord radius
 
