@@ -221,18 +221,40 @@ def _step_chord_tight_clean(self, group, gs, indices):
     #    EMAs on (m_A, v_A, m_B, v_B) + bias-correct → (u_A, u_B).
     u_A, u_B = self._adam_direction_batched(gs)
 
-    # 2. Whitening refresh (shared — keep in caller). On schedule steps,
-    #    recomputes (S_A^{-1/2}, S_B^{-1/2}) ∈ ℝ^(N, r, r) via batched
-    #    Higham. Returns the cached buffers from `gs` on non-refresh steps.
-    SA_inv, SB_inv = self._refresh_whitening_batched(
-        gs, A_f, B_f, step_count=step_count,
-    )
+    # 2. σ_max(A), σ_max(B) FIRST. Two consumers:
+    #    (a) ρ = η/s below;
+    #    (b) the whitening refresh — λ_max(S_A) = σ_max(A)² is passed in,
+    #        so Higham skips its internal lambda_max_power_iter calls.
+    sigma_A, gs['v_sigma_A'] = _sigma_max_power_iter_batched(
+        A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
+    sigma_B, gs['v_sigma_B'] = _sigma_max_power_iter_batched(
+        B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
+    rho = lr / (sigma_A + sigma_B).clamp_min(1e-30)     # (N,)
 
-    # 3. Whiten Adam direction ONCE; reuse for pre-rescale and polar input.
+    # 3. Whitening refresh, inlined. On schedule steps recompute SA, SB
+    #    grams and run Higham with the precomputed λ_max. Otherwise the
+    #    cached `gs['SA_half_inv']` / `gs['SB_half_inv']` carry forward.
+    if (step_count - 1) % self.precond_refresh_every == 0:
+        SA_grams = A_f @ A_f.transpose(-2, -1)          # (N, r, r)
+        SB_grams = B_f.transpose(-2, -1) @ B_f          # (N, r, r)
+        gs['SA_half_inv'].copy_(spd_inv_sqrt_higham_batched(
+            SA_grams, n_iters=self.higham_iters,
+            eps=self.delta, eps_relative=self.precond_delta_relative,
+            lam_max=sigma_A.pow(2),                     # NEW kwarg in utils.py
+        ))
+        gs['SB_half_inv'].copy_(spd_inv_sqrt_higham_batched(
+            SB_grams, n_iters=self.higham_iters,
+            eps=self.delta, eps_relative=self.precond_delta_relative,
+            lam_max=sigma_B.pow(2),
+        ))
+    SA_inv = gs['SA_half_inv']
+    SB_inv = gs['SB_half_inv']
+
+    # 4. Whiten Adam direction ONCE; reuse for pre-rescale and polar input.
     X_A = SB_inv @ u_A                                  # (N, r, d_in)
     X_B = u_B @ SA_inv                                  # (N, d_out, r)
 
-    # 4. Pre-rescale: σ_max(X_A), σ_max(X_B) via power iter (warm-start).
+    # 5. Pre-rescale: σ_max(X_A), σ_max(X_B) via power iter (warm-start).
     sigma_XA, gs['v_sigma_XA'] = _sigma_max_power_iter_batched(
         X_A, v_init=gs.get('v_sigma_XA'), n_iters=8)
     sigma_XB, gs['v_sigma_XB'] = _sigma_max_power_iter_batched(
@@ -240,14 +262,8 @@ def _step_chord_tight_clean(self, group, gs, indices):
     X_A = X_A / sigma_XA[..., None, None].clamp_min(1e-30)
     X_B = X_B / sigma_XB[..., None, None].clamp_min(1e-30)
 
-    # 5. ρ = η / (σ_A + σ_B).
-    sigma_A, gs['v_sigma_A'] = _sigma_max_power_iter_batched(
-        A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
-    sigma_B, gs['v_sigma_B'] = _sigma_max_power_iter_batched(
-        B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
-    rho = lr / (sigma_A + sigma_B).clamp_min(1e-30)     # (N,)
-
     # 6. Picard loop (k=1: no cross-coupling; k≥2: re-key warm-starts by n).
+    #    (Step 5 above produced X_A, X_B at unit operator norm.)
     dA = torch.zeros_like(u_A)
     dB = torch.zeros_like(u_B)
     for n in range(self.picard_iters):
@@ -287,10 +303,12 @@ Wins relative to the gated implementation:
 - $S_B^{-1/2}\,u_A$ matmul once instead of twice (saves $2 N r^2 D$/step).
 - Picard-iter-keyed warm-start at site C eliminates the silent staleness at $k \ge 2$.
 - Cross-coupling reads as $(1/\eta) \cdot S_B^{-1/2} (B^\top \mathrm dB A)$, directly matching §10 notation — no $2/(\rho s)$ doubling or other empirical multipliers.
+- λ_max(S_A) hoisted out of Higham (idea #2 in §5.1): single canonical source.
+
+Companion change in `utils.py`: `spd_inv_sqrt_higham_batched` gains an optional `lam_max=None` kwarg. When `None` (default) the existing behavior is preserved — Higham runs its own `lambda_max_power_iter_psd_batched`. When a tensor is provided, both internal calls are skipped (the `eps_relative=True` damped λ_max is `lam_max·(1 + ε_rel)` in closed form). Non-breaking for every other caller of Higham in the project.
 
 What this skeleton does **not** do (out of scope for this refactor):
 - Switch power iter from 8 cold to 3 warm. Defer to a separate measurement-driven change.
-- Hoist $\lambda_{\max}(S_A)$ out of Higham (idea #2 in §5.1). Defer; touches `utils.py`.
 - Swap Newton–Schulz for a Gram-form variant (see §8 below). Defer; significant kernel change.
 - Add timing/diagnostic hooks. Keep the existing `maybe_time` and snapshot machinery in the caller-side wrapper.
 
