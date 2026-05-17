@@ -290,8 +290,23 @@ Wins relative to the gated implementation:
 
 What this skeleton does **not** do (out of scope for this refactor):
 - Switch power iter from 8 cold to 3 warm. Defer to a separate measurement-driven change.
-- Re-use Higham's λ_max byproduct for site B. Defer.
+- Hoist $\lambda_{\max}(S_A)$ out of Higham (idea #2 in §5.1). Defer; touches `utils.py`.
+- Swap Newton–Schulz for a Gram-form variant (see §8 below). Defer; significant kernel change.
 - Add timing/diagnostic hooks. Keep the existing `maybe_time` and snapshot machinery in the caller-side wrapper.
+
+## 8. Future direction: Gram-form Newton–Schulz
+
+Dao (2026), `docs/papers/gram_newton_schulz_dao_2026.md` (blog: <https://tridao.me/blog/2026/gram-newton-schulz/>), shows that the composition of Newton–Schulz quintic polynomial steps applied to $X \in \mathbb{R}^{m \times n}$ can be exactly reformulated as iteration on the smaller-side Gram $G = X^\top X \in \mathbb{R}^{n \times n}$ (or $X X^\top$, whichever is smaller). The mathematical equivalence is exact; only the work shifts to the symmetric object. Reported wins on trillion-parameter MoE training: 40–50% reduction in NS runtime, training quality preserved within 0.01 val ppl.
+
+For Algorithm 2′ this would directly attack the NS-polar step (currently 65% of step cost at $r = 64$, see §3). The polar input is $X_A^{\text{eff}} \in \mathbb{R}^{N \times r \times d_{\text{in}}}$ with $r \ll d_{\text{in}}$; iterating on the $r \times r$ Gram replaces $20 N r^2 d_{\text{in}}$ FLOPs per pair with $\Theta(N r^3)$ — at $r = 64$, $d_{\text{in}} = 2048$ that's a $\sim 32\times$ reduction in the dominant block, modulo kernel launch overhead.
+
+**Why not now.** Three reasons to defer:
+
+1. **Bigger surface area than the rest of this refactor.** The clean-pipeline refactor preserves trajectory bit-identically at $k = 1$; Gram-NS changes the NS kernel itself. Equivalence has to be re-verified against the rectangular NS reference at fp32 noise, and Dao's blog flags half-precision Gram-NS failure modes (spurious negative eigenvalues, eigenvector drift) that the restart strategy addresses but that we'd need to validate in our setting.
+2. **Concurrent with the Picard warm-start idea.** The restart strategy in Dao composes naturally with warm-starting NS from the previous Picard iter's polar output (the previous iterate is an excellent initial Gram). Both should land together.
+3. **Currently running sweeps still use the rectangular form.** The trajectory data on disk (chord-tight, chord-direction, chord-tight-clean) was produced by `_newton_schulz_batched`. Swapping the kernel mid-comparison muddles the optimizer-vs-optimizer signal.
+
+**When to revisit.** After (a) the §10-clean A/B settles (current commit), and (b) any future Picard warm-start work begins. The two changes belong together because the warm-start gives Gram-NS a free initial restart, and Gram-NS makes Picard $k \ge 3$ cheap enough that the marginal cost no longer dominates the choice of $k$.
 
 ## 7. Verification plan
 
