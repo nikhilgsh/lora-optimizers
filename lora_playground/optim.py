@@ -3515,275 +3515,308 @@ class AdamPolarProductLoRA(Optimizer):
             SA_half_inv = gs['SA_half_inv']
             SB_half_inv = gs['SB_half_inv']
 
-            # Unit-polar normalization of u_A, u_B for chord-tight family.
-            # The Picard coefficient 2/(ρ·s) was derived assuming the base
-            # covector is unit-magnitude in the polar-input space (where the
-            # polar map actually operates). Without this normalization, the
-            # correction's effective scale is set by Adam's absolute u-magnitude
-            # and not by the geometric formula — empirically rendering Picard
-            # inert (γ ≈ 0.003 at lr=1e-2; see K vs L diagnostics 2026-05-12).
-            #
-            # Polar(c·X) = Polar(X) for c > 0, so this is a strict no-op at
-            # picard_iters=1 (trajectory bit-identical). Affects only k ≥ 2.
-            if self.magnitude_rule in ("spectral_chord_tight",
-                                       "spectral_chord_tight_clean",
-                                       "spectral_chord_direction"):
-                with maybe_time(timer, "picard_unit_polar_norm"):
-                    X_A_pre = SB_half_inv @ u_A             # (N, r, d_in)
-                    X_B_pre = u_B @ SA_half_inv             # (N, d_out, r)
-                    # σ_max via batched power-iter (8 iters cold-start) —
-                    # avoids the cuSOLVER batched-eigvalsh latency hit at
-                    # r=256 (~15 ms per (256,256) matrix × 112 pairs = 1-2 s
-                    # per call; 4-6 such calls per step at r=256 was the
-                    # bottleneck behind chord-whiten's 12 s/step). Power-iter
-                    # at n_iters=8 is the original implementation
-                    # (replaced by eigvalsh in 57a932b for accuracy; the
-                    # actual issue was cold-start 3 iters being too few).
-                    # Warm-start from prior step's top singular vector;
-                    # 4 iters suffice once warm (vs 8 cold). v_init=None
-                    # on first call → helper uses deterministic M @ ones.
-                    sigma_XA_b, v_XA = _sigma_max_power_iter_batched(
-                        X_A_pre, v_init=gs.get('v_sigma_XA'), n_iters=8)
-                    sigma_XB_b, v_XB = _sigma_max_power_iter_batched(
-                        X_B_pre, v_init=gs.get('v_sigma_XB'), n_iters=8)
-                    gs['v_sigma_XA'] = v_XA
-                    gs['v_sigma_XB'] = v_XB
-                    sigma_XA = sigma_XA_b + 1e-30
-                    sigma_XB = sigma_XB_b + 1e-30
-                    u_A = u_A / sigma_XA.unsqueeze(-1).unsqueeze(-1)
-                    u_B = u_B / sigma_XB.unsqueeze(-1).unsqueeze(-1)
-
-            # Picard outer loop (batched bmm chains).
-            u_A_eff = u_A
-            u_B_eff = u_B
-            dA_prev = torch.zeros_like(u_A)
-            dB_prev = torch.zeros_like(u_B)
-            A_f = gs['A_stack']
-            B_f = gs['B_stack']
-            # In exact_chord mode the per-Picard-iter precond_refresh uses the
-            # CURRENT iter's preconditioner. Initial values are the same SA/SB
-            # we just computed; recomputed below at k_iter > 0.
-            SA_half_inv_k = SA_half_inv
-            SB_half_inv_k = SB_half_inv
-
-            # spectral_chord: σ_max(A), σ_max(B) via batched power-iter (8
-            # iters cold-start). Originally used 3-iter cold-start power-iter,
-            # which under-estimated σ_max → switched to eigvalsh in 57a932b
-            # for accuracy, but cuSOLVER batched syevd on (n_pairs, r, r) at
-            # r=256 falls back to per-matrix calls with ~15 ms overhead each
-            # → 1-2 s per call × 4 such calls per step was the dominant cost
-            # in chord-whiten production. 8-iter power-iter is the original
-            # method with sufficient iters for accuracy at any r.
-            if self.magnitude_rule in ("spectral_chord",
-                                       "spectral_chord_tight",
-                                       "spectral_chord_tight_clean",
-                                       "spectral_chord_direction"):
-                sigma_A, v_A = _sigma_max_power_iter_batched(
-                    A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
-                sigma_B, v_B = _sigma_max_power_iter_batched(
-                    B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
-                gs['v_sigma_A'] = v_A
-                gs['v_sigma_B'] = v_B
-                if self.magnitude_rule == "spectral_chord":
-                    rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
-                elif self.magnitude_rule == "spectral_chord_tight":
-                    s_AB = sigma_A + sigma_B
-                    rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
-                elif self.magnitude_rule == "spectral_chord_tight_clean":
-                    # §10-clean: linear ρ = η/s (Appendix A boxed form),
-                    # not the quadratic root. Within 1.1% of quadratic in
-                    # our operating regime.
-                    s_AB = sigma_A + sigma_B
-                    rho = lr / (s_AB + 1e-30)
-                else:  # spectral_chord_direction: dA/dB use λ_dir, but
-                       # rho computed for diagnostic comparison consistency
-                    s_AB = sigma_A + sigma_B
-                    rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
-                # Cache batched Grams for direction-aware σ_max in the loop.
-                GBB_s = B_f.transpose(-1, -2) @ B_f                    # (N, r, r)
-                GAA_s = A_f @ A_f.transpose(-1, -2)                    # (N, r, r)
-                # Picard cross-coupling coefficient: `2/(ρ·s)`, derived from
-                # the normalized whitened objective (see user-proposed math
-                # +`docs/notes/polar_product/handoff_2026_05_11.md` §Picard).
-                # Shape (N,) — unsqueeze to (N, 1, 1) for broadcast against
-                # cross-coupling matrices (N, r, r). Replaces the legacy
-                # `picard_alpha/lr` scaling, which never matched the chord-tight
-                # bound's variational structure and produced ~null effect from
-                # Picard k≥2 under chord-tight.
-                if self.magnitude_rule in ("spectral_chord_tight",
-                                           "spectral_chord_direction"):
-                    s_AB = sigma_A + sigma_B
-                    picard_coeff_s = (2.0 / (rho * s_AB + 1e-30)).unsqueeze(-1).unsqueeze(-1)
-                elif self.magnitude_rule == "spectral_chord_tight_clean":
-                    # §10-clean: Lemma 1 coefficient 1/η (no C2 doubling,
-                    # no σ_max(X_A) absorption). Algorithm 2′ is "C1 only";
-                    # the cross-coupling coefficient comes straight from
-                    # expanding (1/(2η))‖J‖_F².
-                    picard_coeff_s = torch.full(
-                        (sigma_A.shape[0], 1, 1),
-                        1.0 / lr, device=sigma_A.device, dtype=sigma_A.dtype,
-                    )
-                else:
-                    picard_coeff_s = None
+            # §10-clean Algorithm 2′: focused dispatch. The helper at
+            # `_chord_tight_clean_polar_pipeline` implements the doc-faithful
+            # pipeline (single S_B^{-1/2} u_A matmul, 1/η cross-coupling,
+            # linear ρ = η/s, Picard-iter-keyed warm-start at site C). The
+            # legacy gated branches in the else-block below stay untouched
+            # for non-clean rules. See docs/notes/polar_product/algorithm_clean_implementation.md.
+            if self.magnitude_rule == "spectral_chord_tight_clean":
+                A_f = gs['A_stack']
+                B_f = gs['B_stack']
+                _clean_result = self._chord_tight_clean_polar_pipeline(
+                    gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
+                )
+                u_A = _clean_result['u_A']
+                u_B = _clean_result['u_B']
+                SA_half_inv_k = _clean_result['SA_half_inv_k']
+                SB_half_inv_k = _clean_result['SB_half_inv_k']
+                sigma_A = _clean_result['sigma_A']
+                sigma_B = _clean_result['sigma_B']
+                rho = _clean_result['rho']
+                picard_coeff_s = _clean_result['picard_coeff_s']
+                u_A_eff = _clean_result['u_A_eff']
+                u_B_eff = _clean_result['u_B_eff']
+                X_A = _clean_result['X_A']
+                X_B = _clean_result['X_B']
+                P_A = _clean_result['P_A']
+                P_B = _clean_result['P_B']
+                geo_A = _clean_result['geo_A']
+                geo_B = _clean_result['geo_B']
+                op_geoA_b = _clean_result['op_geoA_b']
+                op_geoB_b = _clean_result['op_geoB_b']
+                dA = _clean_result['dA']
+                dB = _clean_result['dB']
             else:
-                rho = None
-                GBB_s = None
-                GAA_s = None
-                picard_coeff_s = None
-            for k_iter in range(self.picard_iters):
-                with maybe_time(timer, "picard_cross_coupling"):
-                    if k_iter > 0:
-                        if self.exact_chord:
-                            # Exact-chord (algorithm.md §2 remark): use
-                            # A_eff = A + dA_prev, B_eff = B + dB_prev for
-                            # both cross-coupling and the spectral
-                            # preconditioner. Refresh SA/SB against the
-                            # effective factors via batched higham at every
-                            # Picard iter (~1 ms/group at r=64; would be
-                            # ~80 ms/group with eigh per-pair).
-                            A_eff = A_f + dA_prev
-                            B_eff = B_f + dB_prev
-                            BT_dB_A = B_eff.transpose(-2, -1) @ dB_prev @ A_f
-                            B_dA_AT = B_f @ dA_prev @ A_eff.transpose(-2, -1)
-                            if picard_coeff_s is not None:
-                                u_A_eff = u_A + picard_coeff_s * BT_dB_A
-                                u_B_eff = u_B + picard_coeff_s * B_dA_AT
+                # Unit-polar normalization of u_A, u_B for chord-tight family.
+                # The Picard coefficient 2/(ρ·s) was derived assuming the base
+                # covector is unit-magnitude in the polar-input space (where the
+                # polar map actually operates). Without this normalization, the
+                # correction's effective scale is set by Adam's absolute u-magnitude
+                # and not by the geometric formula — empirically rendering Picard
+                # inert (γ ≈ 0.003 at lr=1e-2; see K vs L diagnostics 2026-05-12).
+                #
+                # Polar(c·X) = Polar(X) for c > 0, so this is a strict no-op at
+                # picard_iters=1 (trajectory bit-identical). Affects only k ≥ 2.
+                if self.magnitude_rule in ("spectral_chord_tight",
+                                           "spectral_chord_tight_clean",
+                                           "spectral_chord_direction"):
+                    with maybe_time(timer, "picard_unit_polar_norm"):
+                        X_A_pre = SB_half_inv @ u_A             # (N, r, d_in)
+                        X_B_pre = u_B @ SA_half_inv             # (N, d_out, r)
+                        # σ_max via batched power-iter (8 iters cold-start) —
+                        # avoids the cuSOLVER batched-eigvalsh latency hit at
+                        # r=256 (~15 ms per (256,256) matrix × 112 pairs = 1-2 s
+                        # per call; 4-6 such calls per step at r=256 was the
+                        # bottleneck behind chord-whiten's 12 s/step). Power-iter
+                        # at n_iters=8 is the original implementation
+                        # (replaced by eigvalsh in 57a932b for accuracy; the
+                        # actual issue was cold-start 3 iters being too few).
+                        # Warm-start from prior step's top singular vector;
+                        # 4 iters suffice once warm (vs 8 cold). v_init=None
+                        # on first call → helper uses deterministic M @ ones.
+                        sigma_XA_b, v_XA = _sigma_max_power_iter_batched(
+                            X_A_pre, v_init=gs.get('v_sigma_XA'), n_iters=8)
+                        sigma_XB_b, v_XB = _sigma_max_power_iter_batched(
+                            X_B_pre, v_init=gs.get('v_sigma_XB'), n_iters=8)
+                        gs['v_sigma_XA'] = v_XA
+                        gs['v_sigma_XB'] = v_XB
+                        sigma_XA = sigma_XA_b + 1e-30
+                        sigma_XB = sigma_XB_b + 1e-30
+                        u_A = u_A / sigma_XA.unsqueeze(-1).unsqueeze(-1)
+                        u_B = u_B / sigma_XB.unsqueeze(-1).unsqueeze(-1)
+
+                # Picard outer loop (batched bmm chains).
+                u_A_eff = u_A
+                u_B_eff = u_B
+                dA_prev = torch.zeros_like(u_A)
+                dB_prev = torch.zeros_like(u_B)
+                A_f = gs['A_stack']
+                B_f = gs['B_stack']
+                # In exact_chord mode the per-Picard-iter precond_refresh uses the
+                # CURRENT iter's preconditioner. Initial values are the same SA/SB
+                # we just computed; recomputed below at k_iter > 0.
+                SA_half_inv_k = SA_half_inv
+                SB_half_inv_k = SB_half_inv
+
+                # spectral_chord: σ_max(A), σ_max(B) via batched power-iter (8
+                # iters cold-start). Originally used 3-iter cold-start power-iter,
+                # which under-estimated σ_max → switched to eigvalsh in 57a932b
+                # for accuracy, but cuSOLVER batched syevd on (n_pairs, r, r) at
+                # r=256 falls back to per-matrix calls with ~15 ms overhead each
+                # → 1-2 s per call × 4 such calls per step was the dominant cost
+                # in chord-whiten production. 8-iter power-iter is the original
+                # method with sufficient iters for accuracy at any r.
+                if self.magnitude_rule in ("spectral_chord",
+                                           "spectral_chord_tight",
+                                           "spectral_chord_tight_clean",
+                                           "spectral_chord_direction"):
+                    sigma_A, v_A = _sigma_max_power_iter_batched(
+                        A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
+                    sigma_B, v_B = _sigma_max_power_iter_batched(
+                        B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
+                    gs['v_sigma_A'] = v_A
+                    gs['v_sigma_B'] = v_B
+                    if self.magnitude_rule == "spectral_chord":
+                        rho = lr / (sigma_A + sigma_B + 1.0)  # (N,)
+                    elif self.magnitude_rule == "spectral_chord_tight":
+                        s_AB = sigma_A + sigma_B
+                        rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
+                    elif self.magnitude_rule == "spectral_chord_tight_clean":
+                        # §10-clean: linear ρ = η/s (Appendix A boxed form),
+                        # not the quadratic root. Within 1.1% of quadratic in
+                        # our operating regime.
+                        s_AB = sigma_A + sigma_B
+                        rho = lr / (s_AB + 1e-30)
+                    else:  # spectral_chord_direction: dA/dB use λ_dir, but
+                           # rho computed for diagnostic comparison consistency
+                        s_AB = sigma_A + sigma_B
+                        rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
+                    # Cache batched Grams for direction-aware σ_max in the loop.
+                    GBB_s = B_f.transpose(-1, -2) @ B_f                    # (N, r, r)
+                    GAA_s = A_f @ A_f.transpose(-1, -2)                    # (N, r, r)
+                    # Picard cross-coupling coefficient: `2/(ρ·s)`, derived from
+                    # the normalized whitened objective (see user-proposed math
+                    # +`docs/notes/polar_product/handoff_2026_05_11.md` §Picard).
+                    # Shape (N,) — unsqueeze to (N, 1, 1) for broadcast against
+                    # cross-coupling matrices (N, r, r). Replaces the legacy
+                    # `picard_alpha/lr` scaling, which never matched the chord-tight
+                    # bound's variational structure and produced ~null effect from
+                    # Picard k≥2 under chord-tight.
+                    if self.magnitude_rule in ("spectral_chord_tight",
+                                               "spectral_chord_direction"):
+                        s_AB = sigma_A + sigma_B
+                        picard_coeff_s = (2.0 / (rho * s_AB + 1e-30)).unsqueeze(-1).unsqueeze(-1)
+                    elif self.magnitude_rule == "spectral_chord_tight_clean":
+                        # §10-clean: Lemma 1 coefficient 1/η (no C2 doubling,
+                        # no σ_max(X_A) absorption). Algorithm 2′ is "C1 only";
+                        # the cross-coupling coefficient comes straight from
+                        # expanding (1/(2η))‖J‖_F².
+                        picard_coeff_s = torch.full(
+                            (sigma_A.shape[0], 1, 1),
+                            1.0 / lr, device=sigma_A.device, dtype=sigma_A.dtype,
+                        )
+                    else:
+                        picard_coeff_s = None
+                else:
+                    rho = None
+                    GBB_s = None
+                    GAA_s = None
+                    picard_coeff_s = None
+                for k_iter in range(self.picard_iters):
+                    with maybe_time(timer, "picard_cross_coupling"):
+                        if k_iter > 0:
+                            if self.exact_chord:
+                                # Exact-chord (algorithm.md §2 remark): use
+                                # A_eff = A + dA_prev, B_eff = B + dB_prev for
+                                # both cross-coupling and the spectral
+                                # preconditioner. Refresh SA/SB against the
+                                # effective factors via batched higham at every
+                                # Picard iter (~1 ms/group at r=64; would be
+                                # ~80 ms/group with eigh per-pair).
+                                A_eff = A_f + dA_prev
+                                B_eff = B_f + dB_prev
+                                BT_dB_A = B_eff.transpose(-2, -1) @ dB_prev @ A_f
+                                B_dA_AT = B_f @ dA_prev @ A_eff.transpose(-2, -1)
+                                if picard_coeff_s is not None:
+                                    u_A_eff = u_A + picard_coeff_s * BT_dB_A
+                                    u_B_eff = u_B + picard_coeff_s * B_dA_AT
+                                else:
+                                    u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
+                                    u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
+                                SA_grams_k = A_eff @ A_eff.transpose(-2, -1)
+                                SB_grams_k = B_eff.transpose(-2, -1) @ B_eff
+                                if self.precond_method == "higham":
+                                    from .utils import spd_inv_sqrt_higham_batched
+                                    SA_half_inv_k = spd_inv_sqrt_higham_batched(
+                                        SA_grams_k, n_iters=self.higham_iters,
+                                        eps=self.delta,
+                                        eps_relative=self.precond_delta_relative,
+                                    )
+                                    SB_half_inv_k = spd_inv_sqrt_higham_batched(
+                                        SB_grams_k, n_iters=self.higham_iters,
+                                        eps=self.delta,
+                                        eps_relative=self.precond_delta_relative,
+                                    )
+                                else:
+                                    SA_half_inv_k = torch.stack([
+                                        _spd_inv_half(
+                                            SA_grams_k[k_pair], eps=self.delta,
+                                            method=self.precond_method,
+                                            higham_iters=self.higham_iters,
+                                            eps_relative=self.precond_delta_relative)
+                                        for k_pair in range(N)])
+                                    SB_half_inv_k = torch.stack([
+                                        _spd_inv_half(
+                                            SB_grams_k[k_pair], eps=self.delta,
+                                            method=self.precond_method,
+                                            higham_iters=self.higham_iters,
+                                            eps_relative=self.precond_delta_relative)
+                                        for k_pair in range(N)])
                             else:
-                                u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
-                                u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
-                            SA_grams_k = A_eff @ A_eff.transpose(-2, -1)
-                            SB_grams_k = B_eff.transpose(-2, -1) @ B_eff
-                            if self.precond_method == "higham":
-                                from .utils import spd_inv_sqrt_higham_batched
-                                SA_half_inv_k = spd_inv_sqrt_higham_batched(
-                                    SA_grams_k, n_iters=self.higham_iters,
-                                    eps=self.delta,
-                                    eps_relative=self.precond_delta_relative,
+                                # Compute-bound chain matmul; bmm vs per-pair was
+                                # 0.97× in microbench (neutral). Prefer batched
+                                # form for code uniformity.
+                                BT_dB_A = B_f.transpose(-2, -1) @ dB_prev @ A_f
+                                B_dA_AT = B_f @ dA_prev @ A_f.transpose(-2, -1)
+                                if picard_coeff_s is not None:
+                                    u_A_eff = u_A + picard_coeff_s * BT_dB_A
+                                    u_B_eff = u_B + picard_coeff_s * B_dA_AT
+                                else:
+                                    u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
+                                    u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
+                    with maybe_time(timer, "picard_polar_pipeline"):
+                        with maybe_time(timer, "polar_whiten"):
+                            X_A = SB_half_inv_k @ u_A_eff
+                            X_B = u_B_eff @ SA_half_inv_k
+                        # Iterate NS in bf16 for ~3.6× throughput on Ampere
+                        # tensor cores (microbench: scripts/bench/bench_ns_bf16.py).
+                        # Pre-norm + Frobenius rescale stay fp32 (small-number
+                        # robustness); only the matmul-heavy iterations run bf16.
+                        # Output cast back to fp32 for downstream unwhiten/rescale
+                        # which still operates in fp32. Pattern mirrors
+                        # modded-nanogpt train_gpt.py:187.
+                        with maybe_time(timer, "polar_NS_A"):
+                            P_A = _newton_schulz_batched(
+                                X_A, nsteps=self.ns_steps, dtype=torch.bfloat16
+                            ).float()
+                        with maybe_time(timer, "polar_NS_B"):
+                            P_B = _newton_schulz_batched(
+                                X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
+                            ).float()
+                        with maybe_time(timer, "polar_unwhiten_rescale"):
+                            if self.magnitude_rule == "spectral_chord_tight_no_rho":
+                                # §8 no-ρ: dA = -lr · S_B^{-1/2} polar(S_B^{-1/2} u_A)
+                                # No σ_max(geo) computation, no rescale by ρ/op-norm.
+                                geo_A = SB_half_inv_k @ P_A
+                                geo_B = P_B @ SA_half_inv_k
+                                dA = -lr * geo_A
+                                dB = -(self.lora_plus_multiplier * lr) * geo_B
+                            elif self.magnitude_rule in ("spectral_chord",
+                                                         "spectral_chord_tight",
+                                                         "spectral_chord_tight_clean",
+                                                         "spectral_chord_direction"):
+                                geo_A = SB_half_inv_k @ P_A
+                                geo_B = P_B @ SA_half_inv_k
+                                geoA_f = geo_A.float()
+                                geoB_f = geo_B.float()
+                                # σ_max via 8-iter batched power-iter; replaces
+                                # eigvalsh on (n_pairs, r, r) Gram which has
+                                # ~1.5 s/call cuSOLVER overhead at r=256.
+                                op_geoA_b, v_geoA = _sigma_max_power_iter_batched(
+                                    geoA_f, v_init=gs.get('v_op_geoA'), n_iters=8)
+                                op_geoB_b, v_geoB = _sigma_max_power_iter_batched(
+                                    geoB_f, v_init=gs.get('v_op_geoB'), n_iters=8)
+                                gs['v_op_geoA'] = v_geoA
+                                gs['v_op_geoB'] = v_geoB
+                                op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                                op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                                if self.magnitude_rule == "spectral_chord_direction":
+                                    # Variant 1 batched: λ_dir from
+                                    # a·λ + b·λ² = lr per pair.
+                                    P_dir = geoA_f / op_geoA              # (N, r, n)
+                                    Q_dir = geoB_f / op_geoB              # (N, m, r)
+                                    PPt_b = P_dir @ P_dir.transpose(-1, -2)
+                                    QtQ_b = Q_dir.transpose(-1, -2) @ Q_dir
+                                    # Use power-iter on N = G_outer·G_inner (r×r non-symmetric,
+                                    # real-positive spectrum). Same per-iter cost as Krylov-chol
+                                    # but no Cholesky → no chol-fails-when-rank-deficient bug
+                                    # that crashed chord-direction on h100. See
+                                    # `docs/notes/sigma_max_estimation.md` and bench data:
+                                    # accuracy matches krylov-chol within 1e-3, timing
+                                    # within ~5% on RTX A6000 across all regimes including
+                                    # rank-deficient (where krylov-chol crashes outright).
+                                    sigma_BP_b, _ = _sigma_max_power_iter_nonsym(GBB_s, PPt_b)
+                                    sigma_QA_b, _ = _sigma_max_power_iter_nonsym(GAA_s, QtQ_b)
+                                    sigma_QP_b, _ = _sigma_max_power_iter_nonsym(PPt_b, QtQ_b)
+                                    a_b = (sigma_BP_b + sigma_QA_b).clamp_min(1e-30)
+                                    b_b = sigma_QP_b
+                                    # Per-pair quadratic: pick lr/a where b≈0,
+                                    # else closed-form root. b_b is (N,) so just
+                                    # use the closed form everywhere with safe
+                                    # denominator clamping.
+                                    disc = a_b * a_b + 4.0 * b_b * lr
+                                    lam_quad = (-a_b + torch.sqrt(disc)) / (2.0 * b_b.clamp_min(1e-30))
+                                    lam_lin = lr / a_b
+                                    lam = torch.where(b_b > 1e-30, lam_quad, lam_lin)
+                                    lam_unsq = lam.unsqueeze(-1).unsqueeze(-1)
+                                    dA = -lam_unsq * P_dir
+                                    dB = -(self.lora_plus_multiplier *
+                                           lam_unsq) * Q_dir
+                                else:
+                                    rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
+                                    dA = -(rho_unsq / op_geoA) * geo_A
+                                    dB = -(self.lora_plus_multiplier *
+                                           rho_unsq / op_geoB) * geo_B
+                            else:
+                                from ._batched_polar import unwhiten_rescale_frob_batched
+                                dA, dB = unwhiten_rescale_frob_batched(
+                                    P_A, P_B, SA_half_inv_k, SB_half_inv_k,
+                                    u_A_eff, u_B_eff, lr,
+                                    lora_plus_multiplier=self.lora_plus_multiplier,
                                 )
-                                SB_half_inv_k = spd_inv_sqrt_higham_batched(
-                                    SB_grams_k, n_iters=self.higham_iters,
-                                    eps=self.delta,
-                                    eps_relative=self.precond_delta_relative,
-                                )
-                            else:
-                                SA_half_inv_k = torch.stack([
-                                    _spd_inv_half(
-                                        SA_grams_k[k_pair], eps=self.delta,
-                                        method=self.precond_method,
-                                        higham_iters=self.higham_iters,
-                                        eps_relative=self.precond_delta_relative)
-                                    for k_pair in range(N)])
-                                SB_half_inv_k = torch.stack([
-                                    _spd_inv_half(
-                                        SB_grams_k[k_pair], eps=self.delta,
-                                        method=self.precond_method,
-                                        higham_iters=self.higham_iters,
-                                        eps_relative=self.precond_delta_relative)
-                                    for k_pair in range(N)])
-                        else:
-                            # Compute-bound chain matmul; bmm vs per-pair was
-                            # 0.97× in microbench (neutral). Prefer batched
-                            # form for code uniformity.
-                            BT_dB_A = B_f.transpose(-2, -1) @ dB_prev @ A_f
-                            B_dA_AT = B_f @ dA_prev @ A_f.transpose(-2, -1)
-                            if picard_coeff_s is not None:
-                                u_A_eff = u_A + picard_coeff_s * BT_dB_A
-                                u_B_eff = u_B + picard_coeff_s * B_dA_AT
-                            else:
-                                u_A_eff = u_A + (self.picard_alpha / lr) * BT_dB_A
-                                u_B_eff = u_B + (self.picard_alpha / lr) * B_dA_AT
-                with maybe_time(timer, "picard_polar_pipeline"):
-                    with maybe_time(timer, "polar_whiten"):
-                        X_A = SB_half_inv_k @ u_A_eff
-                        X_B = u_B_eff @ SA_half_inv_k
-                    # Iterate NS in bf16 for ~3.6× throughput on Ampere
-                    # tensor cores (microbench: scripts/bench/bench_ns_bf16.py).
-                    # Pre-norm + Frobenius rescale stay fp32 (small-number
-                    # robustness); only the matmul-heavy iterations run bf16.
-                    # Output cast back to fp32 for downstream unwhiten/rescale
-                    # which still operates in fp32. Pattern mirrors
-                    # modded-nanogpt train_gpt.py:187.
-                    with maybe_time(timer, "polar_NS_A"):
-                        P_A = _newton_schulz_batched(
-                            X_A, nsteps=self.ns_steps, dtype=torch.bfloat16
-                        ).float()
-                    with maybe_time(timer, "polar_NS_B"):
-                        P_B = _newton_schulz_batched(
-                            X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
-                        ).float()
-                    with maybe_time(timer, "polar_unwhiten_rescale"):
-                        if self.magnitude_rule == "spectral_chord_tight_no_rho":
-                            # §8 no-ρ: dA = -lr · S_B^{-1/2} polar(S_B^{-1/2} u_A)
-                            # No σ_max(geo) computation, no rescale by ρ/op-norm.
-                            geo_A = SB_half_inv_k @ P_A
-                            geo_B = P_B @ SA_half_inv_k
-                            dA = -lr * geo_A
-                            dB = -(self.lora_plus_multiplier * lr) * geo_B
-                        elif self.magnitude_rule in ("spectral_chord",
-                                                     "spectral_chord_tight",
-                                                     "spectral_chord_tight_clean",
-                                                     "spectral_chord_direction"):
-                            geo_A = SB_half_inv_k @ P_A
-                            geo_B = P_B @ SA_half_inv_k
-                            geoA_f = geo_A.float()
-                            geoB_f = geo_B.float()
-                            # σ_max via 8-iter batched power-iter; replaces
-                            # eigvalsh on (n_pairs, r, r) Gram which has
-                            # ~1.5 s/call cuSOLVER overhead at r=256.
-                            op_geoA_b, v_geoA = _sigma_max_power_iter_batched(
-                                geoA_f, v_init=gs.get('v_op_geoA'), n_iters=8)
-                            op_geoB_b, v_geoB = _sigma_max_power_iter_batched(
-                                geoB_f, v_init=gs.get('v_op_geoB'), n_iters=8)
-                            gs['v_op_geoA'] = v_geoA
-                            gs['v_op_geoB'] = v_geoB
-                            op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
-                            op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
-                            if self.magnitude_rule == "spectral_chord_direction":
-                                # Variant 1 batched: λ_dir from
-                                # a·λ + b·λ² = lr per pair.
-                                P_dir = geoA_f / op_geoA              # (N, r, n)
-                                Q_dir = geoB_f / op_geoB              # (N, m, r)
-                                PPt_b = P_dir @ P_dir.transpose(-1, -2)
-                                QtQ_b = Q_dir.transpose(-1, -2) @ Q_dir
-                                # Use power-iter on N = G_outer·G_inner (r×r non-symmetric,
-                                # real-positive spectrum). Same per-iter cost as Krylov-chol
-                                # but no Cholesky → no chol-fails-when-rank-deficient bug
-                                # that crashed chord-direction on h100. See
-                                # `docs/notes/sigma_max_estimation.md` and bench data:
-                                # accuracy matches krylov-chol within 1e-3, timing
-                                # within ~5% on RTX A6000 across all regimes including
-                                # rank-deficient (where krylov-chol crashes outright).
-                                sigma_BP_b, _ = _sigma_max_power_iter_nonsym(GBB_s, PPt_b)
-                                sigma_QA_b, _ = _sigma_max_power_iter_nonsym(GAA_s, QtQ_b)
-                                sigma_QP_b, _ = _sigma_max_power_iter_nonsym(PPt_b, QtQ_b)
-                                a_b = (sigma_BP_b + sigma_QA_b).clamp_min(1e-30)
-                                b_b = sigma_QP_b
-                                # Per-pair quadratic: pick lr/a where b≈0,
-                                # else closed-form root. b_b is (N,) so just
-                                # use the closed form everywhere with safe
-                                # denominator clamping.
-                                disc = a_b * a_b + 4.0 * b_b * lr
-                                lam_quad = (-a_b + torch.sqrt(disc)) / (2.0 * b_b.clamp_min(1e-30))
-                                lam_lin = lr / a_b
-                                lam = torch.where(b_b > 1e-30, lam_quad, lam_lin)
-                                lam_unsq = lam.unsqueeze(-1).unsqueeze(-1)
-                                dA = -lam_unsq * P_dir
-                                dB = -(self.lora_plus_multiplier *
-                                       lam_unsq) * Q_dir
-                            else:
-                                rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
-                                dA = -(rho_unsq / op_geoA) * geo_A
-                                dB = -(self.lora_plus_multiplier *
-                                       rho_unsq / op_geoB) * geo_B
-                        else:
-                            from ._batched_polar import unwhiten_rescale_frob_batched
-                            dA, dB = unwhiten_rescale_frob_batched(
-                                P_A, P_B, SA_half_inv_k, SB_half_inv_k,
-                                u_A_eff, u_B_eff, lr,
-                                lora_plus_multiplier=self.lora_plus_multiplier,
-                            )
-                dA_prev = dA
-                dB_prev = dB
+                    dA_prev = dA
+                    dB_prev = dB
 
             chain_tensors = {
                 "u_A": u_A, "u_B": u_B,
