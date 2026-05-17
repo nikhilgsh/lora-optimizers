@@ -17,7 +17,16 @@ Let $d := \max(d_{\text{in}}, d_{\text{out}})$ and $r$ the LoRA rank ($r \ll d$)
 Persistent state per group:
 - $m_A, v_A$ shape $(N, r, d_{\text{in}})$, $m_B, v_B$ shape $(N, d_{\text{out}}, r)$ — Adam moments.
 - $S_A^{-1/2}, S_B^{-1/2}$ shape $(N, r, r)$ — whitening matrices, refreshed every `precond_refresh_every` steps.
-- Warm-start top-singular vectors `v_sigma_A`, `v_sigma_B`, `v_sigma_XA`, `v_sigma_XB`, `v_op_geoA`, `v_op_geoB`, each shape $(N, r)$ or $(N, d)$ depending on which side of its matrix is smaller.
+- Warm-start top-singular vectors for power-iter (the smaller-side Gram converges as $(\sigma_2/\sigma_1)^{2\,n_{\text{iter}}}$; warm-starting from the prior step's converged $v$ lets us cut $n_{\text{iter}}$ from 8 cold to 3 warm). $r$ is the smaller side of every matrix below, so all warm-start vectors have shape $(N, r)$:
+
+  | key | matrix | norm computed |
+  |---|---|---|
+  | `v_sigma_A` | $A \in \mathbb{R}^{N \times r \times d_{\text{in}}}$ | $\sigma_{\max}(A)$ — feeds $\rho = \eta/s$ |
+  | `v_sigma_B` | $B \in \mathbb{R}^{N \times d_{\text{out}} \times r}$ | $\sigma_{\max}(B)$ — feeds $\rho = \eta/s$ |
+  | `v_sigma_XA` | $X_A = S_B^{-1/2}\,u_A \in \mathbb{R}^{N \times r \times d_{\text{in}}}$ | $\sigma_{\max}(X_A)$ — pre-rescale (Alg 2′) |
+  | `v_sigma_XB` | $X_B = u_B\,S_A^{-1/2} \in \mathbb{R}^{N \times d_{\text{out}} \times r}$ | $\sigma_{\max}(X_B)$ — pre-rescale (Alg 2′) |
+  | `v_op_geoA` | $\text{geo}_A = S_B^{-1/2}\,P_A \in \mathbb{R}^{N \times r \times d_{\text{in}}}$ | $\sigma_{\max}(\text{geo}_A)$ — magnitude rescale |
+  | `v_op_geoB` | $\text{geo}_B = P_B\,S_A^{-1/2} \in \mathbb{R}^{N \times d_{\text{out}} \times r}$ | $\sigma_{\max}(\text{geo}_B)$ — magnitude rescale |
 
 ## 2. Step walkthrough — `spectral_chord_tight_clean`, single Picard iter ($k = 1$)
 
@@ -149,6 +158,8 @@ At $r = 256$, $D = 4096$: NS dominates at 78%; power iters drop to 1.3%. At $r =
 
 ## 4. Per-Picard-iter incremental cost ($k \ge 2$)
 
+**Reminder.** Each Picard iter runs the **full polar pipeline**: whiten ($X_A^{\text{eff}}$ = $S_B^{-1/2}\,\tilde u_A$), one Newton–Schulz polar map ($P_A = \text{polar}_{\text{NS-}j}(X_A^{\text{eff}})$, $j$ inner NS quintic iterations), unwhiten, and σ-rescale. So $k$ Picard iters means $k$ NS polar maps and $k$ σ_max(geo) power iters; the only operations that run *once* per step are the Adam direction (§2.1), the whitening refresh (§2.2, schedule-gated), the pre-rescale (§2.3), and the ρ computation (§2.4). The cross-coupling correction (§2.5 with $n \ge 2$) is the only piece that's skipped at $n = 1$.
+
 Each additional Picard iter $n \ge 2$ adds, inside the inner loop:
 
 | op | shape | FLOPs |
@@ -174,7 +185,19 @@ The current `_step_batched_group` body at `optim.py:~3370–3600` does the follo
 
 1. **Double-computed $S_B^{-1/2}\,u_A$.** Lines ~3390 (pre-rescale) and ~3554 (polar pipeline whiten) both compute $S_B^{-1/2}\,u_A$ — the second time on the rescaled $u_A$, so the matrix is different by a positive scalar but the matmul work is identical. Save the post-rescale matmul by computing $X_A := S_B^{-1/2}\,u_A$ once, taking $\sigma_{\max}(X_A)$, rescaling $X_A \mathrel{{/}{=}} \sigma_{\max}(X_A)$, and feeding the rescaled matrix into NS directly. Cost saved: $2 N r^2 D$, i.e. ~4% of step.
 
-2. **Unused Higham byproduct.** `spd_inv_sqrt_higham_batched` calls `lambda_max_power_iter_psd_batched(H, n_iters=8)` on $H = S_A = A A^\top$ once per refresh. $\lambda_{\max}(S_A) = \sigma_{\max}(A)^2$. Site B then runs another 8-iter power iter on $A$ for $\sigma_{\max}(A)$. The Higham λ_max is on $S_A$ not $A$, so it is not directly returned by the helper; trivially exposed by returning it alongside $S_A^{-1/2}$. Saves the site-B power iter on refresh steps only — small (≤ 2.5% of step).
+2. **Hoist $\lambda_{\max}(S_A)$ out of Higham; pass it in instead.** `spd_inv_sqrt_higham_batched(H, ...)` at `utils.py:146` currently calls `lambda_max_power_iter_psd_batched(H, ...)` internally to scale $Y_0 = H/s$ into Newton–Schulz's basin (and, with `eps_relative=True`, a *second* call on raw $H$ for the damping). But for $H = S_A = A A^\top$, we have the identity
+   $$
+   \lambda_{\max}(S_A) \;=\; \sigma_{\max}(A)^2,
+   $$
+   and $\sigma_{\max}(A)$ is *already* computed every step at site B for $\rho = \eta/s$. The current code computes $\lambda_{\max}(S_A)$ twice: once inside Higham, once at site B. Single-source it by:
+
+   - Computing $\sigma_{\max}(A), \sigma_{\max}(B)$ at the top of the step (site B, as today).
+   - Adding a `lam_max` keyword argument to `spd_inv_sqrt_higham_batched` that, when provided, skips both internal `lambda_max_power_iter_psd_batched` calls and uses the passed value.
+   - Passing `lam_max=sigma_A.pow(2)` (and analogously for $S_B$) into the refresh.
+
+   With `eps_relative=True` the same `lam_max` feeds both the damping ($\delta_A = \varepsilon_{\text{rel}} \cdot \lambda_{\max}(S_A)$) and the NS scaling on the damped matrix ($\lambda_{\max}(S_A + \delta_A I) = \lambda_{\max}(S_A) + \delta_A = \lambda_{\max}(S_A)(1 + \varepsilon_{\text{rel}})$, exact closed form, no second power iter needed).
+
+   FLOP win is small (Higham's internal calls are on $(N, r, r)$, cost $32 N r^2$ each — dwarfed by the NS iteration's $60 N r^3$). The point is architectural: one canonical computation of $\sigma_{\max}(A)$ per step, used by both ρ and the preconditioner damping. Removes the "Higham silently runs its own power iter" footgun for anyone reading the refresh code.
 
 3. **Cold vs warm-start asymmetry.** All three sites use `n_iters=8` unconditionally. The helper docstring says "n_iters=3 reaches the same accuracy with warm start." On non-refresh steps this is 5 wasted iters per call × 3 sites = up to 9% of step at $r = 16$ (where power-iter is non-negligible). Adoption is gated on: (a) does the warm-start key actually correspond to the same matrix the next step (yes for site B; no for sites A, C if recomputed each step on a different matrix); (b) is the convergence still adequate? Verify via a per-pair residual test before committing.
 
@@ -194,11 +217,16 @@ def _step_chord_tight_clean(self, group, gs, indices):
     N = A_f.shape[0]
     lr = group['lr']
 
-    # 1. Adam direction (shared with other rules — keep in caller)
+    # 1. Adam direction (shared with other rules — keep in caller).
+    #    EMAs on (m_A, v_A, m_B, v_B) + bias-correct → (u_A, u_B).
     u_A, u_B = self._adam_direction_batched(gs)
 
-    # 2. Whitening refresh (shared — keep in caller)
-    SA_inv, SB_inv = self._refresh_whitening_batched(gs, A_f, B_f)
+    # 2. Whitening refresh (shared — keep in caller). On schedule steps,
+    #    recomputes (S_A^{-1/2}, S_B^{-1/2}) ∈ ℝ^(N, r, r) via batched
+    #    Higham. Returns the cached buffers from `gs` on non-refresh steps.
+    SA_inv, SB_inv = self._refresh_whitening_batched(
+        gs, A_f, B_f, step_count=step_count,
+    )
 
     # 3. Whiten Adam direction ONCE; reuse for pre-rescale and polar input.
     X_A = SB_inv @ u_A                                  # (N, r, d_in)
