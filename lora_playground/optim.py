@@ -3229,6 +3229,151 @@ class AdamPolarProductLoRA(Optimizer):
             return self._step_batched()
         return self._step_per_pair()
 
+    def _chord_tight_clean_polar_pipeline(
+        self, gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
+    ):
+        """Algorithm 2′ — focused implementation of the §10-clean polar
+        pipeline. Replaces the gated-branch path in `_step_batched` for
+        `magnitude_rule == "spectral_chord_tight_clean"`. Walkthrough and
+        FLOP budget: `docs/notes/polar_product/algorithm_clean_implementation.md`.
+
+        Returns a dict whose keys match the locals the caller's downstream
+        diagnostic-emission block consumes (`u_A`, `u_B`, `SA_half_inv_k`,
+        `SB_half_inv_k`, `sigma_A`, `sigma_B`, `rho`, `picard_coeff_s`,
+        `u_A_eff`, `u_B_eff`, `X_A`, `X_B`, `P_A`, `P_B`, `geo_A`, `geo_B`,
+        `op_geoA_b`, `op_geoB_b`, `dA`, `dB`).
+
+        Differences from the gated implementation:
+          - Computes `X_A := S_B^{-1/2} u_A` once; the pre-rescale and the
+            polar-pipeline whitening share the matmul (saves 2·N·r²·D/step
+            relative to the gated form, which recomputes after rescale).
+          - Cross-coupling coefficient is `1/η` (Lemma 1 form), no factor of
+            2 doubling, no `2/(ρ·s)` empirical multiplier.
+          - ρ is linear `η/s`, not the quadratic root.
+          - Site-C warm-start vector (`v_op_geoA`/`v_op_geoB`) is keyed by
+            Picard iter `n`, so iter `n`'s power iter starts from iter `n`'s
+            own prior step value (not iter `n-1`'s of the current step).
+          - Drops `exact_chord`, `disable_whitening`, `picard_alpha/lr`, and
+            the direction-aware λ_dir quartic — none apply to the clean rule.
+        """
+        N = A_f.shape[0]
+        device, dtype = A_f.device, A_f.dtype
+
+        # 1. σ_max(A), σ_max(B) → ρ = η/s. Warm-started power iter on the
+        #    raw factor matrices. Same warm-start keys as the legacy path.
+        with maybe_time(timer, "chord_tight_clean_sigma_AB"):
+            sigma_A, v_sigma_A = _sigma_max_power_iter_batched(
+                A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
+            sigma_B, v_sigma_B = _sigma_max_power_iter_batched(
+                B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
+            gs['v_sigma_A'] = v_sigma_A
+            gs['v_sigma_B'] = v_sigma_B
+            s_AB = sigma_A + sigma_B
+            rho = lr / (s_AB + 1e-30)                          # (N,)
+
+        # 2. Whitened Adam direction. Computed once; reused for pre-rescale
+        #    and for the n=1 polar input. (The legacy path computes it twice.)
+        with maybe_time(timer, "chord_tight_clean_whiten_input"):
+            X_A = SB_half_inv @ u_A                            # (N, r, d_in)
+            X_B = u_B @ SA_half_inv                            # (N, d_out, r)
+
+        # 3. Pre-rescale: σ_max(X_A,B) via warm-started power iter; divide.
+        #    After this, σ_max(X_A) = σ_max(X_B) = 1 by construction.
+        with maybe_time(timer, "chord_tight_clean_pre_rescale"):
+            sigma_XA, v_sigma_XA = _sigma_max_power_iter_batched(
+                X_A, v_init=gs.get('v_sigma_XA'), n_iters=8)
+            sigma_XB, v_sigma_XB = _sigma_max_power_iter_batched(
+                X_B, v_init=gs.get('v_sigma_XB'), n_iters=8)
+            gs['v_sigma_XA'] = v_sigma_XA
+            gs['v_sigma_XB'] = v_sigma_XB
+            inv_XA = 1.0 / (sigma_XA + 1e-30)
+            inv_XB = 1.0 / (sigma_XB + 1e-30)
+            X_A = X_A * inv_XA.unsqueeze(-1).unsqueeze(-1)
+            X_B = X_B * inv_XB.unsqueeze(-1).unsqueeze(-1)
+            # Keep rescaled u_A,u_B consistent for cross-coupling at n ≥ 1.
+            u_A = u_A * inv_XA.unsqueeze(-1).unsqueeze(-1)
+            u_B = u_B * inv_XB.unsqueeze(-1).unsqueeze(-1)
+
+        # 4. Picard outer loop. At n=0 there is no cross-coupling.
+        dA = torch.zeros_like(u_A)
+        dB = torch.zeros_like(u_B)
+        # Picard-coupling coefficient: Lemma 1 gives 1/η directly. Stored
+        # in (N, 1, 1) form purely so downstream chain_tensors emission
+        # sees the same shape it expects from the legacy path.
+        picard_coeff_s = torch.full((N, 1, 1), 1.0 / lr, device=device, dtype=dtype)
+
+        # Final loop intermediates (carry the last iter's values out so the
+        # caller's diagnostic block sees them).
+        u_A_eff = u_A
+        u_B_eff = u_B
+        P_A = None
+        P_B = None
+        geo_A = None
+        geo_B = None
+        op_geoA_b = None
+        op_geoB_b = None
+
+        for n in range(self.picard_iters):
+            with maybe_time(timer, "chord_tight_clean_picard"):
+                if n == 0:
+                    X_A_eff = X_A
+                    X_B_eff = X_B
+                    u_A_eff = u_A
+                    u_B_eff = u_B
+                else:
+                    # 1/η cross-coupling on the *whitened* polar input —
+                    # X_A^eff = S_B^{-1/2}(u_A + (1/η) B^T dB A).
+                    BT_dB_A = B_f.transpose(-2, -1) @ dB @ A_f       # (N, r, d_in)
+                    B_dA_AT = B_f @ dA @ A_f.transpose(-2, -1)       # (N, d_out, r)
+                    u_A_eff = u_A + (1.0 / lr) * BT_dB_A
+                    u_B_eff = u_B + (1.0 / lr) * B_dA_AT
+                    X_A_eff = SB_half_inv @ u_A_eff
+                    X_B_eff = u_B_eff @ SA_half_inv
+
+                # Polar map via Newton–Schulz. bf16 inside the iteration;
+                # caller-side dtype handling is unchanged from the legacy path.
+                P_A = _newton_schulz_batched(
+                    X_A_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
+                ).float()
+                P_B = _newton_schulz_batched(
+                    X_B_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
+                ).float()
+
+                # Unwhiten back to factor space.
+                geo_A = SB_half_inv @ P_A                              # (N, r, d_in)
+                geo_B = P_B @ SA_half_inv                              # (N, d_out, r)
+
+                # Site-C: σ_max(geo_A), σ_max(geo_B). Warm-start keyed by n
+                # so iter-n's power iter sees iter-n's own prior step value.
+                key_A = f'v_op_geoA_n{n}'
+                key_B = f'v_op_geoB_n{n}'
+                op_geoA_b, v_op_geoA = _sigma_max_power_iter_batched(
+                    geo_A, v_init=gs.get(key_A), n_iters=8)
+                op_geoB_b, v_op_geoB = _sigma_max_power_iter_batched(
+                    geo_B, v_init=gs.get(key_B), n_iters=8)
+                gs[key_A] = v_op_geoA
+                gs[key_B] = v_op_geoB
+
+                rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
+                op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                dA = -(rho_unsq / op_geoA) * geo_A
+                dB = -(self.lora_plus_multiplier * rho_unsq / op_geoB) * geo_B
+
+        return {
+            "u_A": u_A, "u_B": u_B,
+            "SA_half_inv_k": SA_half_inv, "SB_half_inv_k": SB_half_inv,
+            "sigma_A": sigma_A, "sigma_B": sigma_B,
+            "rho": rho, "picard_coeff_s": picard_coeff_s,
+            "u_A_eff": u_A_eff, "u_B_eff": u_B_eff,
+            "X_A": X_A, "X_B": X_B,
+            "P_A": P_A, "P_B": P_B,
+            "geo_A": geo_A, "geo_B": geo_B,
+            "op_geoA_b": op_geoA_b, "op_geoB_b": op_geoB_b,
+            "dA": dA, "dB": dB,
+            "s_AB": s_AB,
+        }
+
     @torch.no_grad()
     def _step_batched(self):
         """Production hot path: shape-grouped 3D buffers + batched primitives.
