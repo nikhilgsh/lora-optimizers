@@ -3956,21 +3956,38 @@ class AdamPolarProductLoRA(Optimizer):
                     geo_A_diag = geo_A
                     geo_B_diag = geo_B
                     # uA_norm/uB_norm follow per-pair convention: rho (or lam)
-                    # for chord variants, since the unit-polar-norm has
+                    # for chord variants where the unit-polar-norm has
                     # absorbed the original Adam magnitude into the rescale.
+                    # spectral_chord_tight_no_rho has neither rho nor lam —
+                    # use raw Adam magnitude (Frobenius) as the fallback.
                     if self.magnitude_rule == "spectral_chord_direction":
                         uA_norm_b = lam.detach()
                         uB_norm_b = lam.detach()
+                    elif self.magnitude_rule == "spectral_chord_tight_no_rho":
+                        uA_norm_b = u_A_eff.flatten(-2).norm(dim=-1)        # (N,)
+                        uB_norm_b = u_B_eff.flatten(-2).norm(dim=-1)        # (N,)
                     else:
                         uA_norm_b = rho.detach()
                         uB_norm_b = rho.detach()
-                    # op_geoA/op_geoB are (N,1,1); flatten to (N,) for per-pair.
-                    op_geoA_b_diag = op_geoA.squeeze(-1).squeeze(-1)
-                    op_geoB_b_diag = op_geoB.squeeze(-1).squeeze(-1)
-                    gA_norm_b = op_geoA_b_diag
-                    gB_norm_b = op_geoB_b_diag
-                    sigma_A_b_diag = sigma_A
-                    sigma_B_b_diag = sigma_B
+                    # op_geoA/op_geoB are (N, 1, 1) for chord variants that
+                    # rescale by σ_max(geo). no_rho skips the rescale entirely
+                    # so it never computes them — use Frobenius of geo as the
+                    # fallback gA_norm/gB_norm and pass None for the op-norm
+                    # diagnostic (consumed downstream as `if not None`).
+                    if self.magnitude_rule == "spectral_chord_tight_no_rho":
+                        op_geoA_b_diag = None
+                        op_geoB_b_diag = None
+                        gA_norm_b = geo_A.flatten(-2).norm(dim=-1) + 1e-30
+                        gB_norm_b = geo_B.flatten(-2).norm(dim=-1) + 1e-30
+                        sigma_A_b_diag = None
+                        sigma_B_b_diag = None
+                    else:
+                        op_geoA_b_diag = op_geoA.squeeze(-1).squeeze(-1)
+                        op_geoB_b_diag = op_geoB.squeeze(-1).squeeze(-1)
+                        gA_norm_b = op_geoA_b_diag
+                        gB_norm_b = op_geoB_b_diag
+                        sigma_A_b_diag = sigma_A
+                        sigma_B_b_diag = sigma_B
 
                 picard_coeff_b = (picard_coeff_s.squeeze(-1).squeeze(-1)
                                   if picard_coeff_s is not None else None)
