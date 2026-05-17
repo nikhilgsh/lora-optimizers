@@ -186,6 +186,34 @@
       "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
       "treat_as_commit": "953a11b",
       "reason": "Tasks did NOT invoke --checkpoint_dir or --resume_from (verified in run_info/tasks: zero hits for either flag). The dirty diff at submission time consisted of train.py adding new checkpoint/resume code paths (opt-in via those CLI flags), plot_utils.py adding log-segment merging for resumes (analysis-side), and untracked lora_playground/checkpoint.py (only imported by the new code paths). None of these affect optimizer math or training behavior when --checkpoint_dir is unset. Other dirty paths (docs/, notebooks/, params/, tests/) are non-runtime. Safe to treat as commit 953a11b."
+    },
+    {
+      "group": "adamw_phase_L_lrsweep_r64_extension_blackwell",
+      "log_filename": "log_0.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "cb6d6e6",
+      "reason": "Phase L LR-extension AdamW run (eta=1e-3). Diff at submission (same git_diff_sha as the earlier chord_tight_r128_k3_eps_rel_1e-2_4k attestations) is the in-flight checkpoint/resume work that landed at cb6d6e6: train.py checkpoint/resume hooks, plot_utils.py log-segment merging, untracked lora_playground/checkpoint.py. Unlike the earlier attestations, these tasks DO invoke CHECKPOINT_DIR (see run_info/tasks). Loader auto-resolve to cb6d6e6 failed -> runtime checkpoint.py differs from the committed cb6d6e6 version by minor edits (logging/comments) made between submission and the cb6d6e6 commit. checkpoint.py only orchestrates state-dict save/load around the optimizer step; it does not modify optimizer math, gradients, or eval loss computation. Eval_loss trajectories therefore reflect the optim.py + train.py + dataset path at 953a11b, which match the committed cb6d6e6 versions of those files. Treating as cb6d6e6 since that is the closest committed source for the running closure."
+    },
+    {
+      "group": "adamw_phase_L_lrsweep_r64_extension_blackwell",
+      "log_filename": "log_1.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "cb6d6e6",
+      "reason": "Phase L LR-extension AdamW run (eta=3e-3). Same attestation rationale as log_0.out of this group: in-flight checkpoint/resume diff that later landed at cb6d6e6; checkpoint.py runtime differs from committed cb6d6e6 version by non-mathematical edits; optimizer math is unaffected; treating as cb6d6e6."
+    },
+    {
+      "group": "chord_tight_phase_L_lrsweep_r64_extension_blackwell",
+      "log_filename": "log_0.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "cb6d6e6",
+      "reason": "Phase L LR-extension chord-tight run (eta=1e-1). Same attestation rationale as the AdamW extension entries: in-flight checkpoint/resume diff that later landed at cb6d6e6; checkpoint.py runtime differs from committed cb6d6e6 version by non-mathematical edits; optimizer math (chord-tight = adam-polar-product-lora-coupled-spectral-chord-tight) is unaffected; treating as cb6d6e6."
+    },
+    {
+      "group": "chord_tight_phase_L_lrsweep_r64_extension_blackwell",
+      "log_filename": "log_1.out",
+      "git_diff_sha": "e61c2d54a588083c90481857550d6ad285b8d104658f2de1b8f4f462278d1186",
+      "treat_as_commit": "cb6d6e6",
+      "reason": "Phase L LR-extension chord-tight run (eta=3e-1). Same attestation rationale as the AdamW extension entries: in-flight checkpoint/resume diff that later landed at cb6d6e6; checkpoint.py runtime differs from committed cb6d6e6 version by non-mathematical edits; optimizer math is unaffected; treating as cb6d6e6."
     }
   ]
 }
