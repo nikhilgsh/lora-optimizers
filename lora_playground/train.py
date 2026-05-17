@@ -598,6 +598,14 @@ def make_parser():
                              "α=1 standard Picard; α=0 zeros the cross-term; intermediate "
                              "values continuously interpolate between block-diagonal and "
                              "joint-NE targets.")
+    parser.add_argument("--htmuon_p", type=float, default=None,
+                        help="HTMuon σ → σ^p sub-mode of "
+                             "adam-polar-product-lora-coupled-spectral-chord-tight-clean. "
+                             "When set ∈ (0, 1], the polar output is left-multiplied by "
+                             "(X X^T)^(p/2) so the singular-value transfer becomes σ → σ^p "
+                             "instead of σ → 1. Use power-of-two reciprocals (0.5, 0.25, "
+                             "0.125, 0.0625) for exact iterated-sqrt landing. None disables "
+                             "the path (bit-identical to clean NS5).")
     parser.add_argument("--picard_iters_override", type=int, default=None,
                         help="Override picard_iters for AdamPolarProductLoRA "
                              "(adam-polar-product-lora-coupled). Default uses the "
@@ -1019,6 +1027,7 @@ def main():
         debug_abort_on_non_finite=args.debug_abort_on_non_finite,
         higham_iters=args.higham_iters,
         picard_alpha=args.picard_alpha,
+        htmuon_p=args.htmuon_p,
         picard_iters_override=args.picard_iters_override,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,

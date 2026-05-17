@@ -190,6 +190,59 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_rel
     return out
 
 
+def spd_power_batched(H, p, n_iters=10, n_power_iter=8, eps=1e-6):
+    """Batched H^p for SPD H, p ∈ (0, 1]. Same coupled-NS sqrt machinery as
+    `spd_inv_sqrt_higham_batched`, iterated `n_outer = round(-log2(p))`
+    rounds (each round produces Y = (X/λ_max)^(1/2); scale by sqrt(λ_max)
+    to recover X^(1/2) and feed into the next round).
+
+    Math equivalence with HTMuon (Pang et al. 2026) Algorithm 5: identical
+    inner loop with λ_max scaling (the paper uses Frobenius scaling which
+    leaves eigenvalues far from 1 for spiky spectra; T=5 inner iters then
+    don't converge — 1-5% rel-err on real LoRA u_A matrices). λ_max scaling
+    + T=10 reaches ~1e-6 rel-err on real shapes per
+    `scripts/bench/bench_htmuon_op.py`.
+
+    Args:
+        H: (..., n, n) SPD, float32.
+        p: target exponent ∈ (0, 1]. p is snapped internally to the nearest
+            2^-k (since each outer round is a sqrt). For p = 0.125 = 2^-3
+            this is exact; for p = 0.3 we'd round to 0.25 = 2^-2 — caller
+            should pick p values that ARE powers-of-two reciprocals.
+        n_iters: inner coupled-NS iters per sqrt round. T=10 passes 1e-4 on
+            real LoRA spectra with 2 orders of margin; T=5 fails.
+        n_power_iter: λ_max power-iter steps per outer round (each round's
+            scaling depends on the current X, not on H — so we re-estimate).
+        eps: δ·I damping added each outer round.
+
+    Returns:
+        Z ≈ H^p, same shape as H.
+    """
+    import math as _math
+    n_outer = max(1, round(-_math.log2(p)))
+    n = H.shape[-1]
+    eye = torch.eye(n, dtype=H.dtype, device=H.device)
+    X = 0.5 * (H + H.transpose(-2, -1))
+    eye_b = eye.expand_as(X)
+    three_eye = 3.0 * eye_b
+    for _ in range(n_outer):
+        X = X + eps * eye
+        lam_max, _ = lambda_max_power_iter_psd_batched(
+            X, n_iters=max(n_power_iter, 8),
+        )
+        s = lam_max.unsqueeze(-1).unsqueeze(-1)
+        Y = X / s
+        Z = eye_b.clone()
+        for _ in range(n_iters):
+            T = three_eye - Z @ Y
+            Y = 0.5 * (Y @ T)
+            Z = 0.5 * (T @ Z)
+        # Y ≈ (X/s)^(1/2) → X^(1/2) = Y · sqrt(s).
+        X = Y * s.sqrt()
+        X = 0.5 * (X + X.transpose(-2, -1))
+    return X
+
+
 def spd_inv_sqrt_higham(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_relative=False):
     """
     Compute H^{-1/2} for SPD H via the coupled Newton-Schulz iteration

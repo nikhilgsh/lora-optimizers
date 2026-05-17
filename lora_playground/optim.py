@@ -2634,6 +2634,7 @@ class AdamPolarProductLoRA(Optimizer):
                  precond_refresh_every=1,
                  precond_method="higham", higham_iters=10,
                  picard_iters=1, end_rms_align=False, picard_alpha=1.0,
+                 htmuon_p=None,
                  operator_type="polar",
                  polar_norm_dir="frob",
                  polar_sigma_power=None,
@@ -2697,6 +2698,15 @@ class AdamPolarProductLoRA(Optimizer):
         # except in passing through the diagnostic instrumentation). Continuous
         # probe of cross-term magnitude.
         self.picard_alpha = picard_alpha
+        # HTMuon σ → σ^p sub-mode of spectral_chord_tight_clean. None = use
+        # NS5 polar output unchanged. When set ∈ (0, 1], the polar output P
+        # is left-multiplied by (X X^T)^(p/2) (right-multiplied by (X^T X)^(p/2)
+        # on the B-side) so the effective singular-value transfer becomes
+        # σ → σ^p instead of σ → 1. p must be a power-of-two reciprocal
+        # (0.5, 0.25, 0.125, 0.0625, ...) for the iterated-sqrt primitive
+        # to land on it exactly. See docs/papers/htmuon_2603.10067.pdf and
+        # scripts/bench/bench_htmuon_op.py for accuracy/timing.
+        self.htmuon_p = htmuon_p
         # Core-signal remix coefficient. α ∈ [0, 1]. 0 = no remix (baseline);
         # 1/4 = the completed-core metric prediction (attenuates the agreed
         # mode S_+ by half, preserves the disagreement mode S_-). Applied
@@ -3338,6 +3348,19 @@ class AdamPolarProductLoRA(Optimizer):
                 P_B = _newton_schulz_batched(
                     X_B_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
                 ).float()
+
+                # HTMuon σ → σ^p sub-mode. Bypasses the NS5 σ→1 polishing on
+                # noise-dominated singular directions; instead applies
+                # U Σ^p V^T = (X X^T)^(p/2) · polar(X). When self.htmuon_p is
+                # None this branch is skipped → bit-identical to clean NS5.
+                if self.htmuon_p is not None:
+                    from .utils import spd_power_batched
+                    G_A = X_A_eff @ X_A_eff.transpose(-2, -1)               # (N, r, r)
+                    G_B = X_B_eff.transpose(-2, -1) @ X_B_eff               # (N, r, r)
+                    G_A_phalf = spd_power_batched(G_A, self.htmuon_p / 2.0) # = U Σ^p U^T
+                    G_B_phalf = spd_power_batched(G_B, self.htmuon_p / 2.0) # right-side Gram
+                    P_A = G_A_phalf @ P_A                                   # = U Σ^p V^T
+                    P_B = P_B @ G_B_phalf
 
                 # Unwhiten back to factor space.
                 geo_A = SB_half_inv @ P_A                              # (N, r, d_in)
@@ -8246,6 +8269,7 @@ def build_optimizer(
     precond_method: str = "eigh",
     higham_iters: int = 10,
     picard_alpha: float = 1.0,
+    htmuon_p: float | None = None,
     picard_iters_override: int | None = None,
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
@@ -8645,6 +8669,7 @@ def build_optimizer(
             higham_iters=higham_iters,
             picard_iters=picard_iters_override if picard_iters_override is not None else 1,
             picard_alpha=picard_alpha,
+            htmuon_p=htmuon_p,
             anderson_m=anderson_m,
             anderson_reg=anderson_reg,
             polar_norm_dir=polar_norm_dir,
