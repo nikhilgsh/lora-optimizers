@@ -3360,6 +3360,11 @@ class AdamPolarProductLoRA(Optimizer):
                 dA = -(rho_unsq / op_geoA) * geo_A
                 dB = -(self.lora_plus_multiplier * rho_unsq / op_geoB) * geo_B
 
+        # (N, 1, 1) unsqueezed forms — downstream probe-step diagnostic
+        # block in _step_batched reads these directly (not the (N,) `_b` forms).
+        op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+        op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+
         return {
             "u_A": u_A, "u_B": u_B,
             "SA_half_inv_k": SA_half_inv, "SB_half_inv_k": SB_half_inv,
@@ -3370,6 +3375,7 @@ class AdamPolarProductLoRA(Optimizer):
             "P_A": P_A, "P_B": P_B,
             "geo_A": geo_A, "geo_B": geo_B,
             "op_geoA_b": op_geoA_b, "op_geoB_b": op_geoB_b,
+            "op_geoA": op_geoA, "op_geoB": op_geoB,
             "dA": dA, "dB": dB,
             "s_AB": s_AB,
         }
@@ -3545,6 +3551,9 @@ class AdamPolarProductLoRA(Optimizer):
                 geo_B = _clean_result['geo_B']
                 op_geoA_b = _clean_result['op_geoA_b']
                 op_geoB_b = _clean_result['op_geoB_b']
+                op_geoA = _clean_result['op_geoA']
+                op_geoB = _clean_result['op_geoB']
+                s_AB = _clean_result['s_AB']
                 dA = _clean_result['dA']
                 dB = _clean_result['dB']
             else:
