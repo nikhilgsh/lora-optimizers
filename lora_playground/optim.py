@@ -3559,7 +3559,6 @@ class AdamPolarProductLoRA(Optimizer):
                 # Polar(c·X) = Polar(X) for c > 0, so this is a strict no-op at
                 # picard_iters=1 (trajectory bit-identical). Affects only k ≥ 2.
                 if self.magnitude_rule in ("spectral_chord_tight",
-                                           "spectral_chord_tight_clean",
                                            "spectral_chord_direction"):
                     with maybe_time(timer, "picard_unit_polar_norm"):
                         X_A_pre = SB_half_inv @ u_A             # (N, r, d_in)
@@ -3609,7 +3608,6 @@ class AdamPolarProductLoRA(Optimizer):
                 # method with sufficient iters for accuracy at any r.
                 if self.magnitude_rule in ("spectral_chord",
                                            "spectral_chord_tight",
-                                           "spectral_chord_tight_clean",
                                            "spectral_chord_direction"):
                     sigma_A, v_A = _sigma_max_power_iter_batched(
                         A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
@@ -3622,12 +3620,6 @@ class AdamPolarProductLoRA(Optimizer):
                     elif self.magnitude_rule == "spectral_chord_tight":
                         s_AB = sigma_A + sigma_B
                         rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
-                    elif self.magnitude_rule == "spectral_chord_tight_clean":
-                        # §10-clean: linear ρ = η/s (Appendix A boxed form),
-                        # not the quadratic root. Within 1.1% of quadratic in
-                        # our operating regime.
-                        s_AB = sigma_A + sigma_B
-                        rho = lr / (s_AB + 1e-30)
                     else:  # spectral_chord_direction: dA/dB use λ_dir, but
                            # rho computed for diagnostic comparison consistency
                         s_AB = sigma_A + sigma_B
@@ -3647,15 +3639,6 @@ class AdamPolarProductLoRA(Optimizer):
                                                "spectral_chord_direction"):
                         s_AB = sigma_A + sigma_B
                         picard_coeff_s = (2.0 / (rho * s_AB + 1e-30)).unsqueeze(-1).unsqueeze(-1)
-                    elif self.magnitude_rule == "spectral_chord_tight_clean":
-                        # §10-clean: Lemma 1 coefficient 1/η (no C2 doubling,
-                        # no σ_max(X_A) absorption). Algorithm 2′ is "C1 only";
-                        # the cross-coupling coefficient comes straight from
-                        # expanding (1/(2η))‖J‖_F².
-                        picard_coeff_s = torch.full(
-                            (sigma_A.shape[0], 1, 1),
-                            1.0 / lr, device=sigma_A.device, dtype=sigma_A.dtype,
-                        )
                     else:
                         picard_coeff_s = None
                 else:
@@ -3754,7 +3737,6 @@ class AdamPolarProductLoRA(Optimizer):
                                 dB = -(self.lora_plus_multiplier * lr) * geo_B
                             elif self.magnitude_rule in ("spectral_chord",
                                                          "spectral_chord_tight",
-                                                         "spectral_chord_tight_clean",
                                                          "spectral_chord_direction"):
                                 geo_A = SB_half_inv_k @ P_A
                                 geo_B = P_B @ SA_half_inv_k
