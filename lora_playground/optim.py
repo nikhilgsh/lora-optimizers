@@ -528,6 +528,8 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled-exact-chord",
     "adam-polar-product-lora-coupled-spectral-chord",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
+    "adam-polar-product-lora-coupled-spectral-chord-tight-clean",
+    "adam-polar-product-lora-coupled-spectral-chord-tight-no-rho",
     "adam-polar-product-lora-coupled-spectral-chord-tight-exact",
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening",
     "adam-polar-product-lora-coupled-spectral-chord-direction",
@@ -2804,12 +2806,24 @@ class AdamPolarProductLoRA(Optimizer):
         #     measured λ_dir_gain ≈ 1.3-1.4 at r=64, growing with training.
         if magnitude_rule not in {"adam_frobenius", "spectral_chord",
                                   "spectral_chord_tight",
+                                  "spectral_chord_tight_clean",
+                                  "spectral_chord_tight_no_rho",
                                   "spectral_chord_direction"}:
             raise ValueError(
-                f"magnitude_rule must be 'adam_frobenius', 'spectral_chord', "
-                f"'spectral_chord_tight', or 'spectral_chord_direction', got "
+                f"magnitude_rule must be one of {{adam_frobenius, spectral_chord, "
+                f"spectral_chord_tight, spectral_chord_tight_clean, "
+                f"spectral_chord_tight_no_rho, spectral_chord_direction}}, got "
                 f"{magnitude_rule!r}")
         self.magnitude_rule = magnitude_rule
+
+        # spectral_chord_tight_no_rho is the §8 ablation: drop the ρ-routed
+        # rescale entirely, apply dA = -lr·D_A directly. The §8 derivation
+        # doesn't pin a cross-coupling coefficient for k≥2, so disallow.
+        if magnitude_rule == "spectral_chord_tight_no_rho" and picard_iters > 1:
+            raise ValueError(
+                f"spectral_chord_tight_no_rho requires picard_iters=1 "
+                f"(§8 doesn't derive a cross-coupling coefficient without ρ); "
+                f"got picard_iters={picard_iters}")
 
         # Shape-group bookkeeping for the batched hot path. Pairs with the
         # same (A.shape, B.shape) get stacked into 3-D buffers; per-pair Adam
@@ -3053,6 +3067,7 @@ class AdamPolarProductLoRA(Optimizer):
         # path. Future magnitude rules need an explicit branch.
         if getattr(self, "magnitude_rule", "adam_frobenius") not in (
                 "adam_frobenius", "spectral_chord", "spectral_chord_tight",
+                "spectral_chord_tight_clean", "spectral_chord_tight_no_rho",
                 "spectral_chord_direction"):
             return False
         # anderson_m, end_rms_align only modify the cross-term path
@@ -3366,6 +3381,7 @@ class AdamPolarProductLoRA(Optimizer):
             # Polar(c·X) = Polar(X) for c > 0, so this is a strict no-op at
             # picard_iters=1 (trajectory bit-identical). Affects only k ≥ 2.
             if self.magnitude_rule in ("spectral_chord_tight",
+                                       "spectral_chord_tight_clean",
                                        "spectral_chord_direction"):
                 with maybe_time(timer, "picard_unit_polar_norm"):
                     X_A_pre = SB_half_inv @ u_A             # (N, r, d_in)
@@ -3415,6 +3431,7 @@ class AdamPolarProductLoRA(Optimizer):
             # method with sufficient iters for accuracy at any r.
             if self.magnitude_rule in ("spectral_chord",
                                        "spectral_chord_tight",
+                                       "spectral_chord_tight_clean",
                                        "spectral_chord_direction"):
                 sigma_A, v_A = _sigma_max_power_iter_batched(
                     A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
@@ -3427,6 +3444,12 @@ class AdamPolarProductLoRA(Optimizer):
                 elif self.magnitude_rule == "spectral_chord_tight":
                     s_AB = sigma_A + sigma_B
                     rho = (-s_AB + torch.sqrt(s_AB * s_AB + 4.0 * lr)) / 2.0
+                elif self.magnitude_rule == "spectral_chord_tight_clean":
+                    # §10-clean: linear ρ = η/s (Appendix A boxed form),
+                    # not the quadratic root. Within 1.1% of quadratic in
+                    # our operating regime.
+                    s_AB = sigma_A + sigma_B
+                    rho = lr / (s_AB + 1e-30)
                 else:  # spectral_chord_direction: dA/dB use λ_dir, but
                        # rho computed for diagnostic comparison consistency
                     s_AB = sigma_A + sigma_B
@@ -3446,6 +3469,15 @@ class AdamPolarProductLoRA(Optimizer):
                                            "spectral_chord_direction"):
                     s_AB = sigma_A + sigma_B
                     picard_coeff_s = (2.0 / (rho * s_AB + 1e-30)).unsqueeze(-1).unsqueeze(-1)
+                elif self.magnitude_rule == "spectral_chord_tight_clean":
+                    # §10-clean: Lemma 1 coefficient 1/η (no C2 doubling,
+                    # no σ_max(X_A) absorption). Algorithm 2′ is "C1 only";
+                    # the cross-coupling coefficient comes straight from
+                    # expanding (1/(2η))‖J‖_F².
+                    picard_coeff_s = torch.full(
+                        (sigma_A.shape[0], 1, 1),
+                        1.0 / lr, device=sigma_A.device, dtype=sigma_A.dtype,
+                    )
                 else:
                     picard_coeff_s = None
             else:
@@ -3535,9 +3567,17 @@ class AdamPolarProductLoRA(Optimizer):
                             X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
                         ).float()
                     with maybe_time(timer, "polar_unwhiten_rescale"):
-                        if self.magnitude_rule in ("spectral_chord",
-                                                   "spectral_chord_tight",
-                                                   "spectral_chord_direction"):
+                        if self.magnitude_rule == "spectral_chord_tight_no_rho":
+                            # §8 no-ρ: dA = -lr · S_B^{-1/2} polar(S_B^{-1/2} u_A)
+                            # No σ_max(geo) computation, no rescale by ρ/op-norm.
+                            geo_A = SB_half_inv_k @ P_A
+                            geo_B = P_B @ SA_half_inv_k
+                            dA = -lr * geo_A
+                            dB = -(self.lora_plus_multiplier * lr) * geo_B
+                        elif self.magnitude_rule in ("spectral_chord",
+                                                     "spectral_chord_tight",
+                                                     "spectral_chord_tight_clean",
+                                                     "spectral_chord_direction"):
                             geo_A = SB_half_inv_k @ P_A
                             geo_B = P_B @ SA_half_inv_k
                             geoA_f = geo_A.float()
@@ -3730,6 +3770,8 @@ class AdamPolarProductLoRA(Optimizer):
                 # for the frob branch (not exposed by unwhiten_rescale_frob_batched).
                 if self.magnitude_rule not in ("spectral_chord",
                                                "spectral_chord_tight",
+                                               "spectral_chord_tight_clean",
+                                               "spectral_chord_tight_no_rho",
                                                "spectral_chord_direction"):
                     geo_A_diag = SB_half_inv_k @ P_A
                     geo_B_diag = P_B @ SA_half_inv_k
@@ -3764,7 +3806,8 @@ class AdamPolarProductLoRA(Optimizer):
                 picard_coeff_b = (picard_coeff_s.squeeze(-1).squeeze(-1)
                                   if picard_coeff_s is not None else None)
                 s_AB_b = s_AB if self.magnitude_rule in (
-                    "spectral_chord_tight", "spectral_chord_direction"
+                    "spectral_chord_tight", "spectral_chord_tight_clean",
+                    "spectral_chord_direction"
                 ) else None
 
                 for k_pair in range(N):
@@ -8388,6 +8431,74 @@ def build_optimizer(
             polar_sigma_power=polar_sigma_power,
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight",
+            precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-clean":
+        # §10-clean Algorithm 2′ (algorithm_tight_chord.md §10). Pre-rescales
+        # u_A by σ_max(X_A) like spectral_chord_tight, but uses the doc-faithful
+        # cross-coupling coefficient 1/η (Lemma 1, not 2/(ρs)) and the linear
+        # ρ = η/s (not the quadratic root). Differs from spectral_chord_tight
+        # at k≥2 only; bit-identical at k=1 up to a <1.1% ρ-formula gap.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_tight_clean",
+            precond_delta_relative=precond_delta_relative,
+            log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-no-rho":
+        # §8 no-ρ ablation (algorithm_tight_chord.md §8). Same direction as
+        # chord-tight (whiten → polar → unwhiten) but drops the ρ-routed
+        # magnitude rescale: dA = -lr·geo_A directly. Constructor enforces
+        # picard_iters=1 — §8 doesn't derive a cross-coupling coefficient
+        # without ρ.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            picard_alpha=picard_alpha,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_tight_no_rho",
             precond_delta_relative=precond_delta_relative,
             log_non_finite=log_non_finite,
             debug_optimizer_state=debug_optimizer_state,
