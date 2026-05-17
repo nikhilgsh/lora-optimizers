@@ -225,21 +225,33 @@ def spd_power_batched(H, p, n_iters=10, n_power_iter=8, eps=1e-6):
     X = 0.5 * (H + H.transpose(-2, -1))
     eye_b = eye.expand_as(X)
     three_eye = 3.0 * eye_b
-    for _ in range(n_outer):
-        X = X + eps * eye
-        lam_max, _ = lambda_max_power_iter_psd_batched(
-            X, n_iters=max(n_power_iter, 8),
-        )
-        s = lam_max.unsqueeze(-1).unsqueeze(-1)
-        Y = X / s
-        Z = eye_b.clone()
-        for _ in range(n_iters):
-            T = three_eye - Z @ Y
-            Y = 0.5 * (Y @ T)
-            Z = 0.5 * (T @ Z)
-        # Y ≈ (X/s)^(1/2) → X^(1/2) = Y · sqrt(s).
-        X = Y * s.sqrt()
-        X = 0.5 * (X + X.transpose(-2, -1))
+    # Force fp32 matmul precision (disable TF32) inside the iteration. TF32
+    # is ~10-bit mantissa on Ampere/Hopper; with n_outer*n_iters ≥ 50
+    # cascaded matmuls on inputs with σ_min/σ_max up to 1e-5 (real LoRA Grams
+    # at r=256 during training), TF32 precision loss compounds and produces
+    # NaN output. fp32 (23-bit) does not. Diagnosed via the NaN sweep at
+    # commit cd63fb6 + repro on workergpu*: TF32=True → NaN on cond≈7e4
+    # pair, TF32=False → finite.
+    prev_tf32_matmul = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        for _ in range(n_outer):
+            X = X + eps * eye
+            lam_max, _ = lambda_max_power_iter_psd_batched(
+                X, n_iters=max(n_power_iter, 8),
+            )
+            s = lam_max.unsqueeze(-1).unsqueeze(-1)
+            Y = X / s
+            Z = eye_b.clone()
+            for _ in range(n_iters):
+                T = three_eye - Z @ Y
+                Y = 0.5 * (Y @ T)
+                Z = 0.5 * (T @ Z)
+            # Y ≈ (X/s)^(1/2) → X^(1/2) = Y · sqrt(s).
+            X = Y * s.sqrt()
+            X = 0.5 * (X + X.transpose(-2, -1))
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = prev_tf32_matmul
     return X
 
 
