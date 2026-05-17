@@ -51,6 +51,17 @@ SNAPSHOT_EXCLUDED_DIRS = frozenset({
     "__pycache__", ".git",
 })
 
+# Load-bearing non-python files. The python closure walker only follows
+# imports, so shell wrappers used to launch / configure training are
+# invisible to it. The submission guard and the loader both treat these as
+# part of the run's execution scope so edits to them at submission time
+# show up as `execution_source_dirty=True`. Globs are project-root-relative
+# and expanded at provenance-compute time.
+DEFAULT_EXTRA_LOAD_BEARING_GLOBS: tuple[str, ...] = (
+    "scripts/sweep/*.sh",
+    "slurm_scripts/*.sh",
+)
+
 
 def project_root() -> Path:
     """Project repo root, derived from this module's location."""
@@ -437,12 +448,32 @@ def capture_env() -> tuple[dict[str, str], str]:
 # ─── public assembly helper ───────────────────────────────────────────────────
 
 
+def expand_extra_load_bearing_paths(
+    project_root: Path,
+    globs: Iterable[str] = DEFAULT_EXTRA_LOAD_BEARING_GLOBS,
+) -> list[str]:
+    """Expand project-root-relative globs into a sorted list of relative
+    paths. Returns only files that currently exist on disk. Used to inject
+    non-python load-bearing files (shell sweep wrappers, sbatch wrappers)
+    into the execution closure.
+    """
+    seen: set[str] = set()
+    for pattern in globs:
+        for p in sorted(project_root.glob(pattern)):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(project_root))
+            seen.add(rel)
+    return sorted(seen)
+
+
 def compute_execution_provenance(
     entry_path: Path,
     project_root: Path,
     snapshot: dict[str, bytes],
     snapshot_sha: dict[str, str],
     git_commit: str | None = None,
+    extra_paths: Iterable[str] | None = None,
 ) -> dict:
     """Top-level helper called by train.py at cfg-emit time. Returns the
     dict of new cfg-event fields:
@@ -455,6 +486,13 @@ def compute_execution_provenance(
                                           `git_commit` is None or unreachable)
       execution_env              : dict[str, str]
       execution_env_sha          : str
+
+    `extra_paths` extends the closure with non-python load-bearing files
+    (shell scripts, sbatch wrappers). When None, defaults to expanding
+    `DEFAULT_EXTRA_LOAD_BEARING_GLOBS` against `project_root`. Pass an
+    empty iterable to suppress. Extras whose bytes are missing from
+    `snapshot_sha` are read from disk now and their SHAs merged into a
+    local copy.
     """
     closure = compute_closure(entry_path, project_root, snapshot)
     # Guard: any closure path missing from the snapshot is a serious bug.
@@ -466,6 +504,28 @@ def compute_execution_provenance(
             f"exclusion list (SNAPSHOT_EXCLUDED_DIRS) — a path imported by "
             f"training code lives in an excluded directory or under a typo."
         )
+
+    # Merge extra (non-python) load-bearing paths into the closure. Read
+    # their bytes from disk if absent from the snapshot; the snapshot is
+    # python-only so this is the common case. Keep `snapshot_sha` immutable
+    # by working on a local copy.
+    if extra_paths is None:
+        extras = expand_extra_load_bearing_paths(project_root)
+    else:
+        extras = sorted(set(extra_paths))
+    if extras:
+        snapshot_sha = dict(snapshot_sha)
+        for rel in extras:
+            if rel in snapshot_sha:
+                continue
+            full = project_root / rel
+            try:
+                content = full.read_bytes()
+            except OSError:
+                continue
+            snapshot_sha[rel] = hashlib.sha256(content).hexdigest()
+            closure.add(rel)
+
     paths_sorted = sorted(closure)
     src_sha = source_tree_sha(paths_sorted, snapshot_sha)
 
@@ -493,3 +553,208 @@ def compute_execution_provenance(
         "execution_env": env,
         "execution_env_sha": env_sha,
     }
+
+
+# ─── check-clean CLI ──────────────────────────────────────────────────────────
+
+def _diff_closure_against_commit(
+    paths: list[str], snapshot_sha: dict[str, str],
+    commit: str, project_root: Path,
+) -> list[tuple[str, str | None, str]]:
+    """For each path in `paths`, compare its `snapshot_sha` against the
+    sha of the blob at `commit:<path>`. Returns a list of (path, commit_sha
+    or None if absent in commit, working_sha) for paths that differ
+    (including paths missing from the commit). Used by check-clean to name
+    the specific files that block submission.
+    """
+    diffs: list[tuple[str, str | None, str]] = []
+    for rel in paths:
+        working = snapshot_sha.get(rel)
+        if working is None:
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "cat-file", "-p", f"{commit}:{rel}"],
+                cwd=str(project_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=5.0,
+            )
+            commit_sha = hashlib.sha256(result.stdout).hexdigest()
+        except (subprocess.CalledProcessError, FileNotFoundError,
+                subprocess.TimeoutExpired):
+            diffs.append((rel, None, working))
+            continue
+        if commit_sha != working:
+            diffs.append((rel, commit_sha, working))
+    return diffs
+
+
+def _check_clean_main(argv: list[str]) -> int:
+    """Entry for `python -m lora_playground.execution_scope check-clean`.
+
+    Compares the working tree's execution closure (python imports walked
+    from `train_lora.py`, plus DEFAULT_EXTRA_LOAD_BEARING_GLOBS) against
+    HEAD's tree. Exits 0 if the load-bearing closure matches HEAD; exits
+    1 with a per-file diff otherwise.
+
+    Honored by:
+      - `slurm_scripts/submit.sh` (via `scripts/check_clean_tree.sh`)
+      - `~/bin/submit-pending` (same wrapper)
+
+    Both paths must agree with the loader's Phase-4 dirty resolution so
+    that "guard passed" implies "loader will accept the resulting run".
+
+    Override: env var FORCE_DIRTY=1 short-circuits to exit 0 with a
+    warning. Use only when the dirt is provably non-load-bearing at
+    runtime AND the future loader exclusion will be resolved via a manual
+    dirty_attestation.
+    """
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(prog="execution_scope check-clean")
+    parser.add_argument(
+        "--entry", default="train_lora.py",
+        help="Entry path (project-root-relative). Default: train_lora.py",
+    )
+    parser.add_argument(
+        "--root", default=None,
+        help="Project root (default: derived from this module's location).",
+    )
+    args = parser.parse_args(argv)
+
+    if os.environ.get("FORCE_DIRTY"):
+        sys.stderr.write(
+            "check_clean_tree: FORCE_DIRTY=1 set — skipping dirty-tree check.\n"
+        )
+        return 0
+
+    root = Path(args.root).resolve() if args.root else project_root()
+    entry = (root / args.entry).resolve()
+    if not entry.is_file():
+        sys.stderr.write(f"check-clean: entry file not found: {entry}\n")
+        return 2
+
+    # Build a from-disk snapshot of the python source tree (the loader's
+    # rule: snapshot is what runs at training time; commit is what HEAD
+    # currently records).
+    snapshot: dict[str, bytes] = {}
+    snapshot_sha: dict[str, str] = {}
+    for p in root.rglob("*.py"):
+        rel = p.relative_to(root)
+        if any(part in SNAPSHOT_EXCLUDED_DIRS for part in rel.parts):
+            continue
+        try:
+            content = p.read_bytes()
+        except OSError:
+            continue
+        key = str(rel)
+        snapshot[key] = content
+        snapshot_sha[key] = hashlib.sha256(content).hexdigest()
+
+    # Resolve HEAD. Skip cleanly if not in a git repo.
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            check=True, timeout=3.0,
+        )
+        head_commit = head_result.stdout.decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired):
+        sys.stderr.write(
+            "check-clean: not a git repo or git unavailable; "
+            "skipping (treat as clean).\n"
+        )
+        return 0
+
+    try:
+        prov = compute_execution_provenance(
+            entry_path=entry,
+            project_root=root,
+            snapshot=snapshot,
+            snapshot_sha=snapshot_sha,
+            git_commit=head_commit,
+        )
+    except RuntimeError as e:
+        # Closure included a path missing from the snapshot — e.g. an
+        # untracked, imported .py file under lora_playground/. That's
+        # exactly what we want to block on.
+        sys.stderr.write(f"check-clean: {e}\n")
+        sys.stderr.write(
+            "\nRemediation: `git add` the missing file(s) and commit, "
+            "or `git stash` if not ready. See `scripts/check_clean_tree.sh` "
+            "for the FORCE_DIRTY override and dirty_attestations flow.\n"
+        )
+        return 1
+
+    if not prov["execution_source_dirty"]:
+        return 0
+
+    # Identify the specific files that differ from HEAD. Re-read paths
+    # the same way provenance did (extras included).
+    paths = list(prov["execution_source_paths"])
+    # Snapshot may not include extras (shell scripts); re-merge SHAs.
+    merged_sha = dict(snapshot_sha)
+    for rel in paths:
+        if rel in merged_sha:
+            continue
+        full = root / rel
+        try:
+            merged_sha[rel] = hashlib.sha256(full.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    diffs = _diff_closure_against_commit(paths, merged_sha, head_commit, root)
+
+    msg = [
+        "",
+        "╭─ DIRTY-TREE SUBMISSION BLOCKED ─────────────────────────────────────╮",
+        "│ Working tree has uncommitted changes to LOAD-BEARING code (python",
+        "│ import-closure from train_lora.py, plus sweep/sbatch shell scripts).",
+        "│ Submitting now will record execution_source_dirty=True in the cfg",
+        "│ event and the loader will EXCLUDE these runs until you either",
+        "│ commit the changes or write a dirty_attestation.",
+        "│",
+        f"│ HEAD: {head_commit}",
+        "│",
+        "│ Dirty load-bearing files (path: HEAD blob sha | working sha):",
+    ]
+    for rel, commit_sha, working in diffs:
+        commit_repr = commit_sha[:12] if commit_sha else "<absent at HEAD>"
+        msg.append(f"│   {rel}: {commit_repr} | {working[:12]}")
+    msg += [
+        "│",
+        "│ Resolve by ONE of:",
+        "│   1. COMMIT:  git add -p && git commit -m \"...\" && re-submit",
+        "│   2. STASH:   git stash; submit; git stash pop",
+        "│   3. ATTEST (after the runs land, if dirt is non-load-bearing at",
+        "│      runtime): add an entry to",
+        "│      lora_playground/exclusions/dirty_attestations.json",
+        "│      keyed by (group, log_filename, git_diff_sha).",
+        "│   4. OVERRIDE: FORCE_DIRTY=1 ./scripts/check_clean_tree.sh",
+        "│      (rare; document the reason in SWEEP_PURPOSE).",
+        "╰─────────────────────────────────────────────────────────────────────╯",
+        "",
+    ]
+    sys.stderr.write("\n".join(msg))
+    return 1
+
+
+def _main(argv: list[str]) -> int:
+    if not argv:
+        sys.stderr.write(
+            "usage: python -m lora_playground.execution_scope <subcommand> ...\n"
+            "subcommands: check-clean\n"
+        )
+        return 2
+    sub, *rest = argv
+    if sub == "check-clean":
+        return _check_clean_main(rest)
+    sys.stderr.write(f"unknown subcommand: {sub}\n")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv[1:]))
