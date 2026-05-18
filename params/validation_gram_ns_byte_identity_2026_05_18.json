@@ -1,0 +1,9 @@
+{
+  "lr": ["3e-2"],
+  "optimizer": ["adam-polar-product-lora-coupled-spectral-chord-tight-clean"],
+  "lora_plus_multiplier": ["1.0"],
+  "seed": ["0"],
+  "lora_r": ["64"],
+  "ns_form": ["rect"],
+  "picard_iters_override": ["3"]
+}
