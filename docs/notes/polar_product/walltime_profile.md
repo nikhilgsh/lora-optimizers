@@ -765,22 +765,101 @@ Reading:
   91, max 1.24e3). At that cond, A and B both have ~1% rel-err vs
   fp32 reference.
 
-### Shipping decision
+### Full-step impact — much smaller than the kernel bench suggested
 
-- **Variant B (fp16+polish) is the shipping path at r ≥ 128.**
-  Wired in as `--higham_compute_dtype fp16`; defaults to fp32 to
-  preserve all current behavior.
-- **At r ≤ 64 don't use it** — cast overhead exceeds matmul win.
-  Caller-side rank check: pass `compute_dtype=None` for low-r.
-- **Variant C (bf16) rejected** — worse precision, no speed advantage
-  over B.
-- **Variant A (fp32+TF32) not shipped** — captures ~70% of B's win
-  at r=256 with the same precision, but B is strictly better at
-  r=256 and ties at r=128, so there's no regime where A is the
-  right choice.
+The kernel bench above measures Higham IN ISOLATION. The relevant
+production number is what the full optimizer step looks like with
+fp16 Higham wired in. Bench script:
+`scripts/bench/bench_full_step_fp16_higham.sh` (OLMo-2-1B,
+all-linear LoRA, batch=2·seq=512·accum=8, no compile, K=1):
 
-Quality validation: `tests/test_higham_lowp.py` bounds B at ≤ 1e-2
-rel-err vs fp32 across the cond range observed in real chord-tight
-r=64 Grams. End-to-end training equivalence — a separate 500-step
-smoke comparison on tiny-fixture data, fp32 baseline vs fp16+polish
-under matched seed — confirms trajectory holds.
+| variant                    | r=64 opt ms | r=64 total | r=256 opt ms | r=256 total |
+|----------------------------|------------:|-----------:|-------------:|------------:|
+| AdamW (reference)          |         3.5 |      555.9 |         10.7 |       724.4 |
+| clean k=2 gram + fp32 Higham |       30.5 |      583.0 |        126.8 |       842.6 |
+| clean k=2 gram + **fp16 Higham** |   30.3 |      584.0 |        123.4 |       839.4 |
+
+fp16 Higham saves **0.2 ms at r=64** (0.04% of step) and **3.4 ms at
+r=256** (0.5% of step). The kernel-level 2.16× speedup at (224,
+256, 256) is real but Higham itself is only ~9 ms of the 127 ms
+opt_ms; the bulk of opt_ms is the Picard scope (gram-NS polar +
+cross-coupling + σ_max + unwhiten), unchanged by the lever.
+
+**Shipping decision: keep the CLI flag, default off.**
+- `--higham_compute_dtype fp16` is plumbed end-to-end and validated
+  to ≤ 1% rel-err vs fp32 reference on real Grams
+  (`tests/test_higham_lowp.py`). Available for opt-in.
+- Not the production default at any rank — the wall savings don't
+  justify a precision-trading change for runs that need byte-for-byte
+  trajectory parity with prior sweeps.
+- The fp16-Higham work was useful to bound the lever, not to ship.
+
+### Where to attack next: CUDA graphs over the Picard scope
+
+The remaining opt_ms is dominated by the chord-tight-clean Picard
+loop (gram-NS polar at K=5, cross-coupling matmuls, σ_max power
+iter, unwhiten). At r=256 that scope is ~110 ms out of 127 ms opt_ms.
+The matmuls inside are small bmms at (N, r, r) and (N, r, d), and
+the wall-per-FLOP analysis at the top of this section put the
+optimizer at ~10–50× off-tensor-core wall efficiency — i.e., it's
+launch-bound, not compute-bound, on Blackwell at packed_v1 shapes.
+
+**CUDA graphs replace N kernel launches with 1.** Conditions for
+capture, all met for `_chord_tight_clean_polar_pipeline`:
+- Fixed shapes per group at every step ✓
+- No host-side branches in the loop body ✓
+- No `.item()` / device-host sync inside the body ✓
+- The method already compiles `fullgraph=True`
+  (`tests/test_chord_tight_clean.py::test_no_graph_breaks_under_compile`).
+
+Prototype + numbers in
+`scripts/bench/bench_cuda_graphs.py` — captures the inner
+function as a `torch.cuda.CUDAGraph()`, replays via `copy_` of new
+input into a static buffer + `graph.replay()`. Higham (10 NS iters
+× 3 matmuls = 30 launches) and gram-NS polar (~15 matmuls) are both
+shape-static so they capture cleanly. The full Picard scope at fixed
+group shape is the bigger target.
+
+### Compile-modes bench result (Blackwell, k=2 gram, fp32 Higham)
+
+Bench script: `scripts/bench/bench_compile_modes.sh`. Three configurations:
+
+- **B: eager** (`LORA_COMPILE_KERNELS=0`).
+- **C: torch.compile default** (`LORA_COMPILE_KERNELS=1`, fullgraph=False, kernel fusion only).
+- **D: torch.compile mode='reduce-overhead'** (`LORA_COMPILE_KERNELS=2`, fullgraph=True + CUDA graphs).
+
+| shape | variant | opt ms | total ms | ×AdamW |
+|---|---|---:|---:|---:|
+| r=64 | B (eager) | 30.4 | 582.8 | 1.05× |
+| r=64 | C (compile) | 27.3 | 581.6 | 1.05× |
+| r=64 | D (reduce-overhead) | — | — | **crash** |
+| r=256 | B (eager) | 126.8 | 842.8 | 1.16× |
+| r=256 | C (compile) | 125.9 | 840.7 | 1.16× |
+| r=256 | D (reduce-overhead) | — | — | **crash** |
+
+**Findings:**
+
+- **C (compile default) saves 3 ms opt at r=64 (10%) and 1 ms at r=256 (0.7%).** Net step-wall impact is < 0.3% — essentially noise.
+- **D (mode='reduce-overhead') crashes** with `"Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run"` at `optim.py:3481`. Root cause: the pipeline writes warm-start tensors into `gs[...]` dict slots; auto-CUDA-graph capture references those tensors by identity, but the next call rebinds the dict slot to a new tensor, leaving the captured graph pointing at the stale (now-overwritten) buffer. A pipeline refactor to mutate warm-start buffers in-place (`gs['v_sigma_A'].copy_(new)` instead of `gs['v_sigma_A'] = new`) would unblock this path. Estimated work: 1–2 days. Expected gain on top of compile: 5–15% opt savings = 1–3% step savings.
+
+### Shipping decision — smallest production walltime
+
+The chord-tight-clean k=2 gram pipeline is essentially at its wall-time floor given the current algorithmic choices:
+
+- **Production default = torch.compile + fp32 Higham + k=2 gram NS.** Already wired into sweep scripts via `--compile`.
+- Step wall vs AdamW: 1.05× at r=64, 1.16× at r=256.
+- No precision-lever or graph-capture trick we tested moves the needle by more than ~1% step wall at production rank.
+
+Levers that didn't pay off and the reasons:
+
+- **fp16 Higham (variant B):** 2.16× kernel-level at r=256 → 0.5% step wall (Higham is ~9 ms of 127 ms opt at r=256; 50% Higham savings is 0.5% step). Real but tiny.
+- **mode='reduce-overhead':** crashes on the warm-start dict-mutation pattern. Would need pipeline refactor.
+- **Manual CUDA graphs around individual primitives:** 5× speedup at r=16-64 but Higham/gram-NS individually are <10% of opt_ms; absolute savings sub-ms.
+- **Manual CUDA graphs around the whole pipeline:** same refactor cost as mode='reduce-overhead' would unblock; uncertain whether ~5-15% opt gain is worth the engineering.
+
+Real remaining levers are algorithmic, not implementation:
+
+- **Picard k=2 → k=1:** drops half of the Picard scope (~50 ms at r=256). But the cross-coupling correction was the whole point of choosing k=2.
+- **NS=5 → NS=3 in gram-NS:** drops ~40% of polar map cost (a few ms). Needs trajectory equivalence validation.
+
+Both are real algorithmic decisions and out of scope for an implementation-only lever search.
