@@ -601,6 +601,15 @@ def make_parser():
                         help="Newton-Schulz iterations when --precond_method=higham. "
                              "10 is needed for κ ≈ 200 (the worst case observed for SB "
                              "during training); 5 is fine on well-conditioned SA only.")
+    parser.add_argument("--higham_compute_dtype", choices=["fp32", "fp16"],
+                        default="fp32",
+                        help="Inner-iteration dtype for Higham. fp32 is the validated "
+                             "default; fp16 runs n_iters-1 iters on tensor cores and "
+                             "polishes with 1 fp32 iter (variant B from "
+                             "`scripts/bench/bench_higham_variants.py`). At r=256 on "
+                             "Blackwell this gives 2.16× kernel speedup with ~1e-2 "
+                             "rel-err vs fp32 at production cond ranges. Not worth it "
+                             "at r ≤ 64 (cast overhead exceeds matmul win).")
     parser.add_argument("--picard_alpha", type=float, default=1.0,
                         help="Damping on the Picard cross-coupling correction in "
                              "AdamPolarProductLoRA (only takes effect when picard_iters > 1). "
@@ -1029,6 +1038,7 @@ def main():
         precond_refresh_every=args.precond_refresh_every,
         precond_method=args.precond_method,
         precond_delta_relative=args.precond_delta_relative,
+        higham_compute_dtype=args.higham_compute_dtype,
         log_non_finite=args.log_non_finite,
         debug_optimizer_state=args.debug_optimizer_state,
         debug_optimizer_state_every=args.debug_optimizer_state_every,

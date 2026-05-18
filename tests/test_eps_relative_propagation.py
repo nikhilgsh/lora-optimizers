@@ -73,7 +73,7 @@ def test_optimizer_passes_eps_relative_to_higham_batched(monkeypatch):
     captured = []
 
     def fake_higham(H, n_iters=10, eps=1e-6, n_power_iter=4,
-                    eps_relative=False):
+                    eps_relative=False, **kwargs):
         captured.append({"eps": eps, "eps_relative": bool(eps_relative)})
         # Return a valid SPD-ish output so the rest of the step doesn't crash.
         n = H.shape[-1]
@@ -138,7 +138,7 @@ def test_optimizer_default_does_not_set_eps_relative(monkeypatch):
     captured = []
 
     def fake_higham(H, n_iters=10, eps=1e-6, n_power_iter=4,
-                    eps_relative=False):
+                    eps_relative=False, **kwargs):
         captured.append({"eps_relative": bool(eps_relative)})
         n = H.shape[-1]
         return torch.eye(n, dtype=H.dtype, device=H.device).expand_as(H)

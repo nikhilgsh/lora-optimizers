@@ -250,13 +250,21 @@ Four σ-power-iter sites fire per step at $k = 2$:
 | **B** | $X_A, X_B$ | `v_sigma_XA`, `v_sigma_XB` | pre-rescale (§2.5) |
 | **C** ($\times 2$ Picard iters) | $\text{geo}_A^{(n)}, \text{geo}_B^{(n)}$ | `v_op_geoA_slots[n]`, `v_op_geoB_slots[n]` | magnitude rescale (§2.6) |
 
-All sites currently use `n_iters = 8` unconditionally (see §7).
+All sites use `n_iters = 8`, warm-started.
 
-## 7. Outstanding cleanup
+## 7. Verification and remaining cleanup
 
-- **Hoist $\lambda_{\max}(S_A)$ out of Higham.** $\sigma_{\max}(A)$ is already computed at site A1, and $\lambda_{\max}(S_A) = \sigma_{\max}(A)^2$. Higham currently re-derives $\lambda_{\max}$ internally. The FLOP win is small ($(N, r, r)$ matmuls); the architectural win is one canonical source for $\sigma_{\max}(A)$ per step. Helper kwarg added in commit `5bfccbb`; wiring into `_chord_tight_clean_polar_pipeline` (passing `σ_max(A).pow(2)` after hoisting the σ_max computation out of the pipeline body into `_step_batched`) is the natural follow-up.
-- **Unit-test coverage for `_chord_tight_clean_polar_pipeline`.** No `tests/test_*.py` currently exercises this method. The end-to-end smoke (§5.3) catches gross regressions but not silent drift in the cross-coupling formula, the Picard-iter-keyed warm-start, or the per-step σ-rescale. Minimum useful coverage: a tiny ($r=4$, $d=8$, $N=2$) fixture asserting bit-identical output between a Python-reference implementation of §2.1–2.7 and the batched method at $k = 1$, plus a separate $k = 2$ trajectory test under fixed seeds.
+**Unit tests** (`tests/test_chord_tight_clean.py`):
 
-**Rejected (not worth the validation cost):**
+- `test_sigma_AB_rho_formula` — ρ = η/(σ_A + σ_B) holds at the pipeline output.
+- `test_post_polar_unit_op_norm` — σ_max(P_A), σ_max(P_B) ≈ 1 after pre-rescale + NS=5 polar map.
+- `test_update_op_norm_matches_rho` — σ_max(dA), σ_max(dB) ≈ ρ (the tight-tangent radius property).
+- `test_determinism` — fixed seed → bit-identical updates across two optimizers.
+- `test_no_graph_breaks_under_compile` — pipeline compiles `fullgraph=True`. Catches regressions where a Python-only construct (dict-key f-string mutation, host-side `.item()`, etc.) forces dynamo to fall back to eager mid-step.
+- `test_lam_max_hoist_equivalence` — Higham with `lam_max=σ_max(A)²` passed in matches Higham with internal λ_max power iter within $10^{-3}$ rel-err.
 
-- *Power-iter warm-start at `n_iters = 3`.* Helper docstring claims `n_iters = 3` suffices with a good warm start. Estimated savings: 9% of opt at $r{=}16$, 3% at $r{=}64$, 0.8% at $r{=}256$ — translating to roughly 1%, 0.3%, 0.1% step-wall at the respective ranks. Four power-iter sites fire per step at $k = 2$; each is a potential drift surface, so per-pair residual validation would need to cover all four sites across the Tier-1 X_eff corpus and at least one real-training trajectory. The validation work is comparable to the Higham fp16-port (a 5–10% step-wall lever), and we'd be doing it for an order-of-magnitude smaller payoff. Not pursuing.
+**Done:**
+
+- **$\lambda_{\max}(S_A)$ hoist.** $\sigma_{\max}(A), \sigma_{\max}(B)$ are now computed once per step in `_step_batched` before the precond-refresh block. The same values feed both Higham's damping (via `lam_max=σ_max.pow(2)` — closed-form `eps_relative` path in `utils.py:192`) and the ρ formula inside `_chord_tight_clean_polar_pipeline` (which accepts `sigma_A`, `sigma_B` kwargs and skips its internal power iter when they're provided). One canonical $\sigma_{\max}(A)$ per step, no double computation.
+
+- **bf16/fp16 mixed-precision Higham (`compute_dtype` kwarg, `--higham_compute_dtype` CLI).** `spd_inv_sqrt_higham_batched` (`utils.py:147`) accepts an optional `compute_dtype` (default `None` = current fp32-no-TF32 behavior; `torch.float16` opts into variant B). Variant B runs `n_iters - 1` Newton-Schulz iters fully in fp16 on tensor cores, then a single fp32 polish iter at the end. Cast launches: 5 per call (3 entry + 2 exit), not per-iter — an earlier per-iter-cast prototype with fp32 bookends + an "identity in fp32" treatment ran *net slower* than reference at $r \le 128$ on Blackwell because the 5 casts per iter cost more than the matmuls they enabled. Variant-B benched in `scripts/bench/bench_higham_variants.py`; numbers in `walltime_profile.md` § "bf16/fp16 Higham". Quality bounded in `tests/test_higham_lowp.py` — at the production damping (`eps_relative=False`, `eps=1e-6`) and real production cond range (≤ 1e3 per the chord-tight-r=64 snapshot audit), fp16+polish matches fp32-no-TF32 to ~1e-2 Frobenius rel-err. fp16 beats bf16 at the same compute cost — 10-bit mantissa vs 7-bit, and fp16's narrow exponent range doesn't bind for our cond range under absolute damping.

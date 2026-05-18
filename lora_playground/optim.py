@@ -2803,7 +2803,8 @@ class AdamPolarProductLoRA(Optimizer):
                  debug_snapshot_dir=None,
                  debug_snapshot_limit=8,
                  debug_abort_on_non_finite=False,
-                 ns_form="rect"):
+                 ns_form="rect",
+                 higham_compute_dtype="fp32"):
         named = collect_lora_pairs_named(model, adapter_name)
         if not named:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2840,6 +2841,21 @@ class AdamPolarProductLoRA(Optimizer):
                 f"ns_form must be 'rect', 'gram', or 'gram-norestart', got {ns_form!r}"
             )
         self.ns_form = ns_form
+        # Inner-iteration dtype for `spd_inv_sqrt_higham_batched`.
+        # "fp32" (default) preserves the validated fp32-no-TF32 path;
+        # "fp16" opts into the variant-B mixed-precision body (fp16
+        # inner + 1 fp32 polish iter). See
+        # `docs/notes/polar_product/algorithm_clean_implementation.md`
+        # §7 and `scripts/bench/bench_higham_variants.py` for the
+        # rationale and per-rank wins.
+        if higham_compute_dtype not in ("fp32", "fp16"):
+            raise ValueError(
+                f"higham_compute_dtype must be 'fp32' or 'fp16', "
+                f"got {higham_compute_dtype!r}"
+            )
+        self._higham_compute_dtype = (
+            torch.float16 if higham_compute_dtype == "fp16" else None
+        )
         # Per-step diagnostic stash flag. When True for a single step, the
         # batched path writes the §9 inputs into pair_state under keys
         # "A" / "B" (the factors fed INTO the step, before the in-place
@@ -3407,6 +3423,7 @@ class AdamPolarProductLoRA(Optimizer):
 
     def _chord_tight_clean_polar_pipeline(
         self, gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
+        sigma_A=None, sigma_B=None,
     ):
         """Algorithm 2′ — focused implementation of the §10-clean polar
         pipeline. Replaces the gated-branch path in `_step_batched` for
@@ -3436,14 +3453,19 @@ class AdamPolarProductLoRA(Optimizer):
         device, dtype = A_f.device, A_f.dtype
 
         # 1. σ_max(A), σ_max(B) → ρ = η/s. Warm-started power iter on the
-        #    raw factor matrices. Same warm-start keys as the legacy path.
+        #    raw factor matrices. When `sigma_A` / `sigma_B` are passed in
+        #    by the caller (λ_max hoist: `_step_batched` computes these
+        #    before the precond-refresh block so the same values feed both
+        #    Higham's damping and the ρ formula here), skip the internal
+        #    power iter and reuse them.
         with maybe_time(timer, "chord_tight_clean_sigma_AB"):
-            sigma_A, v_sigma_A = _sigma_max_power_iter_batched(
-                A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
-            sigma_B, v_sigma_B = _sigma_max_power_iter_batched(
-                B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
-            gs['v_sigma_A'] = v_sigma_A
-            gs['v_sigma_B'] = v_sigma_B
+            if sigma_A is None or sigma_B is None:
+                sigma_A, v_sigma_A = _sigma_max_power_iter_batched(
+                    A_f, v_init=gs.get('v_sigma_A'), n_iters=8)
+                sigma_B, v_sigma_B = _sigma_max_power_iter_batched(
+                    B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
+                gs['v_sigma_A'] = v_sigma_A
+                gs['v_sigma_B'] = v_sigma_B
             s_AB = sigma_A + sigma_B
             rho = lr / (s_AB + 1e-30)                          # (N,)
 
@@ -3681,6 +3703,25 @@ class AdamPolarProductLoRA(Optimizer):
                     self.pair_state[gi]['u_A'] = u_A[j].detach().clone()
                     self.pair_state[gi]['u_B'] = u_B[j].detach().clone()
 
+            # λ_max hoist for the clean rule: σ_max(A), σ_max(B) are needed
+            # downstream by `_chord_tight_clean_polar_pipeline` for ρ = η/s,
+            # AND λ_max(S_A) = σ_max(A)² feeds Higham's damping (closed-form
+            # `eps_relative` path). Compute them once here so a single
+            # canonical σ_max(A) per step is used by both consumers; pass
+            # `lam_max=σ_max.pow(2)` into Higham and `sigma_A` / `sigma_B`
+            # into the pipeline. Non-clean rules are untouched (the variable
+            # stays None and Higham falls back to its internal power iter).
+            sigma_A_hoist = None
+            sigma_B_hoist = None
+            if self.magnitude_rule == "spectral_chord_tight_clean":
+                with maybe_time(timer, "chord_tight_clean_sigma_AB"):
+                    sigma_A_hoist, v_sigma_A = _sigma_max_power_iter_batched(
+                        gs['A_stack'], v_init=gs.get('v_sigma_A'), n_iters=8)
+                    sigma_B_hoist, v_sigma_B = _sigma_max_power_iter_batched(
+                        gs['B_stack'], v_init=gs.get('v_sigma_B'), n_iters=8)
+                    gs['v_sigma_A'] = v_sigma_A
+                    gs['v_sigma_B'] = v_sigma_B
+
             # Precond refresh. precond_method='higham' uses batched
             # `spd_inv_sqrt_higham_batched` (one bmm sequence over all pairs in
             # the group, ~100× faster than per-pair eigh at r=256). 'eigh' stays
@@ -3710,13 +3751,21 @@ class AdamPolarProductLoRA(Optimizer):
                         SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
                         if self.precond_method == "higham":
                             from .utils import spd_inv_sqrt_higham_batched
+                            _lam_A = (sigma_A_hoist.pow(2)
+                                      if sigma_A_hoist is not None else None)
+                            _lam_B = (sigma_B_hoist.pow(2)
+                                      if sigma_B_hoist is not None else None)
                             gs['SA_half_inv'].copy_(spd_inv_sqrt_higham_batched(
                                 SA_grams, n_iters=self.higham_iters, eps=self.delta,
                                 eps_relative=self.precond_delta_relative,
+                                lam_max=_lam_A,
+                                compute_dtype=self._higham_compute_dtype,
                             ))
                             gs['SB_half_inv'].copy_(spd_inv_sqrt_higham_batched(
                                 SB_grams, n_iters=self.higham_iters, eps=self.delta,
                                 eps_relative=self.precond_delta_relative,
+                                lam_max=_lam_B,
+                                compute_dtype=self._higham_compute_dtype,
                             ))
                         else:
                             for k in range(N):
@@ -3746,6 +3795,7 @@ class AdamPolarProductLoRA(Optimizer):
                 B_f = gs['B_stack']
                 _clean_result = self._chord_tight_clean_polar_pipeline(
                     gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
+                    sigma_A=sigma_A_hoist, sigma_B=sigma_B_hoist,
                 )
                 u_A = _clean_result['u_A']
                 u_B = _clean_result['u_B']
@@ -5778,12 +5828,12 @@ class SignMomentumPolarProductLoRA(AdamPolarProductLoRA):
 
 # Opt-in: compile the chord-tight-clean polar pipeline as a single graph
 # when LORA_COMPILE_KERNELS=1. The method is mostly numeric (whiten →
-# pre-rescale → Picard loop → polar → unwhiten → σ_max → scale). Known
-# graph-break points: the f-string warm-start dict keys at site C
-# (`f'v_op_geoA_n{n}'`) and the htmuon_p / dispatch branches. With
-# fullgraph=False, compile falls back to eager on graph breaks rather
-# than erroring, so we get partial compilation across compute-heavy
-# regions.
+# pre-rescale → Picard loop → polar → unwhiten → σ_max → scale) and
+# compiles fullgraph-clean (verified by
+# `tests/test_chord_tight_clean.py::test_no_graph_breaks_under_compile`).
+# fullgraph=False is kept here as a safety net for future edits that
+# might introduce a Python-only construct; the test will fail-fast if
+# that happens so the comment isn't load-bearing.
 if os.environ.get("LORA_COMPILE_KERNELS", "0") == "1":
     AdamPolarProductLoRA._chord_tight_clean_polar_pipeline = torch.compile(
         AdamPolarProductLoRA._chord_tight_clean_polar_pipeline,
@@ -8489,6 +8539,7 @@ def build_optimizer(
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
     ns_form: str = "rect",
+    higham_compute_dtype: str = "fp32",
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -8885,6 +8936,7 @@ def build_optimizer(
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,
+            higham_compute_dtype=higham_compute_dtype,
             log_non_finite=log_non_finite,
             debug_optimizer_state=debug_optimizer_state,
             debug_optimizer_state_every=debug_optimizer_state_every,

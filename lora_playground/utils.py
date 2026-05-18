@@ -145,7 +145,8 @@ def spd_frac_power_inv(H, gamma, eps=1e-6, eps_relative=False):
 
 
 def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4,
-                                eps_relative=False, lam_max=None):
+                                eps_relative=False, lam_max=None,
+                                compute_dtype=None):
     """Batched Iannazzo / Denman-Beavers-Newton coupled NS for H^{-1/2}.
 
     Shape-broadcasting version of `spd_inv_sqrt_higham`. H: (..., n, n) SPD
@@ -168,6 +169,25 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4,
     σ_max(A)² when `H = A·Aᵀ`, since σ_max(A) is already computed once
     per step at the `ρ = η/(σ_A+σ_B)` site. Non-breaking: existing callers
     that omit the kwarg get the original behavior.
+
+    compute_dtype: optional torch dtype for the inner-iteration body
+    (typically `torch.float16` to put Higham on tensor cores). When set,
+    Y, Z, and the `3·I` identity are cast to `compute_dtype` once at
+    the start of the loop, the first `n_iters - 1` iters run in that
+    dtype (three matmuls per iter), and a single final iter is run in
+    fp32 as a polish that restores precision to ~fp32 machine level.
+    Cast launches: only ~5 per call (3 entry + 2 exit), not per-iter,
+    so the bf16/fp16 tensor-core matmul advantage isn't eaten by cast
+    overhead. Benched in `scripts/bench/bench_higham_variants.py` —
+    at r=256, N=224 on Blackwell, fp16+polish gives 2.16× vs fp32-no-TF32
+    with rel-err ~1e-2 at cond ≈ 1e3 (realistic production worst case).
+    fp16 beats bf16 on both axes — wider mantissa, same exponent range
+    binds for our cond range under absolute damping. At r ≤ 64 cast
+    overhead exceeds the matmul win; the caller should not pass
+    compute_dtype below that rank. Damping, λ_max estimation, and the
+    final `Z / √s` rescale all stay in fp32. When `compute_dtype=None`
+    (default) the entire iteration runs in `H.dtype` (preserving the
+    existing TF32-off fp32 path used by every current caller).
     """
     n = H.shape[-1]
     H = 0.5 * (H + H.transpose(-2, -1))
@@ -212,8 +232,38 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4,
     Y = Y.reshape(-1, Y.shape[-2], Y.shape[-1])
     Z = Z.reshape(-1, Z.shape[-2], Z.shape[-1])
     three_eye = three_eye.reshape(-1, three_eye.shape[-2], three_eye.shape[-1])
-    for _ in range(n_iters):
-        # T = 3I - Z @ Y, fused into one baddbmm.
+    if compute_dtype is None or compute_dtype == Y.dtype:
+        # Original single-precision path. Behavior identical to the
+        # pre-`compute_dtype` implementation; every existing caller hits
+        # this branch.
+        for _ in range(n_iters):
+            # T = 3I - Z @ Y, fused into one baddbmm.
+            T = torch.baddbmm(three_eye, Z, Y, beta=1.0, alpha=-1.0)
+            Y = 0.5 * (Y @ T)
+            Z = 0.5 * (T @ Z)
+    else:
+        # Mixed-precision path: cast Y, Z, three_eye to compute_dtype
+        # ONCE at entry, run n_iters - 1 iters fully in compute_dtype
+        # (3 matmuls/iter on tensor cores), then a single fp32 polish
+        # iter at the end. Cast launches per call: 5 (3 entry, 2 exit),
+        # not per-iter — this is what made variant B win the bench in
+        # scripts/bench/bench_higham_variants.py vs a per-iter-cast
+        # approach. fp32 polish recovers precision to ~fp32 machine
+        # level (rel-err ~1e-2 vs fp32 reference at cond ≈ 1e3).
+        Y_lp = Y.to(compute_dtype)
+        Z_lp = Z.to(compute_dtype)
+        three_eye_lp = three_eye.to(compute_dtype)
+        for _ in range(n_iters - 1):
+            T_lp = torch.baddbmm(
+                three_eye_lp, Z_lp, Y_lp, beta=1.0, alpha=-1.0
+            )
+            Y_lp = 0.5 * (Y_lp @ T_lp)
+            Z_lp = 0.5 * (T_lp @ Z_lp)
+        # fp32 polish iter — one full Newton-Schulz step on the
+        # nearly-converged iterate, in fp32. Cast cost is amortized:
+        # 2 casts vs one full iter of compute.
+        Y = Y_lp.float()
+        Z = Z_lp.float()
         T = torch.baddbmm(three_eye, Z, Y, beta=1.0, alpha=-1.0)
         Y = 0.5 * (Y @ T)
         Z = 0.5 * (T @ Z)

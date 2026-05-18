@@ -696,3 +696,91 @@ bash /mnt/home/nghosh/.tmp_scripts/profile_gram_blackwell.sh
   library's CuTeDSL kernels would only activate at min(r, d) > 256
   anyway, beyond practical LoRA ranks for our sweeps. Removed from
   CLI choices.
+
+## bf16 / fp16 Higham — kernel bench + variant comparison (Blackwell)
+
+Higham is the largest non-tensor-core consumer of opt_ms (fp32, TF32
+disabled) at higher rank. This bench answers whether moving its inner
+loop onto tensor cores via low-precision matmuls actually pays off.
+
+Bench script: `scripts/bench/bench_higham_variants.py`. Production
+damping (eps_abs=1e-6, eps_relative=False — the `train.py --precond_delta`
+default). True λ_max scaling computed outside the timed region.
+`n_iters = 10`. Inputs at controlled cond ∈ {1e2, 1e3, 1e6} to bracket
+typical (real Gram audit shows cond ≤ 1.24e3 on chord-tight r=64) and
+adversarial. Three variants:
+
+- **A: fp32 + TF32 enabled.** Original baddbmm polynomial; just flip
+  `allow_tf32 = True` and `set_float32_matmul_precision("high")`
+  around the call. No algorithm change.
+- **B: fp16 inner + 1 fp32 polish.** Y, Z, three_eye cast to fp16
+  once at entry; first `n_iters - 1` iters run fully in fp16 on
+  tensor cores; one final fp32 polish iter restores precision.
+  Cast launches per call: 5 (3 entry + 2 exit), not per-iter.
+- **C: bf16 inner + 1 fp32 polish.** Same as B but bf16.
+
+### Wall-time speedup vs fp32-no-TF32 reference
+
+(Mean across cond levels — variance < 2% with cond. Speedups are
+shape-dominated, not cond-dominated.)
+
+| shape         | A: fp32+TF32 | B: fp16+polish | C: bf16+polish |
+|---------------|-------------:|---------------:|---------------:|
+| (112, 16, 16) | 1.00×        | 0.93×          | 0.93×          |
+| (112, 64, 64) | 0.99×        | 0.93×          | 0.93×          |
+| (112,128,128) | **1.53×**    | **1.52×**      | 1.48×          |
+| (224,256,256) | 1.39×        | **2.16×**      | 1.91×          |
+
+Reading:
+
+- **r ≤ 64**: no win. (112, r, r) bmms are launch-bound at these
+  shapes — matmul time is ~0.01 ms and 5 cast launches add ~0.05 ms,
+  exactly the 7% slowdown observed for B/C.
+- **r = 128**: A and B tie at ~1.5×. TF32 alone is enough; the fp16
+  matmul edge isn't large enough at this shape to outrun cast cost.
+- **r = 256**: B is the clear winner at 2.16×. fp16's TC throughput
+  on Blackwell is the dominant factor; A's TF32 gives only 1.39×.
+
+### Precision (Frobenius rel-err vs fp32-no-TF32 reference)
+
+| shape         | cond=1e2 A / B / C | cond=1e3 A / B / C | cond=1e6 A / B / C |
+|---------------|-------------------:|-------------------:|-------------------:|
+| (224,256,256) | 2e-3 / 2e-3 / 1e-2 | 1e-2 / 1e-2 / 8e-2 | 3e-2 / 3e-2 / 3e-1 |
+| (112,128,128) | 2e-3 / 2e-3 / 1e-2 | 1e-2 / 1e-2 / 9e-2 | 4e-2 / 4e-2 / 3e-1 |
+| (112, 64, 64) | 2e-3 / 2e-3 / 1e-2 | 1e-2 / 1e-2 / 9e-2 | 4e-2 / 4e-2 / 3e-1 |
+| (112, 16, 16) | 0 / 2e-3 / 2e-2    | 0 / 1e-2 / 1e-1    | 0 / 4e-2 / 5e-1    |
+
+Reading:
+
+- **A and B are precision-equivalent** at every (shape, cond). The
+  single fp32 polish iter at the end of B fully restores B's output
+  to TF32-tier precision — the 9 fp16 inner iters drift, the fp32
+  polish corrects.
+- **C (bf16) is ~10× worse** at every (shape, cond). One polish iter
+  isn't enough to recover bf16's bigger mantissa drift (7-bit vs
+  fp16's 10-bit; same exponent range binds for neither at this scale
+  under eps_abs damping).
+- **Precision scales with cond.** Real production worst-case is
+  cond ≈ 1e3 (fixture audit on chord-tight r=64 snapshot — median
+  91, max 1.24e3). At that cond, A and B both have ~1% rel-err vs
+  fp32 reference.
+
+### Shipping decision
+
+- **Variant B (fp16+polish) is the shipping path at r ≥ 128.**
+  Wired in as `--higham_compute_dtype fp16`; defaults to fp32 to
+  preserve all current behavior.
+- **At r ≤ 64 don't use it** — cast overhead exceeds matmul win.
+  Caller-side rank check: pass `compute_dtype=None` for low-r.
+- **Variant C (bf16) rejected** — worse precision, no speed advantage
+  over B.
+- **Variant A (fp32+TF32) not shipped** — captures ~70% of B's win
+  at r=256 with the same precision, but B is strictly better at
+  r=256 and ties at r=128, so there's no regime where A is the
+  right choice.
+
+Quality validation: `tests/test_higham_lowp.py` bounds B at ≤ 1e-2
+rel-err vs fp32 across the cond range observed in real chord-tight
+r=64 Grams. End-to-end training equivalence — a separate 500-step
+smoke comparison on tiny-fixture data, fp32 baseline vs fp16+polish
+under matched seed — confirms trajectory holds.
