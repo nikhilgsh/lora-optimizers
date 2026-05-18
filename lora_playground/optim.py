@@ -3427,39 +3427,45 @@ class AdamPolarProductLoRA(Optimizer):
         self, gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
         sigma_A=None, sigma_B=None,
     ):
-        """Algorithm 2′ — focused implementation of the §10-clean polar
-        pipeline. Replaces the gated-branch path in `_step_batched` for
-        `magnitude_rule == "spectral_chord_tight_clean"`. Walkthrough and
+        """Algorithm 2′ — chord-tight-clean polar pipeline. Walkthrough +
         FLOP budget: `docs/notes/polar_product/algorithm_clean_implementation.md`.
+        Stage labels below (§2.2–§2.7) cross-reference that doc.
+
+        Inputs `u_A`, `u_B` are the post-Adam-direction update (doc §2.1 done
+        upstream); `SA_half_inv`, `SB_half_inv` are the refreshed Higham
+        whiteners (doc §2.3 done upstream); `sigma_A`, `sigma_B` are the
+        optional caller-hoisted σ_max values (per doc §7 "Done").
+
+        Behavior knobs:
+          - `self.ns_form ∈ {"gram", "gram-norestart", "rect"}`. Canonical = "gram"
+            (Dao 2026 Alg 3, fp16+restart at τ=2 — doc §5).
+          - `self.htmuon_p` (default None): when set, applies an extra
+            σ→σ^p polishing P ← (X Xᵀ)^(p/2) · polar(X). None ⇒ bit-identical
+            to clean NS, not described in the algorithm-clean doc.
 
         Returns a dict whose keys match the locals the caller's downstream
-        diagnostic-emission block consumes (`u_A`, `u_B`, `SA_half_inv_k`,
-        `SB_half_inv_k`, `sigma_A`, `sigma_B`, `rho`, `picard_coeff_s`,
-        `u_A_eff`, `u_B_eff`, `X_A`, `X_B`, `P_A`, `P_B`, `geo_A`, `geo_B`,
-        `op_geoA_b`, `op_geoB_b`, `dA`, `dB`).
-
-        Differences from the gated implementation:
-          - Computes `X_A := S_B^{-1/2} u_A` once; the pre-rescale and the
-            polar-pipeline whitening share the matmul (saves 2·N·r²·D/step
-            relative to the gated form, which recomputes after rescale).
-          - Cross-coupling coefficient is `1/η` (Lemma 1 form), no factor of
-            2 doubling, no `2/(ρ·s)` empirical multiplier.
-          - ρ is linear `η/s`, not the quadratic root.
-          - Site-C warm-start vector (`v_op_geoA`/`v_op_geoB`) is keyed by
-            Picard iter `n`, so iter `n`'s power iter starts from iter `n`'s
-            own prior step value (not iter `n-1`'s of the current step).
-          - Drops `exact_chord`, `disable_whitening`, `picard_alpha/lr`, and
-            the direction-aware λ_dir quartic — none apply to the clean rule.
+        diagnostic-emission block consumes.
         """
         N = A_f.shape[0]
         device, dtype = A_f.device, A_f.dtype
 
-        # 1. σ_max(A), σ_max(B) → ρ = η/s. Warm-started power iter on the
-        #    raw factor matrices. When `sigma_A` / `sigma_B` are passed in
-        #    by the caller (λ_max hoist: `_step_batched` computes these
-        #    before the precond-refresh block so the same values feed both
-        #    Higham's damping and the ρ formula here), skip the internal
-        #    power iter and reuse them.
+        def _b11(t):
+            return t.unsqueeze(-1).unsqueeze(-1)
+
+        def _polar(X):
+            if self.ns_form == "gram":
+                return _newton_schulz_gram_batched(X, nsteps=self.ns_steps).float()
+            if self.ns_form == "gram-norestart":
+                return _newton_schulz_gram_batched(
+                    X, nsteps=self.ns_steps, restart_at=None
+                ).float()
+            return _newton_schulz_batched(
+                X, nsteps=self.ns_steps, dtype=torch.bfloat16
+            ).float()
+
+        # §2.2 σ_max(A), σ_max(B) → ρ = η/s. Warm-started power iter on raw
+        #      factors. When caller passes sigma_A/sigma_B (λ_max hoist:
+        #      `_step_batched` shares these with Higham's damping), reuse.
         with maybe_time(timer, "chord_tight_clean_sigma_AB"):
             if sigma_A is None or sigma_B is None:
                 sigma_A, v_sigma_A = _sigma_max_power_iter_batched(
@@ -3468,17 +3474,20 @@ class AdamPolarProductLoRA(Optimizer):
                     B_f, v_init=gs.get('v_sigma_B'), n_iters=8)
                 gs['v_sigma_A'] = v_sigma_A
                 gs['v_sigma_B'] = v_sigma_B
-            s_AB = sigma_A + sigma_B
+            s_AB = sigma_A + sigma_B                           # doc-name: s
             rho = lr / (s_AB + 1e-30)                          # (N,)
 
-        # 2. Whitened Adam direction. Computed once; reused for pre-rescale
-        #    and for the n=1 polar input. (The legacy path computes it twice.)
+        # §2.4 Whitened Adam direction. Computed once; reused for pre-rescale
+        #      and for the n≥1 polar input.
         with maybe_time(timer, "chord_tight_clean_whiten_input"):
             X_A = SB_half_inv @ u_A                            # (N, r, d_in)
             X_B = u_B @ SA_half_inv                            # (N, d_out, r)
 
-        # 3. Pre-rescale: σ_max(X_A,B) via warm-started power iter; divide.
-        #    After this, σ_max(X_A) = σ_max(X_B) = 1 by construction.
+        # §2.5 Pre-rescale: divide X_A, X_B by σ_max(X_A), σ_max(X_B).
+        #      After this, σ_max(X_A) = σ_max(X_B) = 1 by construction.
+        #      The SAME divisors are applied to u_A, u_B so that the n≥1
+        #      cross-coupling (which mixes u with dA, dB derived from the
+        #      rescaled X) stays consistent — this is load-bearing.
         with maybe_time(timer, "chord_tight_clean_pre_rescale"):
             sigma_XA, v_sigma_XA = _sigma_max_power_iter_batched(
                 X_A, v_init=gs.get('v_sigma_XA'), n_iters=8)
@@ -3486,43 +3495,39 @@ class AdamPolarProductLoRA(Optimizer):
                 X_B, v_init=gs.get('v_sigma_XB'), n_iters=8)
             gs['v_sigma_XA'] = v_sigma_XA
             gs['v_sigma_XB'] = v_sigma_XB
-            inv_XA = 1.0 / (sigma_XA + 1e-30)
-            inv_XB = 1.0 / (sigma_XB + 1e-30)
-            X_A = X_A * inv_XA.unsqueeze(-1).unsqueeze(-1)
-            X_B = X_B * inv_XB.unsqueeze(-1).unsqueeze(-1)
-            # Keep rescaled u_A,u_B consistent for cross-coupling at n ≥ 1.
-            u_A = u_A * inv_XA.unsqueeze(-1).unsqueeze(-1)
-            u_B = u_B * inv_XB.unsqueeze(-1).unsqueeze(-1)
+            inv_XA = _b11(1.0 / (sigma_XA + 1e-30))
+            inv_XB = _b11(1.0 / (sigma_XB + 1e-30))
+            X_A = X_A * inv_XA
+            X_B = X_B * inv_XB
+            u_A = u_A * inv_XA
+            u_B = u_B * inv_XB
 
-        # 4. Picard outer loop. At n=0 there is no cross-coupling.
+        # §2.6 Picard outer loop. dA, dB initialized to zero so the n=0 iter
+        #      sees no cross-coupling; the pre-loop sentinels for P_A, P_B,
+        #      geo_A, geo_B, op_geoA_b, op_geoB_b guard the return dict in
+        #      the degenerate picard_iters=0 config.
         dA = torch.zeros_like(u_A)
         dB = torch.zeros_like(u_B)
-        # Picard-coupling coefficient: Lemma 1 gives 1/η directly. Stored
-        # in (N, 1, 1) form purely so downstream chain_tensors emission
-        # sees the same shape it expects from the legacy path.
+        # Picard coupling coefficient (1/η, Lemma 1). Stored as (N, 1, 1)
+        # so downstream chain-tensors emission sees the expected shape.
         picard_coeff_s = torch.full((N, 1, 1), 1.0 / lr, device=device, dtype=dtype)
 
-        # Final loop intermediates (carry the last iter's values out so the
-        # caller's diagnostic block sees them).
-        u_A_eff = u_A
-        u_B_eff = u_B
-        P_A = None
-        P_B = None
-        geo_A = None
-        geo_B = None
-        op_geoA_b = None
-        op_geoB_b = None
+        u_A_eff, u_B_eff = u_A, u_B
+        P_A = P_B = geo_A = geo_B = None
+        op_geoA_b = op_geoB_b = None
+        op_geoA = op_geoB = None
+
+        slots_A = gs.setdefault('v_op_geoA_slots', [None] * self.picard_iters)
+        slots_B = gs.setdefault('v_op_geoB_slots', [None] * self.picard_iters)
 
         for n in range(self.picard_iters):
             with maybe_time(timer, "chord_tight_clean_picard"):
                 if n == 0:
-                    X_A_eff = X_A
-                    X_B_eff = X_B
-                    u_A_eff = u_A
-                    u_B_eff = u_B
+                    u_A_eff, u_B_eff = u_A, u_B
+                    X_A_eff, X_B_eff = X_A, X_B
                 else:
-                    # 1/η cross-coupling on the *whitened* polar input —
-                    # X_A^eff = S_B^{-1/2}(u_A + (1/η) B^T dB A).
+                    # 1/η cross-coupling on the whitened polar input:
+                    # X_A^eff = S_B^{-1/2} (u_A + (1/η) Bᵀ dB A).
                     BT_dB_A = B_f.transpose(-2, -1) @ dB @ A_f       # (N, r, d_in)
                     B_dA_AT = B_f @ dA @ A_f.transpose(-2, -1)       # (N, d_out, r)
                     u_A_eff = u_A + (1.0 / lr) * BT_dB_A
@@ -3530,61 +3535,28 @@ class AdamPolarProductLoRA(Optimizer):
                     X_A_eff = SB_half_inv @ u_A_eff
                     X_B_eff = u_B_eff @ SA_half_inv
 
-                # Polar map via Newton–Schulz. Default rect path runs in
-                # bf16 on tensor cores. With self.ns_form == "gram", dispatch
-                # to the Gram-form variant (Dao 2026 Algorithm 3, fp16+restart
-                # at τ=2). Matches rect-fp32 within polar-map tolerance per
-                # tests/test_ns_gram.py.
-                if self.ns_form == "gram":
-                    P_A = _newton_schulz_gram_batched(
-                        X_A_eff, nsteps=self.ns_steps,
-                    ).float()
-                    P_B = _newton_schulz_gram_batched(
-                        X_B_eff, nsteps=self.ns_steps,
-                    ).float()
-                elif self.ns_form == "gram-norestart":
-                    P_A = _newton_schulz_gram_batched(
-                        X_A_eff, nsteps=self.ns_steps, restart_at=None,
-                    ).float()
-                    P_B = _newton_schulz_gram_batched(
-                        X_B_eff, nsteps=self.ns_steps, restart_at=None,
-                    ).float()
-                else:
-                    P_A = _newton_schulz_batched(
-                        X_A_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
-                    ).float()
-                    P_B = _newton_schulz_batched(
-                        X_B_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
-                    ).float()
+                # Polar map via Newton-Schulz (canonical: gram, fp16+restart).
+                P_A = _polar(X_A_eff)
+                P_B = _polar(X_B_eff)
 
-                # HTMuon σ → σ^p sub-mode. Bypasses the NS5 σ→1 polishing on
-                # noise-dominated singular directions; instead applies
-                # U Σ^p V^T = (X X^T)^(p/2) · polar(X). When self.htmuon_p is
-                # None this branch is skipped → bit-identical to clean NS5.
+                # HTMuon σ→σ^p sub-mode (silent when htmuon_p is None).
+                # Applies U Σ^p V^T = (X Xᵀ)^(p/2) · polar(X).
                 if self.htmuon_p is not None:
                     from .utils import spd_power_batched
                     G_A = X_A_eff @ X_A_eff.transpose(-2, -1)               # (N, r, r)
                     G_B = X_B_eff.transpose(-2, -1) @ X_B_eff               # (N, r, r)
-                    G_A_phalf = spd_power_batched(G_A, self.htmuon_p / 2.0) # = U Σ^p U^T
-                    G_B_phalf = spd_power_batched(G_B, self.htmuon_p / 2.0) # right-side Gram
-                    P_A = G_A_phalf @ P_A                                   # = U Σ^p V^T
+                    G_A_phalf = spd_power_batched(G_A, self.htmuon_p / 2.0)
+                    G_B_phalf = spd_power_batched(G_B, self.htmuon_p / 2.0)
+                    P_A = G_A_phalf @ P_A
                     P_B = P_B @ G_B_phalf
 
                 # Unwhiten back to factor space.
                 geo_A = SB_half_inv @ P_A                              # (N, r, d_in)
                 geo_B = P_B @ SA_half_inv                              # (N, d_out, r)
 
-                # Site-C: σ_max(geo_A), σ_max(geo_B). Warm-start keyed by
-                # Picard iter n. Use pre-allocated slot lists (indexed by
-                # n) instead of f-string dict keys — torch.compile cannot
-                # specialize over dynamic-string dict accesses and would
-                # graph-break here once per (A, B) per Picard iter.
-                slots_A = gs.setdefault('v_op_geoA_slots', [None] * self.picard_iters)
-                slots_B = gs.setdefault('v_op_geoB_slots', [None] * self.picard_iters)
-                if len(slots_A) < self.picard_iters:
-                    slots_A.extend([None] * (self.picard_iters - len(slots_A)))
-                if len(slots_B) < self.picard_iters:
-                    slots_B.extend([None] * (self.picard_iters - len(slots_B)))
+                # Site-C σ_max(geo). Warm-start keyed by Picard iter n via
+                # pre-allocated slot lists (dynamic-string dict keys would
+                # graph-break under torch.compile).
                 op_geoA_b, v_op_geoA = _sigma_max_power_iter_batched(
                     geo_A, v_init=slots_A[n], n_iters=8)
                 op_geoB_b, v_op_geoB = _sigma_max_power_iter_batched(
@@ -3592,16 +3564,12 @@ class AdamPolarProductLoRA(Optimizer):
                 slots_A[n] = v_op_geoA
                 slots_B[n] = v_op_geoB
 
-                rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
-                op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
-                op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                rho_unsq = _b11(rho)
+                op_geoA = _b11(op_geoA_b + 1e-30)
+                op_geoB = _b11(op_geoB_b + 1e-30)
+                # §2.7 Updates (caller applies A += dA, B += dB).
                 dA = -(rho_unsq / op_geoA) * geo_A
                 dB = -(self.lora_plus_multiplier * rho_unsq / op_geoB) * geo_B
-
-        # (N, 1, 1) unsqueezed forms — downstream probe-step diagnostic
-        # block in _step_batched reads these directly (not the (N,) `_b` forms).
-        op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
-        op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
 
         return {
             "u_A": u_A, "u_B": u_B,
