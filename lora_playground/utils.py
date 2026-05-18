@@ -144,7 +144,8 @@ def spd_frac_power_inv(H, gamma, eps=1e-6, eps_relative=False):
     return Q @ torch.diag(evals.clamp(min=eps).pow(-gamma)) @ Q.T
 
 
-def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_relative=False):
+def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4,
+                                eps_relative=False, lam_max=None):
     """Batched Iannazzo / Denman-Beavers-Newton coupled NS for H^{-1/2}.
 
     Shape-broadcasting version of `spd_inv_sqrt_higham`. H: (..., n, n) SPD
@@ -156,6 +157,17 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_rel
     eps_relative: if True, effective damping is `eps * λ_max(H)` per batch
     (σ_max-relative damping, see docs/notes/polar_product/init_damping_math.md §5.3).
     Requires one extra power iter on raw H to estimate λ_max before damping.
+
+    lam_max: optional pre-computed λ_max(H_raw), shape (...,). When provided,
+    the function skips both internal `lambda_max_power_iter_psd_batched` calls
+    (one for the eps_relative damping, one for the NS scaling) and derives the
+    damped λ_max in closed form:
+      - eps_relative=False: λ_max(H + ε·I) = λ_max(H) + ε
+      - eps_relative=True:  λ_max(H + ε·λ_max·I) = λ_max(H) · (1 + ε)
+    The caller is responsible for passing a valid λ_max — typically
+    σ_max(A)² when `H = A·Aᵀ`, since σ_max(A) is already computed once
+    per step at the `ρ = η/(σ_A+σ_B)` site. Non-breaking: existing callers
+    that omit the kwarg get the original behavior.
     """
     n = H.shape[-1]
     H = 0.5 * (H + H.transpose(-2, -1))
@@ -165,20 +177,33 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_rel
         # λ_max on RAW H (before damping) sets scale-invariant damping.
         # Use the shared PSD spectral primitive; a single H@ones start can
         # miss the top eigendirection and under-scale the Higham iteration.
-        lam_max_raw, _ = lambda_max_power_iter_psd_batched(
-            H, n_iters=max(n_power_iter, 8),
-        )
-        lam_max_raw = lam_max_raw.unsqueeze(-1).unsqueeze(-1)
+        if lam_max is not None:
+            lam_max_raw = lam_max.reshape(*lam_max.shape, 1, 1)
+        else:
+            lam_max_raw_flat, _ = lambda_max_power_iter_psd_batched(
+                H, n_iters=max(n_power_iter, 8),
+            )
+            lam_max_raw = lam_max_raw_flat.unsqueeze(-1).unsqueeze(-1)
         H = H + (eps * lam_max_raw).clamp_min(1e-12) * eye
     else:
         H = H + eps * eye
     eye_b = eye.expand_as(H)
 
-    lam_max, _ = lambda_max_power_iter_psd_batched(
-        H, n_iters=max(n_power_iter, 8),
-    )
+    if lam_max is not None:
+        # Damped λ_max in closed form (additive shift): identity-mul-eps for
+        # absolute damping, eps_relative shifts by eps·λ_max_raw.
+        if eps_relative:
+            lam_max_damped = lam_max * (1.0 + eps)
+        else:
+            lam_max_damped = lam_max + eps
+        lam_max_for_residual = lam_max_damped
+    else:
+        lam_max_damped, _ = lambda_max_power_iter_psd_batched(
+            H, n_iters=max(n_power_iter, 8),
+        )
+        lam_max_for_residual = lam_max_damped
 
-    s = lam_max.unsqueeze(-1).unsqueeze(-1)           # (..., 1, 1)
+    s = lam_max_damped.unsqueeze(-1).unsqueeze(-1)    # (..., 1, 1)
     Y = H / s
     Z = eye_b.clone()
     three_eye = 3.0 * eye_b
@@ -194,7 +219,7 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_rel
         Z = 0.5 * (T @ Z)
     Z = Z.reshape(*orig_leading, Z.shape[-2], Z.shape[-1])
     out = Z / s.sqrt()
-    _higham_emit_residual(out, H, lam_max, n_iters, eps, where="batched")
+    _higham_emit_residual(out, H, lam_max_for_residual, n_iters, eps, where="batched")
     return out
 
 

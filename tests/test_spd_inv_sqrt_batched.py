@@ -87,3 +87,37 @@ def test_higham_batched_survives_top_vector_orthogonal_to_ones():
     H_damped = H + 1e-2 * 1000.0 * torch.eye(n)
     rel = (Z @ H_damped @ Z - torch.eye(n)).norm() / (n ** 0.5)
     assert rel < 1e-3
+
+
+@pytest.mark.parametrize("eps_relative", [False, True])
+def test_lam_max_kwarg_matches_internal(eps_relative):
+    """Passing pre-computed `lam_max` produces output equivalent to the
+    default path (which computes λ_max internally).
+
+    Use-case: in the chord-tight-clean pipeline, σ_max(A) is already
+    computed at the ρ-formula site, so λ_max(S_A) = σ_max(A)² is a free
+    by-product. Hoisting it into Higham removes the internal λ_max power
+    iter at no quality cost.
+    """
+    torch.manual_seed(7)
+    H = _spd_batch(N=4, n=32)
+    eps = 1e-2 if eps_relative else 1e-6
+
+    # Reference: compute internally
+    Z_ref = spd_inv_sqrt_higham_batched(
+        H, n_iters=10, eps=eps, eps_relative=eps_relative,
+    )
+
+    # Compute λ_max externally and pass in. Use the same primitive the
+    # function uses internally so the two paths see the same λ_max.
+    lam, _ = lambda_max_power_iter_psd_batched(H, n_iters=8)
+    Z_hoisted = spd_inv_sqrt_higham_batched(
+        H, n_iters=10, eps=eps, eps_relative=eps_relative, lam_max=lam,
+    )
+
+    err = (Z_ref - Z_hoisted).abs().max().item()
+    rel = err / (Z_ref.abs().max().item() + 1e-30)
+    # Closed-form damped λ_max (lam·(1+eps) or lam+eps) should agree with the
+    # internal second power iter to fp32 noise — both converge to the same
+    # damped-λ_max value, so the iterations they drive are equivalent.
+    assert rel < 1e-5, f"hoisted vs internal lam_max diverge: {rel:.2e}"
