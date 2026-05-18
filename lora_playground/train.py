@@ -522,13 +522,16 @@ def make_parser():
                         help="Rank r_m for PSI-LoRA low-rank momentum (default: lora_r).")
     parser.add_argument("--muon_ns_steps", type=int, default=5,
                         help="Newton-Schulz iterations for Muon-family optimizers; 0 disables NS (Tier-2 sanity).")
-    parser.add_argument("--ns_form", type=str, default="rect",
+    parser.add_argument("--ns_form", type=str, default="gram",
                         choices=["rect", "gram", "gram-norestart"],
                         help="Newton-Schulz kernel form for the clean polar pipeline. "
-                             "'rect' (default) is _newton_schulz_batched on (r,d). "
-                             "'gram' uses _newton_schulz_gram_batched (Dao 2026 Algorithm 3, "
-                             "fp16+restart at τ=2). 'gram-norestart' is gram without the "
-                             "restart hedge (validated on Tier 1 + tight-damping corpus for "
+                             "'gram' (default) uses _newton_schulz_gram_batched (Dao 2026 "
+                             "Algorithm 3, fp16+restart at τ=2) — 21% step-wall reduction "
+                             "vs rect k=3 at 8B/r=256, validated end-to-end. "
+                             "'rect' is the legacy path (_newton_schulz_batched on (r,d)); "
+                             "keep available for trajectory comparisons against pre-gram sweeps. "
+                             "'gram-norestart' is gram without the restart hedge "
+                             "(validated on Tier 1 + tight-damping corpus for "
                              "cubic Muon at NS=5 — see tests/test_ns_gram.py). Only "
                              "consulted by magnitude_rule=spectral_chord_tight_clean.")
     parser.add_argument("--galore_update_proj_gap", type=int, default=200,

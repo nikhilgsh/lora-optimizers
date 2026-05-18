@@ -2803,7 +2803,7 @@ class AdamPolarProductLoRA(Optimizer):
                  debug_snapshot_dir=None,
                  debug_snapshot_limit=8,
                  debug_abort_on_non_finite=False,
-                 ns_form="rect",
+                 ns_form="gram",
                  higham_compute_dtype="fp32"):
         named = collect_lora_pairs_named(model, adapter_name)
         if not named:
@@ -2828,12 +2828,14 @@ class AdamPolarProductLoRA(Optimizer):
         self.debug_snapshot_limit = int(debug_snapshot_limit)
         self.debug_abort_on_non_finite = bool(debug_abort_on_non_finite)
         self._debug_snapshots_written = 0
-        # ns_form: "rect" (default, _newton_schulz_batched), "gram"
-        # (_newton_schulz_gram_batched — Dao 2026 Algorithm 3, fp16+restart,
-        # our reimplementation), or "gram-norestart" (same as gram, but
-        # restart_at=None — drops the stability hedge for the FLOP headroom;
-        # validated to track rect-fp32 on Tier 1 corpus + tight-damping
-        # rebuild at cubic-Muon NS=5, see tests/test_ns_gram.py).
+        # ns_form: "gram" (default, _newton_schulz_gram_batched — Dao 2026
+        # Algorithm 3, fp16+restart, our reimplementation; production path),
+        # "rect" (_newton_schulz_batched on rectangular (r,d) — legacy, kept
+        # for trajectory comparisons against pre-gram sweeps), or
+        # "gram-norestart" (same as gram, but restart_at=None — drops the
+        # stability hedge for the FLOP headroom; validated to track rect-fp32
+        # on Tier 1 corpus + tight-damping rebuild at cubic-Muon NS=5, see
+        # tests/test_ns_gram.py).
         # Only consulted by `_chord_tight_clean_polar_pipeline`; other
         # magnitude_rules ignore it.
         if ns_form not in ("rect", "gram", "gram-norestart"):
@@ -8550,7 +8552,7 @@ def build_optimizer(
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
-    ns_form: str = "rect",
+    ns_form: str = "gram",
     higham_compute_dtype: str = "fp32",
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
