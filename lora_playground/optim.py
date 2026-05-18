@@ -5834,10 +5834,22 @@ class SignMomentumPolarProductLoRA(AdamPolarProductLoRA):
 # fullgraph=False is kept here as a safety net for future edits that
 # might introduce a Python-only construct; the test will fail-fast if
 # that happens so the comment isn't load-bearing.
-if os.environ.get("LORA_COMPILE_KERNELS", "0") == "1":
+#
+# LORA_COMPILE_KERNELS=2 selects `mode='reduce-overhead'` which captures
+# the compiled function as a CUDA graph (1 launch per call vs N).
+# Requires fullgraph=True; the body satisfies that, but external state
+# mutations (warm-start dict writes, `gs[...]` updates) may force
+# extra recompiles. Bench script: `scripts/bench/bench_compile_modes.sh`.
+_compile_setting = os.environ.get("LORA_COMPILE_KERNELS", "0")
+if _compile_setting == "1":
     AdamPolarProductLoRA._chord_tight_clean_polar_pipeline = torch.compile(
         AdamPolarProductLoRA._chord_tight_clean_polar_pipeline,
         dynamic=False, fullgraph=False,
+    )
+elif _compile_setting == "2":
+    AdamPolarProductLoRA._chord_tight_clean_polar_pipeline = torch.compile(
+        AdamPolarProductLoRA._chord_tight_clean_polar_pipeline,
+        dynamic=False, fullgraph=True, mode="reduce-overhead",
     )
 
 

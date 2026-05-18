@@ -218,6 +218,12 @@ def parse_args():
                              "'eigh higham' to compare both.")
     parser.add_argument("--higham_iters", type=int, default=5,
                         help="Newton-Schulz iterations when precond_method=higham.")
+    parser.add_argument("--higham_compute_dtype", type=str, default="fp32",
+                        choices=["fp32", "fp16"],
+                        help="Inner-iteration dtype for Higham. fp32 (default) "
+                             "preserves current behavior; fp16 opts into variant B "
+                             "(n_iters-1 in fp16 + 1 fp32 polish iter). Bench numbers: "
+                             "scripts/bench/bench_higham_variants.py.")
     parser.add_argument("--ns_form", type=str, default="rect",
                         choices=["rect", "gram", "gram-norestart"],
                         help="Newton-Schulz kernel form for the clean polar pipeline. "
@@ -421,6 +427,7 @@ def main():
                         precond_refresh_every=K,
                         precond_method=method,
                         higham_iters=args.higham_iters,
+                        higham_compute_dtype=args.higham_compute_dtype,
                         ns_form=args.ns_form,
                         picard_iters_override=args.picard_iters_override,
                     )
