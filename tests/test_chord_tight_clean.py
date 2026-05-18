@@ -257,3 +257,54 @@ def test_lam_max_hoist_equivalence(tiny_specs):
     # σ_max(A)² — they should agree to a few power-iter residuals.
     rel = (inv_internal - inv_hoisted).norm() / inv_internal.norm()
     assert rel < 1e-3, f"hoisted Higham differs by rel_err={rel:.2e}"
+
+
+def test_first_step_with_lora_B_zero_init_does_not_nan(tiny_specs):
+    """Regression test for the LoRA init edge case:
+    `B` initializes to zero (PEFT convention), so on the first step
+    σ_max(B) = 0, which is passed as `lam_max=0` into Higham via the
+    λ_max hoist. The closed-form damping in Higham must mirror the
+    `.clamp_min(1e-12)` that the H-damping line applies, otherwise
+    `s = lam_max_damped = 0` and `Y = H / 0 = NaN` — which then
+    propagates through Adam (m, v ← NaN) and bricks training. Caught
+    in a production smoke; this test would have caught it earlier."""
+    torch.manual_seed(0)
+    # init_B_nonzero=False is the production default — B starts at 0.
+    model = FakeLoRAModel(tiny_specs, init_B_nonzero=False)
+    opt = _make_optimizer(model, picard_iters=2)
+    _seed_grads(model, seed=0)
+    opt.step()
+    for ad in model.adapters:
+        A_post = ad.lora_A["default"].weight
+        B_post = ad.lora_B["default"].weight
+        assert torch.isfinite(A_post).all(), \
+            f"A NaN/Inf after first step with B=0 init"
+        assert torch.isfinite(B_post).all(), \
+            f"B NaN/Inf after first step with B=0 init"
+
+
+def test_higham_with_lam_max_zero_returns_finite():
+    """Lower-level regression: passing lam_max=zeros into
+    `spd_inv_sqrt_higham_batched` (eps_relative=True path) must
+    produce a finite output, matching what the non-hoisted path
+    returns when called on the same zero-Gram matrix."""
+    from lora_playground.utils import spd_inv_sqrt_higham_batched
+    N, r = 2, 4
+    H_zero = torch.zeros(N, r, r)
+    lam_max_zero = torch.zeros(N)
+    # Closed-form path with lam_max=0 — the bug case.
+    Z_hoisted = spd_inv_sqrt_higham_batched(
+        H_zero.clone(), n_iters=10, eps=1e-2, eps_relative=True,
+        lam_max=lam_max_zero,
+    )
+    assert torch.isfinite(Z_hoisted).all(), \
+        f"Higham(H=0, lam_max=0) produced non-finite: {Z_hoisted}"
+    # And the non-hoisted path with the SAME zero matrix — should
+    # also be finite (sanity check that the fix doesn't regress the
+    # internal-power-iter path).
+    Z_internal = spd_inv_sqrt_higham_batched(
+        H_zero.clone(), n_iters=10, eps=1e-2, eps_relative=True,
+        lam_max=None,
+    )
+    assert torch.isfinite(Z_internal).all(), \
+        f"Higham(H=0, lam_max=None) produced non-finite: {Z_internal}"

@@ -210,10 +210,14 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4,
     eye_b = eye.expand_as(H)
 
     if lam_max is not None:
-        # Damped λ_max in closed form (additive shift): identity-mul-eps for
-        # absolute damping, eps_relative shifts by eps·λ_max_raw.
+        # Damped λ_max in closed form. Mirrors the actual damping added
+        # to H above: for eps_relative, the damping is
+        # `(eps * lam_max).clamp_min(1e-12)` per-batch (so a zero lam_max
+        # — e.g., LoRA's B=0 at init produces σ_max(B)=0, λ_max(S_B)=0 —
+        # still gets a non-zero 1e-12 floor instead of dividing by zero).
         if eps_relative:
-            lam_max_damped = lam_max * (1.0 + eps)
+            damping = (eps * lam_max).clamp_min(1e-12)
+            lam_max_damped = lam_max + damping
         else:
             lam_max_damped = lam_max + eps
         lam_max_for_residual = lam_max_damped
