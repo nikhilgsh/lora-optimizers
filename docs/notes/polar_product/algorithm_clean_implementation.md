@@ -335,3 +335,24 @@ The refactor preserves trajectory only if:
 3. End-to-end smoke through `train_lora.py` — 5 steps at lr=3e-3, r=64, picard_iters_override=3 — same final eval loss within 0.01.
 
 After verification, the pending sbatch `chord_tight_clean_lrsweep_k3_r64_4k_blackwell.sbatch` re-runs at the new commit. The decision rule in `there-is-an-ablation-magical-stroustrup.md` §2.4 still applies (compare at lr=3e-3 overlap with existing chord-tight).
+
+## 9. Tested and rejected: σ → σ^p (HTMuon)
+
+HTMuon (Pang et al. 2026, `docs/papers/htmuon_2603.10067.pdf`) proposes σ → σ^p, p ∈ (0, 1), as a "graduated" alternative to the polar σ → 1. The argument is that finite-NS Muon (with its non-flat singular spectrum) outperforms exact-polar Muon by preserving information in noise-dominated directions; σ^p makes that preservation explicit and tunable. Implementation: `htmuon(X, p) = U Σ^p V^T = (X X^T)^(p/2) · polar(X)`, applied as a sub-mode of `spectral_chord_tight_clean` via the `htmuon_p` CLI flag (`lora_playground/utils.py:spd_power_batched`).
+
+**Result (`chord_tight_clean_htmuon_p_lr_grid_r256_blackwell`, 3-p × 3-lr Cartesian at r=256, k=3, default-δ, step=4000):**
+
+| | eval@4000 | Δ vs NS=5 (σ_AdamW=0.0017) |
+|---|---|---|
+| NS=5 baseline (clean default-δ, lr=3e-2) | 0.5025 | — |
+| NS=10 reference (lr=3e-2) | 0.5054 | +1.7σ |
+| **best htmuon: lr=3e-2, p=0.0625** | **0.5048** | **+1.34σ** |
+| other htmuon cells | 0.5055 — 0.5143 | +1.78σ to +6.94σ |
+
+**Every measured (p, lr) is ≥1.3σ worse than NS=5.** Smaller p is better within each lr row (0.0625 < 0.125 < 0.25), and best lr is 3e-2 (matches NS=5's lr-best — not lr-pinned). Best htmuon ≈ NS=10 (within 1σ) but neither matches NS=5.
+
+**Reading.** NS=5's specific shape — moderate cutoff at σ_in ≈ 0.08·σ_max — does noise rejection that neither extreme replicates: NS=10 (σ→1, no cutoff) and σ^p (graduated preservation of small σ) both lose to it by ~1.3-1.7σ. The HTMuon "soft msign" framing doesn't transfer to the chord-tight whitened pipeline; the cutoff structure of NS=5 is doing real work the bench-time accuracy criterion (rel-err < 1e-4 on the polar output) didn't measure.
+
+**Implementation note (numerical).** `spd_power_batched` requires fp32 matmul internally (forced via `torch.backends.cuda.matmul.allow_tf32 = False` inside the call). TF32's ~10-bit mantissa over the n_outer × n_iters ≥ 50 cascaded matmuls compounds to NaN output for Gram matrices with cond ≳ 1e4 (real LoRA training Grams at r=256). The first version of the sweep without this guard NaN'd 9/9 cells by step ≤ 400; with the guard, all 9 train to step 4000 cleanly. The bench at `scripts/bench/bench_htmuon_op.py` missed this because random Gaussian inputs at LoRA shape have cond ~ 100, well within TF32's stable range — a measurement-vs-production gap worth remembering for future numerical primitives.
+
+**What would change the verdict.** σ^p applied to the raw Adam direction (not the whitened input) is the HTMuon paper's regime and untested here. The whitening preconditioner `S_B^{-1/2}` may itself be incompatible with σ^p in a way that the cutoff structure of NS=5 was hiding. If we ever turn off chord-tight whitening (`disable_whitening` exists as an ablation flag), σ^p would be worth re-running there.
