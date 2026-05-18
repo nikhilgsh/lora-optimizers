@@ -511,3 +511,188 @@ packed_v1. Absolute numbers are NOT comparable to the unpacked_v0
 AdamW@r=16 baseline (0.7579) — prompt-mask alone changes the loss
 objective. Re-anchored AdamW noise-floor under packed_v1 is the
 follow-on (multiseed).
+
+## Gram-NS + k=2 wall-time (Blackwell, packed_v1, 2026-05-17)
+
+Goal: quantify the wall-time impact of (a) the Dao 2026 Gram Newton-Schulz
+polar map (`--ns_form gram` — `_newton_schulz_gram_batched` in fp16 with
+restart at τ=2) and (b) lowering Picard iters from k=3 to k=2, both for
+the `chord-tight-clean` clean polar pipeline.
+
+Setup: r=64, K=1 (refresh every step), higham preconditioner, packed_v1,
+batch=2 × seq=512 × grad_accum=4 (effective batch 8), bf16, no compile,
+Blackwell RTX PRO 6000 (workergpu174, exclusive). Bench script:
+`scripts/bench/bench_optimizer_step.py` with new `--ns_form` /
+`--picard_iters_override` flags. Per-scope profile script:
+`scripts/bench/profile_chord_tight_clean.py`. JSONL outputs under
+`logs/bench/bench_ns_gram_blackwell_workergpu174_*.jsonl`.
+
+### Headline numbers — 1B (OLMo-2-1B), r=64
+
+| optimizer config | fwd ms | bwd ms | opt ms | total ms | ×AdamW | MFU |
+|---|---:|---:|---:|---:|---:|---:|
+| adamw (baseline) | 118.3 | 156.5 | 3.3 | 278.9 | 1.00× | 35.8% |
+| chord-tight-clean rect k=3 (prior baseline) | 118.3 | 156.5 | 49.1 | 325.2 | **1.16×** | 30.7% |
+| chord-tight-clean rect k=2 | 118.2 | 156.6 | 34.6 | 310.7 | **1.11×** | 32.1% |
+| chord-tight-clean gram k=3 | 118.1 | 158.8 | 47.5 | 325.7 | **1.16×** | 30.6% |
+| chord-tight-clean **gram k=2** | 119.0 | 156.4 | 34.7 | 311.4 | **1.12×** | 32.0% |
+
+Reading at r=64: **almost all of the wall-time win comes from k=3 → k=2**
+(one fewer Picard iter = one fewer polar map + cross-coupling). Gram-NS
+at k=2 buys essentially nothing extra (1.12× vs 1.11×). Gram-NS at k=3
+buys ~3% of opt_ms (49.1 → 47.5). At r=64 the polar block is too small
+a fraction of step wall for the gram FLOP advantage to surface.
+
+### Headline numbers — 1B (OLMo-2-1B), r=256
+
+| optimizer config | fwd ms | bwd ms | opt ms | total ms | ×AdamW | MFU |
+|---|---:|---:|---:|---:|---:|---:|
+| adamw (baseline) | 150.4 | 205.3 | ~3 | ~377 | 1.00× | ~31% |
+| chord-tight-clean rect k=3 (prior baseline) | 150.6 | 205.7 | 230.9 | 588.4 | **1.56×** | 18.5% |
+| chord-tight-clean rect k=2 | 150.4 | 205.3 | 158.9 | 515.9 | **1.40×** | 21.2% |
+| chord-tight-clean gram k=3 | 150.4 | 205.9 | 189.5 | 547.1 | **1.49×** | 19.9% |
+| chord-tight-clean gram k=2 | 151.4 | 205.2 | 131.4 | 489.4 | **1.33×** | 22.3% |
+| chord-tight-clean gram-norestart k=3 | 150.4 | 206.6 | 186.2 | 544.5 | **1.48×** | 20.0% |
+| chord-tight-clean **gram-norestart k=2** | 150.3 | 205.5 | 129.2 | 486.2 | **1.33×** | 22.4% |
+
+Reading at r=256: **gram-NS earns its keep at higher rank.**
+- gram vs rect at fixed $k$: opt_ms drops 18% (231→190 at k=3; 159→131 at k=2).
+- k=3 → k=2: saves ~70 ms in rect, ~58 ms in gram.
+- **Combined gram + k=2 vs old baseline (rect + k=3): 489 vs 588 ms = 17% step-wall reduction. Overhead drops from 1.56× → 1.33× AdamW.**
+- gram-norestart at k=2 is bit-equivalent to gram k=2 at this scale (486 vs 489 ms; 0.6%). At k=3 the restart costs ~3 ms (544 vs 547). Marginal; restart on is the safer default.
+
+### Headline numbers — 8B (Meta-Llama-3-8B)
+
+#### 8B, r=64
+
+| optimizer config | fwd ms | bwd ms | opt ms | total ms | ×AdamW | MFU |
+|---|---:|---:|---:|---:|---:|---:|
+| adamw (baseline) | 419.0 | 545.5 | 10.2 | 975.4 | 1.00× | 54.7% |
+| chord-tight-clean rect k=3 (prior baseline) | 419.1 | 545.6 | 201.1 | 1168.3 | **1.20×** | 45.6% |
+| chord-tight-clean rect k=2 | 419.1 | 545.2 | 127.5 | 1094.2 | **1.12×** | 48.7% |
+| chord-tight-clean gram k=3 | 417.3 | 542.8 | 186.8 | 1149.3 | **1.18×** | 46.4% |
+| chord-tight-clean **gram k=2** | 418.8 | 545.2 | 118.0 | 1084.4 | **1.11×** | 49.2% |
+
+#### 8B, r=256 (where the gram-NS win is largest)
+
+| optimizer config | fwd ms | bwd ms | opt ms | total ms | ×AdamW | MFU |
+|---|---:|---:|---:|---:|---:|---:|
+| adamw (baseline, implied) | 505 | 730 | ~10 | ~1275 | 1.00× | ~52% |
+| chord-tight-clean rect k=3 (prior baseline) | 504.9 | 729.6 | 979.1 | 2216.0 | **1.74×** | 25.5% |
+| chord-tight-clean rect k=2 | 504.3 | 728.5 | 629.5 | 1864.8 | **1.46×** | 30.3% |
+| chord-tight-clean gram k=3 | 505.3 | 729.8 | 815.1 | 2052.6 | **1.61×** | 27.6% |
+| chord-tight-clean gram k=2 | 506.8 | 731.2 | 519.8 | 1760.2 | **1.38×** | 32.2% |
+| chord-tight-clean gram-norestart k=3 | 507.2 | 732.0 | 802.5 | 2044.1 | **1.60×** | 27.7% |
+| chord-tight-clean **gram-norestart k=2** | 505.0 | 729.0 | 511.3 | 1747.7 | **1.37×** | 32.4% |
+
+Reading at 8B r=256:
+- **Combined gram-norestart + k=2 vs old baseline (rect + k=3): 1748 vs 2216 = 21% step-wall reduction.** Overhead drops from 1.74× → 1.37× AdamW. **MFU rises from 25.5% to 32.4%.**
+- gram vs rect at fixed k: opt_ms drops 17% (979→815 at k=3; 630→520 at k=2). Same FLOP-ratio reasoning as 1B r=256, scaled by ~4× more LoRA pairs.
+- gram-norestart vs gram at fixed k: marginal 1-2% additional savings (12 ms at k=3, 8 ms at k=2). Hedge cost is small at this scale; restart on remains the safer default.
+
+### Summary across (model, rank)
+
+| where | k=3 → k=2 | rect → gram | net (rect/k=3 → gram-norestart/k=2) |
+|---|---:|---:|---:|
+| 1B r=64 | 5% | ~0% | ~4% |
+| 1B r=256 | 10% | 7% | 17% |
+| 8B r=64 | 6% | 1-2% | 7% |
+| 8B r=256 | 16% | 7% | **21%** |
+
+**Reading: k=3 → k=2 is a free win everywhere; gram-NS is a free win at r=256 and especially 8B r=256. At r=64 the polar block is too small a fraction of step wall (~10-15%) for the gram FLOP reformulation to matter.**
+
+### Per-scope breakdown — where opt_ms goes
+
+CudaEvent timing inside optimizer.step (`scripts/bench/profile_chord_tight_clean.py`).
+Logs: `logs/bench/profile_blackwell_*.log`.
+
+| scope | rect k=3 | rect k=2 | gram k=3 | gram k=2 |
+|---|---:|---:|---:|---:|
+| `chord_tight_clean_picard` (= polar pipeline × k) | 35.3 (75%) | 19.8 (63%) | 31.8 (74%) | 18.2 (62%) |
+| `precond_refresh` (higham) | 5.0 (10%) | 5.0 (16%) | 4.6 (11%) | 4.6 (16%) |
+| `chord_tight_clean_pre_rescale` | 2.5 (5%) | 2.5 (8%) | 2.3 (5%) | 2.3 (8%) |
+| `chord_tight_clean_sigma_AB` (ρ formula) | 2.1 (4%) | 2.0 (6%) | 1.8 (4%) | 1.8 (6%) |
+| `adam_direction` (EMA) | 1.6 (3%) | 1.6 (5%) | 1.6 (4%) | 1.6 (5%) |
+| `apply` | 0.45 (1%) | 0.45 (1%) | 0.45 (1%) | 0.45 (1%) |
+| `chord_tight_clean_whiten_input` | 0.30 (1%) | 0.30 (1%) | 0.29 (1%) | 0.29 (1%) |
+| **sum of timed scopes per step** | **47.3** | **31.6** | **42.8** | **29.2** |
+
+`picard / k` (per-Picard-iter cost): rect 11.8 ms/iter, gram 10.6 ms/iter
+— gram is ~10% faster per iter, matching the FLOP-block ratio for the
+polar map (rect 4·N·r²·d → gram 4·N·r³ + reconstruction). The absolute
+gain is small because the polar block is only ~11% of opt_ms.
+
+### Reconciliation with the FLOP audit
+
+`algorithm_clean_implementation.md` §3 estimated the polar map at 65% of
+step cost at r=64. The measured per-scope profile here puts the Picard
+loop (which contains the polar map AND the cross-coupling matmuls AND
+unwhiten AND σ_max(geo)) at 75% of opt_ms — but opt_ms is only ~15% of
+step wall. So polar is ~11% of step wall, not 65%. The FLOP count was
+correct *about the polar block*; what changed is the denominator —
+fwd+bwd dominate step wall, and the polar map's bf16-tensor-core wall
+is much smaller than its FLOP fraction suggests on Blackwell.
+
+Implication: Gram-NS's headline 3-6× speedup *of the polar block* is
+real, but invisible at r=64 because the polar block is small. At
+**r=256** the r³ inner work amortizes better and (more importantly) the
+rect path's r²·d cost scales linearly with d while gram stays r³ —
+re-bench at r=256 expected to show a larger gram-vs-rect gap. Deferred
+until needed.
+
+### Headlines
+
+- **Production switch (highest value): flip the `chord-tight-clean`
+  sweep scripts to `--picard_iters_override 2`.** Free 5-16% step-wall
+  reduction across all (model, rank) configurations with no measured
+  eval-loss penalty (prior multi-cell sweep, per user). Already applied
+  in `scripts/sweep/sweep_4k_packed_diag_k3_htmuon.sh`.
+- **`--ns_form gram` ships behind the flag** as the production-ready
+  Gram-NS path. Recommended for r≥128 and especially 8B/r=256 (21%
+  step-wall reduction). Default remains `rect` pending trajectory-level
+  validation in a real training run — currently only verified to 5
+  steps. Flip the default after the first sweep using `--ns_form gram`
+  produces a sane eval trajectory.
+- **`--ns_form gram-norestart` ships behind the flag** as the
+  performance-tuned variant. Saves 1-3% additional opt_ms by dropping
+  Dao's stability restart. Cubic Muon at NS=5 makes the restart hedge
+  unnecessary on our corpus (basin-blowup factor is 2.25× per iter, too
+  slow to compound over 5 iters from the fp16 noise floor). Tier 1
+  evidence (real chord-tight r=64 X_eff; max cond(G) 1.4e5; tight-
+  damping rebuild at δ=1e-6 gives max cond 3.1e5) shows
+  with-restart and no-restart produce identical results to 3.6% rel-err.
+  Opt in if you want the headroom; restart-on is the safer default.
+- **Tier 1 fixture (real X_eff inputs from chord-tight r=64 snapshots)
+  + Tier 3 synthetic cond=1e4 stress** validated all three Gram-NS
+  variants in `tests/test_ns_gram.py`. fp16+restart matches rect-fp32
+  to ≤ 5% rel-err on every cell in the corpus; orthogonality residual
+  is NOT a test target (NS=5 sub-orthogonal is by design — best eval
+  per project convention).
+
+### Reproduce
+
+```bash
+# Bench (4 cells: rect/gram × k=2/k=3)
+bash /mnt/home/nghosh/.tmp_scripts/bench_gram_blackwell.sh
+# Per-scope profile
+bash /mnt/home/nghosh/.tmp_scripts/profile_gram_blackwell.sh
+```
+
+### Caveats
+
+- Single seed per cell, n_cycles=4 (4 timed steps). Variance not
+  characterized; ±~2% expected per the existing A100 profiling notes.
+- No compile. Compile may shift the opt:fwd+bwd ratio if it fuses parts
+  of the optimizer. Production sweep scripts already use `--compile`.
+- Bench script silently downgrades `--precond_method higham` to `eigh`
+  if the optimizer name is not in `POLAR_OPTIMIZERS` (commit fixed
+  this for the clean variant; the first Blackwell bench run gave 1.82×
+  because of this silent downgrade — preserved in
+  `logs/bench/bench_ns_gram_*` files marked eigh).
+- gram-dao path (using the official Tri Dao library) was wired but not
+  benched. Pip-installing `~/gram-newton-schulz` forced `torch>=2.7.1`,
+  which uninstalled the env's torch 2.7.0+cu128 and broke
+  megablocks/torchvision/torchaudio/vllm/xformers. Reverted. The
+  library's CuTeDSL kernels would only activate at min(r, d) > 256
+  anyway, beyond practical LoRA ranks for our sweeps. Removed from
+  CLI choices.

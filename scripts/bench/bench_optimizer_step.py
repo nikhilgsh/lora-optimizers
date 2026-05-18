@@ -218,6 +218,13 @@ def parse_args():
                              "'eigh higham' to compare both.")
     parser.add_argument("--higham_iters", type=int, default=5,
                         help="Newton-Schulz iterations when precond_method=higham.")
+    parser.add_argument("--ns_form", type=str, default="rect",
+                        choices=["rect", "gram", "gram-norestart"],
+                        help="Newton-Schulz kernel form for the clean polar pipeline. "
+                             "Only consulted by the chord-tight-clean variant.")
+    parser.add_argument("--picard_iters_override", type=int, default=None,
+                        help="Override picard_iters. Used for the chord-tight-clean "
+                             "variant to compare k=2 vs k=3 at fixed ns_form.")
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Learning rate (immaterial for timing; passed through).")
     parser.add_argument("--batch_size", type=int, default=2,
@@ -377,6 +384,7 @@ def main():
         "adam-polar-product-lora-coupled-exact-chord",
         "adam-polar-product-lora-coupled-spectral-chord",
         "adam-polar-product-lora-coupled-spectral-chord-tight",
+        "adam-polar-product-lora-coupled-spectral-chord-tight-clean",
         "adamuon-polar-product-lora",
     }
     if is_main():
@@ -413,6 +421,8 @@ def main():
                         precond_refresh_every=K,
                         precond_method=method,
                         higham_iters=args.higham_iters,
+                        ns_form=args.ns_form,
+                        picard_iters_override=args.picard_iters_override,
                     )
                     n_reps = args.n_cycles * K
                     if device.type == "cuda":

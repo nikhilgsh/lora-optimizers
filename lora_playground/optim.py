@@ -1915,6 +1915,158 @@ def _newton_schulz_batched(X, nsteps=5, eps=1e-7, dtype=None):
     return X.transpose(-2, -1) if tall else X
 
 
+def _newton_schulz_gram_batched(
+    X,
+    nsteps=5,
+    eps=1e-7,
+    dtype=torch.float16,
+    restart_at=2,
+    safety_factor=1.05,
+):
+    """Gram-form Newton-Schulz (Dao 2026, Algorithm 3 — Stabilized Gram NS).
+
+    Mathematically equivalent to `_newton_schulz_batched` (cubic Muon polynomial
+    1.5 X - 0.5 X X^T X), but iterates on the smaller-side r×r Gram matrix
+    R = X X^T instead of on rectangular X. Only the initial R_0 = X X^T and
+    the final X_final = Q_T X_0 require rectangular matmuls; everything in
+    between is (r, r) x (r, r). For r ≪ d this is ~7× fewer FLOPs at K=5.
+
+    Production path (dtype=torch.float16, restart_at=2): runs the iteration
+    in fp16 on tensor cores, with one restart at iter τ=2 to reset the
+    spurious-negative-eigenvalue compounding that breaks naive Gram NS
+    in half precision (Dao §"Instability of Naive Gram NS"). The restart
+    re-forms R from the current X iterate, capping the exponential blowup
+    of any negative R eigenvalues at half-precision noise floor magnitude
+    1e-6 over the remaining T-τ iters.
+
+    Safety path (dtype=torch.float32, restart_at=None): inner loop wrapped
+    with `allow_tf32 = False`. Noise floor drops to ~1e-7 so the blowup
+    factor (15/8)^(2T) from any spurious negative never reaches the basin
+    edge — no restart needed. Slower (no tensor cores) but bulletproof.
+    Used by tests as the fp32 reference and as a fallback if fp16+restart
+    is ever observed to blow up on real data.
+
+    Future opt: at cubic Muon coefficients the per-iter blowup factor is
+    only 2.25 (vs Polar Express 3.5), and Tier 1 evidence shows fp16
+    WITHOUT restart tracks fp32 fine on real chord-tight r=64 X_eff up to
+    cond(G) ≈ 1e4. Once that holds across more (r, optimizer) configs we
+    could drop restart for a ~80% headroom gain. Defer until evidence is
+    broader; one blown-up cell mid-sweep costs more than the headroom.
+
+    The reconstruction matmul X_final = Q · X_0 does not compound and runs
+    in the iteration dtype (bf16 internal accumulate on tensor cores).
+    """
+    if X.shape[-2] == 0 or X.shape[-1] == 0:
+        return X
+    X = X.float()
+    # Tall-transpose so the second-to-last dim is the smaller (r ≤ d).
+    # The Gram form assumes r ≤ d; flipping breaks the FLOP win and would
+    # instantiate a (d, d) Q matrix. Always force this orientation.
+    tall = X.shape[-2] > X.shape[-1]
+    if tall:
+        X = X.transpose(-2, -1)
+    # Flatten leading dims to exactly one batch dim so torch.baddbmm (used to
+    # fuse the inner-iter `b·(R@Q) + a·Q` and `b²·R²·R + 2ab·R²` updates) is
+    # well-defined (it requires 3-D inputs). Restore the original shape at
+    # the end.
+    orig_leading = X.shape[:-2]
+    X = X.reshape(-1, X.shape[-2], X.shape[-1])
+    # X is now (batch, r, d) with r ≤ d.
+    r = X.shape[-2]
+
+    # Frobenius pre-norm (per-matrix, fp32) with Dao's safety factor so the
+    # post-norm σ_max ≤ 1/safety_factor < 1 — gives margin for half-precision
+    # roundoff that can otherwise push singular values just above the NS basin.
+    norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
+    X_normed = X / (norm * safety_factor)
+
+    # State dtype for the iteration; reconstruction also runs in this dtype.
+    iter_dtype = dtype
+    X0_iter = X_normed.to(iter_dtype)
+
+    # Cubic Muon polynomial X ← 1.5 X - 0.5 X X^T X, which in Gram form is
+    # Z_t = a I + b R, M_t = Z_t (symmetric). a = 1.5, b = -0.5.
+    a = 1.5
+    b = -0.5
+
+    # If running in fp32 (safety mode), force TF32 off to mirror spd_power_batched.
+    use_tf32_guard = (iter_dtype == torch.float32) and X.is_cuda
+    prev_tf32_matmul = None
+    if use_tf32_guard:
+        prev_tf32_matmul = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = False
+
+    try:
+        eye = torch.eye(r, dtype=iter_dtype, device=X0_iter.device)
+        eye_b = eye.expand(*X0_iter.shape[:-2], r, r)
+
+        R = X0_iter @ X0_iter.transpose(-2, -1)  # (..., r, r), should be PSD
+        Q = eye_b.clone()
+        # First Z is M_1 = a I + b R; mathematically Q_1 = M_1, R_1 = M_1 R M_1.
+        # We fold the first iter into the loop below; init Q = I.
+
+        for t in range(1, nsteps + 1):
+            # Restart at iter τ (Dao Algorithm 3 step 8): update X_0 ← Q_τ X_0,
+            # reform R from the updated X, reset Q to I. This zeroes the
+            # cumulative drift in Q and resets the negative-eigenvalue
+            # magnitudes to the noise floor of the current X iterate. The
+            # final Y = Q · X0_iter at function exit then applies only the
+            # POST-restart Q to the post-restart X, matching Dao's algorithm.
+            if restart_at is not None and t == restart_at + 1:
+                X0_iter = Q @ X0_iter                     # (..., r, d)
+                R = X0_iter @ X0_iter.transpose(-2, -1)   # (..., r, r)
+                Q = eye_b.clone()
+
+            # Matrix-quadratic ordering per Dao §"Computing Matrix Quadratics":
+            # keep a·I out of the fused-add downcast by handling a·Q / a·R
+            # separately. For cubic NS (c = 0), M = a·I + b·R, so
+            #   Q ← b·R·Q  + a·Q     (one fused baddbmm)
+            #   R ← M·R·M = a²·R + 2ab·R² + b²·R³
+            new_Q = torch.baddbmm(Q, R, Q, beta=a, alpha=b)
+
+            R2 = R @ R
+            # new_R = a²·R + R²·(2ab·I + b²·R) — fuse second matmul with its add.
+            #   torch.baddbmm(C=R2, A=R2, B=R, beta=2ab, alpha=b²)
+            #     = 2ab·R² + b²·R²·R = 2ab·R² + b²·R³.
+            # Then add a²·R as a separate elementwise (one launch).
+            mid = torch.baddbmm(R2, R2, R, beta=(2.0 * a * b), alpha=(b * b))
+            new_R = (a * a) * R + mid
+            # No explicit symmetrize: in exact arithmetic M and R are symmetric
+            # and M·R·M is symmetric (M = aI+bR commutes with R, so MR=RM).
+            # In fp16 asymmetry compounds at ~1e-4/iter — well below NS=5
+            # polar tolerance. Tested in tests/test_ns_gram.py.
+
+            Q = new_Q
+            R = new_R
+    finally:
+        if use_tf32_guard:
+            torch.backends.cuda.matmul.allow_tf32 = prev_tf32_matmul
+
+    # Final reconstruction: one rectangular matmul, no compounding downstream.
+    # NS contract (matching _newton_schulz_batched): output is approximately
+    # orthonormal (σ_out → 1 for surviving directions), Frobenius-norm
+    # INDEPENDENT of input magnitude. Do not multiply by safety_factor or
+    # norm at the end — the basin scaling is absorbed by the NS map.
+    out_iter = Q @ X0_iter                                # (batch, r, d)
+    out = out_iter.float()
+    # Restore the original leading dimensions.
+    out = out.reshape(*orig_leading, *out.shape[-2:])
+
+    return out.transpose(-2, -1) if tall else out
+
+
+# Opt-in: compile the leaf-numeric helpers with torch.compile when
+# LORA_COMPILE_KERNELS=1. These functions have fixed-shape inner loops
+# and no Python control flow inside the loop body (the restart_at branch
+# is at a fixed iteration, predictable), so they compile cleanly into
+# fused kernels. Trade-off: ~30s one-time compile cost per shape group.
+# Worth it for sweeps; off by default to keep unit tests / smokes fast.
+if os.environ.get("LORA_COMPILE_KERNELS", "0") == "1":
+    _newton_schulz_gram_batched = torch.compile(
+        _newton_schulz_gram_batched, dynamic=False, fullgraph=False,
+    )
+
+
 def _polar_retract(X, nsteps=5, eps=1e-7):
     """Polar retraction for near-orthonormal X (singular values already ≈ 1).
 
@@ -2650,7 +2802,8 @@ class AdamPolarProductLoRA(Optimizer):
                  debug_optimizer_state_every=1,
                  debug_snapshot_dir=None,
                  debug_snapshot_limit=8,
-                 debug_abort_on_non_finite=False):
+                 debug_abort_on_non_finite=False,
+                 ns_form="rect"):
         named = collect_lora_pairs_named(model, adapter_name)
         if not named:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2674,6 +2827,19 @@ class AdamPolarProductLoRA(Optimizer):
         self.debug_snapshot_limit = int(debug_snapshot_limit)
         self.debug_abort_on_non_finite = bool(debug_abort_on_non_finite)
         self._debug_snapshots_written = 0
+        # ns_form: "rect" (default, _newton_schulz_batched), "gram"
+        # (_newton_schulz_gram_batched — Dao 2026 Algorithm 3, fp16+restart,
+        # our reimplementation), or "gram-norestart" (same as gram, but
+        # restart_at=None — drops the stability hedge for the FLOP headroom;
+        # validated to track rect-fp32 on Tier 1 corpus + tight-damping
+        # rebuild at cubic-Muon NS=5, see tests/test_ns_gram.py).
+        # Only consulted by `_chord_tight_clean_polar_pipeline`; other
+        # magnitude_rules ignore it.
+        if ns_form not in ("rect", "gram", "gram-norestart"):
+            raise ValueError(
+                f"ns_form must be 'rect', 'gram', or 'gram-norestart', got {ns_form!r}"
+            )
+        self.ns_form = ns_form
         # Per-step diagnostic stash flag. When True for a single step, the
         # batched path writes the §9 inputs into pair_state under keys
         # "A" / "B" (the factors fed INTO the step, before the in-place
@@ -3340,14 +3506,32 @@ class AdamPolarProductLoRA(Optimizer):
                     X_A_eff = SB_half_inv @ u_A_eff
                     X_B_eff = u_B_eff @ SA_half_inv
 
-                # Polar map via Newton–Schulz. bf16 inside the iteration;
-                # caller-side dtype handling is unchanged from the legacy path.
-                P_A = _newton_schulz_batched(
-                    X_A_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
-                ).float()
-                P_B = _newton_schulz_batched(
-                    X_B_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
-                ).float()
+                # Polar map via Newton–Schulz. Default rect path runs in
+                # bf16 on tensor cores. With self.ns_form == "gram", dispatch
+                # to the Gram-form variant (Dao 2026 Algorithm 3, fp16+restart
+                # at τ=2). Matches rect-fp32 within polar-map tolerance per
+                # tests/test_ns_gram.py.
+                if self.ns_form == "gram":
+                    P_A = _newton_schulz_gram_batched(
+                        X_A_eff, nsteps=self.ns_steps,
+                    ).float()
+                    P_B = _newton_schulz_gram_batched(
+                        X_B_eff, nsteps=self.ns_steps,
+                    ).float()
+                elif self.ns_form == "gram-norestart":
+                    P_A = _newton_schulz_gram_batched(
+                        X_A_eff, nsteps=self.ns_steps, restart_at=None,
+                    ).float()
+                    P_B = _newton_schulz_gram_batched(
+                        X_B_eff, nsteps=self.ns_steps, restart_at=None,
+                    ).float()
+                else:
+                    P_A = _newton_schulz_batched(
+                        X_A_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
+                    ).float()
+                    P_B = _newton_schulz_batched(
+                        X_B_eff, nsteps=self.ns_steps, dtype=torch.bfloat16
+                    ).float()
 
                 # HTMuon σ → σ^p sub-mode. Bypasses the NS5 σ→1 polishing on
                 # noise-dominated singular directions; instead applies
@@ -3366,16 +3550,23 @@ class AdamPolarProductLoRA(Optimizer):
                 geo_A = SB_half_inv @ P_A                              # (N, r, d_in)
                 geo_B = P_B @ SA_half_inv                              # (N, d_out, r)
 
-                # Site-C: σ_max(geo_A), σ_max(geo_B). Warm-start keyed by n
-                # so iter-n's power iter sees iter-n's own prior step value.
-                key_A = f'v_op_geoA_n{n}'
-                key_B = f'v_op_geoB_n{n}'
+                # Site-C: σ_max(geo_A), σ_max(geo_B). Warm-start keyed by
+                # Picard iter n. Use pre-allocated slot lists (indexed by
+                # n) instead of f-string dict keys — torch.compile cannot
+                # specialize over dynamic-string dict accesses and would
+                # graph-break here once per (A, B) per Picard iter.
+                slots_A = gs.setdefault('v_op_geoA_slots', [None] * self.picard_iters)
+                slots_B = gs.setdefault('v_op_geoB_slots', [None] * self.picard_iters)
+                if len(slots_A) < self.picard_iters:
+                    slots_A.extend([None] * (self.picard_iters - len(slots_A)))
+                if len(slots_B) < self.picard_iters:
+                    slots_B.extend([None] * (self.picard_iters - len(slots_B)))
                 op_geoA_b, v_op_geoA = _sigma_max_power_iter_batched(
-                    geo_A, v_init=gs.get(key_A), n_iters=8)
+                    geo_A, v_init=slots_A[n], n_iters=8)
                 op_geoB_b, v_op_geoB = _sigma_max_power_iter_batched(
-                    geo_B, v_init=gs.get(key_B), n_iters=8)
-                gs[key_A] = v_op_geoA
-                gs[key_B] = v_op_geoB
+                    geo_B, v_init=slots_B[n], n_iters=8)
+                slots_A[n] = v_op_geoA
+                slots_B[n] = v_op_geoB
 
                 rho_unsq = rho.unsqueeze(-1).unsqueeze(-1)
                 op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
@@ -5583,6 +5774,21 @@ class SignMomentumPolarProductLoRA(AdamPolarProductLoRA):
         u_A = state['m_A'].sign()
         u_B = state['m_B'].sign()
         return u_A, u_B
+
+
+# Opt-in: compile the chord-tight-clean polar pipeline as a single graph
+# when LORA_COMPILE_KERNELS=1. The method is mostly numeric (whiten →
+# pre-rescale → Picard loop → polar → unwhiten → σ_max → scale). Known
+# graph-break points: the f-string warm-start dict keys at site C
+# (`f'v_op_geoA_n{n}'`) and the htmuon_p / dispatch branches. With
+# fullgraph=False, compile falls back to eager on graph breaks rather
+# than erroring, so we get partial compilation across compute-heavy
+# regions.
+if os.environ.get("LORA_COMPILE_KERNELS", "0") == "1":
+    AdamPolarProductLoRA._chord_tight_clean_polar_pipeline = torch.compile(
+        AdamPolarProductLoRA._chord_tight_clean_polar_pipeline,
+        dynamic=False, fullgraph=False,
+    )
 
 
 class AdamPolarProductLoRAGauge(Optimizer):
@@ -8282,6 +8488,7 @@ def build_optimizer(
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
+    ns_form: str = "rect",
 ):
     if optimizer_type not in OPTIMIZER_CHOICES:
         raise ValueError(
@@ -8677,6 +8884,7 @@ def build_optimizer(
             polar_method=polar_method,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
+            ns_form=ns_form,
             log_non_finite=log_non_finite,
             debug_optimizer_state=debug_optimizer_state,
             debug_optimizer_state_every=debug_optimizer_state_every,

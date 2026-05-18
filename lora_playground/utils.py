@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from dataclasses import dataclass
 
@@ -181,10 +182,17 @@ def spd_inv_sqrt_higham_batched(H, n_iters=10, eps=1e-6, n_power_iter=4, eps_rel
     Y = H / s
     Z = eye_b.clone()
     three_eye = 3.0 * eye_b
+    # Promote to exactly 3-D for torch.baddbmm; restore at end.
+    orig_leading = Y.shape[:-2]
+    Y = Y.reshape(-1, Y.shape[-2], Y.shape[-1])
+    Z = Z.reshape(-1, Z.shape[-2], Z.shape[-1])
+    three_eye = three_eye.reshape(-1, three_eye.shape[-2], three_eye.shape[-1])
     for _ in range(n_iters):
-        T = three_eye - Z @ Y
+        # T = 3I - Z @ Y, fused into one baddbmm.
+        T = torch.baddbmm(three_eye, Z, Y, beta=1.0, alpha=-1.0)
         Y = 0.5 * (Y @ T)
         Z = 0.5 * (T @ Z)
+    Z = Z.reshape(*orig_leading, Z.shape[-2], Z.shape[-1])
     out = Z / s.sqrt()
     _higham_emit_residual(out, H, lam_max, n_iters, eps, where="batched")
     return out

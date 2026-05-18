@@ -41,6 +41,7 @@ pairs.
 """
 from __future__ import annotations
 
+import os
 import torch
 
 
@@ -226,6 +227,21 @@ def lambda_max_power_iter_psd_batched(H, v_init=None, n_iters=8, eps=1e-30):
     lam = torch.maximum(lam, diag.max(dim=-1).values.clamp_min(0.0))
     lam = torch.maximum(lam, diag.sum(dim=-1).clamp_min(0.0) / max(n, 1))
     return lam.clamp_min(eps), best
+
+
+# Opt-in: compile the spectral power iterations when LORA_COMPILE_KERNELS=1.
+# Same env-gated pattern as the gram-NS / chord-tight-clean decorations in
+# lora_playground/optim.py. These functions have Python control flow at the
+# entry (v_init checks, smaller_m branch) but the inner n_iters loop is
+# fixed-shape numeric — compile fuses the n_iters worth of bmm+norm+div
+# elementwise sequence.
+if os.environ.get("LORA_COMPILE_KERNELS", "0") == "1":
+    sigma_max_power_iter_batched = torch.compile(
+        sigma_max_power_iter_batched, dynamic=False, fullgraph=False,
+    )
+    lambda_max_power_iter_psd_batched = torch.compile(
+        lambda_max_power_iter_psd_batched, dynamic=False, fullgraph=False,
+    )
 
 
 # ─── Shape B: σ_max of a product XY via Gram form ────────────────────────────

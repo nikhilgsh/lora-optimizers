@@ -156,6 +156,59 @@ Let $D := d_{\text{in}} + d_{\text{out}}$. Per step, ignoring elementwise terms:
 
 At $r = 256$, $D = 4096$: NS dominates at 78%; power iters drop to 1.3%. At $r = 16$, $D = 4096$: power iters rise to ~15% because they scale as $N r D$ vs the $N r^2 D$ of everything else.
 
+## 3.1. Gram-form Newton–Schulz (`--ns_form gram`)
+
+The polar map at §2.5 dominates step cost; Tri Dao's Gram NS (2026, `docs/papers/gram_newton_schulz_dao_2026.md`) reformulates the same composition to iterate on the smaller-side $r \times r$ Gram instead of on the rectangular $X \in \mathbb{R}^{r \times d}$. Enabled via `--ns_form gram`; default is `rect` for trajectory continuity with existing sweeps.
+
+### Math (Dao Theorem 1)
+
+For NS polynomial $p_t(x) = a_t x + b_t x^3 + c_t x^5$, write $p_t(x) = x \cdot h_t(x^2)$ with $h_t(y) = a_t + b_t y + c_t y^2$. Standard NS acts on $X$; equivalent Gram form acts on $R = X X^\top \in \mathbb{R}^{r \times r}$ and accumulates a single $Q \in \mathbb{R}^{r \times r}$ that produces the final $X$ via $X_T = Q_T X_0$:
+
+$$
+R_0 = X_0 X_0^\top, \quad Q_0 = I, \qquad
+\begin{cases}
+Z_t = h_t(R_{t-1}) = a_t I + b_t R_{t-1} + c_t R_{t-1}^2 \\
+Q_t = Q_{t-1} Z_t \\
+R_t = Z_t R_{t-1} Z_t
+\end{cases}
+$$
+
+All work between $R_0$ and the final reconstruction is on $(N, r, r)$.
+
+### FLOP win at $K = 5$, cubic Muon ($c_t = 0$)
+
+| op | shape | FLOPs |
+|---|---|---|
+| $R_0 = X X^\top$ | $(N, r, d) \cdot (N, d, r) \to (N, r, r)$ | $2 N r^2 d$ |
+| Per-iter $R$ update ($Z \cdot R \cdot Z$ via direct $R^k$ poly) | $(N, r, r)$ | $\approx 4 N r^3$ |
+| Per-iter $Q$ update ($Q \leftarrow M_k Q$) | $(N, r, r)$ | $\approx 2 N r^3$ |
+| Reconstruction $X_T = Q_T X_0$ | $(N, r, r) \cdot (N, r, d) \to (N, r, d)$ | $2 N r^2 d$ |
+
+Total $K = 5$: $4 N r^2 d + 30 N r^3$. Vs rect: $20 N r^2 d$. At $r = 64$, $d = 2048$: rect $1.7 \times 10^8 N$, gram $2.4 \times 10^7 N$ — **~7× FLOP reduction in the dominant block**. Measured wall impact is much smaller than the FLOP ratio suggests because the polar block itself is a small fraction of optimizer step on Blackwell at $r=64$: per-scope profile (`scripts/bench/profile_chord_tight_clean.py`, see `walltime_profile.md` §"Gram-NS + k=2 wall-time") puts the entire Picard loop at ~75% of opt_ms but opt_ms is only ~15% of step wall. Gram vs rect at fixed $k=3$ shaves ~10% off the Picard scope (35.3→31.8 ms) and < 2% off total step wall. Expected to show a larger gap at $r=256$ where rect's $r^2 d$ dominates and gram's $r^3$ amortizes; not measured yet.
+
+### Precision strategy — fp16 with restart at $\tau = 2$ (Dao Algorithm 3)
+
+Gram NS has two failure modes that rect NS does not, both arising because $R_t$ is *cumulative state* that re-enters every iteration:
+
+1. **Spurious negative eigenvalues.** $R_0 = X X^\top$ in half precision develops eigenvalues $\approx -\varepsilon_{\text{half}}$ where the true eigenvalue is 0. The scalar recurrence $r_t \approx 1.5^2 \, r_{t-1}$ (cubic Muon $h(0) = 1.5$; Polar Express has $h(0) = 15/8$, faster blowup) drives any tiny negative toward $-\infty$. Once $|r| \sim 1$, the polynomial leaves the basin and $z_t = h_t(r)$ blows up super-exponentially.
+2. **Eigenvector drift.** In exact arithmetic $R_t, Q_t, X_t$ all share $X_0$'s singular vectors. In finite precision $Q$ drifts away — the final $X_T = Q_T X_0$ no longer captures $X_0$'s dominant directions correctly.
+
+**Fix (restart at $\tau = 2$):**
+$$
+X_0 \leftarrow Q_\tau X_0, \quad R_\tau \leftarrow X_0 X_0^\top, \quad Q_\tau \leftarrow I.
+$$
+Resets accumulated negative-eigenvalue magnitudes to the noise floor on the *current* iterate, and resets the $R \leftrightarrow Q$ eigenvector drift to zero. Cost: two extra matmuls.
+
+**fp16 not bf16.** fp16's 10-bit mantissa shrinks the spurious-negative noise floor $\sim 10\times$ vs bf16's 7-bit. After Frobenius pre-norm (with safety factor 1.05) values sit near $[0, 1]$ — fp16's narrow range doesn't bind. Rect NS uses bf16 because it doesn't compound state; gram reverses that priority.
+
+Implementation at `lora_playground/optim.py:_newton_schulz_gram_batched`; also exposes a safety-mode `dtype=torch.float32` path that disables TF32 (mirroring `spd_power_batched` at `utils.py:235`) for diagnostics — no restart needed because the fp32 noise floor never reaches the basin.
+
+### Verification
+
+- Equivalence: `tests/test_ns_gram.py` confirms gram-fp32 matches rect-fp32 to fp32 noise ($< 10^{-5}$) on random, real (Tier 1 — chord-tight r=64 snapshots), and synthetic cond=$10^4$ inputs.
+- fp16+restart: matches rect-fp32 within $5 \times 10^{-2}$ rel-err on Tier 1 corpus (top-20 worst-conditioned X_eff from `/mnt/ceph/users/nghosh/lora_snapshots/chord_tight_r64_k3_snapshot_blackwell/`; max measured cond$(G)$ = $1.4 \times 10^5$).
+- End-to-end smoke: 5-step train at r=64, k=2, OLMo-2-1B: gram eval_loss = 1.1759, rect = 1.1792, $|\Delta| < 5 \times 10^{-3}$.
+
 ## 4. Per-Picard-iter incremental cost ($k \ge 2$)
 
 **Reminder.** Each Picard iter runs the **full polar pipeline**: whiten ($X_A^{\text{eff}}$ = $S_B^{-1/2}\,\tilde u_A$), one Newton–Schulz polar map ($P_A = \text{polar}_{\text{NS-}j}(X_A^{\text{eff}})$, $j$ inner NS quintic iterations), unwhiten, and σ-rescale. So $k$ Picard iters means $k$ NS polar maps and $k$ σ_max(geo) power iters; the only operations that run *once* per step are the Adam direction (§2.1), the whitening refresh (§2.2, schedule-gated), the pre-rescale (§2.3), and the ρ computation (§2.4). The cross-coupling correction (§2.5 with $n \ge 2$) is the only piece that's skipped at $n = 1$.
@@ -312,20 +365,6 @@ What this skeleton does **not** do (out of scope for this refactor):
 - Swap Newton–Schulz for a Gram-form variant (see §8 below). Defer; significant kernel change.
 - Add timing/diagnostic hooks. Keep the existing `maybe_time` and snapshot machinery in the caller-side wrapper.
 
-## 8. Future direction: Gram-form Newton–Schulz
-
-Dao (2026), `docs/papers/gram_newton_schulz_dao_2026.md` (blog: <https://tridao.me/blog/2026/gram-newton-schulz/>), shows that the composition of Newton–Schulz quintic polynomial steps applied to $X \in \mathbb{R}^{m \times n}$ can be exactly reformulated as iteration on the smaller-side Gram $G = X^\top X \in \mathbb{R}^{n \times n}$ (or $X X^\top$, whichever is smaller). The mathematical equivalence is exact; only the work shifts to the symmetric object. Reported wins on trillion-parameter MoE training: 40–50% reduction in NS runtime, training quality preserved within 0.01 val ppl.
-
-For Algorithm 2′ this would directly attack the NS-polar step (currently 65% of step cost at $r = 64$, see §3). The polar input is $X_A^{\text{eff}} \in \mathbb{R}^{N \times r \times d_{\text{in}}}$ with $r \ll d_{\text{in}}$; iterating on the $r \times r$ Gram replaces $20 N r^2 d_{\text{in}}$ FLOPs per pair with $\Theta(N r^3)$ — at $r = 64$, $d_{\text{in}} = 2048$ that's a $\sim 32\times$ reduction in the dominant block, modulo kernel launch overhead.
-
-**Why not now.** Three reasons to defer:
-
-1. **Bigger surface area than the rest of this refactor.** The clean-pipeline refactor preserves trajectory bit-identically at $k = 1$; Gram-NS changes the NS kernel itself. Equivalence has to be re-verified against the rectangular NS reference at fp32 noise, and Dao's blog flags half-precision Gram-NS failure modes (spurious negative eigenvalues, eigenvector drift) that the restart strategy addresses but that we'd need to validate in our setting.
-2. **Concurrent with the Picard warm-start idea.** The restart strategy in Dao composes naturally with warm-starting NS from the previous Picard iter's polar output (the previous iterate is an excellent initial Gram). Both should land together.
-3. **Currently running sweeps still use the rectangular form.** The trajectory data on disk (chord-tight, chord-direction, chord-tight-clean) was produced by `_newton_schulz_batched`. Swapping the kernel mid-comparison muddles the optimizer-vs-optimizer signal.
-
-**When to revisit.** After (a) the §10-clean A/B settles (current commit), and (b) any future Picard warm-start work begins. The two changes belong together because the warm-start gives Gram-NS a free initial restart, and Gram-NS makes Picard $k \ge 3$ cheap enough that the marginal cost no longer dominates the choice of $k$.
-
 ## 7. Verification plan
 
 The refactor preserves trajectory only if:
@@ -333,6 +372,7 @@ The refactor preserves trajectory only if:
 1. At $k = 1$, `spectral_chord_tight_clean` (refactored) produces bit-identical output to `spectral_chord_tight_clean` (current gated form). Test: tiny CPU model, same seed, $\lVert \mathrm dA_{\text{new}} - \mathrm dA_{\text{old}}\rVert_F / \lVert \mathrm dA_{\text{old}}\rVert_F < 10^{-6}$ in fp32.
 2. At $k = 3$, allow $\le 5\%$ relative diff (Picard warm-start rekey changes the trajectory by exactly the staleness the legacy code was carrying).
 3. End-to-end smoke through `train_lora.py` — 5 steps at lr=3e-3, r=64, picard_iters_override=3 — same final eval loss within 0.01.
+4. Gram-NS equivalence and precision tests: `tests/test_ns_gram.py` (equivalence to rect-fp32, fp16+restart on Tier 1 real X_eff corpus, synthetic cond=$10^4$ stress). Fixtures built by `scripts/build_gram_ns_test_fixtures.py` from existing chord-tight r=64 snapshots — no extra sweep required.
 
 After verification, the pending sbatch `chord_tight_clean_lrsweep_k3_r64_4k_blackwell.sbatch` re-runs at the new commit. The decision rule in `there-is-an-ablation-magical-stroustrup.md` §2.4 still applies (compare at lr=3e-3 overlap with existing chord-tight).
 

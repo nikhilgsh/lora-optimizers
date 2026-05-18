@@ -51,7 +51,7 @@ python train_lora.py \
     --lora_alpha "$lora_r" \
     --muon_ns_steps 5 \
     --precond_method higham \
-    --picard_iters_override 3 \
+    --picard_iters_override 2 \
     --htmuon_p "$htmuon_p" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 80 \
