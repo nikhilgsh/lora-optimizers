@@ -251,9 +251,53 @@ def main():
                     flush=True,
                 )
 
-    # Snapshot-input accuracy rows (one residual per pair × variant × K).
-    # Timing on snapshot inputs duplicates the synthetic-shape timing (same
-    # shapes); we only collect accuracy here.
+    # Snapshot-shape timing rows (one timed row per UNIQUE shape across the
+    # loaded snapshot pairs — timing is value-independent so one sample
+    # suffices per shape). This covers shapes the synthetic grid misses
+    # (notably (64, 8192) MLP matrices in the chord-tight r=64 snapshot).
+    timed_shapes: dict[tuple[int, int], int] = {}
+    for pair_idx, u_A in snapshot_pairs:
+        shape = tuple(u_A.shape)
+        if shape in timed_shapes:
+            continue
+        timed_shapes[shape] = pair_idx
+        r, d = shape
+        for K in args.Ks:
+            for name, fn in VARIANTS.items():
+                mean_ms, std_ms, _ = time_call(
+                    fn, u_A, K, args.n_warmup, args.n_reps,
+                )
+                # Re-use the same tensor for the residual to keep "what was
+                # timed = what was scored" tight.
+                resid = sigma_residual(fn(u_A, K))
+                row = {
+                    "source": "snapshot_u_A_timed",
+                    "shape_kind": f"snapshot_r{r}_d{d}",
+                    "snapshot_step": args.snapshot_step,
+                    "pair_idx": pair_idx,
+                    "r": r,
+                    "d": d,
+                    "variant": name,
+                    "K": K,
+                    "ms_mean": mean_ms,
+                    "ms_std": std_ms,
+                    "sigma_residual_max": resid,
+                    "hardware": args.hardware,
+                    "gpu_name": gpu,
+                    "git_commit": sha,
+                    "n_reps": args.n_reps,
+                }
+                rows.append(row)
+                print(
+                    f"  snap   r{r}_d{d:<5d}    {name:15s} K={K:2d}  "
+                    f"{mean_ms:7.3f}±{std_ms:5.3f} ms  resid={resid:.2e}  "
+                    f"(pair {pair_idx})",
+                    flush=True,
+                )
+
+    # Snapshot-input accuracy rows (one residual per pair × variant × K) —
+    # covers all loaded pairs so we get min/median/max across the layer
+    # population, not just the one timed representative per shape.
     for pair_idx, u_A in snapshot_pairs:
         r, d = u_A.shape
         label = f"snapshot_r{r}_d{d}_pair{pair_idx}"

@@ -113,10 +113,12 @@ def render() -> str:
     lines.append("|" + "|".join(["---"] * len(col_headers)) + "|")
 
     # Aggregate: key = (shape_kind, K) -> hardware -> variant -> ms_mean
+    # Include both random_fp32 (synthetic shapes) and snapshot_u_A_timed
+    # (real production shapes the synthetic grid may miss).
     timings: dict[tuple, dict] = defaultdict(lambda: defaultdict(dict))
     for hw, rows in rows_by_hw.items():
         for r in rows:
-            if r["source"] != "random_fp32":
+            if r["source"] not in ("random_fp32", "snapshot_u_A_timed"):
                 continue
             timings[(r["shape_kind"], r["K"])][hw][r["variant"]] = r["ms_mean"]
 
@@ -126,6 +128,10 @@ def render() -> str:
             for v in VARIANTS:
                 row.append(fmt_ms(timings[(shape, K)].get(hw, {}).get(v)))
         lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    lines.append("Rows prefixed `snapshot_…` are timed on a real u_A tensor from "
+                 "the chord-tight r=64 snapshot (one timed sample per unique "
+                 "shape; timing is value-independent for these algorithms).")
     lines.append("")
 
     # ------------------------------------------------------------------
