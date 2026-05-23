@@ -20,11 +20,22 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
-from .manifest import live_manifests_newest_first, load_manifests, warn_untagged
+from .manifest import (
+    SERIES_AXIS_FIELDS, live_manifests_newest_first, load_manifests, warn_untagged,
+)
 from .plot_utils import (
     DIVERGE_THRESHOLD, OPTIM_COLORS, RUNTIME_FIELDS, has_runs, load_sweep,
     max_loss, merge_runs, parse_flag,
 )
+
+
+class UncontrolledAxisError(RuntimeError):
+    """Raised by ``load_runs(unique_on=...)`` when returned runs vary on a
+    cfg axis the caller didn't list in ``unique_on``, runtime fields, or
+    series-axis fields. Catches the pattern where a custom analysis cell
+    buckets by a coarser key than the loader's dedup uses and silently
+    collapses runs from an orthogonal ablation (e.g. ``htmuon_p``,
+    ``ns_form``) into the canonical bucket."""
 
 
 def _default_logs_root() -> str:
@@ -440,6 +451,55 @@ def _denylist_key(cfg: dict, runtime_fields: frozenset[str]) -> frozenset:
         and v is not None
     )
 
+
+def _check_unique_on(
+    runs: list[tuple[dict, list[dict]]],
+    unique_on: tuple[str, ...],
+    runtime_fields: frozenset[str],
+    allow_axes: tuple[str, ...],
+) -> None:
+    """Raise UncontrolledAxisError if any (unique_on)-bucket spans runs
+    that differ on a non-allowed cfg axis. Allowed axes = ``unique_on ∪
+    runtime_fields ∪ SERIES_AXIS_FIELDS ∪ allow_axes ∪ underscore-prefix``.
+    Dict-valued cfg fields (e.g. ``optimizer_config``) are skipped — the
+    same rule as ``_denylist_key``."""
+    allowed: set[str] = set(unique_on) | set(runtime_fields) | set(SERIES_AXIS_FIELDS) | set(allow_axes)
+    buckets: dict[tuple, list[dict]] = {}
+    for cfg, _ in runs:
+        bk = tuple(cfg.get(a) for a in unique_on)
+        buckets.setdefault(bk, []).append(cfg)
+    violations: list[str] = []
+    for bk, cfgs in buckets.items():
+        if len(cfgs) < 2:
+            continue
+        # For each non-allowed scalar cfg axis, gather the set of values.
+        field_values: dict[str, set] = {}
+        for cfg in cfgs:
+            for k, v in cfg.items():
+                if k in allowed or k.startswith("_") or isinstance(v, dict):
+                    continue
+                field_values.setdefault(k, set()).add(_hashable(v))
+        differing = {k: sorted(vs, key=repr) for k, vs in field_values.items() if len(vs) > 1}
+        if differing:
+            bucket_repr = ", ".join(f"{a}={v!r}" for a, v in zip(unique_on, bk))
+            diffs = ", ".join(f"{k}={list(vs)}" for k, vs in sorted(differing.items()))
+            paths = [c.get("_log_filename", "?") for c in cfgs]
+            violations.append(
+                f"  bucket({bucket_repr}) has {len(cfgs)} runs differing on: {diffs}\n"
+                f"    paths: {paths}"
+            )
+    if violations:
+        raise UncontrolledAxisError(
+            f"load_runs(unique_on={unique_on!r}) returned runs that vary on "
+            f"axes outside `unique_on`, runtime, series, and `allow_axes`:\n"
+            + "\n".join(violations)
+            + "\n\nFix: either tighten `where=` to constrain the offending "
+            "axis, OR pass `allow_axes=(...)` to acknowledge variation on "
+            "that axis is expected (the consumer is responsible for "
+            "filtering it before bucketing)."
+        )
+
+
 # Pinning categories returned in CoverageRow.pinning.
 PINNING_INTERIOR = "interior"
 PINNING_LOW = "pinned_low"
@@ -495,6 +555,8 @@ def load_runs(
     cfg_postprocess: Callable[[dict, str], None] | None = None,
     logs_root: str | None = None,
     warn_cross_commit: bool = True,
+    unique_on: tuple[str, ...] | None = None,
+    allow_axes: tuple[str, ...] = (),
 ) -> list[tuple[dict, list[dict]]]:
     """Load all runs whose cfg matches every predicate in ``where``.
 
@@ -520,6 +582,20 @@ def load_runs(
     still fires if two runs share the dedup key but differ on another cfg
     axis (most useful in allow-list mode; under deny-list it almost never
     fires by construction).
+
+    Uncontrolled-axis guard (``unique_on``):
+      When set, after the where-filter the loader buckets returned runs by
+      ``tuple(cfg.get(a) for a in unique_on)`` and verifies that every bucket
+      contains runs that agree on all cfg axes outside the allow-list
+      (``unique_on ∪ runtime_fields ∪ SERIES_AXIS_FIELDS ∪ allow_axes ∪
+      underscore-prefixed cfg fields``). If any axis varies within a bucket,
+      raises ``UncontrolledAxisError`` listing the offending fields and
+      values. Use this in custom analysis cells that manually bucket runs
+      after ``load_runs`` — without it, orthogonal ablations (e.g.
+      ``htmuon_p``, ``ns_form``) silently contaminate downstream dedup.
+      Production plotting via ``standard_sweep_figure`` already gets this
+      via ``assert_label_discriminates``; ``unique_on`` is the load-time
+      analogue for ad-hoc cells.
     """
     if logs_root is None:
         logs_root = _default_logs_root()
@@ -751,6 +827,9 @@ def load_runs(
             )
 
 
+    if unique_on is not None and runs:
+        _check_unique_on(runs, unique_on, runtime_fields, allow_axes)
+
     if warn_cross_commit and runs:
         commits: dict[str, int] = {}
         for cfg, _ in runs:
@@ -961,6 +1040,70 @@ def inventory_runs(logs_root: str | None = None) -> RunInventory:
         optimizers_unknown=optimizers_unknown,
         coverage=tuple(coverage),
     )
+
+
+def aggregate_by(
+    runs: list[tuple[dict, list[dict]]],
+    key: tuple[str, ...],
+    reduce: Callable[[list[tuple[dict, list[dict]]]], Any] | None = None,
+    *,
+    runtime_fields: frozenset[str] = RUNTIME_FIELDS,
+    allow_axes: tuple[str, ...] = (),
+) -> dict[tuple, Any]:
+    """Bucket ``runs`` (a list of ``(cfg, history)`` pairs as returned by
+    ``load_runs``) by the cfg-field tuple ``key`` and apply ``reduce`` to
+    each bucket. Raises ``UncontrolledAxisError`` if any bucket spans
+    runs differing on cfg axes outside ``key``, ``runtime_fields``,
+    ``SERIES_AXIS_FIELDS``, or ``allow_axes``.
+
+    Motivation: post-load aggregators (``best_by_lr`` and friends) routinely
+    re-bucket loaded runs on a coarser key than the loader's dedup uses.
+    When the coarser key leaves cfg axes unaccounted for, the bucket
+    silently collapses runs from orthogonal ablations (e.g. ``precond_delta_relative``,
+    ``ns_form``, ``htmuon_p``) into one "best" or "mean" — biasing the
+    output downward and hiding what's actually being compared. The
+    loader exposes ``unique_on=`` at load time for the same check, but
+    that doesn't help when bucketing happens downstream. This helper
+    closes the loop.
+
+    Args:
+        runs: list of ``(cfg, history)`` pairs.
+        key: tuple of cfg field names. Each bucket is indexed by the
+            tuple of values ``(cfg[k] for k in key)``.
+        reduce: callable applied to the list of ``(cfg, history)`` in each
+            bucket. Default returns the list itself (no reduction).
+        runtime_fields: cfg fields treated as metadata / runtime state
+            and thus allowed to vary within a bucket.
+        allow_axes: additional cfg fields the caller acknowledges may
+            vary within a bucket.
+
+    Returns:
+        dict mapping bucket-key tuple → reduce(bucket_runs).
+
+    Raises:
+        UncontrolledAxisError: if any bucket spans runs that differ on an
+            unaccounted-for cfg axis.
+
+    Example::
+
+        runs = load_runs(where={"optimizer": "adamw", "lora_r": 64})
+        best_by_lr = aggregate_by(
+            runs, key=("lr",),
+            reduce=lambda bucket: min(h[-1]["eval_loss"] for _, h in bucket),
+        )
+    """
+    if isinstance(key, str):
+        key = (key,)
+    _check_unique_on(runs, tuple(key), runtime_fields, allow_axes)
+
+    buckets: dict[tuple, list[tuple[dict, list[dict]]]] = {}
+    for cfg, hist in runs:
+        bk = tuple(_hashable(cfg.get(a)) for a in key)
+        buckets.setdefault(bk, []).append((cfg, hist))
+
+    if reduce is None:
+        return buckets
+    return {bk: reduce(bucket) for bk, bucket in buckets.items()}
 
 
 def render_inventory(inv: RunInventory) -> str:

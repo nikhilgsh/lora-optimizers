@@ -29,8 +29,10 @@ from lora_playground.loader import (
     PINNING_INTERIOR,
     PINNING_LOW,
     PINNING_SINGLE,
+    UncontrolledAxisError,
     _enrich_cfg,
     _matches,
+    aggregate_by,
     inventory_runs,
     load_runs,
     render_inventory,
@@ -158,6 +160,134 @@ def test_load_runs_newest_wins_on_dedup_collision(tmp_path: Path):
     assert len(runs) == 1, "dedup didn't collapse colliding runs"
     _, evs = runs[0]
     assert evs[-1]["eval_loss"] == 0.74
+
+
+def test_load_runs_unique_on_raises_on_uncontrolled_axis(tmp_path: Path):
+    """A bucket spanning runs with different htmuon_p values must raise."""
+    logs = tmp_path / "logs"
+    c1 = _cfg("adam-polar-product-lora", 3e-2)
+    c1["htmuon_p"] = None
+    c2 = _cfg("adam-polar-product-lora", 3e-2)
+    c2["htmuon_p"] = 0.0625
+    _write_group(logs, "g", {"scope": ["polar_family"]}, [
+        (c1, _evs((2000, 0.50))),
+        (c2, _evs((2000, 0.51))),
+    ])
+    # Without unique_on: silently returns both.
+    runs = load_runs(where={"optimizer": "adam-polar-product-lora"},
+                     logs_root=str(logs))
+    assert len(runs) == 2
+
+    # With unique_on=(optimizer, lr): bucket has two runs differing on htmuon_p.
+    with pytest.raises(UncontrolledAxisError, match="htmuon_p"):
+        load_runs(where={"optimizer": "adam-polar-product-lora"},
+                  unique_on=("optimizer", "lr"), logs_root=str(logs))
+
+    # allow_axes opt-out: htmuon_p variation acknowledged.
+    runs = load_runs(where={"optimizer": "adam-polar-product-lora"},
+                     unique_on=("optimizer", "lr"),
+                     allow_axes=("htmuon_p",), logs_root=str(logs))
+    assert len(runs) == 2
+
+    # Constraining via `where` also clears the violation.
+    runs = load_runs(where={"optimizer": "adam-polar-product-lora", "htmuon_p": None},
+                     unique_on=("optimizer", "lr"), logs_root=str(logs))
+    assert len(runs) == 1
+
+
+def test_load_runs_unique_on_clean_bucket_passes(tmp_path: Path):
+    """Same bucket, runs identical on all cfg axes → no error."""
+    logs = tmp_path / "logs"
+    cfg = _cfg("adam-polar-product-lora", 3e-2)
+    cfg["htmuon_p"] = None
+    # Two distinct buckets (different lr) — each bucket has one run.
+    _write_group(logs, "g", {"scope": ["polar_family"]}, [
+        (cfg, _evs((2000, 0.50))),
+        ({**cfg, "lr": 1e-2}, _evs((2000, 0.51))),
+    ])
+    runs = load_runs(where={"optimizer": "adam-polar-product-lora"},
+                     unique_on=("optimizer", "lr"), logs_root=str(logs))
+    assert len(runs) == 2
+
+
+def test_aggregate_by_raises_on_hidden_axis(tmp_path: Path):
+    """aggregate_by(key=("lr",)) must raise when two runs at the same lr
+    differ on an unaccounted-for cfg axis (precond_delta_relative)."""
+    logs = tmp_path / "logs"
+    c1 = _cfg("adam-polar-product-lora", 3e-2)
+    c1["precond_delta_relative"] = False
+    c2 = _cfg("adam-polar-product-lora", 3e-2)
+    c2["precond_delta_relative"] = True
+    _write_group(logs, "g", {"scope": ["polar_family"]}, [
+        (c1, _evs((2000, 0.50))),
+        (c2, _evs((2000, 0.51))),
+    ])
+    runs = load_runs(where={"optimizer": "adam-polar-product-lora"},
+                     logs_root=str(logs))
+    assert len(runs) == 2
+    with pytest.raises(UncontrolledAxisError, match="precond_delta_relative"):
+        aggregate_by(runs, key=("lr",))
+
+
+def test_aggregate_by_clean_bucket_reduces(tmp_path: Path):
+    """No hidden axis variation → reduce runs per bucket."""
+    logs = tmp_path / "logs"
+    _write_group(logs, "g", {"scope": ["polar_family"]}, [
+        (_cfg("adamw", 3e-4), _evs((2000, 0.50))),
+        (_cfg("adamw", 1e-3), _evs((2000, 0.52))),
+    ])
+    runs = load_runs(where={"optimizer": "adamw"}, logs_root=str(logs))
+    best = aggregate_by(
+        runs, key=("lr",),
+        reduce=lambda bucket: min(h[-1]["eval_loss"] for _, h in bucket),
+    )
+    assert best == {(3e-4,): 0.50, (1e-3,): 0.52}
+
+
+def test_aggregate_by_allow_axes_opt_out(tmp_path: Path):
+    """`allow_axes=(...)` lets the caller acknowledge hidden variation."""
+    logs = tmp_path / "logs"
+    c1 = _cfg("adam-polar-product-lora", 3e-2)
+    c1["precond_delta_relative"] = False
+    c2 = _cfg("adam-polar-product-lora", 3e-2)
+    c2["precond_delta_relative"] = True
+    _write_group(logs, "g", {"scope": ["polar_family"]}, [
+        (c1, _evs((2000, 0.50))),
+        (c2, _evs((2000, 0.51))),
+    ])
+    runs = load_runs(where={"optimizer": "adam-polar-product-lora"},
+                     logs_root=str(logs))
+    out = aggregate_by(runs, key=("lr",), allow_axes=("precond_delta_relative",))
+    assert set(out.keys()) == {(3e-2,)}
+    assert len(out[(3e-2,)]) == 2
+
+
+def test_aggregate_by_seed_is_series_axis(tmp_path: Path):
+    """`seed` is in SERIES_AXIS_FIELDS — bucket spanning seeds doesn't raise."""
+    logs = tmp_path / "logs"
+    _write_group(logs, "g", {"scope": ["polar_family"]}, [
+        (_cfg("adamw", 3e-4, seed=0), _evs((2000, 0.50))),
+        (_cfg("adamw", 3e-4, seed=1), _evs((2000, 0.52))),
+    ])
+    runs = load_runs(where={"optimizer": "adamw"}, logs_root=str(logs))
+    mean_by_lr = aggregate_by(
+        runs, key=("lr",),
+        reduce=lambda bucket: sum(h[-1]["eval_loss"] for _, h in bucket) / len(bucket),
+    )
+    assert mean_by_lr == {(3e-4,): 0.51}
+
+
+def test_load_runs_unique_on_seed_in_series_axis(tmp_path: Path):
+    """`seed` is in SERIES_AXIS_FIELDS, so a bucket spanning seeds is fine."""
+    logs = tmp_path / "logs"
+    _write_group(logs, "g", {"scope": ["polar_family"]}, [
+        (_cfg("adamw", 3e-4, seed=0), _evs((2000, 0.50))),
+        (_cfg("adamw", 3e-4, seed=1), _evs((2000, 0.51))),
+    ])
+    # seed varies within the (optimizer, lr) bucket but it's a series axis.
+    runs = load_runs(where={"optimizer": "adamw"},
+                     unique_on=("optimizer", "lr"), logs_root=str(logs))
+    assert len(runs) == 2
 
 
 def test_load_runs_extension_does_not_drop_old_data(tmp_path: Path):
