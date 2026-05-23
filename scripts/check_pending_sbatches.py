@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+"""Refuse pending sbatches whose `--ntasks=N` undershoots `# CELLS: M`
+**only when M ≤ QOS_CAP** (default 24) and there's no QOS-clamp reason
+to leave parallelism on the table.
+
+Three failure modes vs three responses:
+
+  1. Small grid, ntasks < CELLS (M ≤ QOS_CAP):  REFUSE.
+     Mistake-shaped: inherited --ntasks from a prior sbatch; the marginal
+     QOS cost of scaling up is zero but the wall-time win is real
+     (CELLS/ntasks rounds → 1 round).
+
+  2. Large grid, ntasks < CELLS (M > QOS_CAP):  WARN (don't refuse).
+     Legitimate QOS clamp: a 40-cell grid genuinely needs --ntasks≤24
+     and queues remaining cells through later rounds. Surfaces the
+     wall-time / round count so the user can sanity-check.
+
+  3. ntasks > CELLS (any size):                  REFUSE.
+     Reserves idle GPU slots. Always a mistake.
+
+Override: FORCE_NTASKS_MISMATCH=1. QOS cap: QOS_CAP env var (default 24).
+
+Convention: every pending sbatch declares `# CELLS: N` near `# ETA: H`.
+Sbatches missing the header are flagged (not refused) so the convention
+spreads to new templates without breaking submission on legacy ones.
+"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+
+PENDING = Path("slurm_pending")
+NTASKS_PATTERN = re.compile(r"^\s*#SBATCH\s+--ntasks=(\d+)\s*$", re.MULTILINE)
+CELLS_PATTERN = re.compile(r"^\s*#\s*CELLS:\s*(\d+)\s*$", re.MULTILINE)
+
+
+def main() -> int:
+    if not PENDING.exists():
+        return 0
+    qos_cap = int(os.environ.get("QOS_CAP", "24"))
+    refuse_msgs: list[str] = []
+    warn_msgs: list[str] = []
+    missing_header: list[str] = []
+
+    for sbatch in sorted(PENDING.glob("*.sbatch")):
+        text = sbatch.read_text()
+        ntasks_matches = NTASKS_PATTERN.findall(text)
+        if not ntasks_matches:
+            continue
+        ntasks = int(ntasks_matches[-1])
+        cells_matches = CELLS_PATTERN.findall(text)
+        if not cells_matches:
+            missing_header.append(
+                f"  {sbatch.name}: --ntasks={ntasks}, no `# CELLS: N` header"
+            )
+            continue
+        cells = int(cells_matches[-1])
+
+        if ntasks == cells:
+            continue
+        if ntasks > cells:
+            refuse_msgs.append(
+                f"  {sbatch.name}: --ntasks={ntasks} > # CELLS: {cells} "
+                f"({ntasks - cells} idle GPU slot{'s' if ntasks - cells != 1 else ''} reserved)"
+            )
+            continue
+        # ntasks < cells:
+        rounds = -(-cells // ntasks)  # ceil-div
+        if cells <= qos_cap:
+            refuse_msgs.append(
+                f"  {sbatch.name}: --ntasks={ntasks} < # CELLS: {cells} "
+                f"(grid fits under QOS_CAP={qos_cap}; {rounds} rounds "
+                f"instead of 1 → ~{rounds}x wall time)"
+            )
+        else:
+            warn_msgs.append(
+                f"  {sbatch.name}: --ntasks={ntasks} < # CELLS: {cells} "
+                f"(grid exceeds QOS_CAP={qos_cap}; {rounds} rounds expected; "
+                f"verify --time covers it)"
+            )
+
+    if warn_msgs:
+        sys.stderr.write(
+            "check_pending_sbatches: WARN — sbatch(es) using QOS-clamped "
+            "parallelism (informational, not refused):\n"
+            + "\n".join(warn_msgs) + "\n\n"
+        )
+    if missing_header:
+        sys.stderr.write(
+            "check_pending_sbatches: WARN — sbatch(es) missing `# CELLS: N` "
+            "header (required for ntasks-vs-cells check; add near `# ETA: H`):\n"
+            + "\n".join(missing_header) + "\n\n"
+        )
+    if refuse_msgs:
+        sys.stderr.write(
+            "check_pending_sbatches: REFUSE — ntasks/cells mismatch in "
+            "pending sbatch(es):\n"
+            + "\n".join(refuse_msgs)
+            + "\n\nFor independent disBatch sweeps that fit under the QOS "
+            f"cap (={qos_cap}), --ntasks should equal # CELLS so all cells "
+            "run in parallel. Inheriting --ntasks from a prior sbatch is the "
+            "usual cause; recompute from this grid's cell count.\n"
+            "Override: FORCE_NTASKS_MISMATCH=1\n"
+        )
+        if os.environ.get("FORCE_NTASKS_MISMATCH") == "1":
+            sys.stderr.write("FORCE_NTASKS_MISMATCH=1 set; proceeding anyway.\n")
+            return 0
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

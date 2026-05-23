@@ -26,4 +26,14 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$REPO_DIR"
 
+# Sanity-check pending sbatches before the load-bearing-cleanliness check:
+# refuse if any sbatch declares --ntasks=N while its disBatch task block
+# generates a different number of tasks. Catches the "inherited ntasks from
+# prior sbatch, didn't recompute for this grid" failure mode — running
+# 5 cells through --ntasks=3 doubles wall time and the user pays for
+# whatever differential exists.
+#
+# Override: FORCE_NTASKS_MISMATCH=1 ./check_clean_tree.sh
+python scripts/check_pending_sbatches.py
+
 exec python -m lora_playground.execution_scope check-clean
