@@ -2068,6 +2068,91 @@ if os.environ.get("LORA_COMPILE_KERNELS", "0") == "1":
     )
 
 
+def _ssc_svd(M, c, eps=1e-30):
+    """SPECTRA (arXiv:2603.14315) Soft Spectral Clipping via SVD — ground truth.
+
+    H_c(X) = U · diag(σ / sqrt(1 + (σ/c)²)) · V^T,  where X = U diag(σ) V^T.
+
+    Equivalent (operator form): H_c(X) = (I + X X^T / c²)^{-1/2} X. The MISR
+    routine `_ssc_misr_batched` computes this without SVD via Newton-Schulz
+    on the inverse-square-root of (I + X X^T / c²); use this function as
+    the reference for validating MISR convergence on real snapshots.
+
+    Operates on the last two dims; leading dims are broadcast through
+    `torch.linalg.svd`. Returns same shape and dtype as input.
+    """
+    in_dtype = M.dtype
+    Mf = M.float()
+    U, S, Vh = torch.linalg.svd(Mf, full_matrices=False)
+    # h_c(σ) = σ / sqrt(1 + (σ/c)²); denom ≥ 1 so eps clamp is only for safety.
+    denom = torch.sqrt(1.0 + (S / c).pow(2)).clamp_min(eps)
+    S_clip = S / denom
+    out = (U * S_clip.unsqueeze(-2)) @ Vh
+    return out.to(in_dtype)
+
+
+def _ssc_misr_batched(X, c, nsteps=10, eps=1e-12):
+    """SPECTRA (arXiv:2603.14315) Soft Spectral Clipping via Newton-Schulz MISR.
+
+    Computes H_c(X) = (I + X X^T / c²)^{-1/2} · X without SVD, via the
+    matrix-inverse-square-root Schulz iteration on the gram-side matrix
+    G = I + X X^T / c²  (size r×r when X is (..., r, d) with r ≤ d).
+
+    Iteration (Algorithm 2 of SPECTRA):
+        α ≥ σ_max(G);  Y_0 = G / α;  Z_0 = I.
+        for k = 0..K-1:
+            T_k = (3 I − Z_k Y_k) / 2
+            Y_{k+1} = Y_k T_k
+            Z_{k+1} = T_k Z_k
+        return (Z_K / sqrt(α)) · X.
+
+    Z_K / sqrt(α) approximates G^{-1/2}; left-multiplying X recovers H_c.
+
+    Assumes X has been pre-rescaled so σ_max(X) ≲ 1 (which holds inside
+    `_chord_tight_clean_polar_pipeline` after §2.5 normalization). The
+    Schulz iteration is contractive when σ(G/α) ∈ (0, 3], guaranteed by
+    α = trace(G) + ε ≥ σ_max(G). Cubic convergence near σ=1; for c ≪ 1
+    the gram has larger condition number and more iters (≥10) are needed.
+
+    Always returns float32 (consistent with `_newton_schulz_gram_batched`
+    output convention for downstream chord-tight-clean pipeline).
+    """
+    if X.shape[-2] == 0 or X.shape[-1] == 0:
+        return X.float()
+    # Tall-transpose so the second-to-last dim is the smaller side; the
+    # gram (I + X X^T / c²) is then (r, r) with r ≤ d, matching the FLOP
+    # win of `_newton_schulz_gram_batched`. SSC is left-multiplicative on
+    # the smaller-side basis, so the transpose is undone at the end.
+    Xf = X.float()
+    tall = Xf.shape[-2] > Xf.shape[-1]
+    if tall:
+        Xf = Xf.transpose(-2, -1)
+    orig_leading = Xf.shape[:-2]
+    Xf = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
+    batch, r, d = Xf.shape
+    device, dtype = Xf.device, Xf.dtype
+    inv_c2 = 1.0 / (float(c) ** 2)
+    I_r = torch.eye(r, device=device, dtype=dtype).expand(batch, r, r)
+    # G = I + X X^T / c² is symmetric PSD with eigenvalues ≥ 1.
+    G = torch.baddbmm(I_r, Xf, Xf.transpose(-2, -1), alpha=inv_c2, beta=1.0)
+    # α ≥ σ_max(G): use trace as a cheap upper bound (sum of eigvals ≥ max eigval).
+    alpha = G.diagonal(dim1=-2, dim2=-1).sum(dim=-1).clamp_min(eps)  # (batch,)
+    alpha_b11 = alpha.view(-1, 1, 1)
+    Y = G / alpha_b11
+    Z = I_r.clone()
+    half = 0.5
+    three_I = 3.0 * I_r
+    for _ in range(nsteps):
+        T = half * (three_I - torch.bmm(Z, Y))
+        Y = torch.bmm(Y, T)
+        Z = torch.bmm(T, Z)
+    # Z ≈ G^{-1/2} · sqrt(α);  so G^{-1/2} ≈ Z / sqrt(α).
+    G_inv_half = Z / alpha_b11.sqrt()
+    out = torch.bmm(G_inv_half, Xf)  # (batch, r, d)
+    out = out.reshape(*orig_leading, *out.shape[-2:])
+    return out.transpose(-2, -1) if tall else out
+
+
 def _polar_retract(X, nsteps=5, eps=1e-7):
     """Polar retraction for near-orthonormal X (singular values already ≈ 1).
 
@@ -3566,6 +3651,81 @@ class AdamPolarProductLoRA(Optimizer):
                         u_B_eff = u_B_eff + (1.0 / lr) * (dB @ S_A_full)
                     X_A_eff = SB_half_inv @ u_A_eff
                     X_B_eff = u_B_eff @ SA_half_inv
+
+                    # Env-gated debug probe (full-FW only): compare measured
+                    # self-term magnitude to §10-style theory prediction.
+                    _probe_step = (next(iter(self.pair_state.values())).get('step', -1)
+                                   if self.pair_state else -1)
+                    _probe_fire = (os.environ.get("LORA_FULL_FW_PROBE", "0") == "1"
+                                   and self.fw_linearization == "full"
+                                   and _probe_step in (1, 25, 50, 100, 200, 400))
+                    if _probe_fire:
+                        import sys as _sys, json as _json
+                        SB_dA = S_B_full @ dA                                # (N, r, d_in)
+                        Y_A_self = SB_half_inv @ SB_dA                       # (N, r, d_in)  — polar-input self
+                        cross_polar = SB_half_inv @ (B_f.transpose(-2, -1) @ dB @ A_f)  # (N, r, d_in)
+                        step_num = _probe_step
+                        if self.precond_delta_relative:
+                            delta_eff_B_v = self.delta * (sigma_B.float() ** 2)
+                        else:
+                            delta_eff_B_v = torch.full_like(sigma_B.float(), float(self.delta))
+                        N_probe = A_f.shape[0]
+                        for i in range(N_probe):
+                            sv_B = torch.linalg.svdvals(B_f[i].float())
+                            sv_A = torch.linalg.svdvals(A_f[i].float())
+                            sigma_min_B_i = float(sv_B.min())
+                            sigma_max_B_i = float(sv_B.max())
+                            sigma_max_A_i = float(sv_A.max())
+                            s_i = sigma_max_A_i + sigma_max_B_i
+                            rho_i = float(lr) / (s_i + 1e-30)
+                            dA_op = float(torch.linalg.matrix_norm(dA[i].float(), ord=2))
+                            Y_A_self_op = float(torch.linalg.matrix_norm(Y_A_self[i].float(), ord=2))
+                            cross_op = float(torch.linalg.matrix_norm(cross_polar[i].float(), ord=2))
+                            X_A_op = float(torch.linalg.matrix_norm(X_A[i].float(), ord=2))
+                            X_A_eff_op = float(torch.linalg.matrix_norm(X_A_eff[i].float(), ord=2))
+                            delta_i = float(delta_eff_B_v[i])
+                            Y_A_predicted = rho_i * (sigma_min_B_i**2 + delta_i) ** 0.5
+                            # Q_A spectrum (X_A is post-rescale, so X_A == Q_A here)
+                            sv_QA = torch.linalg.svdvals(X_A[i].float())  # (r,)
+                            alpha_i = Y_A_predicted / float(lr)  # self/base ratio for this pair
+                            # alpha_i here equals sqrt(σ_min(B)²+δ_B)/s (note: lr=η)
+                            n_flips = int((sv_QA < alpha_i).sum())
+                            n_flips_half = int((sv_QA < alpha_i / 2).sum())
+                            n_flips_2x = int((sv_QA < 2 * alpha_i).sum())
+                            sigma_min_QA = float(sv_QA.min())
+                            # Polar drift predicted from sign-flips alone:
+                            # ||polar(Q_A − α·polar(Q_A)) − polar(Q_A)||_F = sqrt(2·n_flips)
+                            # because each flipped direction contributes 2 in Frobenius (U·diag(sign)·Vᵀ vs U·I·Vᵀ).
+                            polar_drift_predicted = (2 * n_flips) ** 0.5
+                            _sys.stdout.write(_json.dumps({
+                                "event": "full_fw_probe",
+                                "step": int(step_num),
+                                "picard_iter": int(n),
+                                "pair": int(i),
+                                "lr": float(lr),
+                                "rho_predicted": rho_i,
+                                "sigma_min_B": sigma_min_B_i,
+                                "sigma_max_B": sigma_max_B_i,
+                                "sigma_max_A": sigma_max_A_i,
+                                "s_AB": s_i,
+                                "delta_eff_B": delta_i,
+                                "Y_A_actual_op_norm": Y_A_self_op,
+                                "Y_A_predicted": Y_A_predicted,
+                                "Y_A_actual_over_predicted": (Y_A_self_op
+                                                              / (Y_A_predicted + 1e-30)),
+                                "alpha": alpha_i,
+                                "sigma_min_QA": sigma_min_QA,
+                                "n_singular_below_alpha": n_flips,
+                                "n_singular_below_half_alpha": n_flips_half,
+                                "n_singular_below_2x_alpha": n_flips_2x,
+                                "polar_drift_predicted_F": polar_drift_predicted,
+                                "self_over_base_ratio": Y_A_self_op / (X_A_op + 1e-30),
+                                "cross_over_base_ratio": cross_op / (X_A_op + 1e-30),
+                                "X_A_op_norm_post_rescale": X_A_op,
+                                "X_A_eff_op_norm": X_A_eff_op,
+                                "r": int(sv_QA.numel()),
+                            }) + "\n")
+                        _sys.stdout.flush()
 
                 # Polar map via Newton-Schulz (canonical: gram, fp16+restart).
                 P_A = _polar(X_A_eff)
