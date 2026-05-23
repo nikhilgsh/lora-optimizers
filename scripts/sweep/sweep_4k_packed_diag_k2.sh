@@ -49,7 +49,7 @@ python train_lora.py \
     --seed "$seed" \
     --lora_r "$lora_r" \
     --lora_alpha "$lora_r" \
-    --muon_ns_steps 5 \
+    --muon_ns_steps "${MUON_NS_STEPS:-10}" \
     --precond_method higham \
     --picard_iters_override 2 \
     "${diag_args[@]}" \
