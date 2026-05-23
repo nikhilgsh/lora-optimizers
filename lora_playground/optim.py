@@ -529,6 +529,7 @@ OPTIMIZER_CHOICES = {
     "adam-polar-product-lora-coupled-spectral-chord",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
     "adam-polar-product-lora-coupled-spectral-chord-tight-clean",
+    "adam-polar-product-lora-coupled-spectral-chord-tight-clean-full-fw",
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-rho",
     "adam-polar-product-lora-coupled-spectral-chord-tight-exact",
     "adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening",
@@ -2804,7 +2805,8 @@ class AdamPolarProductLoRA(Optimizer):
                  debug_snapshot_limit=8,
                  debug_abort_on_non_finite=False,
                  ns_form="gram",
-                 higham_compute_dtype="fp32"):
+                 higham_compute_dtype="fp32",
+                 fw_linearization="anchored"):
         named = collect_lora_pairs_named(model, adapter_name)
         if not named:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -2843,6 +2845,11 @@ class AdamPolarProductLoRA(Optimizer):
                 f"ns_form must be 'rect', 'gram', or 'gram-norestart', got {ns_form!r}"
             )
         self.ns_form = ns_form
+        if fw_linearization not in ("anchored", "full"):
+            raise ValueError(
+                f"fw_linearization must be 'anchored' or 'full', got {fw_linearization!r}"
+            )
+        self.fw_linearization = fw_linearization
         # Inner-iteration dtype for `spd_inv_sqrt_higham_batched`.
         # "fp32" (default) preserves the validated fp32-no-TF32 path;
         # "fp16" opts into the variant-B mixed-precision body (fp16
@@ -3520,6 +3527,26 @@ class AdamPolarProductLoRA(Optimizer):
         slots_A = gs.setdefault('v_op_geoA_slots', [None] * self.picard_iters)
         slots_B = gs.setdefault('v_op_geoB_slots', [None] * self.picard_iters)
 
+        # Full-FW self-term grams (algorithm_tight_chord.md §6). Materialized
+        # once outside the Picard loop; both r×r and constant across iters.
+        # Effective δ matches the Higham/eigh damping (relative ⇒ δ·σ_max²,
+        # absolute ⇒ δ). σ_A, σ_B already in scope from §2.2.
+        if self.fw_linearization == "full":
+            r = A_f.shape[-2]
+            eye_r = torch.eye(r, device=device, dtype=dtype).expand(N, r, r)
+            if self.precond_delta_relative:
+                delta_eff_A = self.delta * (sigma_A ** 2)        # (N,)
+                delta_eff_B = self.delta * (sigma_B ** 2)        # (N,)
+                S_A_full = (A_f @ A_f.transpose(-2, -1)
+                            + delta_eff_A.view(N, 1, 1) * eye_r)
+                S_B_full = (B_f.transpose(-2, -1) @ B_f
+                            + delta_eff_B.view(N, 1, 1) * eye_r)
+            else:
+                S_A_full = A_f @ A_f.transpose(-2, -1) + self.delta * eye_r
+                S_B_full = B_f.transpose(-2, -1) @ B_f + self.delta * eye_r
+        else:
+            S_A_full = S_B_full = None
+
         for n in range(self.picard_iters):
             with maybe_time(timer, "chord_tight_clean_picard"):
                 if n == 0:
@@ -3532,6 +3559,11 @@ class AdamPolarProductLoRA(Optimizer):
                     B_dA_AT = B_f @ dA @ A_f.transpose(-2, -1)       # (N, d_out, r)
                     u_A_eff = u_A + (1.0 / lr) * BT_dB_A
                     u_B_eff = u_B + (1.0 / lr) * B_dA_AT
+                    # Full-FW (§6) self-terms: keep block's own previous
+                    # contribution in the polar input. Anchored path skips.
+                    if self.fw_linearization == "full":
+                        u_A_eff = u_A_eff + (1.0 / lr) * (S_B_full @ dA)
+                        u_B_eff = u_B_eff + (1.0 / lr) * (dB @ S_A_full)
                     X_A_eff = SB_half_inv @ u_A_eff
                     X_B_eff = u_B_eff @ SA_half_inv
 
@@ -8919,6 +8951,44 @@ def build_optimizer(
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,
             higham_compute_dtype=higham_compute_dtype,
+            log_non_finite=log_non_finite,
+            debug_optimizer_state=debug_optimizer_state,
+            debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_snapshot_dir=debug_snapshot_dir,
+            debug_snapshot_limit=debug_snapshot_limit,
+            debug_abort_on_non_finite=debug_abort_on_non_finite,
+        )
+    if optimizer_type == "adam-polar-product-lora-coupled-spectral-chord-tight-clean-full-fw":
+        # §6 full-residual Frank-Wolfe variant of chord-tight-clean. Identical
+        # to chord-tight-clean except the Picard inner loop retains the
+        # self-terms S_B·dA and dB·S_A in each block's polar input (doc §6).
+        # Bit-identical to chord-tight-clean at picard_iters=1 (self-terms
+        # vanish at dA⁽⁰⁾=dB⁽⁰⁾=0); diverges at k≥2.
+        return AdamPolarProductLoRA(
+            model, lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            ns_steps=muon_ns_steps,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            precond_method=precond_method,
+            higham_iters=higham_iters,
+            picard_iters=picard_iters_override if picard_iters_override is not None else 1,
+            picard_alpha=picard_alpha,
+            htmuon_p=htmuon_p,
+            anderson_m=anderson_m,
+            anderson_reg=anderson_reg,
+            polar_norm_dir=polar_norm_dir,
+            polar_sigma_power=polar_sigma_power,
+            polar_method=polar_method,
+            magnitude_rule="spectral_chord_tight_clean",
+            precond_delta_relative=precond_delta_relative,
+            ns_form=ns_form,
+            higham_compute_dtype=higham_compute_dtype,
+            fw_linearization="full",
             log_non_finite=log_non_finite,
             debug_optimizer_state=debug_optimizer_state,
             debug_optimizer_state_every=debug_optimizer_state_every,
