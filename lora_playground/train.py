@@ -664,11 +664,19 @@ def make_parser():
                              "(instant per-step variance — tests whether EMA of v matters "
                              "for polar-pipeline upstream).")
     parser.add_argument("--polar_method", type=str, default="ns",
-                        choices=["ns", "ns_hybrid", "polar_express"],
+                        choices=["ns", "ns_hybrid", "polar_express", "ssc"],
                         help="Polar approximation method in adam-polar-product-lora's _polar_pipeline. "
                              "'ns' = standard degree-3 Newton-Schulz (default). "
                              "'ns_hybrid' = DeepSeek-V4 §2.4 two-stage degree-5 (8 aggressive + 2 refine). "
-                             "'polar_express' = Amsel et al. arXiv:2505.16932 per-iteration optimal degree-5.")
+                             "'polar_express' = Amsel et al. arXiv:2505.16932 per-iteration optimal degree-5. "
+                             "'ssc' = SPECTRA (arXiv:2603.14315) soft spectral clipping h_c(σ)=σ/√(1+(σ/c)²). "
+                             "Requires --ssc_c.")
+    parser.add_argument("--ssc_c", type=float, default=None,
+                        help="SSC clipping threshold c (σ-units). Required when --polar_method ssc. "
+                             "Input to _ssc_misr_batched is post-§2.5-rescale (σ_max≈1), so c is in "
+                             "fraction-of-σ_max units.")
+    parser.add_argument("--ssc_nsteps", type=int, default=10,
+                        help="MISR (matrix iterative soft-clipping) iteration count for SSC. Default 10.")
     parser.add_argument("--polar_sigma_power", type=float, default=None,
                         help="HTMuon (arXiv:2603.10067) σ → σ^p generalized polar. "
                              "None = use Newton-Schulz (default Muon polar). "
@@ -1060,6 +1068,8 @@ def main():
         polar_sigma_power=args.polar_sigma_power,
         polar_method=args.polar_method,
         polar_core_remix_alpha=args.polar_core_remix_alpha,
+        ssc_c=args.ssc_c,
+        ssc_nsteps=args.ssc_nsteps,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -1175,6 +1185,8 @@ def main():
             "polar_norm_dir": args.polar_norm_dir,
             "polar_sigma_power": args.polar_sigma_power,
             "polar_method": args.polar_method,
+            "ssc_c": args.ssc_c,
+            "ssc_nsteps": args.ssc_nsteps,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,
