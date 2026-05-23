@@ -106,7 +106,7 @@ def resolve_effective_inner_polar(
                 "sigma_power": psp_f,
                 "label": f"sigma_power(p={psp_f})",
             }
-    if polar_method in {"ns", "ns_hybrid", "polar_express"}:
+    if polar_method in {"ns", "ns_hybrid", "polar_express", "ssc"}:
         return {"method": polar_method, "label": polar_method}
     if optimizer_class_name:
         norm = optimizer_class_name.lower().replace("_", "").replace("-", "")
@@ -2877,6 +2877,7 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_norm_dir="frob",
                  polar_sigma_power=None,
                  polar_method="ns",
+                 ssc_c=None, ssc_nsteps=10,
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
@@ -3021,9 +3022,16 @@ class AdamPolarProductLoRA(Optimizer):
         # "polar_express" = Amsel et al. 2505.16932 per-iteration optimal
         # degree-5 minimax. Higher-quality methods better orthogonalize wide
         # σ-range inputs (where standard NS-5 leaves residual variation).
-        if polar_method not in {"ns", "ns_hybrid", "polar_express"}:
-            raise ValueError(f"polar_method must be one of ns/ns_hybrid/polar_express, got {polar_method!r}")
+        if polar_method not in {"ns", "ns_hybrid", "polar_express", "ssc"}:
+            raise ValueError(f"polar_method must be one of ns/ns_hybrid/polar_express/ssc, got {polar_method!r}")
         self.polar_method = polar_method
+        # SSC (SPECTRA arXiv:2603.14315): soft spectral clipping h_c(σ) = σ/√(1+(σ/c)²)
+        # via Newton-Schulz MISR. c is in units of the §2.5-rescaled polar input
+        # where σ_max(X)=1; active clipping range is c ∈ (0, 1]. c → large ≈ identity.
+        if polar_method == "ssc" and ssc_c is None:
+            raise ValueError("polar_method='ssc' requires ssc_c (clipping threshold)")
+        self.ssc_c = ssc_c
+        self.ssc_nsteps = ssc_nsteps
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
         # (Adam direction norms before any cross-term correction). The
@@ -3346,7 +3354,7 @@ class AdamPolarProductLoRA(Optimizer):
             return False
         if self.operator_type != "polar":
             return False
-        if self.polar_method != "ns":
+        if self.polar_method not in ("ns", "ssc"):
             return False
         # adam_frobenius, spectral_chord, spectral_chord_tight, and
         # spectral_chord_direction (variant 1) all implemented in batched
@@ -3545,6 +3553,11 @@ class AdamPolarProductLoRA(Optimizer):
             return t.unsqueeze(-1).unsqueeze(-1)
 
         def _polar(X):
+            if self.polar_method == "ssc":
+                # SPECTRA soft spectral clipping in place of NS polar map.
+                # Input is post-§2.5-rescale so σ_max(X) ≈ 1; ssc_c is in
+                # those units (c ≲ 1 produces meaningful clipping).
+                return _ssc_misr_batched(X, c=self.ssc_c, nsteps=self.ssc_nsteps).float()
             if self.ns_form == "gram":
                 return _newton_schulz_gram_batched(X, nsteps=self.ns_steps).float()
             if self.ns_form == "gram-norestart":
@@ -3651,81 +3664,6 @@ class AdamPolarProductLoRA(Optimizer):
                         u_B_eff = u_B_eff + (1.0 / lr) * (dB @ S_A_full)
                     X_A_eff = SB_half_inv @ u_A_eff
                     X_B_eff = u_B_eff @ SA_half_inv
-
-                    # Env-gated debug probe (full-FW only): compare measured
-                    # self-term magnitude to §10-style theory prediction.
-                    _probe_step = (next(iter(self.pair_state.values())).get('step', -1)
-                                   if self.pair_state else -1)
-                    _probe_fire = (os.environ.get("LORA_FULL_FW_PROBE", "0") == "1"
-                                   and self.fw_linearization == "full"
-                                   and _probe_step in (1, 25, 50, 100, 200, 400))
-                    if _probe_fire:
-                        import sys as _sys, json as _json
-                        SB_dA = S_B_full @ dA                                # (N, r, d_in)
-                        Y_A_self = SB_half_inv @ SB_dA                       # (N, r, d_in)  — polar-input self
-                        cross_polar = SB_half_inv @ (B_f.transpose(-2, -1) @ dB @ A_f)  # (N, r, d_in)
-                        step_num = _probe_step
-                        if self.precond_delta_relative:
-                            delta_eff_B_v = self.delta * (sigma_B.float() ** 2)
-                        else:
-                            delta_eff_B_v = torch.full_like(sigma_B.float(), float(self.delta))
-                        N_probe = A_f.shape[0]
-                        for i in range(N_probe):
-                            sv_B = torch.linalg.svdvals(B_f[i].float())
-                            sv_A = torch.linalg.svdvals(A_f[i].float())
-                            sigma_min_B_i = float(sv_B.min())
-                            sigma_max_B_i = float(sv_B.max())
-                            sigma_max_A_i = float(sv_A.max())
-                            s_i = sigma_max_A_i + sigma_max_B_i
-                            rho_i = float(lr) / (s_i + 1e-30)
-                            dA_op = float(torch.linalg.matrix_norm(dA[i].float(), ord=2))
-                            Y_A_self_op = float(torch.linalg.matrix_norm(Y_A_self[i].float(), ord=2))
-                            cross_op = float(torch.linalg.matrix_norm(cross_polar[i].float(), ord=2))
-                            X_A_op = float(torch.linalg.matrix_norm(X_A[i].float(), ord=2))
-                            X_A_eff_op = float(torch.linalg.matrix_norm(X_A_eff[i].float(), ord=2))
-                            delta_i = float(delta_eff_B_v[i])
-                            Y_A_predicted = rho_i * (sigma_min_B_i**2 + delta_i) ** 0.5
-                            # Q_A spectrum (X_A is post-rescale, so X_A == Q_A here)
-                            sv_QA = torch.linalg.svdvals(X_A[i].float())  # (r,)
-                            alpha_i = Y_A_predicted / float(lr)  # self/base ratio for this pair
-                            # alpha_i here equals sqrt(σ_min(B)²+δ_B)/s (note: lr=η)
-                            n_flips = int((sv_QA < alpha_i).sum())
-                            n_flips_half = int((sv_QA < alpha_i / 2).sum())
-                            n_flips_2x = int((sv_QA < 2 * alpha_i).sum())
-                            sigma_min_QA = float(sv_QA.min())
-                            # Polar drift predicted from sign-flips alone:
-                            # ||polar(Q_A − α·polar(Q_A)) − polar(Q_A)||_F = sqrt(2·n_flips)
-                            # because each flipped direction contributes 2 in Frobenius (U·diag(sign)·Vᵀ vs U·I·Vᵀ).
-                            polar_drift_predicted = (2 * n_flips) ** 0.5
-                            _sys.stdout.write(_json.dumps({
-                                "event": "full_fw_probe",
-                                "step": int(step_num),
-                                "picard_iter": int(n),
-                                "pair": int(i),
-                                "lr": float(lr),
-                                "rho_predicted": rho_i,
-                                "sigma_min_B": sigma_min_B_i,
-                                "sigma_max_B": sigma_max_B_i,
-                                "sigma_max_A": sigma_max_A_i,
-                                "s_AB": s_i,
-                                "delta_eff_B": delta_i,
-                                "Y_A_actual_op_norm": Y_A_self_op,
-                                "Y_A_predicted": Y_A_predicted,
-                                "Y_A_actual_over_predicted": (Y_A_self_op
-                                                              / (Y_A_predicted + 1e-30)),
-                                "alpha": alpha_i,
-                                "sigma_min_QA": sigma_min_QA,
-                                "n_singular_below_alpha": n_flips,
-                                "n_singular_below_half_alpha": n_flips_half,
-                                "n_singular_below_2x_alpha": n_flips_2x,
-                                "polar_drift_predicted_F": polar_drift_predicted,
-                                "self_over_base_ratio": Y_A_self_op / (X_A_op + 1e-30),
-                                "cross_over_base_ratio": cross_op / (X_A_op + 1e-30),
-                                "X_A_op_norm_post_rescale": X_A_op,
-                                "X_A_eff_op_norm": X_A_eff_op,
-                                "r": int(sv_QA.numel()),
-                            }) + "\n")
-                        _sys.stdout.flush()
 
                 # Polar map via Newton-Schulz (canonical: gram, fp16+restart).
                 P_A = _polar(X_A_eff)
