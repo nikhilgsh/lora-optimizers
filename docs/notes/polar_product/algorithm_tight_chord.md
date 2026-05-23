@@ -19,14 +19,15 @@ $$
 
 The chord $\Delta W = J + \Delta B\,\Delta A$ differs from $J$ by the bilinear term, whose operator norm is bounded by $\rho^2 = (\eta/s)^2 = (\eta/s^2)\,\eta$. Empirically $s^2/\eta \gg 1$ throughout training in our setting (≳ 90 at init, ≳ 750 late; see Appendix A), so the chord agrees with the tangent up to a relative correction $\eta/s^2$ that is $\le 1\%$ throughout. Capping $J$ directly is the cleaner derivation; the chord is bounded by $\eta\,(1 + \eta/s^2)$ as a consequence.
 
-The derivation proceeds in two stages.
+The derivation proceeds in three stages.
 
-1. **Exact clipped solver (§§3–6).** Block-coordinate descent on the program derives the cross-coupling correction (Lemma 1) and the whitening change of variable (Lemma 2). The clip prox solves the resulting whitened subproblem exactly (Proposition 1). Block-Jacobi iteration on the joint problem (§6) gives **Algorithm 1**, an exact solver of the program for any choice of the per-block-contribution caps.
-2. **Saturating-regime simplification (§§7–8).** Under (H), clip becomes polar (Proposition 2), Lemma 3 makes the per-factor norm a state-only function of $\tau$, and the chain above pins $(\tau_A, \tau_B)$ from $\eta$ alone. This produces **Algorithm 2**, the polar variant — exact block-Jacobi BCD on the program at the chain-pinned caps. The per-factor and tangent caps are auto-satisfied properties of its iterates, not separate constraints. This is what we run.
+1. **Whitened residual program and LMO (§§3–4).** The local model is the residual objective $\tfrac{1}{2\eta}\lVert J + \eta\,G\rVert_F^2$ under per-block-contribution caps. The whitening change of variable $Y_A := S_B^{1/2}\,\Delta A$, $Y_B := \Delta B\,S_A^{1/2}$ (Definition 2) diagonalizes the operator-norm caps and exposes the whitened gradients $\widetilde G_A, \widetilde G_B$ as duals (Lemma 2). Adam supplies surrogate directions, calibrated to unit operator norm (§4.1). The per-block solver is the linear-minimization oracle (LMO) over the operator-norm ball, which is the polar map (§4.2; Lemma 0).
+2. **Frank-Wolfe outer loop (§§5–6).** The whitened residual quadratic couples the two blocks; each Picard iter is a Frank-Wolfe step that linearizes the quadratic at the current iterate and applies the polar LMO to the linearization. **Anchored FW** (§5) drops the self-terms $Y_A^{(n)}, Y_B^{(n)}$ from the linearization; in factor coordinates this recovers the cross-coupling correction (Lemma 1) and matches the production code. **Full-residual FW** (§6) keeps the self-terms — one extra matmul per block per Picard iter; logged as a variant, not currently implemented.
+3. **Closure of the program (§§7–8).** Under a saturating-regime hypothesis on the FW trajectory, the per-block-contribution norm $\lVert\mathrm dA^\star(\tau_A)\rVert_2$ is state-only (Lemma 3) and the polar map coincides with the exact clip-prox solver (Proposition 2). The chain $\eta \to \rho \to (\tau_A, \tau_B)$ in §8 then pins the program's caps from a single user-facing spectral step size. This produces **Algorithm 2** (§9, the polar variant — what we run); §10 states **Algorithm 2′**, the implemented variant at $k \ge 2$ that bakes in the Adam calibration of §4.1.
 
-§2 begins with a **warmup**: the simplest spectral-cap LoRA program — per-factor caps with a linear cost and nothing else — whose closed-form solution is one polar map per factor and is essentially Muon applied independently to each LoRA factor. The warmup makes contact with what is already familiar; §§3–8 are what is gained by adding the Frobenius coupling and the tangent-implied chain.
+§2 begins with a **warmup**: the simplest spectral-cap LoRA program — per-factor caps with a linear cost and nothing else — whose closed-form solution is the operator-norm LMO applied independently to each LoRA factor, and is essentially Muon. The warmup is the LMO of §4.2 without coupling; §§3–10 are what is gained by adding the Frobenius coupling, the whitening change of variable, and the tangent-implied chain.
 
-§9 states Algorithm 2 (what we run) alongside Algorithm 1 (what it simplifies from).
+§9 states Algorithm 2 (what we run) alongside Algorithm 1 (the exact clip-prox block-Jacobi solver Algorithm 2 specializes from under (H); see the Remark at the end of §7).
 
 ## 1. Setup
 
@@ -122,180 +123,226 @@ What program (W) **does not** capture:
 - *No whitening.* The constraint $\lVert\Delta A\rVert_2 \le \rho_A$ controls the factor itself, not the merged-weight contribution $B\,\Delta A$. The latter is the geometrically meaningful quantity (it lives in the same space as the loss); $B$ and the constraint live in incompatible coordinates.
 - *No tangent control.* The radii $\rho_A, \rho_B$ are not connected to the merged-weight change. With $\rho_A = \rho_B = \rho$, submultiplicativity gives only $\lVert J\rVert_2 \le s\rho$ (and $\lVert\Delta W\rVert_2 \le s\rho + \rho^2$), which is loose unless $\rho$ is chosen with this bound in mind.
 
-The remainder of this document repairs these three deficiencies in turn. The Frobenius coupling on $J$ (§3) couples the two factors; the per-block-contribution constraints (§3) and Lemma 2 (§5) put the operator-norm cap on the right object; the tangent trust region (§8) connects the radii to $J$.
+The remainder of this document repairs these three deficiencies in turn. The Frobenius coupling on $J$ (§3) couples the two factors; the per-block-contribution constraints (§3) and Lemma 2 (§4) put the operator-norm cap on the right object; the tangent trust region (§8) connects the radii to $J$.
 
-## 3. The direction program
+## 3. The residual program
 
-A single optimizer step on a layer pair targets the **per-block operator-norm program**:
+A single optimizer step on a layer pair targets the **whitened residual program**. Let $G := \nabla f(W + BA)$ be the dense gradient with respect to the merged weight. A factor perturbation $(\Delta A, \Delta B)$ produces the tangent $J = B\,\Delta A + \Delta B\,A$, and the first-order local model of the loss is
 
 $$
-\min_{\Delta A,\, \Delta B}\ \langle u_A, \Delta A\rangle + \langle u_B, \Delta B\rangle
-\;+\; \frac{1}{2\eta}\,\lVert B\, \Delta A + \Delta B\, A \rVert_F^2
+\langle G,\,J\rangle + \frac{1}{2\eta}\,\lVert J\rVert_F^2.
+$$
+
+Up to a constant in $(\Delta A, \Delta B)$, this is the **residual form**
+
+$$
+\frac{1}{2\eta}\,\lVert J + \eta\,G\rVert_F^2,
+$$
+
+which asks for a tangent update $J$ that approximates the dense gradient step $-\eta\,G$ in merged-weight space. Adding per-block-contribution operator-norm caps gives the program:
+
+$$
+\min_{\Delta A,\,\Delta B}\ \frac{1}{2\eta}\,\lVert B\,\Delta A + \Delta B\,A + \eta\,G\rVert_F^2
 \quad\text{s.t.}\quad
-\lVert B\, \Delta A \rVert_2 \le \tau_A, \ \ \lVert \Delta B\, A \rVert_2 \le \tau_B.
+\lVert B\,\Delta A\rVert_2 \le \tau_A,\ \ \lVert\Delta B\,A\rVert_2 \le \tau_B.
 \tag{1}
 $$
 
 Three pieces:
 
-- **Linear cost.** Same as (W).
-- **Frobenius coupling.** $\frac{1}{2\eta}\lVert J\rVert_F^2$ is the only term coupling $\Delta A$ and $\Delta B$. It treats $J$ as the primary object: a step that produces a small first-order change in loss but a large $J$ pays a quadratic penalty.
-- **Per-block-contribution caps.** Each factor's contribution to the tangent — $B\Delta A$ and $\Delta B\,A$ — is capped separately in operator norm, with independent caps $\tau_A, \tau_B$. This is the geometrically natural cap: the relevant object is what the merged-weight update receives from each side, not the bare factor.
+- **Residual cost.** $\lVert J + \eta\,G\rVert_F^2$ packages the Frobenius coupling and the linear cost in a single squared norm. It treats $J$ as the primary object: the step optimizes how well the tangent approximates the dense gradient step $-\eta\,G$.
+- **Per-block-contribution caps.** Each factor's contribution to the tangent — $B\,\Delta A$ and $\Delta B\,A$ — is capped separately in operator norm. This is the geometrically natural cap: the relevant object is what the merged-weight update receives from each side, not the bare factor.
+- **Practical replacement of $G$.** The dense gradient $G$ is not what optimizers see directly. Backpropagation produces factor gradients $g_A = B^\top G$, $g_B = G\,A^\top$, and Adam preconditioning yields directions $u_A, u_B$. These are the inputs to the algorithm. §4 connects them to $G$ via the whitening change of variable and the calibration of Adam as a directional preconditioner.
 
-The caps $\tau_A, \tau_B$ are free hyperparameters of program (1). §§4–6 give an exact solver of (1) for any choice of them (Algorithm 1). §§7–8 derive $(\tau_A, \tau_B)$ from a single user-facing tangent step size $\eta$ (a cap on $\lVert J\rVert_2$) via the chain $\eta \to \rho \to (\tau_A, \tau_B)$ outlined in §1 (Proposition 3 + Lemma 3 under (H)), yielding Algorithm 2.
+The caps $\tau_A, \tau_B$ are free hyperparameters of program (1). §4 changes variables and identifies the per-block solver as the operator-norm-ball LMO. §§5–6 give the Frank-Wolfe outer loop: the **anchored** variant (§5) is what production runs, and the **full-residual** variant (§6) is a one-line untested alternative. §7 closes the program by deriving the per-block-contribution norm under a saturating-regime hypothesis. §8 derives $(\tau_A, \tau_B)$ from a single user-facing tangent step size $\eta$ via the chain $\eta \to \rho \to (\tau_A, \tau_B)$.
 
-## 4. Block-coordinate decomposition
+## 4. Whitening and the operator-norm LMO
 
-The Frobenius coupling is bilinear in $(\Delta A, \Delta B)$, so block-coordinate descent reduces (1) to single-factor subproblems with a corrected linear cost.
+Program (1)'s constraint is on $\lVert B\,\Delta A\rVert_2$, not on $\lVert\Delta A\rVert_2$, and the quadratic couples the two factors through $\lVert J\rVert_F^2$. A single linear change of variable diagonalizes both.
 
-**Lemma 1 (cross-coupling correction).** Fix $\Delta B$. The Frobenius coupling in (1) splits as
-
-$$
-\lVert B\,\Delta A + \Delta B\, A\rVert_F^2 \;=\; \lVert B\,\Delta A\rVert_F^2 \;+\; 2\langle B\,\Delta A,\, \Delta B\, A\rangle \;+\; \lVert\Delta B\, A\rVert_F^2.
-$$
-
-The third term is constant in $\Delta A$. The cross term is linear in $\Delta A$:
+**Definition 2 (whitened objects).** Let $S_A := AA^\top$ and $S_B := B^\top B$ ($r \times r$ PSD; here assumed rank $r$, with damping deferred to §9). Define the **column-orthonormal projector** of $B$ and the **row-orthonormal projector** of $A$,
 
 $$
-2\langle B\,\Delta A,\, \Delta B\, A\rangle \;=\; 2\langle \Delta A,\, B^\top\,\Delta B\, A\rangle,
+U_B \;:=\; B\,S_B^{-1/2} \in \mathbb{R}^{d_{\text{out}} \times r},
+\qquad
+V_A \;:=\; S_A^{-1/2}\,A \in \mathbb{R}^{r \times d_{\text{in}}},
 $$
 
-so it absorbs into the linear cost as a shift. Define the **corrected linear cost**
+satisfying $U_B^\top U_B = I_r$ and $V_A V_A^\top = I_r$. The **whitened factor updates** and **whitened gradients** are
 
 $$
-\tilde u_A \;:=\; u_A \;+\; \tfrac{1}{\eta}\, B^\top\, \Delta B\, A.
+Y_A \;:=\; S_B^{1/2}\,\Delta A, \qquad Y_B \;:=\; \Delta B\,S_A^{1/2},
 $$
 
-Then the $A$-subproblem of (1) is
+$$
+\widetilde G_A \;:=\; S_B^{-1/2}\,g_A \;=\; S_B^{-1/2}\,B^\top G, \qquad \widetilde G_B \;:=\; g_B\,S_A^{-1/2} \;=\; G\,A^\top\,S_A^{-1/2}.
+$$
+
+The maps $\Delta A \leftrightarrow Y_A$ and $\Delta B \leftrightarrow Y_B$ are invertible. In these coordinates the tangent factors cleanly:
 
 $$
-\min_{\Delta A}\ \langle \tilde{u}_A,\, \Delta A\rangle \;+\; \frac{1}{2\eta}\,\langle \Delta A,\, B^\top B\, \Delta A\rangle
-\quad\text{s.t.}\quad \lVert B\,\Delta A\rVert_2 \le \tau_A.
+J \;=\; B\,\Delta A + \Delta B\,A \;=\; U_B\,Y_A + Y_B\,V_A,
+$$
+
+and the operator-norm caps become caps on the whitened variables: $\lVert B\,\Delta A\rVert_2 = \lVert U_B\,Y_A\rVert_2 = \lVert Y_A\rVert_2$ (since $U_B$ is an isometry on its column space), and symmetrically $\lVert\Delta B\,A\rVert_2 = \lVert Y_B\rVert_2$.
+
+**Lemma 2 (whitened residual program).** The linear term $\langle G,\,J\rangle$ decomposes as
+
+$$
+\langle G,\,J\rangle \;=\; \langle U_B^\top G,\,Y_A\rangle + \langle G\,V_A^\top,\,Y_B\rangle \;=\; \langle \widetilde G_A,\,Y_A\rangle + \langle \widetilde G_B,\,Y_B\rangle.
+$$
+
+In whitened coordinates, program (1) reads
+
+$$
+\min_{Y_A,\,Y_B}\ \langle \widetilde G_A,\,Y_A\rangle + \langle \widetilde G_B,\,Y_B\rangle + \frac{1}{2\eta}\,\lVert U_B\,Y_A + Y_B\,V_A\rVert_F^2
+\quad\text{s.t.}\quad \lVert Y_A\rVert_2 \le \tau_A,\ \lVert Y_B\rVert_2 \le \tau_B.
 \tag{2}
 $$
 
-By symmetry, fixing $\Delta A$ gives the $B$-subproblem with corrected cost $\tilde u_B := u_B + \tfrac{1}{\eta}\, B\, \Delta A\, A^\top$. ∎
+*Proof.* $U_B^\top G = S_B^{-1/2}\,B^\top G = \widetilde G_A$ and $G\,V_A^\top = G\,A^\top\,S_A^{-1/2} = \widetilde G_B$. Substitution is immediate. ∎
 
-The shift $\tilde u_A - u_A = \tfrac{1}{\eta}\, B^\top \Delta B\, A$ is the **cross-coupling correction**: the only place the two factors interact in the per-block subproblem.
+The whitening is *forced* by the program: it is the unique linear change of variable that simultaneously diagonalizes the operator-norm caps and exhibits the whitened gradients as the dual objects. The cross-coupling correction (Lemma 1, below) and Algorithm 1's clip-prox solver, both obtainable by completing the square on a per-block subproblem of (1), are recovered as corollaries — see §5.3 and the Remark at the end of §7. The cleaner spine is to take program (2) as the working objective and apply Frank-Wolfe iteration directly.
 
-## 5. Whitening and the per-block clip prox
+### 4.1 Adam calibration
 
-The $A$-subproblem (2) has a non-identity quadratic in $B^\top B$ and a constraint on $B\,\Delta A$. A linear change of variable removes both.
-
-**Definition 2 (whitened objects).** Let $S_B := B^\top B$ ($r \times r$, PSD). The **whitened update** and **whitened cost** are
+Optimizers do not have $G$ on hand. They have Adam-preconditioned factor directions $u_A, u_B$ in place of $g_A, g_B$. Substituting gives whitened Adam directions
 
 $$
-Y \;:=\; S_B^{1/2}\,\Delta A, \qquad c \;:=\; S_B^{-1/2}\,\tilde u_A.
+q_A \;:=\; S_B^{-1/2}\,u_A, \qquad q_B \;:=\; u_B\,S_A^{-1/2}.
 $$
 
-The map $\Delta A \leftrightarrow Y$ is invertible by $\Delta A = S_B^{-1/2} Y$.
-
-**Lemma 2 (whitened subproblem).** In coordinates $(Y, c)$, the $A$-subproblem (2) is
+Adam is a **directional** preconditioner — its elementwise rescaling reshapes the gradient direction — but its absolute magnitude is not a faithful estimate of $\lVert\widetilde G_A\rVert$. Using $q_A$ as if it were $\widetilde G_A$ would inject a state-dependent scale into the residual quadratic, breaking the geometry. The fix is to **calibrate** to unit operator norm:
 
 $$
-\min_{Y}\ \langle c,\, Y\rangle \;+\; \frac{1}{2\eta}\,\lVert Y\rVert_F^2
-\quad\text{s.t.}\quad \lVert Y\rVert_2 \le \tau_A.
+Q_A \;:=\; \frac{q_A}{\lVert q_A\rVert_2}
+\;=\; \frac{S_B^{-1/2}\,u_A}{\lVert S_B^{-1/2}\,u_A\rVert_2},
+\qquad
+Q_B \;:=\; \frac{q_B}{\lVert q_B\rVert_2}
+\;=\; \frac{u_B\,S_A^{-1/2}}{\lVert u_B\,S_A^{-1/2}\rVert_2}.
+$$
+
+With optional per-block strengths $\gamma_A, \gamma_B > 0$ (default $\gamma_A = \gamma_B = 1$), the Adam-surrogate whitened residual program substitutes $\widetilde G_A \rightsquigarrow \gamma_A\,Q_A$ and $\widetilde G_B \rightsquigarrow \gamma_B\,Q_B$ into (2). **This is the program Algorithm 2′ solves**, and the pre-rescale step in `algorithm_clean_implementation.md` §2.5 (dividing $X_A$ by $\sigma_{\max}(X_A)$) is exactly this calibration. The default $\gamma = 1$ puts the dual input and the primal trust region on the same spectral scale.
+
+### 4.2 Operator-norm LMO
+
+The per-block solver is the linear-minimization oracle (LMO) over the operator-norm ball, which is part (b) of Lemma 0 from the warmup §2:
+
+$$
+\arg\min_{\lVert Y\rVert_2 \le \tau}\ \langle C,\,Y\rangle \;=\; -\tau\,\mathrm{polar}(C),
+\qquad
+\min\text{-value} \;=\; -\tau\,\lVert C\rVert_*.
+$$
+
+**Definition 3 (polar map).** For $C = U\,\Sigma\,V^\top$, $\mathrm{polar}(C) := U\,V^\top$ — every singular value mapped to one, singular vectors preserved.
+
+This is the only per-block tool the rest of the derivation needs. §5 applies it to a linearization of (2) at the current FW iterate. The clip-prox alternative — Frobenius projection of $-\eta\,C$ onto the same ball — solves a different per-block subproblem and is discussed as a Remark at the end of §7.
+
+## 5. Anchored Frank-Wolfe — the production iteration
+
+The whitened residual quadratic in (2) couples $Y_A$ and $Y_B$ through $\lVert U_B\,Y_A + Y_B\,V_A\rVert_F^2$. Frank-Wolfe iteration handles the coupling by **linearizing the quadratic at the current iterate** and applying the LMO of §4.2 to the resulting linear program. The linearization point is a modeling choice; this section uses the **anchored** linearization, which drops self-terms and produces the production iteration. §6 covers the alternative full linearization.
+
+### 5.1 FW linear costs
+
+Write $\Phi(Y_A, Y_B)$ for the Adam-surrogate whitened residual objective from §4.1:
+
+$$
+\Phi(Y_A, Y_B) \;=\; \langle \gamma_A\,Q_A,\,Y_A\rangle + \langle \gamma_B\,Q_B,\,Y_B\rangle + \frac{1}{2\eta}\,\lVert U_B\,Y_A + Y_B\,V_A\rVert_F^2.
+$$
+
+Its block gradients, using $U_B^\top U_B = I_r$ and $V_A V_A^\top = I_r$, are
+
+$$
+\nabla_{Y_A}\Phi \;=\; \gamma_A\,Q_A + \tfrac{1}{\eta}\bigl(Y_A + U_B^\top\,Y_B\,V_A\bigr),
+\qquad
+\nabla_{Y_B}\Phi \;=\; \gamma_B\,Q_B + \tfrac{1}{\eta}\bigl(U_B\,Y_A\,V_A^\top + Y_B\bigr).
+$$
+
+### 5.2 Anchored linearization
+
+Define the **anchored** Frank-Wolfe linearization: at iterate $(Y_A^{(n)}, Y_B^{(n)})$, linearize the $A$-block at $(0,\,Y_B^{(n)})$ — i.e. anchor the linearized variable at zero while keeping the other block at its current value — and symmetrically linearize the $B$-block at $(Y_A^{(n)},\,0)$. This drops the self-terms $Y_A^{(n)}, Y_B^{(n)}$ from the gradients and gives the per-block linear costs
+
+$$
+C_A^{(n)} \;:=\; \gamma_A\,Q_A + \tfrac{1}{\eta}\,U_B^\top\,Y_B^{(n)}\,V_A,
+\qquad
+C_B^{(n)} \;:=\; \gamma_B\,Q_B + \tfrac{1}{\eta}\,U_B\,Y_A^{(n)}\,V_A^\top.
+$$
+
+Applying the LMO of §4.2 with full Frank-Wolfe step ($\alpha_n = 1$):
+
+$$
+Y_A^{(n+1)} \;=\; -\tau_A\,\mathrm{polar}\bigl(C_A^{(n)}\bigr),
+\qquad
+Y_B^{(n+1)} \;=\; -\tau_B\,\mathrm{polar}\bigl(C_B^{(n)}\bigr).
 \tag{3}
 $$
 
-*Proof.* Substitute $\Delta A = S_B^{-1/2} Y$: the linear cost becomes $\langle\tilde u_A, S_B^{-1/2} Y\rangle = \langle c, Y\rangle$; the quadratic becomes $\langle Y, Y\rangle$; and $\lVert B\Delta A\rVert_2 = \lVert U_B \Sigma_B V_B^\top \Delta A\rVert_2 = \lVert\Sigma_B V_B^\top \Delta A\rVert_2 = \lVert S_B^{1/2}\Delta A\rVert_2 = \lVert Y\rVert_2$ (where $B = U_B \Sigma_B V_B^\top$). ∎
+Initialization $Y_A^{(0)} = Y_B^{(0)} = 0$ makes $C_A^{(0)} = \gamma_A\,Q_A$ and $C_B^{(0)} = \gamma_B\,Q_B$, so the $n = 0$ vertex is the polar of the (calibrated) Adam direction — exactly the per-block Muon update of the warmup (§2), now derived from the joint program.
 
-The whitening is *forced* by the program: it is the unique linear change of variable that simultaneously diagonalizes the $B^\top B$ quadratic and turns the constraint on $\lVert B\Delta A\rVert_2$ into a constraint on $\lVert Y\rVert_2$.
+### 5.3 Recovery of original variables — Lemma 1 falls out
 
-**Proposition 1 (per-block clip prox).** For any $\tau_A > 0$, the unique minimizer of (3) is $Y^\star(\tau_A) = \mathrm{clip}_{\tau_A}(-\eta\, c)$ where $\mathrm{clip}_\tau(U \Sigma V^\top) := U\,\min(\Sigma, \tau)\,V^\top$ (singular-value clip), and in original coordinates
-
-$$
-\Delta A^\star(\tau_A) \;=\; S_B^{-1/2}\,\mathrm{clip}_{\tau_A}\!\bigl(-\eta\, S_B^{-1/2}\,\tilde u_A\bigr).
-\tag{4}
-$$
-
-*Proof.* Complete the square in (3): $\langle c, Y\rangle + \tfrac{1}{2\eta}\lVert Y\rVert_F^2 = \tfrac{1}{2\eta}\lVert Y - (-\eta\, c)\rVert_F^2 - \tfrac{\eta}{2}\lVert c\rVert_F^2$. The constrained problem is the Frobenius projection of $-\eta\, c$ onto the operator-norm ball of radius $\tau_A$, which by Lemma 0 is the singular-value clip. ∎
-
-The $B$-side is symmetric, with $S_A := A A^\top$:
+Translating back via $\Delta A = S_B^{-1/2}\,Y_A$ and $\Delta B = Y_B\,S_A^{-1/2}$:
 
 $$
-\Delta B^\star(\tau_B) \;=\; \mathrm{clip}_{\tau_B}\!\bigl(-\eta\, \tilde u_B\, S_A^{-1/2}\bigr)\, S_A^{-1/2}.
-\tag{4'}
+\mathrm dA^{(n+1)} \;=\; -\tau_A\,\underbrace{S_B^{-1/2}\,\mathrm{polar}(C_A^{(n)})}_{=:\, D_A^{(n)}},
+\qquad
+\mathrm dB^{(n+1)} \;=\; -\tau_B\,\underbrace{\mathrm{polar}(C_B^{(n)})\,S_A^{-1/2}}_{=:\, D_B^{(n)}}.
 $$
 
-Equations (4) and (4′) define the per-block prox: from a corrected linear cost and a threshold, produce the optimal factor update.
-
-## 6. Block-Jacobi outer loop: Algorithm 1
-
-The two subproblems share state — $\tilde u_A$ depends on $\Delta B$ and vice versa — so the joint problem (1) is solved by alternating the two clip-prox solves. Both updates at outer iteration $n$ use the previous iterate $(n-1)$ of the *other* block (simultaneous rather than sequential); this is **block-Jacobi**, not block-Gauss-Seidel.
-
-**Algorithm 1** (exact clipped solver). Given $u_A, u_B, A, B, \tau_A, \tau_B$, and block-Jacobi sweep count $k$:
-
-1. $\Delta A^{(0)} = \Delta B^{(0)} = 0$.
-
-2. For $n = 1, \ldots, k$:
-
-   - **Cross-coupling correction.**
-
-     $$
-     \tilde u_A^{(n)} = u_A + \tfrac{1}{\eta}\, B^\top\, \Delta B^{(n-1)}\, A,
-     \qquad
-     \tilde u_B^{(n)} = u_B + \tfrac{1}{\eta}\, B\, \Delta A^{(n-1)}\, A^\top.
-     $$
-
-   - **Per-block clip prox** (Proposition 1):
-
-     $$
-     \Delta A^{(n)} = S_B^{-1/2}\,\mathrm{clip}_{\tau_A}\!\bigl(-\eta\, S_B^{-1/2}\,\tilde u_A^{(n)}\bigr),
-     \qquad
-     \Delta B^{(n)} = \mathrm{clip}_{\tau_B}\!\bigl(-\eta\,\tilde u_B^{(n)}\, S_A^{-1/2}\bigr)\, S_A^{-1/2}.
-     $$
-
-3. Return $(\Delta A^{(k)}, \Delta B^{(k)})$.
-
-Every fixed point is a global minimum of (1); when the iteration contracts, $k \to \infty$ converges to the joint optimum. The block-Jacobi outer loop is *derived* — it is BCD on (1), not an additional algorithmic choice — and Algorithm 1 is the **exact single-program solver of (1)** at any fixed $(\tau_A, \tau_B)$. What remains, in §§7–8, is to close the program by picking $(\tau_A, \tau_B)$.
-
-## 7. Closing the program: the saturating regime
-
-Algorithm 1 is an exact solver of (1) at any given $(\tau_A, \tau_B)$. We want to *pin* these caps to a single spectral step size $\eta$ that controls the tangent $\lVert J\rVert_2$ (and hence the chord up to a bilinear correction; see Appendix A). For that closure to work, we need $\lVert\Delta A^\star(\tau_A)\rVert_2$ to be a simple function of $\tau_A$ times something computable from $(A, B)$ alone — free of the block-Jacobi iterate. In general it is not: the clip prox output magnitude depends on the corrected $\tilde u_A^{(n)}$, which depends on $\Delta B^{(n-1)}$. Under a saturating hypothesis on the trajectory, it is.
-
-Write
+The polar argument $C_A^{(n)}$ can be re-expressed in factor coordinates by factoring $S_B^{-1/2}$ out:
 
 $$
-c_A^{(n)} \;:=\; S_B^{-1/2}\,\tilde u_A^{(n)}, \qquad c_B^{(n)} \;:=\; \tilde u_B^{(n)}\, S_A^{-1/2}
+C_A^{(n)}
+\;=\; \gamma_A\,\frac{S_B^{-1/2}\,u_A}{\lVert S_B^{-1/2}\,u_A\rVert_2}
+\;+\; \tfrac{1}{\eta}\,S_B^{-1/2}\,B^\top\,\mathrm dB^{(n)}\,A
+\;=\; S_B^{-1/2}\,\bigl[\,\hat u_A \;+\; \tfrac{1}{\eta}\,B^\top\,\mathrm dB^{(n)}\,A\,\bigr],
 $$
 
-for the whitened costs at block-Jacobi iterate $n$.
-
-**Saturating-regime hypothesis (H).** For all $n = 1, \ldots, k$,
+where $\hat u_A := \gamma_A\,u_A / \lVert S_B^{-1/2}\,u_A\rVert_2$ is the calibrated Adam direction in factor coordinates. Symmetrically,
 
 $$
-\tau_A \;\le\; \eta\,\sigma_{\min}\!\bigl(c_A^{(n)}\bigr), \qquad
-\tau_B \;\le\; \eta\,\sigma_{\min}\!\bigl(c_B^{(n)}\bigr).
-\tag{H}
+C_B^{(n)} \;=\; \bigl[\,\hat u_B \;+\; \tfrac{1}{\eta}\,B\,\mathrm dA^{(n)}\,A^\top\,\bigr]\,S_A^{-1/2}.
 $$
 
-This is a hypothesis on the *trajectory* of the block-Jacobi iteration, not on the initial inputs alone — both sides of each inequality move as $n$ advances. We assume (H) holds along the trajectory we care about ($n = 1, \ldots, k$) and derive the simplification it permits; what happens when it fails is discussed at the end of this section.
-
-**Definition 3 (polar map).** For $X = U \Sigma V^\top$, $\mathrm{polar}(X) := U V^\top$ — every singular value mapped to one, singular vectors preserved.
-
-**Proposition 2 (clip $\to$ polar under H).** If (H) holds at iterate $n$, then $\mathrm{clip}_{\tau_A}(-\eta\, c_A^{(n)}) = -\tau_A\,\mathrm{polar}(c_A^{(n)})$. Symmetrically for the $B$-side.
-
-*Proof.* Under (H), $\mathrm{clip}_{\tau_A}$ flattens every singular value of $-\eta\, c_A^{(n)}$ to $\tau_A$ and preserves singular vectors, giving $\tau_A\, U V^\top$. Polar is invariant under positive scaling and odd under negation. ∎
-
-Substituting into the clip-prox expressions of Proposition 1 gives, under (H), the iterate-wise solution
+**Lemma 1 (cross-coupling correction, FW reading).** The anchored FW linear cost in factor coordinates is exactly the corrected linear cost obtained by completing the square on the $A$-subproblem of (1) after fixing $\Delta B$:
 
 $$
-\boxed{\quad
-\Delta A^\star(\tau_A) \;=\; -\tau_A\, D_A^{(n)}, \qquad \Delta B^\star(\tau_B) \;=\; -\tau_B\, D_B^{(n)},
-\quad}
-\tag{5}
+\tilde u_A \;=\; u_A \;+\; \tfrac{1}{\eta}\,B^\top\,\mathrm dB^{(n)}\,A,
 $$
 
-with directions
+and symmetrically $\tilde u_B = u_B + \tfrac{1}{\eta}\,B\,\mathrm dA^{(n)}\,A^\top$. (The full $\hat u_A$ here includes the $\gamma_A$ strength and the Adam calibration; setting $\gamma_A = 1$ and substituting $u_A$ for $\hat u_A$ recovers the bare $\tilde u_A$.) The cross-coupling correction has two equivalent derivations: completing the square on the block-coordinate quadratic, or anchored-FW linearization of the joint program. They give the same linear cost. ∎
+
+The recovered direction $D_A^{(n)} = S_B^{-1/2}\,\mathrm{polar}\bigl(S_B^{-1/2}\,\tilde u_A\bigr) = S_B^{-1/2}\,\mathrm{polar}\bigl(C_A^{(n)}\bigr)$ is exactly what Algorithm 2 (§9) and Algorithm 2′ (§10) use, and is what `_chord_tight_clean_polar_pipeline` (`lora_playground/optim.py:3408`) computes; see `algorithm_clean_implementation.md` §2 for the implementation walkthrough.
+
+## 6. Full-residual Frank-Wolfe (variant, not currently implemented)
+
+The **full** Frank-Wolfe linearization at the current iterate $(Y_A^{(n)}, Y_B^{(n)})$ — without anchoring — uses the full block gradients of §5.1, retaining the self-terms:
 
 $$
-D_A^{(n)} \;:=\; S_B^{-1/2}\,\mathrm{polar}\bigl(c_A^{(n)}\bigr), \qquad D_B^{(n)} \;:=\; \mathrm{polar}\bigl(c_B^{(n)}\bigr)\, S_A^{-1/2}.
+C_A^{(n),\,\text{full}} \;:=\; \gamma_A\,Q_A + \tfrac{1}{\eta}\bigl(Y_A^{(n)} + U_B^\top\,Y_B^{(n)}\,V_A\bigr),
+\qquad
+C_B^{(n),\,\text{full}} \;:=\; \gamma_B\,Q_B + \tfrac{1}{\eta}\bigl(U_B\,Y_A^{(n)}\,V_A^\top + Y_B^{(n)}\bigr).
 $$
 
-The directions still depend on the iterate $n$ via $c_A^{(n)}, c_B^{(n)}$ — that is, on the cross-coupling correction — but the *operator norms* of these directions do not.
+The FW vertex is $Y_A^{(n+1)} = -\tau_A\,\mathrm{polar}(C_A^{(n),\,\text{full}})$ as before. Factoring $S_B^{-1/2}$ from the $A$-side — using $Y_A^{(n)} = S_B^{1/2}\,\mathrm dA^{(n)}$, so $S_B^{-1/2}\cdot S_B\,\mathrm dA^{(n)} = S_B^{1/2}\,\mathrm dA^{(n)} = Y_A^{(n)}$ — gives the polar input in mixed factor/whitened form
 
-**Lemma 3 (factor-norm collapse).** Under (H), the operator norms of $D_A^{(n)}, D_B^{(n)}$ are state-only (independent of the block-Jacobi iterate):
+$$
+C_A^{(n),\,\text{full}} \;=\; S_B^{-1/2}\,\bigl[\,\hat u_A \;+\; \tfrac{1}{\eta}\,\bigl(S_B\,\mathrm dA^{(n)} \;+\; B^\top\,\mathrm dB^{(n)}\,A\bigr)\,\bigr],
+$$
+
+and symmetrically $C_B^{(n),\,\text{full}} = \bigl[\,\hat u_B + \tfrac{1}{\eta}\bigl(B\,\mathrm dA^{(n)}\,A^\top + \mathrm dB^{(n)}\,S_A\bigr)\,\bigr]\,S_A^{-1/2}$.
+
+The only difference from the anchored form (§5.3) is the presence of the **self-terms** $S_B\,\mathrm dA^{(n)}$ and $\mathrm dB^{(n)}\,S_A$ inside the brackets. Geometrically, anchored FW models each block's polar input as if the previous iterate of that block contributed nothing to the residual; full FW retains the contribution.
+
+**Cost.** Two additional $(r{\times}r)\cdot(r{\times}d)$ matmuls per Picard iter — well under $10\%$ of the per-step optimizer FLOP budget at production shapes (see `algorithm_clean_implementation.md` §3).
+
+**Status.** Untested. The anchored variant matches the production code; the full variant has not been implemented or swept. Logged here as a one-line specification, not a proposed sweep.
+
+## 7. Saturating regime: per-block-contribution norms are state-only
+
+Algorithm 2 (§9) is the anchored FW iteration of §5 at the chain-pinned caps (7) of §8. To close the chain we need $\lVert\mathrm dA^{(n+1)}\rVert_2$ — the per-factor operator norm of the FW vertex — to be a simple, state-only function of $\tau_A$ (independent of the FW iterate $n$). From (3) and the definition of $D_A^{(n)}$, $\mathrm dA^{(n+1)} = -\tau_A\,D_A^{(n)}$ with $D_A^{(n)} = S_B^{-1/2}\,\mathrm{polar}(C_A^{(n)})$; the polar factor is a partial isometry, and this is enough to make its operator norm a state-only quantity.
+
+**Lemma 3 (factor-norm collapse).** For any FW iterate $n$, the operator norms of $D_A^{(n)}, D_B^{(n)}$ are state-only — independent of the FW iterate, and in particular independent of $C_A^{(n)}, C_B^{(n)}$:
 
 $$
 \lVert D_A^{(n)}\rVert_2 \;=\; \lVert S_B^{-1/2}\rVert_2 \;=\; \bigl(\sigma_{\min}(B)^2 + \delta_B\bigr)^{-1/2},
@@ -303,23 +350,53 @@ $$
 \lVert D_B^{(n)}\rVert_2 \;=\; \lVert S_A^{-1/2}\rVert_2 \;=\; \bigl(\sigma_{\min}(A)^2 + \delta_A\bigr)^{-1/2}.
 $$
 
-*Proof.* The polar factor $\mathrm{polar}(c_A^{(n)}) \in \mathbb{R}^{r \times d_{\text{in}}}$ has $r \le d_{\text{in}}$ and orthonormal rows, so $\mathrm{polar}(c_A^{(n)})\,\mathrm{polar}(c_A^{(n)})^\top = I_r$. Then
+*Proof.* The polar factor $\mathrm{polar}(C_A^{(n)}) \in \mathbb{R}^{r \times d_{\text{in}}}$ has $r \le d_{\text{in}}$ and orthonormal rows, so $\mathrm{polar}(C_A^{(n)})\,\mathrm{polar}(C_A^{(n)})^\top = I_r$. Then
 
 $$
-\lVert S_B^{-1/2}\,\mathrm{polar}(c_A^{(n)})\rVert_2^2 \;=\; \sigma_{\max}\!\bigl(S_B^{-1/2}\,\mathrm{polar}\,\mathrm{polar}^\top\,S_B^{-1/2}\bigr) \;=\; \sigma_{\max}(S_B^{-1}) \;=\; \lVert S_B^{-1/2}\rVert_2^2.
+\lVert S_B^{-1/2}\,\mathrm{polar}(C_A^{(n)})\rVert_2^2 \;=\; \sigma_{\max}\!\bigl(S_B^{-1/2}\,\mathrm{polar}\,\mathrm{polar}^\top\,S_B^{-1/2}\bigr) \;=\; \sigma_{\max}(S_B^{-1}) \;=\; \lVert S_B^{-1/2}\rVert_2^2.
 $$
 
-Symmetric for the $B$-side: $\mathrm{polar}(c_B^{(n)}) \in \mathbb{R}^{d_{\text{out}} \times r}$ has $r \le d_{\text{out}}$ and orthonormal columns, so $\mathrm{polar}(c_B^{(n)})^\top\,\mathrm{polar}(c_B^{(n)}) = I_r$, and the same calculation gives $\lVert D_B^{(n)}\rVert_2 = \lVert S_A^{-1/2}\rVert_2$. The damped-spectrum forms follow from $S_B = B^\top B + \delta_B I$ and likewise for $S_A$. ∎
+Symmetric for the $B$-side: $\mathrm{polar}(C_B^{(n)}) \in \mathbb{R}^{d_{\text{out}} \times r}$ has $r \le d_{\text{out}}$ and orthonormal columns, so $\mathrm{polar}(C_B^{(n)})^\top\,\mathrm{polar}(C_B^{(n)}) = I_r$, and the same calculation gives $\lVert D_B^{(n)}\rVert_2 = \lVert S_A^{-1/2}\rVert_2$. The damped-spectrum forms follow from $S_B = B^\top B + \delta_B I$ and likewise for $S_A$. ∎
 
-Lemma 3 is the key observation. The iterate-dependence of $D_A^{(n)}, D_B^{(n)}$ — driven by the cross-coupling correction — sits entirely in their *singular vectors* under (H), not in their norms. Consequently, $\lVert\Delta A^\star(\tau_A)\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$ at every iterate, a state-only function of $\tau_A$. This is exactly the property we needed: it lets the tangent constraint be folded into program (1) as state-only caps, in §8.
+Lemma 3 is the key observation. The FW iterate-dependence of $D_A^{(n)}, D_B^{(n)}$ — driven by the cross-coupling — sits entirely in their *singular vectors*, not in their norms. Consequently $\lVert\mathrm dA^{(n+1)}\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$ at every iterate, a state-only function of $\tau_A$. This is exactly the property needed in §8 to fold the tangent constraint into program (1) as state-only caps.
 
-**When (H) fails.** Outside the saturating regime — when some singular direction of $c_A^{(n)}$ falls below $\tau_A/\eta$ — clip is no longer polar on that direction (clip leaves small singular values alone; polar lifts them to one). Lemma 3 then fails: $\lVert D_A^{(n)}\rVert_2$ can be strictly larger than $\lVert S_B^{-1/2}\rVert_2$ because polar inflates the small directions. Algorithm 2 (§9) uses polar unconditionally; in the non-saturating regime it ceases to be the exact solver of (1) and instead applies a uniform-spectrum prior on the whitened cost. The directions remain coherent; the exact single-program identification is what is lost.
+**Saturating-regime hypothesis (H).** Writing $c_A^{(n)} := S_B^{-1/2}\,\tilde u_A^{(n)}$ for the anchored polar input in factor coordinates (so that $C_A^{(n)} = c_A^{(n)}$ when $\gamma_A = 1$ and $\hat u_A = u_A$, i.e. before Adam calibration), the saturating-regime hypothesis is
 
-The polar map is computed via Newton–Schulz iteration: $X_0 = M / \lVert M\rVert_F$, $X_{i+1} = \tfrac{3}{2} X_i - \tfrac{1}{2} X_i X_i^\top X_i$. The iteration drives every singular value of $X_0$ toward one cubically; a small fixed number of iterations suffice on matrices of LoRA size.
+$$
+\tau_A \;\le\; \eta\,\sigma_{\min}\!\bigl(c_A^{(n)}\bigr), \qquad
+\tau_B \;\le\; \eta\,\sigma_{\min}\!\bigl(c_B^{(n)}\bigr)
+\qquad\text{for } n = 1,\ldots,k.
+\tag{H}
+$$
+
+This is a hypothesis on the FW trajectory, not on the initial inputs alone — both sides of each inequality move as $n$ advances. Under (H), every singular direction of $c_A^{(n)}$ has $\sigma > \tau_A/\eta$, and the polar map coincides with the clip-prox alternative discussed in the Remark below.
+
+**Proposition 2 (clip $\to$ polar under H).** If (H) holds at iterate $n$, then $\mathrm{clip}_{\tau_A}\bigl(-\eta\,c_A^{(n)}\bigr) = -\tau_A\,\mathrm{polar}\bigl(c_A^{(n)}\bigr)$, where $\mathrm{clip}_\tau(U\Sigma V^\top) := U\,\min(\Sigma, \tau)\,V^\top$. Symmetrically for the $B$-side.
+
+*Proof.* Under (H), $\mathrm{clip}_{\tau_A}$ flattens every singular value of $-\eta\,c_A^{(n)}$ to $\tau_A$ and preserves singular vectors, giving $\tau_A\,U V^\top$. Polar is invariant under positive scaling and odd under negation. ∎
+
+**When (H) fails.** Outside the saturating regime — when some singular direction of $c_A^{(n)}$ falls below $\tau_A/\eta$ — clip and polar diverge on that direction (clip leaves small singular values alone; polar lifts them to one). Algorithm 2 uses polar unconditionally; in the non-saturating regime its update is still well-defined and the partial-isometry guarantee of Lemma 3 still holds (so the per-factor norm is still state-only), but its identification with the exact clip-prox solver of (1) — Algorithm 1, in the Remark below — is lost. The directions remain coherent; what is lost is exactness as an (1)-solver, replaced by a uniform-spectrum prior on the whitened cost.
+
+**Remark (Algorithm 1, the exact clip-prox solver — not run).** Frank-Wolfe is one way to solve the whitened residual program (2); another is **block-coordinate descent** with the per-block subproblem solved exactly. The per-block subproblem of (2), fixing the other block, has the form
+
+$$
+\min_{Y_A}\ \langle c_A^{(n)},\,Y_A\rangle + \tfrac{1}{2\eta}\,\lVert Y_A\rVert_F^2
+\quad\text{s.t.}\quad \lVert Y_A\rVert_2 \le \tau_A.
+$$
+
+Completing the square gives $\tfrac{1}{2\eta}\lVert Y_A - (-\eta\,c_A^{(n)})\rVert_F^2$ up to a constant, so this is the Frobenius projection of $-\eta\,c_A^{(n)}$ onto the operator-norm ball of radius $\tau_A$, whose solution is the singular-value **clip** (Lemma 0(a), Mirsky 1960):
+
+$$
+Y_A^\star(\tau_A) \;=\; \mathrm{clip}_{\tau_A}\bigl(-\eta\,c_A^{(n)}\bigr).
+$$
+
+Block-Jacobi iteration with this clip-prox at every inner step is **Algorithm 1**, the exact single-program solver of (1) at any user-chosen $(\tau_A, \tau_B)$. Under (H), Proposition 2 says clip $=$ polar at the chain-pinned caps, so Algorithm 2 and Algorithm 1 produce identical updates on the saturating-regime ray; Algorithm 2 substitutes polar (a uniform-spectrum prior on the whitened cost) for clip unconditionally, which is what makes it computable via Newton–Schulz without an SVD per inner step. Algorithm 1 is a reference point, not the run algorithm.
+
+The polar map (FW vertex) is computed via Newton–Schulz iteration: $X_0 = M / \lVert M\rVert_F$, $X_{i+1} = \tfrac{3}{2}\,X_i - \tfrac{1}{2}\,X_i\,X_i^\top\,X_i$. The iteration drives every singular value of $X_0$ toward one cubically; a small fixed number of iterations suffice on matrices of LoRA size. See Appendix B.
 
 ## 8. The chain: $\eta \to \rho \to (\tau_A, \tau_B)$
 
-§§3–6 left the program's caps $(\tau_A, \tau_B)$ as free hyperparameters. §7 showed that under (H), the per-block-contribution norm $\lVert\Delta A^\star(\tau_A)\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$ is a state-only function of $\tau_A$ (Lemma 3), and similarly for the $B$-side. We now use this to derive $(\tau_A, \tau_B)$ from a single user-facing magnitude hyperparameter — the spectral step size $\eta$ — via a chain of tight implications. The chain has two steps.
+§§3–6 left the program's caps $(\tau_A, \tau_B)$ as free hyperparameters. §7 showed that the per-block-contribution norm $\lVert\mathrm dA^\star(\tau_A)\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$ is a state-only function of $\tau_A$ at every FW iterate (Lemma 3), and similarly for the $B$-side. We now use this to derive $(\tau_A, \tau_B)$ from a single user-facing magnitude hyperparameter — the spectral step size $\eta$ — via a chain of tight implications. The chain has two steps.
 
 ### Step 1: $\eta \to \rho$ (Proposition 3)
 
@@ -422,7 +499,7 @@ This is the natural one-knob ablation to the $\rho$-routed pinning: same program
 
 ## 9. Algorithm 2 (the polar variant — what we run)
 
-Algorithm 2 is exact block-Jacobi BCD on program (1) at the chain-pinned caps (7) of §8, with the clip-to-polar substitution of Proposition 2. Under hypothesis (H), it is the exact solver of (1) at those caps; the per-factor and tangent caps are auto-satisfied properties of its iterates, not constraints enforced by a separate program. We present it directly in normalize-then-scale form (the right-hand side of (8)), which absorbs the state-only norm of $D^{(n)}$ via normalization rather than computing $\sigma_{\min}(A), \sigma_{\min}(B)$ explicitly.
+Algorithm 2 is **anchored Frank-Wolfe** (§5) on the whitened residual program (2) at the chain-pinned caps (7) of §8, with the polar LMO of §4.2 at each step. Under hypothesis (H), Proposition 2 identifies this iteration with the exact block-Jacobi clip-prox solver of (1) at those caps (Algorithm 1 in the §7 Remark); the per-factor and tangent caps are auto-satisfied properties of its iterates, not constraints enforced by a separate program. We present it directly in normalize-then-scale form (the right-hand side of (8)), which absorbs the state-only norm of $D^{(n)}$ via normalization rather than computing $\sigma_{\min}(A), \sigma_{\min}(B)$ explicitly.
 
 **Hyperparameters:** Adam $\beta_1, \beta_2, \varepsilon$; block-Jacobi sweep count $k$; Newton–Schulz iters $j$; preconditioner regularizer $\varepsilon_{\text{rel}}$; spectral step size $\eta$.
 
@@ -437,7 +514,7 @@ Algorithm 2 is exact block-Jacobi BCD on program (1) at the chain-pinned caps (7
    S_A^{-1/2} = (A A^\top + \delta_A I)^{-1/2},
    \qquad
    S_B^{-1/2} = (B^\top B + \delta_B I)^{-1/2}.
-   $$
+    $$
    The §5 derivation corresponds to $\delta_A = \delta_B = 0$; in practice $A, B$ can be near-singular (especially at init), so the implementation damps each side. We use the **scale-invariant parameterization**
    $$
    \delta_A \;=\; \varepsilon_{\text{rel}}\,\sigma_{\max}(A A^\top), \qquad \delta_B \;=\; \varepsilon_{\text{rel}}\,\sigma_{\max}(B^\top B),
@@ -487,19 +564,19 @@ The line-by-line correspondence with the variational program:
 
 | Algorithm 2 step | Variational source |
 |---|---|
-| Adam preconditioning ($u_A, u_B$) | Linear cost in (1) |
-| Spectral preconditioners ($S_A^{-1/2}, S_B^{-1/2}$) | Whitening forced by Lemma 2 |
+| Adam preconditioning ($u_A, u_B$) | Surrogate for $G$ in (1); calibrated via §4.1 |
+| Spectral preconditioners ($S_A^{-1/2}, S_B^{-1/2}$) | Whitening of Definition 2; forced by Lemma 2 |
 | Tight-tangent radius ($\rho$) | Tangent constraint $\lVert J\rVert_2 \le \eta$ + Proposition 3 |
-| Cross-coupling correction ($\tilde u_A, \tilde u_B$) | Lemma 1 |
-| Directions $D_A^{(n)}, D_B^{(n)}$ (whiten + polar + unwhiten) | Lemma 2 + Prop 1 + Prop 2 under (H); equation (5) |
+| Cross-coupling correction ($\tilde u_A, \tilde u_B$) | Lemma 1 (recovered as anchored-FW linear cost; §5.3) |
+| Directions $D_A^{(n)}, D_B^{(n)}$ (whiten + polar + unwhiten) | LMO over operator-norm ball (§4.2) applied to anchored FW cost; equation (3) |
 | Tight-tangent rescale | Lemma 3 + state-only caps (7); equation (8) |
-| Block-Jacobi outer loop | BCD on (1) — Algorithm 1 |
+| Block-Jacobi outer loop | Anchored Frank-Wolfe on (2) — §5 |
 
-**Algorithm 1 (reference, not run).** Replace the polar step in 5b with the clip prox of Proposition 1 and drop the rescale in 5c (which is then redundant — the clip prox already returns the correct magnitude at the given $\tau$). Algorithm 1 is the exact single-program solver of (1) at any user-chosen $(\tau_A, \tau_B)$; we run Algorithm 2 because under (H) it coincides with Algorithm 1 at the tangent-saturating caps (7), with the polar form avoiding an SVD per inner step.
+**Algorithm 1 (reference, not run).** Replace the polar step in 5b with the clip prox of the §7 Remark and drop the rescale in 5c (which is then redundant — the clip prox already returns the correct magnitude at the given $\tau$). Algorithm 1 is the exact single-program solver of (1) at any user-chosen $(\tau_A, \tau_B)$; we run Algorithm 2 because under (H) it coincides with Algorithm 1 at the tangent-saturating caps (7), with the polar form avoiding an SVD per inner step.
 
 ## 10. Algorithm 2′ — the implemented variant at $k \ge 2$
 
-`magnitude_rule = "spectral_chord_tight"` in `lora_playground/optim.py` coincides with Algorithm 2 at $k = 1$ and differs at $k \ge 2$. The code **pre-normalizes the Adam updates by the operator norm of the whitened direction** before entering the Picard loop, so the polar map sees a whitened direction of unit norm at iter 1. This subsection states the modified algorithm and quantifies its effect on the polar input.
+`magnitude_rule = "spectral_chord_tight"` in `lora_playground/optim.py` coincides with Algorithm 2 at $k = 1$ and differs at $k \ge 2$. The code **pre-normalizes the Adam updates by the operator norm of the whitened direction** before entering the Picard loop, so the polar map sees a whitened direction of unit norm at iter 1. This is exactly the **Adam calibration** of §4.1: replacing $q_A = S_B^{-1/2}\,u_A$ with $Q_A = q_A / \lVert q_A\rVert_2$ so the dual input sits at unit operator norm. This subsection states the modified algorithm and quantifies its effect on the polar input.
 
 ### 10.1. Notation
 
@@ -532,7 +609,7 @@ u_A \;\leftarrow\; u_A / \sigma_{\max}(X_A),
 u_B \;\leftarrow\; u_B / \sigma_{\max}(X_B).
 $$
 
-*Geometric motivation.* Program (1) places its trust region in operator-norm geometry — $\lVert B\,\Delta A\rVert_2 \le \tau_A$, equivalently $\lVert Y\rVert_2 \le \tau_A$ in the whitened variable $Y = S_B^{1/2}\,\Delta A$ (Lemma 2). The linear cost in the whitened frame is $\langle X_A, Y\rangle$ with $X_A = S_B^{-1/2}\,u_A$. The pre-rescale normalizes $X_A$ to unit operator norm, putting the dual input and the primal trust region on the same spectral scale. This corresponds to a modified program with linear cost $\langle X_A/\sigma_{\max}(X_A),\, Y\rangle$; Algorithm 2′ is block-Jacobi on the modified program.
+*Geometric motivation.* Program (1) places its trust region in operator-norm geometry — $\lVert B\,\Delta A\rVert_2 \le \tau_A$, equivalently $\lVert Y_A\rVert_2 \le \tau_A$ in the whitened variable $Y_A = S_B^{1/2}\,\Delta A$ (Lemma 2). The linear cost in the whitened frame is $\langle X_A, Y_A\rangle$ with $X_A = S_B^{-1/2}\,u_A$. The pre-rescale normalizes $X_A$ to unit operator norm, putting the dual input and the primal trust region on the same spectral scale. This corresponds to a modified program with linear cost $\langle X_A/\sigma_{\max}(X_A),\, Y_A\rangle$ — i.e. $\langle Q_A, Y_A\rangle$ in the §4.1 notation — and Algorithm 2′ is anchored Frank-Wolfe on the modified (calibrated) program.
 
 *Implementation note.* The shipped code multiplies the cross-coupling coefficient by an additional factor of $2$, replacing $1/\eta$ with $2/(\rho s) \approx 2/\eta$. This doubling does not change the qualitative analysis below and is treated as an empirical implementation choice.
 
@@ -673,5 +750,5 @@ If $X_i$ has SVD $X_i = U \Sigma V^\top$, then $X_{i+1} = U\,(\tfrac{3}{2}\Sigma
 - Kingma & Ba, *Adam.* arXiv:1412.6980.
 - Loshchilov & Hutter, *Decoupled Weight Decay Regularization (AdamW).* arXiv:1711.05101.
 - Jordan et al., *Muon: An optimizer for hidden layers in neural networks.* 2024. Source of the Newton–Schulz polar iteration and the spectral-cap design philosophy on dense weight updates.
-- Mirsky, *Symmetric gauge functions and unitarily invariant norms.* Quart. J. Math. 11 (1960), 50–59. Closed form for the Frobenius projection onto an operator-norm ball used in Proposition 1.
+- Mirsky, *Symmetric gauge functions and unitarily invariant norms.* Quart. J. Math. 11 (1960), 50–59. Closed form for the Frobenius projection onto an operator-norm ball used in Lemma 0(a) and the §7 Remark (Algorithm 1's clip-prox per-block solver).
 - Higham, *Functions of Matrices: Theory and Computation.* SIAM 2008, Ch. 8. Cubic convergence of the Newton–Schulz iteration.

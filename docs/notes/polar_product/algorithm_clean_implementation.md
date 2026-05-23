@@ -1,6 +1,6 @@
 # Algorithm 2′ — chord-tight-clean ($k=2$, gram-NS): implementation walkthrough
 
-The canonical optimizer in this campaign is **`spectral_chord_tight_clean`** with **`picard_iters = 2`** and **`ns_form = "gram"`**. This doc walks one step of that configuration through `AdamPolarProductLoRA._chord_tight_clean_polar_pipeline` (`lora_playground/optim.py:3408`), names every tensor that crosses an iteration boundary, and counts FLOPs in conceptual form. Algorithm-derivation companion: `algorithm_tight_chord.md` §10.
+The canonical optimizer in this campaign is **`spectral_chord_tight_clean`** with **`picard_iters = 2`** and **`ns_form = "gram"`**. This doc walks one step of that configuration through `AdamPolarProductLoRA._chord_tight_clean_polar_pipeline` (`lora_playground/optim.py:3408`), names every tensor that crosses an iteration boundary, and counts FLOPs in conceptual form. Algorithm-derivation companion: `algorithm_tight_chord.md` §§3–5 (whitened residual program, LMO, anchored Frank-Wolfe) and §10 (Algorithm 2′ statement).
 
 ## 1. Shapes and notation
 
@@ -80,6 +80,8 @@ $$
 
 and the same scalar divisors are applied to $u_A, u_B$ so the Picard cross-coupling at $n \ge 1$ stays consistent. Two power iters at 8 iterations each, warm-started.
 
+Derivation: this is the **Adam calibration** of `algorithm_tight_chord.md` §4.1 — replacing the whitened Adam direction $q_A = S_B^{-1/2}\,u_A$ with $Q_A := q_A / \lVert q_A\rVert_2$ so the dual input sits at unit operator norm, on the same spectral scale as the primal trust region.
+
 ### 2.6 Picard loop, $n = 0, 1$
 
 The loop body produces the polar map of the (possibly cross-coupling-corrected) whitened direction and computes its magnitude-rescaled unwhitening.
@@ -89,7 +91,7 @@ $$
 X_A^{(0)} = X_A, \qquad X_B^{(0)} = X_B.
 $$
 
-**$n = 1$** (Lemma 1 cross-coupling, coefficient $1/\eta$):
+**$n = 1$** (Lemma 1 cross-coupling, coefficient $1/\eta$; derivation in `algorithm_tight_chord.md` §5.3 as the anchored-FW linear cost):
 $$
 \begin{aligned}
 u_A^{(1)} &= u_A + \tfrac{1}{\eta}\, B^\top\, \mathrm dB^{(0)}\, A, \\

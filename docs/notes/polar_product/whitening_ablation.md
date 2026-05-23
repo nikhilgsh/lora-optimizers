@@ -4,7 +4,7 @@
 
 ## TL;DR
 
-Removing the `S^{-1/2}` whitening from the chord-tight LoRA optimizer entirely — setting `SA^{-1/2} = SB^{-1/2} = I`, so the polar map operates on the raw Adam direction without any factor-Gram preconditioning — produces **essentially equivalent training loss** to the full chord-tight machinery and **matches variant 1 (direction-aware ρ)** within ~1σ_AdamW. The "tight chord" optimizer's elaborate whitening / unwhitening pipeline is correct in the variational sense (algorithm_tight_chord.md §5 Lemma 2) but practically not load-bearing at this scale.
+Removing the `S^{-1/2}` whitening from the chord-tight LoRA optimizer entirely — setting `SA^{-1/2} = SB^{-1/2} = I`, so the polar map operates on the raw Adam direction without any factor-Gram preconditioning — produces **essentially equivalent training loss** to the full chord-tight machinery and **matches variant 1 (direction-aware ρ)** within ~1σ_AdamW. The "tight chord" optimizer's elaborate whitening / unwhitening pipeline is correct in the variational sense (algorithm_tight_chord.md §4 Lemma 2) but practically not load-bearing at this scale.
 
 Surprising consequence: **the chord-tight v0 baseline is the worst of three closely-related optimizers**, and the geometric-machinery cost was apparently not buying us anything in eval loss.
 
