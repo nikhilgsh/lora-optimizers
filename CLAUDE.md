@@ -79,6 +79,22 @@ Custom optimizers collect pairs via `collect_lora_pairs()` in `utils.py` and ope
 
 Every training run emits JSON lines to stdout via `log_event()`: one `config` event at startup (includes full command line and git commit), and one `eval` event per evaluation step with `eval_loss`, `tokens_per_sec`, `peak_memory_mb`, etc.
 
+## Cluster / sbatch conventions
+
+These are the project-specific facts that global skills (`/slurm-submit`, `/disbatch`, `/run-env`) refer back to here.
+
+- **Conda env**: `ffcv-pl` (activate with `source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl`). Do not install or mutate; report missing deps.
+- **Wall-tier ladder** (`slurm_scripts/`):
+  - `sbatch_4h.sh` — A100 4h
+  - `sbatch_blackwell.sh` — Blackwell 8h (small Blackwell jobs only)
+  - `sbatch_12h.sh` — A100 12h
+  - `sbatch_24h.sh` — A100 24h
+  - `sbatch_24h_h100.sh` — H100 24h
+  - For Blackwell sweeps needing >8h, write a custom pending sbatch with a longer `--time` and the Blackwell directives copied from `sbatch_blackwell.sh`.
+- **Default to `sbatch_24h.sh` (or 24h-equivalent) for**: any sweep at r ≥ 128, any sweep at ≥6000 training steps, any sweep using a new/un-measured optimizer family at production scale, any sweep where prior runs on similar workloads finished in >70% of wall.
+- **Blackwell reservation (Flatiron cluster).** Blackwell RTX PRO 6000 nodes (workergpu[171-182, ...]) are gated behind SLURM reservation `rocky9`. Every Blackwell sbatch MUST include `#SBATCH --reservation=rocky9` or the job sits PD with `ReqNodeNotAvail,_UnavailableNodes:workergpuXXX` indefinitely (node state shows `IDLE+DRAIN+RESERVED`). If a Blackwell job is already PD without the reservation, fix in place: `scontrol update jobid=<id> reservation=rocky9` — typically starts within seconds. A100 / H100 jobs do NOT need this reservation.
+- **Per-task `--cpus-per-task`**: 8 for the standard sbatch templates here.
+
 ## Coding Conventions
 
 - PascalCase for optimizer classes, snake_case for functions
