@@ -125,6 +125,29 @@ def solve_sylvester(SB, SA, RHS):
     return QB @ X @ QA.T                              # (r, r)
 
 
+def stable_rank(M):
+    """‖M‖_F² / σ_max²(M), via a single SVD. Float scalar.
+
+    Exact (not power-iter). For cheap-but-noisy variants used inside
+    optimizers, see the inline `_stable_rank` closures in `optim.py`.
+    """
+    s = torch.linalg.svdvals(M.float())
+    return float((s.pow(2).sum() / (s[0] ** 2 + 1e-30)).item())
+
+
+def prerescale_unit_op(X, eps=1e-30):
+    """Rescale X so σ_max(X) = 1. Float32 output."""
+    Xf = X.float()
+    s = torch.linalg.matrix_norm(Xf, ord=2)
+    return Xf / s.clamp_min(eps)
+
+
+def polar_uvt(X):
+    """Exact polar factor U V^T of X via thin SVD."""
+    U, _, Vh = torch.linalg.svd(X.float(), full_matrices=False)
+    return U @ Vh
+
+
 def spd_frac_power_inv(H, gamma, eps=1e-6, eps_relative=False):
     """
     Compute (H + eps_eff*I)^{-gamma} for SPD H via eigendecomposition.
