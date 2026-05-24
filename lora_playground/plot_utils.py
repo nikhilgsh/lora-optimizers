@@ -813,11 +813,18 @@ def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[
     submit.sh's pre-submit log rotation when a wall-killed run is resubmitted
     with checkpoint resume.
 
-    Cached by the per-file (mtime, size) signature of the group's log files;
-    in-flight files invalidate naturally as they grow. Returned cfgs are
-    shallow-copied per call so downstream mutation (``merge_runs`` writing
-    ``log_group``, ``_enrich_cfg`` writing ``_derived``) doesn't poison
-    cached entries.
+    Cached in two tiers, both invalidated by the per-file (name, mtime, size)
+    signature of the group's log files:
+      1. In-process module dict (`_LOAD_SWEEP_CACHE`) — fastest, dies on
+         interpreter exit.
+      2. Cross-session pickle cache at `<logs_root>/_runs_cache.pkl`
+         (`lora_playground.run_cache`) — survives kernel restarts. Built
+         lazily: a miss falls back to the JSONL parser and updates the
+         pickle on the next `flush()` call (issued by the loader).
+
+    Returned cfgs are shallow-copied per call so downstream mutation
+    (``merge_runs`` writing ``log_group``, ``_enrich_cfg`` writing
+    ``_derived``) doesn't poison cached entries.
     """
     log_dir = Path(f"{logs_root}/{group}/run_info/logs")
     if not log_dir.exists():
@@ -835,6 +842,15 @@ def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[
     if cached is not None and cached[0] == sig:
         return [(dict(cfg), evs) for cfg, evs in cached[1]]
 
+    # Persistent cross-session cache. Same sig is recorded inside
+    # `_runs_cache.pkl`; `get_cached_sweep` re-stats and compares internally.
+    # If the persistent entry is fresh, use it and warm the in-process cache.
+    from . import run_cache as _run_cache
+    persistent = _run_cache.get_cached_sweep(group, logs_root)
+    if persistent is not None:
+        _LOAD_SWEEP_CACHE[cache_key] = (sig, persistent)
+        return [(dict(cfg), evs) for cfg, evs in persistent]
+
     runs = []
     for task_idx in sorted(tasks):
         segments = [load_run(f) for f in tasks[task_idx]]
@@ -847,6 +863,7 @@ def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[
             cfg["_log_filename"] = tasks[task_idx][-1].name
             runs.append((cfg, evs))
     _LOAD_SWEEP_CACHE[cache_key] = (sig, runs)
+    _run_cache.update_group(group, logs_root, runs, sig=sig)
     return [(dict(cfg), evs) for cfg, evs in runs]
 
 

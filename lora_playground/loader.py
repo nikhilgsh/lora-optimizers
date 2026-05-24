@@ -13,6 +13,7 @@ of how old the run is or how complete its raw cfg was. See ``_enrich_cfg``.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import warnings
 from dataclasses import dataclass
@@ -260,6 +261,28 @@ HISTORICAL_DEFAULTS_WHEN_MISSING: dict[str, Any] = {
 }
 
 
+_ARGPARSE_DEFAULTS_CACHE = Path(__file__).resolve().parent.parent / "logs" / "_argparse_defaults.json"
+_TRAIN_PY_PATH = Path(__file__).resolve().parent / "train.py"
+
+
+def _argparse_defaults_cache_is_fresh() -> bool:
+    """True iff the JSON sidecar exists AND is newer than train.py. Any
+    edit to train.py (adding a flag, changing a default) bumps its mtime
+    and triggers a one-shot regeneration on the next call. Cheap: two
+    `stat()` calls."""
+    try:
+        cache_mt = _ARGPARSE_DEFAULTS_CACHE.stat().st_mtime_ns
+    except OSError:
+        return False
+    try:
+        src_mt = _TRAIN_PY_PATH.stat().st_mtime_ns
+    except OSError:
+        # train.py missing (shouldn't happen in this repo); fall back to
+        # the JSON regardless rather than re-import unnecessarily.
+        return True
+    return cache_mt >= src_mt
+
+
 @lru_cache(maxsize=1)
 def _argparse_defaults() -> dict[str, Any]:
     """Return ``{dest: default_value}`` for every CLI flag in train.py's
@@ -271,8 +294,12 @@ def _argparse_defaults() -> dict[str, Any]:
     identical (e.g. old run lacks `precond_delta`, new run logs
     `precond_delta=1e-6` — both ran with 1e-6).
 
-    Lazy + cached: train.py imports torch + transformers; we pay that
-    cost once per process the first time enrichment runs.
+    Persistent on-disk cache at ``logs/_argparse_defaults.json``: train.py
+    imports torch + transformers (~17 s cold). Building the parser to read
+    defaults is reproducible from the codebase, so we snapshot the result
+    to JSON and consult that first. The JSON is rebuilt automatically
+    whenever the loader runs in a fresh process and the file is missing;
+    `scripts/build_logs_cache.py` rebuilds it as part of its workflow.
 
     Caveat: this assumes the flag's default has never changed. When it has,
     register the history in `HARDCODED_DEFAULT_HISTORY` and resolve via
@@ -280,6 +307,16 @@ def _argparse_defaults() -> dict[str, Any]:
     optimizer-kwarg defaults; CLI-flag defaults change rarely enough that
     the simple cache is acceptable.
     """
+    if _argparse_defaults_cache_is_fresh():
+        try:
+            with open(_ARGPARSE_DEFAULTS_CACHE) as f:
+                cached = json.load(f)
+            if isinstance(cached, dict):
+                return cached
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Cold path: import train.py (torch + transformers) to introspect the
+    # parser. Write the result back so subsequent processes skip the import.
     from .train import make_parser
     parser = make_parser()
     defaults: dict[str, Any] = {}
@@ -287,6 +324,12 @@ def _argparse_defaults() -> dict[str, Any]:
         if action.dest in (None, "help"):
             continue
         defaults[action.dest] = action.default
+    try:
+        _ARGPARSE_DEFAULTS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_ARGPARSE_DEFAULTS_CACHE, "w") as f:
+            json.dump(defaults, f, sort_keys=True, indent=2, default=str)
+    except OSError:
+        pass
     return defaults
 
 
@@ -850,6 +893,14 @@ def load_runs(
                 stacklevel=2,
             )
 
+    # Persist any newly-parsed groups to the cross-session pickle cache.
+    # Cheap when nothing changed (early-return on `not _DIRTY`).
+    try:
+        from . import run_cache as _run_cache
+        _run_cache.flush(logs_root)
+    except Exception:
+        pass
+
     return runs
 
 
@@ -1031,6 +1082,13 @@ def inventory_runs(logs_root: str | None = None) -> RunInventory:
             if not (child / "run_info").exists() and any(child.iterdir()):
                 no_run_info.append(child.name)
 
+    # `inventory_runs` also touches load_sweep — flush any newly parsed
+    # groups so the persistent pickle stays in sync.
+    try:
+        from . import run_cache as _run_cache
+        _run_cache.flush(logs_root)
+    except Exception:
+        pass
     return RunInventory(
         groups_on_disk=tuple(on_disk),
         groups_loaded=tuple(sorted(contributing_groups)),
