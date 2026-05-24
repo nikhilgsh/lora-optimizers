@@ -107,16 +107,16 @@ def test_filter_baseline_excludes_variant_runs(cand_runs):
 
 
 def test_no_stale_commit_survivors(cand_runs):
-    """EXCLUDED_COMMITS in manifest must keep all known-stale runs out of
-    cand_runs. If a stale commit's runs reappear, the loader exclusion
-    is broken or a new stale commit slipped in undetected."""
-    from lora_playground.manifest import EXCLUDED_COMMITS
+    """COMMIT_EXCLUSIONS must keep all known-stale runs out of cand_runs.
+    If a stale commit's runs reappear, the loader exclusion is broken or
+    a new stale commit slipped in undetected."""
+    from lora_playground.commit_exclusions import COMMIT_EXCLUSIONS
     for cfg, _ in cand_runs:
         commit = cfg.get("git_commit") or ""
-        for prefix in EXCLUDED_COMMITS:
+        for prefix, _reason in COMMIT_EXCLUSIONS:
             assert not commit.startswith(prefix), (
                 f"Stale-commit run leaked: commit={commit[:7]} "
-                f"group={cfg.get('log_group')!r} — EXCLUDED_COMMITS not honored"
+                f"group={cfg.get('log_group')!r} — COMMIT_EXCLUSIONS not honored"
             )
 
 
