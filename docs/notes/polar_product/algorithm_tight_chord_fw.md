@@ -2,6 +2,8 @@
 
 This document derives the Frank-Wolfe (FW) variant of the polar-product LoRA optimizer: state the variational program, solve it via FW iteration on the per-block whitened residual, and use the polar map as the FW vertex. The result is **Algorithm 2** (anchored linearization) and **Algorithm 2′** (the same iteration with Adam calibration baked in). §8 presents a related variant — full-gradient linearization with the self-term kept — and analyzes the structure of its polar input.
 
+**Important distinction.** The polar map is the FW linear-minimization oracle for the operator-norm ball **unconditionally**. The saturating-regime hypothesis (H) is not a FW validity condition. It is only a comparison condition: under (H), the polar FW vertex equals the clip-prox / block-coordinate-descent update from the companion Algorithm 1. Outside (H), FW is still a valid FW step, but it no longer coincides with the clip-prox residual solver.
+
 A companion document `algorithm_tight_chord.md` derives the block-coordinate-descent variant of the same program (Algorithm 1, clip-prox per-block solver). The two documents are independent; this one stands on its own.
 
 **Reading guide.**
@@ -12,7 +14,7 @@ A companion document `algorithm_tight_chord.md` derives the block-coordinate-des
 - **§6** — operator-norm LMO: polar is the FW vertex.
 - **§7** — anchored Frank-Wolfe iteration, recovers Lemma 1.
 - **§8** — full-gradient linearization variant; derives the structure of its polar input at the first inner iteration.
-- **§§9–10** — closure: saturating-regime hypothesis (H), Lemma 3, chain $\eta \to \rho \to (\tau_A, \tau_B)$.
+- **§§9–10** — closure: polar norm collapse, the chain $\eta \to \rho \to (\tau_A, \tau_B)$, and a separate comparison to clip-prox / Algorithm 1 under (H).
 - **§11** — Algorithm 2 pseudocode and correspondence with the variational program.
 - **§12** — when the inner Picard iteration moves at $k \ge 2$ (calibration analysis).
 
@@ -104,7 +106,7 @@ All symbols used below are grouped here. Shapes assume a single LoRA layer pair.
 
 | label | what it is |
 |---|---|
-| **Algorithm 1** | exact clip-prox block-Jacobi solver — derived in the companion `algorithm_tight_chord.md`. Referenced here as a contrastive point in §9 (where clip coincides with polar under (H)). |
+| **Algorithm 1** | exact clip-prox block-Jacobi solver — derived in the companion `algorithm_tight_chord.md`. Referenced here only as a contrastive point: under (H), clip-prox and the polar FW vertex coincide. |
 | **Algorithm 2** | polar FW, anchored, uncalibrated (§11). |
 | **Algorithm 2′** | Algorithm 2 with the §5 pre-rescale $u_A \leftarrow u_A/\sigma_{\max}(X_A)$ baked in. §12 explains why this matters at $k \ge 2$. |
 
@@ -318,7 +320,9 @@ $$
 
 **Definition 3 (polar map).** For $C = U\,\Sigma\,V^\top$, $\mathrm{polar}(C) := U\,V^\top$ — every singular value mapped to one, singular vectors preserved.
 
-This is the only per-block tool the rest of the derivation needs. §7 applies it to a linearization of (2) at the current FW iterate. The clip-prox alternative (Lemma 0a) is the per-block solver for block-coordinate descent on (1); under hypothesis (H) of §9, clip and polar coincide at the chain-pinned caps — see §9 for the contrast and the companion document for the BCD derivation.
+This is the only per-block tool the FW derivation needs. §7 applies it to a linearization of (2) at the current FW iterate. No saturating-regime assumption is needed for this statement: polar is the LMO for every input $C$.
+
+The clip-prox alternative (Lemma 0a) is the per-block solver for block-coordinate descent on (1). Hypothesis (H) of §9.1 is only the condition under which that clip-prox update happens to equal the polar FW vertex at the chain-pinned caps.
 
 ## 7. Frank-Wolfe derivation of Algorithm 2
 
@@ -350,7 +354,7 @@ C_A^{(n)} \;:=\; Q_A + \tfrac{1}{\eta}\,U_B^\top\,Y_B^{(n)}\,V_A,
 C_B^{(n)} \;:=\; Q_B + \tfrac{1}{\eta}\,U_B\,Y_A^{(n)}\,V_A^\top.
 $$
 
-Applying the LMO of §6 with full Frank-Wolfe step ($\alpha_n = 1$):
+Applying the LMO of §6 with a unit Frank-Wolfe step ($\alpha_n = 1$) gives a vertex replacement update:
 
 $$
 Y_A^{(n+1)} \;=\; -\tau_A\,\mathrm{polar}\bigl(C_A^{(n)}\bigr),
@@ -358,6 +362,16 @@ Y_A^{(n+1)} \;=\; -\tau_A\,\mathrm{polar}\bigl(C_A^{(n)}\bigr),
 Y_B^{(n+1)} \;=\; -\tau_B\,\mathrm{polar}\bigl(C_B^{(n)}\bigr).
 \tag{3}
 $$
+
+A general FW update would average the previous iterate with the LMO vertex,
+
+$$
+Y_A^{(n+1)} = (1-\alpha_n)\,Y_A^{(n)} + \alpha_n\,Z_A^{(n)},
+\qquad
+Z_A^{(n)} = -\tau_A\,\mathrm{polar}\bigl(C_A^{(n)}\bigr),
+$$
+
+and symmetrically for $B$. Algorithm 2 uses the special case $\alpha_n = 1$, so the next inner iterate is the new vertex itself.
 
 Initialization $Y_A^{(0)} = Y_B^{(0)} = 0$ makes $C_A^{(0)} = Q_A$ and $C_B^{(0)} = Q_B$, so the $n = 0$ vertex is the polar of the calibrated Adam direction — exactly the per-block Muon update of §2, now derived from the joint program.
 
@@ -461,9 +475,9 @@ Two structural observations relative to the anchored §7 polar input $Q_A + (1/\
 - **The self-term shares singular vectors with $Q_A$.** $\mathrm{polar}(Q_A)$ has the SVD $U V^\top$ on the same $U, V$ that diagonalize $Q_A$, so $Q_A - \alpha\,\mathrm{polar}(Q_A)$ has the same singular vectors as $Q_A$ with singular values shifted uniformly down by $\alpha$. The cross-coupling lives in singular directions determined by $B$'s column space and $A$'s row space, generically not aligned with $Q_A$'s singular vectors.
 - **The self-term magnitude is chain-pinned, not iterate-driven.** The per-iter rescale (Lemma 3) forces $\lVert\mathrm dA^{(n)}\rVert_2 = \rho$ exactly, so $\alpha$ depends only on the current factor spectrum.
 
-## 9. Saturating regime: per-block-contribution norms are state-only
+## 9. Polar norm collapse and clip-prox comparison
 
-Algorithm 2 (§11) is the FW iteration of §7 at the chain-pinned caps (7) of §10. To close the chain we need $\lVert\mathrm dA^{(n+1)}\rVert_2$ — the per-factor operator norm of the FW vertex — to be a simple, state-only function of $\tau_A$ (independent of the FW iterate $n$).
+Algorithm 2 (§11) is the FW iteration of §7 at the chain-pinned caps (7) of §10. For the FW algorithm, the polar LMO is already valid without any saturating-regime assumption. What we need for the magnitude chain is only the operator norm of the unwhitened polar vertex, and that norm is state-only for every polar input.
 
 **Lemma 3 (factor-norm collapse).** For any FW iterate $n$, the operator norms of $D_A^{(n)}, D_B^{(n)}$ are state-only:
 
@@ -483,6 +497,18 @@ Symmetric for the $B$-side. The damped-spectrum forms follow from $S_B = B^\top 
 
 The FW iterate-dependence of $D_A^{(n)}, D_B^{(n)}$ sits entirely in their *singular vectors*, not in their norms.
 
+This unconditional collapse is why the FW update can be written in the normalize-then-scale-by-$\rho$ form used in Algorithm 2. It does not rely on clip-prox and does not rely on (H).
+
+### 9.1 Comparison to clip-prox / Algorithm 1
+
+The companion Algorithm 1 solves each block-coordinate subproblem by clip-prox, not by FW. For that different solver, the per-block update is
+
+$$
+Y_A^{\text{clip}} = \mathrm{clip}_{\tau_A}\bigl(-\eta\,c_A^{(n)}\bigr),
+$$
+
+where $c_A^{(n)}$ is the block's linear cost in whitened coordinates. The following hypothesis is only an equivalence condition between this clip-prox update and the FW polar vertex.
+
 **Saturating-regime hypothesis (H).** Writing $c_A^{(n)} := S_B^{-1/2}\,\tilde u_A^{(n)}$ for the polar input in factor coordinates,
 
 $$
@@ -496,7 +522,9 @@ $$
 
 *Proof.* Under (H), $\mathrm{clip}_{\tau_A}$ flattens every singular value of $-\eta\,c_A^{(n)}$ to $\tau_A$ and preserves singular vectors, giving $\tau_A\,U V^\top$. Polar is invariant under positive scaling and odd under negation. ∎
 
-**Connection to Algorithm 1 (BCD, companion doc).** The companion document derives the exact block-coordinate-descent solver of (2) with clip-prox per block. Under (H), Proposition 2 says clip and polar coincide at the chain-pinned caps, so Algorithm 2 and Algorithm 1 produce identical updates on the saturating-regime ray; Algorithm 2 (here) substitutes polar (a uniform-spectrum prior on the whitened cost) for clip unconditionally, which is what makes it computable via Newton–Schulz without an SVD per inner step. Outside (H), clip and polar diverge on directions with $\sigma_i(c_A^{(n)}) < \tau_A/\eta$ (clip leaves small singular values alone; polar lifts them to one).
+**Connection to Algorithm 1 (BCD, companion doc).** Under (H), Proposition 2 says clip-prox and the FW polar vertex coincide at the chain-pinned caps, so Algorithm 2 and Algorithm 1 produce the same per-block update on that ray.
+
+Outside (H), the two algorithms diverge but for different reasons than FW invalidity. FW still uses the correct LMO for its linearized subproblem. Clip-prox solves a different quadratic block subproblem and leaves weak singular directions at $\eta\,\sigma_i(c_A^{(n)}) < \tau_A$; polar maps every nonzero singular direction to $\tau_A$. Thus failure of (H) means "FW no longer matches clip-prox," not "FW is not a valid FW step."
 
 The polar map is computed via Newton–Schulz iteration (Appendix B).
 
@@ -508,7 +536,7 @@ $$
 \underbrace{\lVert J\rVert_2 \le \eta}_{\text{user-facing (tangent)}}
 \;\overset{\text{Prop 3}}{\Longleftarrow}\;
 \underbrace{\lVert\Delta A\rVert_2, \lVert\Delta B\rVert_2 \le \rho}_{\text{per-factor}}
-\;\overset{\text{Lemma 3 under (H)}}{\Longleftarrow}\;
+\;\overset{\text{Lemma 3 (polar)}}{\Longleftarrow}\;
 \underbrace{\lVert S_B^{1/2}\Delta A\rVert_2 \le \tau_A,\ \lVert\Delta B\, S_A^{1/2}\rVert_2 \le \tau_B}_{\text{program's caps}}
 $$
 
@@ -523,9 +551,9 @@ $$
 
 The chord satisfies $\lVert\Delta W\rVert_2 \le \eta + \rho^2 = \eta\,(1 + \eta/s^2)$ (Appendix A).
 
-### Step 2: $\rho \to (\tau_A, \tau_B)$ (Lemma 3 under (H))
+### Step 2: $\rho \to (\tau_A, \tau_B)$ (Lemma 3 for the polar vertex)
 
-Under (H), Lemma 3 gives $\lVert\Delta A^\star(\tau_A)\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$. Setting this equal to $\rho$ pins
+For the polar FW vertex, Lemma 3 gives $\lVert\Delta A^\star(\tau_A)\rVert_2 = \tau_A\,\lVert S_B^{-1/2}\rVert_2$ unconditionally. Setting this equal to $\rho$ pins
 
 $$
 \boxed{\quad
@@ -538,7 +566,7 @@ $$
 
 ### The pinned program
 
-Program (1) with state-fixed caps (7) is what Algorithm 2 solves. The applied update at outer iteration $n$ is
+Program (1) with state-fixed caps (7) is the residual program whose FW linearizations Algorithm 2 follows. The applied update at outer iteration $n$ is
 
 $$
 \boxed{\quad
@@ -549,16 +577,9 @@ $$
 \tag{8}
 $$
 
-The two equalities in each line are identical under (H) by Lemma 3. The right-hand normalize-then-scale-by-$\rho$ form absorbs the state-only norm of $D^{(n)}$ without explicitly computing $\sigma_{\min}(B), \sigma_{\min}(A)$.
+The two equalities in each line are identical for the polar vertex by Lemma 3. The right-hand normalize-then-scale-by-$\rho$ form absorbs the state-only norm of $D^{(n)}$ without explicitly computing $\sigma_{\min}(B), \sigma_{\min}(A)$.
 
-### Sufficient condition for (H)
-
-$$
-\rho \;\le\; \eta\,\min\!\Bigl(\sigma_{\min}\!\bigl(c_A^{(n)}\bigr)\,\lVert S_B^{-1/2}\rVert_2,\ \ \sigma_{\min}\!\bigl(c_B^{(n)}\bigr)\,\lVert S_A^{-1/2}\rVert_2\Bigr)
-\quad\text{for } n = 1, \ldots, k.
-$$
-
-When this holds, Algorithm 2 is the exact solver of (1) at the chain-pinned caps. When it fails, Algorithm 2's update is still well-defined; the directions remain coherent but the identification with the exact (1)-solver is lost.
+Algorithm 2 is a FW iteration on the state-fixed residual program, not the exact clip-prox / BCD solver of that program. The exact block-coordinate solver is Algorithm 1 in the companion document; it matches Algorithm 2 only under the comparison condition (H) of §9.1.
 
 ## 11. Algorithm 2 (the polar variant)
 

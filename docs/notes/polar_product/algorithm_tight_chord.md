@@ -601,37 +601,31 @@ Alternatives to a direct thin SVD include:
 
 The Newton–Schulz polar iteration used by the FW variant in the companion document does not produce singular values; it lifts every singular value to $1$. There is no fast Newton–Schulz analog for the clip operator, because clip needs the singular *values* to test against $\tau$.
 
-## Appendix C. Dual-norm trust region: F-norm cap on top of the op-norm cap
+## Appendix C. Shape control: a second degree of freedom in the polar map
 
-**Status.** Open hypothesis. The dual-norm magnitude rule sketched below is *not yet* implemented as an optimizer. SSC primitives (`_ssc_svd`, `_ssc_misr_batched`) and a snapshot-based calibration script (`scripts/analysis/ssc_snapshot_calibration.py`) are wired and verified, but the appendix now treats SSC as one *implementation* of the proposal, not the proposal itself. Default recommendation: run the offline diagnostics in §C.6 before any new sweep; only the cheapest implementation (hard spectral water-filling) is worth coding without a sweep until the F-norm framing is validated by the diagnostics.
+The chord-tight derivation in §§1–8 fixes the polar map's *magnitude* via the chain $\eta \to \rho \to (\tau_A, \tau_B)$. Under (H), the magnitude rule fully determines the update: $\mathrm dA = -\tau_A\,S_B^{-1/2}\,\mathrm{polar}(c_A)$, with every singular direction of $\mathrm{polar}(c_A)$ treated identically. This appendix steps back from (H) and asks what additional freedom is available in the polar-side map when the saturating assumption is relaxed.
 
-### C.1. Diagnosis: the K-vs-η Pareto is an F-norm leak
+### C.1. The shape degree of freedom
 
-The current chord-tight-clean pipeline scales the polar output by an *operator-norm* magnitude rule
-
-$$
-\mathrm dA \;=\; -\frac{\rho}{\sigma_{\max}(\mathrm{geo}_A)}\,\mathrm{geo}_A,
-\qquad \rho \;=\; \eta/s,
-$$
-
-which fixes $\lVert \mathrm dA\rVert_{op} = \rho$ but leaves the Frobenius size $\lVert \mathrm dA\rVert_F = \rho\,\sqrt{\mathrm{srank}(\mathrm{geo}_A)}$ uncontrolled. Newton–Schulz iteration count $K$ acts on the F-norm through $\mathrm{srank}(\mathrm{NS}_K(X))$: from the `chord_tight_r64_k3_snapshot_blackwell` snapshots at step 2000, median stable rank across 12 pairs is
-
-| $K$ | 3 | 5 | 7 | 10 |
-|---|---|---|---|---|
-| $\mathrm{srank}(\mathrm{NS}_K)$ | 7.8 | 19.0 | 38.9 | 62.7 |
-
-(input $X$ has $\mathrm{srank} \approx 4.4$; $r = 64$.) The leaderboard pattern is that low $\eta$ prefers large $K$ (full polar) and high $\eta$ prefers small $K$.
-
-**The reframing.** Full polar is not worse at high $\eta$ because it is "more accurate"; it is worse because, at fixed operator norm, it spends much more Frobenius energy across many singular directions. Since $\lVert\mathrm dA\rVert_F = \rho\,\sqrt{\mathrm{srank}}$ and srank moves with $K$, the effective F-step at high $\eta$ scales as $\eta\,\sqrt{\mathrm{srank}}/s$ — and large srank pushes the update too wide for the local quadratic. The optimal $\lVert\mathrm dA\rVert_F$ grows *sublinearly* in $\eta$ (factor 16$\times$ over a 33$\times$ $\eta$ range, anchored by best-$K$ pairs at $\eta \in \{3{\cdot}10^{-3}, 10^{-1}\}$). Fixed $K$ cannot match the sublinear scaling, hence the Pareto.
-
-**Predicted failure mode.** If this diagnosis is right, an op-norm-and-F-norm dual-norm cap with a single F-trust radius $T$ should recover the best $K$ at each $\eta$ from one fixed hyperparameter. If the diagnosis is wrong — if the Pareto lives on a third axis (spectral shape, layer coupling, chord error, Adam-direction noise) — no single $T$ will win across the $\eta$ grid. §C.6 is built to separate these.
-
-### C.2. The proposal: hard spectral water-filling
-
-The principled magnitude rule for a dual op-norm / F-norm trust region is
+After whitening and pre-rescaling so that $\sigma_{\max}(X) = 1$ (where $X = S_B^{-1/2}\,u_A$ is the whitened Adam direction), any map $\phi: \mathbb{R}_{\ge 0} \to \mathbb{R}_{\ge 0}$ acting on the singular values of $X$ defines a candidate polar-side direction
 
 $$
-\mathrm dA \;\in\; \mathrm{argmin}_{Y}\bigl\langle Y, -\mathrm{geo}_A\bigr\rangle
+\Phi(X) \;=\; U\,\mathrm{diag}\bigl(\phi(\sigma_i)\bigr)\,V^\top,
+$$
+
+followed by a scalar magnitude rule that lifts $\lVert\Phi(X)\rVert_{op}$ to the chord-tight budget $\rho$. Two scalars are then exposed independently:
+
+- **Operator norm.** $\lVert\Phi(X)\rVert_{op} = \phi(1)$ before rescale, $\rho$ after. Always fixed by the magnitude rule.
+- **Frobenius norm.** $\lVert\Phi(X)\rVert_F^2 = \sum_i \phi(\sigma_i)^2$, equivalently $\rho^2\,\mathrm{srank}(\Phi(X))$ after rescale. *Not* fixed by the magnitude rule; depends on $\phi$ and on the spectrum of $X$.
+
+The chord-tight derivation's choice — exact polar — corresponds to $\phi(\sigma) = 1$, so $\lVert\Phi\rVert_F^2 = r$ after rescale and every direction is lifted to the same magnitude. Other choices of $\phi$ preserve the operator-norm budget $\rho$ but redistribute Frobenius energy across directions.
+
+### C.2. A two-budget program
+
+A natural way to expose the shape choice as a structured optimization is to add an explicit Frobenius constraint to the per-block program of §5.1:
+
+$$
+\Delta A \;\in\; \mathrm{argmin}_{Y}\;\bigl\langle Y, -\eta\,c_A\bigr\rangle
 \quad\text{s.t.}\quad
 \lVert Y\rVert_{op} \le \rho,
 \;\;
@@ -639,38 +633,42 @@ $$
 \tag{C1}
 $$
 
-For input $X = U\,\mathrm{diag}(\sigma_i)\,V^\top$ normalized so $\sigma_1 = 1$, von-Neumann's trace inequality (Lemma 0b) aligns singular vectors with $X$, and (C1) reduces to a scalar problem on singular values with closed form
+The op-norm cap $\rho$ comes from the chord-tight magnitude rule and scales with $\eta$. The F-norm cap $T$ is a separate parameter, introduced as a second budget on the update's total spectral energy. Setting $T = \rho\,\sqrt{r}$ recovers exact polar (the F-constraint becomes inactive); setting $T < \rho\,\sqrt{r}$ deviates the update toward a more concentrated singular spectrum.
+
+By von-Neumann's trace inequality (Lemma 0b), the LMO aligns $Y$'s singular vectors with those of $X$. Substituting $Y = U\,\mathrm{diag}(y_i)\,V^\top$ reduces (C1) to a scalar problem on the singular values with closed form
 
 $$
-y_i \;=\; \min(\rho,\ \lambda\,\sigma_i),
+y_i \;=\; \min\!\bigl(\rho,\ \lambda\,\sigma_i\bigr),
 \qquad
-\lambda \text{ chosen so } \sum_i y_i^2 \;=\; \min(T^2,\ r\rho^2).
+\lambda \text{ chosen so } \sum_i y_i^2 \;=\; \min\!\bigl(T^2,\ r\,\rho^2\bigr).
 \tag{C2}
 $$
 
-This is **spectral water-filling**: $\lambda$ acts as a dual variable for the F-norm constraint; directions with strong signal $\sigma_i$ saturate at $\rho$ first, then the budget spills to weaker directions. Three limits make the rule legible:
+This is **spectral water-filling**: $\lambda$ is the dual variable for the F-norm constraint. Directions with strong signal $\sigma_i$ saturate at the op-norm ceiling $\rho$ first; once their share of the F-budget is used, the remainder is distributed across weaker directions proportional to their $\sigma_i$. Three regimes are visible in (C2):
 
-- **F-constraint inactive** ($T \ge \rho\,\sqrt{r}$, equivalently $\lambda \to \infty$): every $y_i$ saturates at $\rho$, recovering the standard op-norm-budgeted polar step.
-- **F-constraint binding everywhere** ($T \le \rho\,\sqrt{\mathrm{srank}(X)}$): no $y_i$ hits $\rho$; the rule is a pure F-scaled polar, $y_i = \lambda\sigma_i$ with $\lambda = T/\lVert X\rVert_F$.
-- **Intermediate** ($\rho\,\sqrt{\mathrm{srank}(X)} \le T \le \rho\,\sqrt{r}$): top directions saturate, tail directions are F-rescaled.
+- **F-constraint inactive** ($T \ge \rho\,\sqrt{r}$): every $y_i = \rho$, recovering exact polar.
+- **F-constraint binding everywhere** ($T \le \rho\,\sqrt{\mathrm{srank}(X)}$): no $y_i$ reaches $\rho$; $y_i = \lambda\,\sigma_i$ with $\lambda = T/\lVert X\rVert_F$ — a pure F-rescaled identity.
+- **Intermediate**: top directions saturate at $\rho$; tail directions are F-rescaled.
 
-At small $\eta$, $\rho\,\sqrt{r} \le T$ and the rule reduces to full polar (recovering $K{=}10$). At high $\eta$, $\rho\,\sqrt{r} > T$ and the effective stable rank is approximately $(T/\rho)^2$ — automatically behaving like a smaller $K$. One scalar $T$, no per-$\eta$ tuning *if* the diagnosis is right.
+The intermediate regime is the substantive one: it interpolates smoothly between exact polar and the unprocessed direction, with the interpolation governed by $T$.
 
-Cost of (C2): one thin SVD of $X$ (already paid for by clip-prox in Algorithm 1, or by NS in Algorithm 2 with a single extra SVD per pair per iter), plus an $O(r)$ bisection for $\lambda$.
+Cost of (C2): a thin SVD of $X$ (already paid by clip-prox in Algorithm 1) plus an $O(r)$ bisection for $\lambda$.
 
-### C.3. Soft Spectral Clipping as a smooth implementation
+### C.3. A smooth implementation: Soft Spectral Clipping
 
-Soft Spectral Clipping (Bertelli et al., *SPECTRA*, arXiv:2603.14315) is the operator
+The hard $\min$ in (C2) has a kink at $\sigma_i = \rho/\lambda$. Soft Spectral Clipping (Bertelli et al., *SPECTRA*, arXiv:2603.14315) replaces it with a smooth saturation
 
 $$
 H_c(X) \;=\; (I + X X^\top / c^2)^{-1/2}\,X
 \;=\;
-U\,\mathrm{diag}\!\bigl(\sigma_i / \sqrt{1 + (\sigma_i/c)^2}\bigr)\,V^\top,
+U\,\mathrm{diag}\!\bigl(h_c(\sigma_i)\bigr)\,V^\top,
+\qquad
+h_c(\sigma) := \frac{\sigma}{\sqrt{1 + (\sigma/c)^2}}.
 $$
 
-which is the canonical smooth projection onto $\{Y : \lVert Y\rVert_{op} \le c\}$: as $c \to 0$ it approaches the hard clip; for $\sigma \ll c$ it is the identity. $h_c(\sigma) := \sigma/\sqrt{1+(\sigma/c)^2}$ is the gradient of the convex potential $c^2\,\sqrt{1+\sigma^2/c^2}$, so $H_c$ is a smooth proximal-like operator.
+$h_c$ is the gradient of the convex potential $c^2\,\sqrt{1 + \sigma^2/c^2}$, so $H_c$ is a smooth proximal-like operator. For $\sigma \ll c$, $h_c(\sigma) \approx \sigma$ (passthrough); for $\sigma \gg c$, $h_c(\sigma) \approx c$ (saturation). The crossover scale $c$ plays the role of the hard threshold $\rho/\lambda$ in (C2).
 
-Using $H_c$ as a smooth replacement for the kinked $\min$ in (C2): with pre-rescaled input ($\sigma_{\max}(X) = 1$), set
+Composing $H_c$ with the chord-tight magnitude rule gives
 
 $$
 \mathrm dA \;=\; \beta\,H_c(X),
@@ -678,100 +676,41 @@ $$
 \beta \;=\; \rho / h_c(1),
 $$
 
-and pick $c$ per step by bisection on the monotone equation $\rho\,\sqrt{\mathrm{srank}(H_c(X))} = \min(\rho\,\sqrt{r},\,T)$. LHS is monotone increasing in $c$, so the bisection always has a solution when the RHS is in $[\rho\,\sqrt{\mathrm{srank}(X)},\,\rho\,\sqrt{r}]$.
+so that $\lVert\mathrm dA\rVert_{op} = \rho$ matches the chord-tight budget while the *shape* of the output spectrum is set by $c$. Two implementation routes are available:
 
-SSC is worth implementing *only if* hard water-filling (C2) validates the F-norm-leak diagnosis — at that point SSC offers (a) no kink in the magnitude rule as $\eta$ crosses $T/\sqrt{r}$, and (b) a Newton–Schulz-style matmul-only evaluation via `_ssc_misr_batched`, avoiding the SVD. Until (C2) is validated, the extra smoothing is premature.
+- An SVD-based reference (`_ssc_svd`) that applies $h_c$ to the singular values directly. Same cost as clip-prox.
+- A matmul-only Newton–Schulz-style routine (`_ssc_misr_batched`) based on the matrix-inverse-square-root iteration of SPECTRA Algorithm 2. Avoids the SVD; cubic convergence near the saturation regime; assumes pre-rescaled input ($\sigma_{\max}(X) \approx 1$), which holds after §2.5.
 
-From the calibration script, median F-norm ratios $\lVert H_c(X)\rVert_F / \lVert X\rVert_F$ on snapshot inputs (step 2000):
+### C.4. Relation to fixed-$K$ Newton–Schulz
 
-| $c$ | 0.1 | 0.3 | 0.5 | 0.7 | 1.0 | 3.0 | 10.0 |
-|---|---|---|---|---|---|---|---|
-| ratio | 0.29 | 0.57 | 0.71 | 0.79 | 0.86 | 0.96 | 1.00 |
+Fixed-iteration NS at iteration count $K$ also defines a shape map: $\phi_K(\sigma) \to 1$ as $K \to \infty$ for $\sigma$ in the basin of attraction, with finite-$K$ output spectra that interpolate between the input and the polar limit. At matched $(\sigma_{\max}, \lVert\cdot\rVert_F)$, $H_c$ and $\mathrm{NS}_K$ define different but related families:
 
-The SPECTRA paper's recommended $c \approx 10$ corresponds to $h_{10}(1) \approx 0.995$ in the rescaled frame — essentially identity, no F-control. Active clipping requires $c \lesssim 1$.
+- **NS** lifts every singular value toward $1$; the F-norm growth is controlled by how aggressively each $\sigma_i$ is moved upward at iteration count $K$.
+- **SSC** caps singular values at $\approx c$ from above while leaving small singular values approximately untouched; the F-norm growth is controlled by where the saturation knee sits.
 
-### C.4. Why fixed $c$ does *not* escape the Pareto
+Both families have a single shape parameter ($K$ or $c$). At any given input spectrum, one can find $(K, c)$ pairs that produce updates with matched op-norm and matched Frobenius norm; the residual difference is in the *shape* of the output spectrum (NS distributes lift across all directions; SSC saturates the top and preserves the tail). Whether shape at matched norms is empirically relevant is an open question that this appendix does not resolve.
 
-A naive use of SSC — fixed $c$ under the unchanged op-norm magnitude rule — is degenerate with fixed-$K$ NS:
+### C.5. Two interpretations of $c$
 
-$$
-\lVert \mathrm dA\rVert_F \;=\; \rho\,\sqrt{\mathrm{srank}(H_c(X))},
-$$
+The shape parameter $c$ admits two distinct interpretations, with different implications for how it should be set.
 
-so the only lever exposed is the output stable rank. Empirically:
+**$c$ tied to $\eta$ (state-dependent).** In the water-filling formulation (C2), $\lambda$ — and therefore the effective crossover scale $\rho/\lambda$ — depends on $\rho$ and on the spectrum of $X$. In the SSC analog, this corresponds to choosing $c$ per step by solving a monotone equation that ties it to $\rho$ via the F-budget $T$. The user-facing parameter is $T$ (the F-budget); $c$ is computed as a state-dependent function. Under this interpretation, $c$ scales with $\eta$ and the shape adapts to the magnitude.
 
-| $K$ | matched-$\mathrm{srank}$ SSC $c$ |
-|---|---|
-| 3  | 0.7 |
-| 5  | 0.3 |
-| 7  | 0.1 |
+**$c$ fixed (η-independent).** Alternatively, $c$ can be exposed directly as a hyperparameter, in the pre-rescaled coordinates where $\sigma_{\max}(X) = 1$ holds by construction. In this frame, $c$ no longer references $\eta$ or $\rho$: it sets a fixed knee location on the workload's intrinsic singular-value distribution. Directions with $\sigma_i > c$ are saturated toward a common magnitude (signal-like treatment); directions with $\sigma_i < c$ are left near their natural amplitude (tail-like treatment). The magnitude rule still scales the output by $\rho$ via $\beta$, so the op-norm budget remains tied to $\eta$. What is η-independent under this interpretation is the *partition* of $X$'s spectrum into "treated as signal" vs "left alone", which is read as a property of the workload's pre-rescaled spectrum rather than of the user's step-size choice.
 
-A fixed-$c$ SSC sweep is therefore degenerate with a fixed-$K$ NS sweep on the $(\lVert\cdot\rVert_{op}, \lVert\cdot\rVert_F)$ pair after the magnitude rule. Residual differences live in the $\sigma$-distribution *shape* at matched norms (SSC saturates a plateau near $c$; NS lifts every $\sigma$ toward $1$); prior $\sigma^p$ sweep (HTMuon) evidence suggests such shape variations alone do not move the leaderboard.
+The two interpretations are not equivalent. The first answers "how should the shape adapt as $\eta$ varies?" — the answer being that the F-budget $T$ stays constant and $c$ tracks $\rho$. The second answers "where is the knee of the workload's spectrum?" — the answer being a number determined by the model, dataset, and layer geometry, not by $\eta$. The two cases coincide only if the workload's pre-rescaled spectrum is itself $\eta$-independent over the relevant range and the relevant value of $T$ corresponds to a $c$ that does not vary much across $\eta$.
 
-What makes the dual-norm trust region in §C.2 *not* a fixed-spectrum-shape knob is that $\lambda$ (in (C2)) or $c$ (in the SSC implementation) depends on $\rho$, hence on $\eta$. The interpolation across $\eta$ is what one fixed $K$ cannot do.
+### C.6. Open questions
 
-### C.5. Empirical anchor points
+1. **Choice of dual norm.** F-norm is one natural pair with the op-norm cap; alternatives include nuclear norm $\lVert\cdot\rVert_*$ (rank-aware) or general Schatten-$p$. F-norm is the cheapest to evaluate and admits the water-filling closed form, but it is not the unique principled choice.
 
-If $T$ is set to the best-NS-$K$ F-norm at the highest stable $\eta$, the dual-norm trust region should match best-NS-$K$ behavior at both endpoints of the $\eta$ grid:
+2. **Absolute vs relative $T$.** Whether the F-budget should live in absolute units or be scaled by a state-dependent quantity ($\lVert A\rVert_F$, $\rho\,\sqrt{r}$, etc.) bears on transferability across model sizes and ranks. The choice influences whether a single $T$ generalizes, or whether the user-facing knob should be a unitless ratio.
 
-| $\eta$ | $\rho = \eta/s$ | $\rho\,\sqrt{r}$ (full-polar F-norm) | best-$K$ F-norm | $T$ status |
-|---|---|---|---|---|
-| $3{\cdot}10^{-3}$ | $\approx 10^{-3}$ | $\approx 8{\cdot}10^{-3}$ | $K{=}10$: 0.008 | inactive ($T > \rho\sqrt{r}$) |
-| $10^{-1}$ | $\approx 3{\cdot}10^{-2}$ | $\approx 0.24$ | $K{=}5$: 0.13 | active, dictates $T \approx 0.13$ |
+3. **Hard vs smooth saturation.** Whether the smoothness of $H_c$ around the saturation knee matters in practice, beyond what hard water-filling (C2) provides, is open. Both maps share the same singular-vector alignment and the same op-norm cap; they differ only in the local behavior near the knee.
 
-A single $T \approx 0.13$ should recover NS $K{=}10$ behavior at $\eta = 3{\cdot}10^{-3}$ and NS $K{=}5$ behavior at $\eta = 10^{-1}$, with smooth interpolation in between. This is the testable claim.
+4. **Interaction with the Picard loop.** The shape map applies per polar step inside the block-Jacobi / Frank–Wolfe loop. At $k \ge 2$, the shape choice on the current sub-iterate feeds into the cross-coupling correction of the next; whether the loop's fixed-point properties depend on the choice of $\phi$ (beyond magnitude) is worth working out.
 
-### C.6. Recommended diagnostics, in order
-
-Each step is cheaper than the next and gates further work. Do not jump ahead.
-
-1. **Offline snapshot diagnostic (no new runs).** Aggregate per-step diagnostics from existing NS-ablation log groups (`chord_tight_clean_ns_ablation_*`) — for each $(K, \eta)$ pair, scatter eval-loss against $\lVert\mathrm dA\rVert_F$, $\lVert\mathrm dB\rVert_F$, and effective stable rank $\lVert\mathrm d\rVert_F^2/\lVert\mathrm d\rVert_2^2$. **Pass:** best runs across $\eta$ cluster around a roughly constant F-norm budget. **Fail:** best F-norm varies monotonically with $\eta$ → Pareto is on a different axis; drop the proposal.
-
-2. **Norm-matched ablation (one new sweep).** At a single high $\eta$, take the $K{=}10$ / full-polar direction but rescale its F-norm to match the observed best-$K$ F-norm while preserving op-norm cap as much as possible. **Pass:** $K{=}10$ recovers $K{=}5$-like behavior. **Fail:** mismatch persists → the F-norm is necessary but not sufficient; spectral shape or layer-wise coupling matters separately.
-
-3. **Hard water-filling sweep (one optimizer, one new flag).** Implement (C2) as `--fnorm_trust_radius T`. Sweep $T \in \{0.05, 0.1, 0.2, 0.4\}$ across $\eta \in \{3{\cdot}10^{-4}, 10^{-3}, 3{\cdot}10^{-3}, 10^{-2}, 3{\cdot}10^{-2}, 10^{-1}\}$ at $r{=}64$, $k{=}2$, NS $K{=}10$, packed_v1 4000 steps, seed 0. 24 cells. **Pass:** one $T$ (or two adjacent $T$'s) wins across most $\eta$ — Pareto-escape. **Partial:** two non-adjacent $T$'s — directionally correct, needs refinement. **Fail:** best $T$ tracks $\eta$ — reinvented fixed effective rank; drop.
-
-4. **Smoke test: global F cap.** Before water-filling, try scaling the final update by $\min(1,\,T/\lVert\mathrm dA\rVert_F)$ on top of $K{=}10$. This is crude (reduces op-norm when active) but cheap, and answers "is total F step the thing that breaks high $\eta$?" If this crude version helps materially at high $\eta$, the principled (C2) is worth doing.
-
-5. **Chord diagnostic (logging only).** Log $\eta/s^2$ and $\lVert\Delta B\,\Delta A\rVert/\lVert J\rVert$ per layer. If high-$\eta$ failures correlate with the chord term becoming $O(1)$ relative to $J$, a stricter chord-safe radius (Appendix A's quadratic form) is a simpler fix than dual-norm trust.
-
-Steps 1, 4, 5 are essentially free (no new sweeps); 2 and 3 are sweeps gated by step 1.
-
-### C.7. Open questions for review
-
-1. **Is $T$ the right dual quantity?** Alternatives include nuclear norm $\lVert\cdot\rVert_*$ (rank-aware) or Schatten-$p$ for intermediate $p$. F-norm is the cheapest and directly corresponds to the leaked quantity in §C.1, but is not the unique principled choice.
-
-2. **Where should $T$ live dimensionally?** Absolute F-norm units vs. relative $T = \tau\,\lVert A\rVert_F$ (LAMB-style). Working hypothesis: absolute $T$ is correct *for a fixed model*; relative $\tau\,\lVert A\rVert_F$ is needed *across* models or ranks.
-
-3. **Hard vs smooth.** Whether the smoothness of $H_c$ over the hard $\min$ in (C2) matters at training scale is empirically open. (C2) is the correct first test because it isolates the F-cap question from the smoothing question.
-
-4. **Interaction with Picard / cross-coupling.** The dual-norm magnitude rule applies per polar-step inside the Picard loop. At $k \ge 2$ with full-FW linearization, self-terms see the F-capped $\mathrm dA$ from the previous Picard iter; verify by smoke before sweeping.
-
-### C.8. Confidence and request for review
-
-**Update from §C.6 step 1 (offline diagnostic):** Run `scripts/analysis/dual_norm_diagnostic.py` on the `chord_tight_clean_ns_ablation_*` log groups. For each $(r, k, \eta)$ cell, the per-$\eta$ winning NS-count was identified and the median-over-training $\lVert\mathrm dA\rVert_F \approx \lVert\mathrm dA\rVert_{op}\,\sqrt{\mathrm{srank}_A}$ was reconstructed. Results at the per-$\eta$ Pareto frontier:
-
-| $(r, k)$ | NS-crossover across $\eta$? | $F_{\mathrm dA}$ range at winning cells | F-cap consistent? |
-|---|---|---|---|
-| $r{=}64, k{=}2$ | no — NS$=$10 wins at all $\eta$ | $1.3\cdot 10^{-2}$ – $1.8\cdot 10^{-1}$ (13.5$\times$) | no Pareto to test |
-| $r{=}64, k{=}3$ | no — NS$=$5 wins at all $\eta$ | $8.2\cdot 10^{-3}$ – $5.2\cdot 10^{-2}$ (6.3$\times$) | no Pareto to test |
-| $r{=}256, k{=}1$ | yes (10 $\to$ 5 $\to$ 2) | $3.5\cdot 10^{-2}$ – $2.3\cdot 10^{-1}$ (6.6$\times$); winning $F$ caps near $0.2$ at the 10$\to$5 boundary | weak support |
-| $r{=}256, k{=}3$ | yes (10 $\to$ 5 $\to$ 2) | $2.8\cdot 10^{-2}$ – $1.9\cdot 10^{-1}$ (6.9$\times$); winning $F$ drops 7$\times$ across the 10$\to$5 boundary | inconsistent |
-
-The strongest reading of the F-norm-cap hypothesis (a single $T$ near a constant $F_{\mathrm dA}$ value explains best-K across $\eta$) is **not supported**: winning $F_{\mathrm dA}$ varies by 6–7$\times$ across the $\eta$ grid even within a single $(r, k)$ cell. At $r{=}256, k{=}3$, $F_{\mathrm dA}$ at the winning cell *drops* sharply when the optimal K transitions from 10 to 5, opposite to what a constant-$T$ ceiling would produce.
-
-A weaker reading survives at $r{=}256, k{=}1$: in the high-$\eta$ regime where K transitions happen, the winning $F_{\mathrm dA}$ saturates near $0.2$ before forcing a K-drop. This is consistent with an $r$-dependent F-cap, but not with one cross-$r$ constant $T$.
-
-**Updated credence that hard water-filling (C2) will Pareto-escape:** ~20–25%, down from a pre-diagnostic ~30–40%. The strongest version of the proposal is contradicted; only a regime-restricted version (high-$\eta$ behaviour at large $r$) remains plausible.
-
-**Recommended path:** before any (C2) sweep, run §C.6 step 4 (global F cap on K$=$10 at high $\eta$, ~1 cell). It is the cheapest test of the residual hypothesis and falsifies a weaker version of the claim. Drop SSC implementation entirely until either step 4 produces a clear positive signal, or a third axis (chord error per §C.6 step 5, or layer coupling) replaces the F-norm framing.
-
-**Failure modes still on the table:**
-
-- **F-norm may not be the right dual.** Strongly suggested by the $r{=}256, k{=}3$ result above. The K-vs-$\eta$ Pareto likely lives on spectral shape, chord error, or layer-coupling.
-- **The right scale of $T$ is $r$-dependent.** A constant $T$ across $r$ ignores that $\rho\sqrt{r}$ grows with $r$. A relative formulation $T = \tau\,\rho\sqrt{r}$ might recover what the diagnostic rules out at fixed $T$ — but this is a post-hoc rescue and should not be pursued without independent motivation.
-
-Raw aggregated data: `results/analysis/dual_norm_diagnostic_v1.pkl`.
+5. **Empirical operating curves.** The appendix is silent on which choice of $\phi$ — exact polar, fixed-$K$ NS, water-filling (C2), or fixed-$c$ SSC — performs best on the target workload, and whether the answer is sensitive to rank, optimizer hyperparameters, or learning-rate placement within a sweep. These are empirical questions; the role of this appendix is to lay out the structural options.
 
 ## References
 
