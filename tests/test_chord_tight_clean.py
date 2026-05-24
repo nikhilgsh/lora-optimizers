@@ -308,3 +308,57 @@ def test_higham_with_lam_max_zero_returns_finite():
     )
     assert torch.isfinite(Z_internal).all(), \
         f"Higham(H=0, lam_max=None) produced non-finite: {Z_internal}"
+
+
+# ---- κ-adaptive SSC (Appendix C.5 state-dependent c) ----
+
+def _kappa_from_X_c(X, c):
+    """Reference κ = ‖H_c(X)‖_F² / (r · h_c(1)²) computed via _ssc_svd."""
+    from lora_playground.optim import _ssc_svd
+    H = _ssc_svd(X, c=c)
+    r = X.shape[-2] if X.shape[-2] <= X.shape[-1] else X.shape[-1]
+    h1_sq = 1.0 / (1.0 + 1.0 / (c ** 2))
+    # Reduce over the last two axes; keep batch leading dims.
+    return H.pow(2).sum(dim=(-2, -1)) / (r * h1_sq)
+
+
+def test_ssc_adaptive_kappa_recovers_target():
+    """Adaptive kernel: realized κ on its output matches the target κ to
+    ~1e-3 across a range of targets."""
+    from lora_playground.optim import _ssc_adaptive_kappa_batched
+    torch.manual_seed(0)
+    N, r, d = 4, 8, 32
+    X = torch.randn(N, r, d) * 0.5
+    # Pre-rescale to σ_max=1 like §2.5 of the algorithm doc.
+    sigma_max = torch.linalg.svdvals(X).max(dim=-1).values
+    X = X / sigma_max.view(-1, 1, 1)
+    for kappa in (0.6, 0.7, 0.85, 0.95):
+        H, c = _ssc_adaptive_kappa_batched(X, kappa=kappa, nsteps=20)
+        h1_sq = 1.0 / (1.0 + 1.0 / c.pow(2))
+        realized = H.pow(2).sum(dim=(-2, -1)) / (r * h1_sq)
+        # Per-pair realized κ should match target.
+        assert torch.allclose(realized, torch.full_like(realized, kappa),
+                              atol=2e-3), \
+            f"target κ={kappa}: solved c={c.tolist()}, realized={realized.tolist()}"
+
+
+def test_ssc_adaptive_matches_fixed_c_round_trip():
+    """κ→c bisection round-trips: pick a fixed c, compute κ(c), feed κ to
+    the adaptive kernel, recover c."""
+    from lora_playground.optim import _ssc_adaptive_kappa_batched
+    torch.manual_seed(1)
+    r, d = 6, 24
+    for trial in range(3):
+        X = torch.randn(1, r, d) * 0.5
+        sigma_max = torch.linalg.svdvals(X).max(dim=-1).values
+        X = X / sigma_max.view(-1, 1, 1)
+        for c_target in (0.3, 0.5, 0.7, 1.0):
+            kappa = _kappa_from_X_c(X, c_target)  # (1,) per-pair κ at c_target
+            _, c_solved = _ssc_adaptive_kappa_batched(
+                X, kappa=float(kappa), nsteps=20,
+            )
+            rel_err = float(((c_solved - c_target).abs() / c_target).max())
+            assert rel_err < 1e-3, (
+                f"trial={trial} c_target={c_target}: solved c={c_solved.tolist()} "
+                f"κ(c_target)={kappa.tolist()} rel_err={rel_err}"
+            )

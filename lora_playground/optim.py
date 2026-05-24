@@ -2138,10 +2138,20 @@ def _ssc_misr_batched(X, c, nsteps=10, eps=1e-12):
     Xf = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
     batch, r, d = Xf.shape
     device, dtype = Xf.device, Xf.dtype
-    inv_c2 = 1.0 / (float(c) ** 2)
-    I_r = torch.eye(r, device=device, dtype=dtype).expand(batch, r, r)
-    # G = I + X X^T / c² is symmetric PSD with eigenvalues ≥ 1.
-    G = torch.baddbmm(I_r, Xf, Xf.transpose(-2, -1), alpha=inv_c2, beta=1.0)
+    # `c` may be a scalar (fixed-c SSC) or a (batch,) tensor (κ-adaptive SSC,
+    # one solved c per pair). Broadcast either to (batch, 1, 1) so the gram
+    # G = I + X X^T / c² is correct per-batch.
+    if torch.is_tensor(c):
+        inv_c2 = (1.0 / c.to(device=device, dtype=dtype).pow(2)).view(-1, 1, 1)
+        # baddbmm requires alpha to be a Python scalar — promote via expand
+        # on the gram path below instead. Compute scaled outer product manually.
+        I_r = torch.eye(r, device=device, dtype=dtype).expand(batch, r, r)
+        G = I_r + inv_c2 * torch.bmm(Xf, Xf.transpose(-2, -1))
+    else:
+        inv_c2 = 1.0 / (float(c) ** 2)
+        I_r = torch.eye(r, device=device, dtype=dtype).expand(batch, r, r)
+        # G = I + X X^T / c² is symmetric PSD with eigenvalues ≥ 1.
+        G = torch.baddbmm(I_r, Xf, Xf.transpose(-2, -1), alpha=inv_c2, beta=1.0)
     # α ≥ σ_max(G): use trace as a cheap upper bound (sum of eigvals ≥ max eigval).
     alpha = G.diagonal(dim1=-2, dim2=-1).sum(dim=-1).clamp_min(eps)  # (batch,)
     alpha_b11 = alpha.view(-1, 1, 1)
@@ -2158,6 +2168,96 @@ def _ssc_misr_batched(X, c, nsteps=10, eps=1e-12):
     out = torch.bmm(G_inv_half, Xf)  # (batch, r, d)
     out = out.reshape(*orig_leading, *out.shape[-2:])
     return out.transpose(-2, -1) if tall else out
+
+
+def _solve_c_from_kappa_batched(s_sq, kappa, c_lo=1e-3, c_hi=1e3, iters=40):
+    """Solve per-batch for the SSC threshold c that realizes a target
+    rank-normalized energy κ.
+
+    Defining h_c(s) = s / sqrt(1 + (s/c)²), the rank-normalized energy is
+        κ(c) := (1/r) Σ_i (h_c(s_i) / h_c(1))²
+              = (1+1/c²)/r · Σ_i  s_i² / (1 + s_i²/c²).
+    κ is monotone DECREASING in c on (0, ∞) for any spectrum with s_i ∈ [0, 1],
+    s_max = 1: small c flattens every direction toward the same magnitude (κ →
+    rank/r, near 1), large c approaches identity (κ → ‖s‖² / r, can be small
+    when the input spectrum is concentrated). Bisection in log-c is well-posed.
+
+    Inputs
+    ------
+    s_sq : (N, r) tensor — squared singular values normalized so each row's
+        max is 1 (the §2.5-rescaled input spectrum, in squared form so we
+        avoid an extra sqrt — eigvalsh gives σ² directly).
+    kappa : float — target κ. Should lie in (mean(s_sq)/r, 1].
+
+    Returns
+    -------
+    c : (N,) tensor — solved c per pair.
+    """
+    device, dtype = s_sq.device, s_sq.dtype
+    N, r = s_sq.shape
+    lo = torch.full((N,), float(c_lo), device=device, dtype=dtype)
+    hi = torch.full((N,), float(c_hi), device=device, dtype=dtype)
+    log_lo, log_hi = lo.log(), hi.log()
+    target = torch.full((N,), float(kappa), device=device, dtype=dtype)
+    for _ in range(iters):
+        log_mid = 0.5 * (log_lo + log_hi)
+        c = log_mid.exp()
+        inv_c2 = (1.0 / c.pow(2)).unsqueeze(-1)            # (N, 1)
+        # κ(c) = (1/r) Σ s² (1 + 1/c²) / (1 + s²/c²)
+        num = s_sq * (1.0 + inv_c2)
+        den = 1.0 + s_sq * inv_c2
+        kappa_at_c = (num / den).mean(dim=-1)              # (N,)
+        # κ is monotone DECREASING in c → if κ(c) < target, lower c (raise κ).
+        too_low = kappa_at_c < target
+        log_hi = torch.where(too_low, log_mid, log_hi)
+        log_lo = torch.where(too_low, log_lo, log_mid)
+    return (0.5 * (log_lo + log_hi)).exp()
+
+
+def _ssc_adaptive_kappa_batched(X, kappa, nsteps=10, eps=1e-12,
+                                c_lo=1e-3, c_hi=1e3, bisect_iters=40):
+    """SPECTRA Soft Spectral Clipping with the threshold c solved per-pair
+    per-step from a target rank-normalized energy κ.
+
+    Pipeline:
+      1. G_X = X X^T (r×r per pair — one bmm).
+      2. λ_i = eigvalsh(G_X) (eigenvalues only, no eigenvectors).
+      3. s_sq = λ / λ.max — pre-rescaled squared spectrum, max = 1.
+      4. c = _solve_c_from_kappa_batched(s_sq, κ) — log-bisection in c.
+      5. Apply existing MISR kernel with that per-pair c.
+
+    Returns (H_c(X), c) where c is (N,) for diagnostic logging. No SVD;
+    eigvalsh is launch-bound on small r×r at production scale, so this is
+    intended as the upper-bound-on-quality probe before designing a refresh-
+    schedule amortization. See `algorithm_tight_chord.md` §C.5 for the
+    state-dependent interpretation of c.
+    """
+    if X.shape[-2] == 0 or X.shape[-1] == 0:
+        return X.float(), torch.zeros(X.shape[:-2], device=X.device)
+    Xf = X.float()
+    tall = Xf.shape[-2] > Xf.shape[-1]
+    if tall:
+        Xf = Xf.transpose(-2, -1)
+    orig_leading = Xf.shape[:-2]
+    Xf_flat = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
+    batch, r, d = Xf_flat.shape
+    # Use the smaller-side gram (r×r) so eigvalsh stays on small matrices.
+    G_X = torch.bmm(Xf_flat, Xf_flat.transpose(-2, -1))
+    # PSD ⇒ eigvalsh returns ascending real eigenvalues. Add a tiny floor for
+    # rank-deficient inputs (the post-§2.5-rescale path generally has a clean
+    # top eigenvalue but the tail can be ≈ 0 in finite precision).
+    lam = torch.linalg.eigvalsh(G_X).clamp_min(0.0)          # (batch, r)
+    lam_max = lam.max(dim=-1, keepdim=True).values.clamp_min(eps)
+    s_sq = lam / lam_max                                     # max-normalized to 1
+    c = _solve_c_from_kappa_batched(s_sq, kappa,
+                                    c_lo=c_lo, c_hi=c_hi, iters=bisect_iters)
+    # Apply MISR with per-pair c. Untranspose was undone by reshape above;
+    # _ssc_misr_batched handles its own tall-transpose, so pass Xf_flat as-is
+    # (after our outer transpose).
+    out_flat = _ssc_misr_batched(Xf_flat, c=c, nsteps=nsteps, eps=eps)
+    out = out_flat.reshape(*orig_leading, *out_flat.shape[-2:])
+    c_out = c.reshape(*orig_leading)
+    return (out.transpose(-2, -1) if tall else out), c_out
 
 
 def _polar_retract(X, nsteps=5, eps=1e-7):
@@ -2884,7 +2984,7 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_norm_dir="frob",
                  polar_sigma_power=None,
                  polar_method="ns",
-                 ssc_c=None, ssc_nsteps=10,
+                 ssc_c=None, ssc_nsteps=10, ssc_kappa=None,
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
@@ -3035,9 +3135,19 @@ class AdamPolarProductLoRA(Optimizer):
         # SSC (SPECTRA arXiv:2603.14315): soft spectral clipping h_c(σ) = σ/√(1+(σ/c)²)
         # via Newton-Schulz MISR. c is in units of the §2.5-rescaled polar input
         # where σ_max(X)=1; active clipping range is c ∈ (0, 1]. c → large ≈ identity.
-        if polar_method == "ssc" and ssc_c is None:
-            raise ValueError("polar_method='ssc' requires ssc_c (clipping threshold)")
+        # SSC has two interpretations of the shape parameter (Appendix C.5 of
+        # algorithm_tight_chord.md): fixed ssc_c (η-independent knee location)
+        # or state-dependent via ssc_kappa (target rank-normalized energy,
+        # solved per-pair per-step for c). Exactly one must be set.
+        if polar_method == "ssc":
+            n_set = (ssc_c is not None) + (ssc_kappa is not None)
+            if n_set != 1:
+                raise ValueError(
+                    "polar_method='ssc' requires exactly one of {ssc_c, ssc_kappa}; "
+                    f"got ssc_c={ssc_c!r}, ssc_kappa={ssc_kappa!r}"
+                )
         self.ssc_c = ssc_c
+        self.ssc_kappa = ssc_kappa
         self.ssc_nsteps = ssc_nsteps
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
@@ -3559,11 +3669,24 @@ class AdamPolarProductLoRA(Optimizer):
         def _b11(t):
             return t.unsqueeze(-1).unsqueeze(-1)
 
-        def _polar(X):
+        def _polar(X, side=None):
             if self.polar_method == "ssc":
                 # SPECTRA soft spectral clipping in place of NS polar map.
                 # Input is post-§2.5-rescale so σ_max(X) ≈ 1; ssc_c is in
                 # those units (c ≲ 1 produces meaningful clipping).
+                if self.ssc_kappa is not None:
+                    # κ-adaptive: solve c per-pair per-step from target κ
+                    # (Appendix C.5 state-dependent interpretation).
+                    out, c_solved = _ssc_adaptive_kappa_batched(
+                        X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                    )
+                    if side is not None:
+                        # Stash the realized per-pair c for diagnostic logging.
+                        # Last polar call wins (n=k-1 of Picard); fine since
+                        # the cross-coupling-corrected iterate is what gets
+                        # applied to the weights.
+                        gs[f'ssc_c_last_{side}'] = c_solved.detach()
+                    return out.float()
                 return _ssc_misr_batched(X, c=self.ssc_c, nsteps=self.ssc_nsteps).float()
             if self.ns_form == "gram":
                 return _newton_schulz_gram_batched(X, nsteps=self.ns_steps).float()
@@ -3673,8 +3796,8 @@ class AdamPolarProductLoRA(Optimizer):
                     X_B_eff = u_B_eff @ SA_half_inv
 
                 # Polar map via Newton-Schulz (canonical: gram, fp16+restart).
-                P_A = _polar(X_A_eff)
-                P_B = _polar(X_B_eff)
+                P_A = _polar(X_A_eff, side='A')
+                P_B = _polar(X_B_eff, side='B')
 
                 # HTMuon σ→σ^p sub-mode (silent when htmuon_p is None).
                 # Applies U Σ^p V^T = (X Xᵀ)^(p/2) · polar(X).
@@ -4366,6 +4489,10 @@ class AdamPolarProductLoRA(Optimizer):
                     "spectral_chord_tight", "spectral_chord_tight_clean",
                     "spectral_chord_direction"
                 ) else None
+                # κ-adaptive SSC stashes the per-pair solved c into gs;
+                # surface it for the per-pair diagnostic emitter.
+                ssc_c_A_b = gs.get('ssc_c_last_A')
+                ssc_c_B_b = gs.get('ssc_c_last_B')
 
                 for k_pair in range(N):
                     gi = indices[k_pair]
@@ -4397,6 +4524,8 @@ class AdamPolarProductLoRA(Optimizer):
                         rho=(rho[k_pair] if rho is not None else None),
                         s_AB=(s_AB_b[k_pair] if s_AB_b is not None else None),
                         lr=lr,
+                        ssc_c_A=(ssc_c_A_b[k_pair] if ssc_c_A_b is not None else None),
+                        ssc_c_B=(ssc_c_B_b[k_pair] if ssc_c_B_b is not None else None),
                     )
                     diag_records.append(rec)
                     # Cache so the next step's NaN-trigger event can
@@ -4778,6 +4907,7 @@ class AdamPolarProductLoRA(Optimizer):
         sigma_A_t, sigma_B_t, op_geoA, op_geoB,
         uA_norm, uB_norm, gA_norm, gB_norm, picard_coeff_t,
         rho, s_AB, lr,
+        ssc_c_A=None, ssc_c_B=None,
     ):
         """Basic-tier diagnostics (default ON, ~2% wall). Returns the
         per-pair ``rec`` dict the caller appends to ``diag_records``.
@@ -4799,6 +4929,8 @@ class AdamPolarProductLoRA(Optimizer):
         rec = {
             "cos_A": _frob_cos(dA, -u_A),
             "cos_B": _frob_cos(dB, -u_B),
+            **({"ssc_c_A": float(ssc_c_A)} if ssc_c_A is not None else {}),
+            **({"ssc_c_B": float(ssc_c_B)} if ssc_c_B is not None else {}),
             "norm_dA": float(dA.detach().norm()),
             "norm_dA_adamw_eq": float(lr * uA_norm),
             "norm_dB": float(dB.detach().norm()),
@@ -8656,6 +8788,7 @@ def build_optimizer(
     polar_core_remix_alpha: float = 0.0,
     ssc_c: float | None = None,
     ssc_nsteps: int = 10,
+    ssc_kappa: float | None = None,
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
@@ -9056,6 +9189,7 @@ def build_optimizer(
             polar_method=polar_method,
             ssc_c=ssc_c,
             ssc_nsteps=ssc_nsteps,
+            ssc_kappa=ssc_kappa,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,

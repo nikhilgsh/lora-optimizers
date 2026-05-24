@@ -652,7 +652,14 @@ This is **spectral water-filling**: $\lambda$ is the dual variable for the F-nor
 
 The intermediate regime is the substantive one: it interpolates smoothly between exact polar and the unprocessed direction, with the interpolation governed by $T$.
 
-Cost of (C2): a thin SVD of $X$ (already paid by clip-prox in Algorithm 1) plus an $O(r)$ bisection for $\lambda$.
+Cost of (C2) depends on the polar backend the SSC step is composed into:
+
+- *Clip-prox path (Algorithm 1).* The thin SVD of $X$ is already paid by clip-prox itself, so (C2) adds only the $O(r)$ bisection for $\lambda$ — essentially free.
+- *Newton–Schulz polar path (Algorithm 2′, the canonical implementation).* The pipeline does **not** compute an SVD; it uses gram-form NS on $X$ (`algorithm_clean_implementation.md` §5). To realize (C2) here, one must form the $r \times r$ gram $G_X := X X^\top$ (one $r \times d$ matmul) and obtain its eigenvalues. Two cost regimes apply:
+  - **Per-polar-call eigvalsh is expensive.** `torch.linalg.eigvalsh` is launch-bound on small $r \times r$ matrices on Blackwell — `walltime_profile.md` records `eigh` whitening at ~700 ms/step opt vs Higham's ~160 ms at r=128, which is why this project moved the whitening preconditioner off eigh. Calling `eigvalsh` once per polar call per pair would re-incur that gap.
+  - **Amortized eigvalsh is cheap.** If $c$ is refreshed on a schedule (matching `precond_refresh_every`, i.e. once per N steps and held constant between refreshes), the eigvalsh cost is amortized and falls back to the same FLOP class as the existing Higham refresh. This is the right cost model for the state-dependent SSC use case in §C.5, where we expect $c$ to track slow changes in the workload's spectrum, not jitter step-to-step.
+
+  In either regime, the SSC application itself still uses `_ssc_misr_batched` with the solved $c$; the SVD never enters Algorithm 2′.
 
 ### C.3. A smooth implementation: Soft Spectral Clipping
 
@@ -678,8 +685,8 @@ $$
 
 so that $\lVert\mathrm dA\rVert_{op} = \rho$ matches the chord-tight budget while the *shape* of the output spectrum is set by $c$. Two implementation routes are available:
 
-- An SVD-based reference (`_ssc_svd`) that applies $h_c$ to the singular values directly. Same cost as clip-prox.
-- A matmul-only Newton–Schulz-style routine (`_ssc_misr_batched`) based on the matrix-inverse-square-root iteration of SPECTRA Algorithm 2. Avoids the SVD; cubic convergence near the saturation regime; assumes pre-rescaled input ($\sigma_{\max}(X) \approx 1$), which holds after §2.5.
+- **`_ssc_misr_batched` (production, no SVD).** A matmul-only Newton–Schulz-style routine based on the matrix-inverse-square-root iteration of SPECTRA Algorithm 2, applied to the $r \times r$ gram $I + X X^\top / c^2$. Cubic convergence near the saturation regime; assumes pre-rescaled input ($\sigma_{\max}(X) \approx 1$), which holds after §2.5. This is what `_chord_tight_clean_polar_pipeline` calls when `polar_method="ssc"` — Algorithm 2′ stays SVD-free end-to-end. Cost is one $r \times r$ NS recurrence per polar call, same FLOP class as gram-NS polar.
+- **`_ssc_svd` (reference only, do not put in the production path).** Thin SVD of $X$ + apply $h_c$ to the singular values directly. Used to validate MISR convergence on snapshots; introducing it into Algorithm 2′ would replace the gram-NS polar's $O(r^2 D)$ matmul work with a fresh $O(r^2 D)$ SVD per call, which is a significant wall-time regression (SVDs are launch-heavy and not on tensor cores), not a free composition.
 
 ### C.4. Relation to fixed-$K$ Newton–Schulz
 
@@ -694,7 +701,7 @@ Both families have a single shape parameter ($K$ or $c$). At any given input spe
 
 The shape parameter $c$ admits two distinct interpretations, with different implications for how it should be set.
 
-**$c$ tied to $\eta$ (state-dependent).** In the water-filling formulation (C2), $\lambda$ — and therefore the effective crossover scale $\rho/\lambda$ — depends on $\rho$ and on the spectrum of $X$. In the SSC analog, this corresponds to choosing $c$ per step by solving a monotone equation that ties it to $\rho$ via the F-budget $T$. The user-facing parameter is $T$ (the F-budget); $c$ is computed as a state-dependent function. Under this interpretation, $c$ scales with $\eta$ and the shape adapts to the magnitude.
+**$c$ tied to $\eta$ (state-dependent).** In the water-filling formulation (C2), $\lambda$ — and therefore the effective crossover scale $\rho/\lambda$ — depends on $\rho$ and on the spectrum of $X$. In the SSC analog, this corresponds to choosing $c$ per step by solving a monotone equation that ties it to $\rho$ via the F-budget $T$ (equivalently, via a rank-normalized energy target $\kappa := \tfrac{1}{r}\sum_i (h_c(s_i)/h_c(1))^2$ with $s_i = \sigma_i(X)/\sigma_{\max}(X)$). The user-facing parameter is $T$ (or $\kappa$); $c$ is computed as a state-dependent function. Under this interpretation, $c$ scales with $\eta$ and the shape adapts to the magnitude. The realization cost is the spectrum of $X$ (per the gram-eigvalsh route in C.2 — amortize via a refresh schedule to keep this off the per-step hot path; per-call `eigvalsh` is launch-bound at production $r$ on Blackwell, see `walltime_profile.md`) plus a scalar bisection in $\log c$. The SSC application itself stays on the existing MISR path with the solved $c$, so Algorithm 2′ remains SVD-free.
 
 **$c$ fixed (η-independent).** Alternatively, $c$ can be exposed directly as a hyperparameter, in the pre-rescaled coordinates where $\sigma_{\max}(X) = 1$ holds by construction. In this frame, $c$ no longer references $\eta$ or $\rho$: it sets a fixed knee location on the workload's intrinsic singular-value distribution. Directions with $\sigma_i > c$ are saturated toward a common magnitude (signal-like treatment); directions with $\sigma_i < c$ are left near their natural amplitude (tail-like treatment). The magnitude rule still scales the output by $\rho$ via $\beta$, so the op-norm budget remains tied to $\eta$. What is η-independent under this interpretation is the *partition* of $X$'s spectrum into "treated as signal" vs "left alone", which is read as a property of the workload's pre-rescaled spectrum rather than of the user's step-size choice.
 

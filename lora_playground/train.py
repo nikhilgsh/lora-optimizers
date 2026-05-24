@@ -672,9 +672,16 @@ def make_parser():
                              "'ssc' = SPECTRA (arXiv:2603.14315) soft spectral clipping h_c(σ)=σ/√(1+(σ/c)²). "
                              "Requires --ssc_c.")
     parser.add_argument("--ssc_c", type=float, default=None,
-                        help="SSC clipping threshold c (σ-units). Required when --polar_method ssc. "
+                        help="SSC clipping threshold c (σ-units). Mutually exclusive with --ssc_kappa; "
+                             "exactly one is required when --polar_method ssc. "
                              "Input to _ssc_misr_batched is post-§2.5-rescale (σ_max≈1), so c is in "
                              "fraction-of-σ_max units.")
+    parser.add_argument("--ssc_kappa", type=float, default=None,
+                        help="SSC κ-adaptive target rank-normalized energy "
+                             "(1/r) Σ_i (h_c(s_i)/h_c(1))². Mutually exclusive with --ssc_c. "
+                             "c is solved per-pair per-step via bisection. "
+                             "Achievable range: (‖s‖²/r, 1] on the §2.5-rescaled spectrum; "
+                             "concentrated LoRA polar inputs imply useful κ ≳ 0.1.")
     parser.add_argument("--ssc_nsteps", type=int, default=10,
                         help="MISR (matrix iterative soft-clipping) iteration count for SSC. Default 10.")
     parser.add_argument("--polar_sigma_power", type=float, default=None,
@@ -1070,6 +1077,7 @@ def main():
         polar_core_remix_alpha=args.polar_core_remix_alpha,
         ssc_c=args.ssc_c,
         ssc_nsteps=args.ssc_nsteps,
+        ssc_kappa=args.ssc_kappa,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -1187,6 +1195,7 @@ def main():
             "polar_method": args.polar_method,
             "ssc_c": args.ssc_c,
             "ssc_nsteps": args.ssc_nsteps,
+            "ssc_kappa": args.ssc_kappa,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,
