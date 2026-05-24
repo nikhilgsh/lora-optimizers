@@ -13,7 +13,7 @@ distinct algorithms as if they were seeds.
 import pytest
 
 from lora_playground.manifest import SERIES_AXIS_FIELDS
-from lora_playground.plot_utils import (
+from lora_playground.plotting import (
     LabelCollisionError,
     RUNTIME_FIELDS,
     assert_label_discriminates,

@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .plot_utils import RUNTIME_FIELDS, has_runs
+from .plotting import RUNTIME_FIELDS, has_runs
 
 
 # Phase 3 deletion (2026-05-14): EXCLUDED_COMMITS, EXCLUDED_GROUPS,

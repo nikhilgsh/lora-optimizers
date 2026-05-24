@@ -10,7 +10,7 @@ cell coverage) were removed in favor of testing logic over state.
 import pytest
 
 from lora_playground.loader import load_runs
-from lora_playground.plot_utils import (
+from lora_playground.plotting import (
     assert_label_discriminates,
     filter_baseline,
     series_id,

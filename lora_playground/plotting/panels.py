@@ -1,0 +1,368 @@
+"""Single-axis panel renderers and the per-rank leaderboard.
+
+`plot_eta_vs_final` renders the left panel (η vs final loss with diverged
+markers and OOR clamping); `plot_best_eta_curves` renders the right panel
+(best-η training trajectories). `plot_leaderboard_by_rank` is the
+single-panel best-eval-vs-rank bar/line chart.
+"""
+from __future__ import annotations
+
+import math
+from typing import Callable
+
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
+from .dedup import assert_label_discriminates
+from .style import (
+    AXIS_LABEL_FONTSIZE, BASELINE_COLOR, BASELINE_LS_CURVE,
+    BASELINE_LW_CURVE, BASELINE_MARKER, BASELINE_ZORDER, LEGEND_KW,
+    LINE_WIDTH, MARKER_SIZE, PANEL_TITLE_FONTSIZE, TICK_LABEL_FONTSIZE,
+)
+
+
+def _infer_min_step(runs) -> int | None:
+    """Return the target horizon by reading `max_steps` from the input cfgs.
+
+    Multiple max_steps in the same `runs` list (mixed-regime) → pick the
+    MAX, since the left panel can only report "final" for runs that hit
+    the highest target. Returns None if no cfg carries `max_steps`.
+    """
+    targets = {int(c["max_steps"]) for c, _ in runs if "max_steps" in c}
+    return max(targets) if targets else None
+
+
+def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
+                      color_map: dict, *, hlines: list[tuple] | None = None,
+                      ref_eta_sweeps: list[tuple] | None = None,
+                      title: str = "Final eval loss vs η, per group",
+                      legend: bool = True,
+                      adamw_group_keys: set[str] | None = None,
+                      marker_map: dict | None = None,
+                      linestyle_map: dict | None = None,
+                      normalize_x_to_optimum: bool = False,
+                      diverged_runs: list | None = None,
+                      allow_label_collision: bool = False) -> None:
+    """Left panel: η vs final eval loss, one line per group key.
+
+    `hlines` is a list of (label, y, color, ls, lw) 5-tuples.
+    `ref_eta_sweeps` is a list of (label, points, color, ls, lw, marker)
+    6-tuples where `points` is [(lr, mean, std, n), …] for error-bar
+    rendering, or a legacy [(lr, eval)] 2-tuple list.
+
+    `normalize_x_to_optimum`: when True, each series is plotted at
+    x = η/η⋆ where η⋆ is the lr giving the lowest mean eval for that
+    series. Optimum-aligns at x=1.
+    """
+    adamw_group_keys = adamw_group_keys or set()
+    marker_map = marker_map or {}
+    linestyle_map = linestyle_map or {}
+
+    # Defense in depth: enforce the series-id contract here too, in case
+    # this is called outside standard_sweep_figure. Idempotent when the
+    # caller already asserted.
+    if not allow_label_collision and runs:
+        assert_label_discriminates(runs, group_key_fn)
+
+    def _maybe_norm(xs, ys):
+        if not normalize_x_to_optimum or len(ys) < 1:
+            return xs
+        best_idx = min(range(len(ys)), key=lambda i: ys[i])
+        eta_star = xs[best_idx]
+        if eta_star <= 0:
+            return xs
+        return [x / eta_star for x in xs]
+
+    all_losses = []
+    if ref_eta_sweeps:
+        for label, points, color, ls, lw, marker in ref_eta_sweeps:
+            if not points:
+                continue
+            # points rows are (lr, mean, std, n); legacy (lr, eval) 2-tuples
+            # still supported.
+            if len(points[0]) == 4:
+                xs = [p[0] for p in points]
+                ys = [p[1] for p in points]
+                stds = [p[2] for p in points]
+                xs = _maybe_norm(xs, ys)
+                ax.errorbar(xs, ys, yerr=stds, color=color, ls=ls, lw=lw,
+                            marker=marker, markersize=MARKER_SIZE,
+                            label=label, zorder=BASELINE_ZORDER,
+                            capsize=6, capthick=lw, elinewidth=lw)
+            else:
+                xs = [p[0] for p in points]
+                ys = [p[1] for p in points]
+                xs = _maybe_norm(xs, ys)
+                ax.plot(xs, ys, color=color, ls=ls, lw=lw,
+                        marker=marker, markersize=MARKER_SIZE,
+                        label=label, zorder=BASELINE_ZORDER)
+            all_losses.extend(ys)
+    if hlines:
+        for label, y, color, ls, lw in hlines:
+            ax.axhline(y, color=color, ls=ls, lw=lw, label=label,
+                       zorder=BASELINE_ZORDER)
+            all_losses.append(y)
+
+    in_range_losses = []
+    groups = sorted({group_key_fn(c) for c, _ in runs})
+
+    # ── PASS 1: aggregate per-group (no clamping yet) ─────────────────────
+    # Two-pass design: we need to know `hi` (the visible top of the y-axis,
+    # computed from in_range_losses) BEFORE we pick a y_cap for clamping
+    # OOR / diverged points. With the old single-pass design y_cap was
+    # set to `min(raw_losses) + 0.15` upfront, which could exceed `hi`,
+    # pushing hollow markers off-screen.
+    import statistics as _stats
+    from collections import defaultdict as _dd
+    group_agg = []
+    for g in groups:
+        by_lr: dict[float, list[float]] = _dd(list)
+        for c, e in runs:
+            if group_key_fn(c) != g:
+                continue
+            by_lr[float(c["lr"])].append(e[-1]["eval_loss"])
+        # Fold diverged runs (NaN-final / max>thresh / early-killed) for
+        # THIS group into the same aggregation, sentinel = +∞.
+        if diverged_runs:
+            for c, e in diverged_runs:
+                if group_key_fn(c) != g:
+                    continue
+                by_lr[float(c["lr"])].append(float("inf"))
+        if not by_lr:
+            continue
+        agg = sorted(
+            (lr, sum(ys)/len(ys),
+             _stats.stdev(ys) if len(ys) > 1 else 0.0,
+             len(ys))
+            for lr, ys in by_lr.items()
+        )
+        xs = [p[0] for p in agg]
+        means = [p[1] for p in agg]
+        stds = [p[2] for p in agg]
+        is_nonfinite = [not math.isfinite(m) for m in means]
+        in_range_losses.extend(m for m, nf in zip(means, is_nonfinite) if not nf)
+        is_adamw = g in adamw_group_keys
+        style = dict(
+            color=BASELINE_COLOR if is_adamw else color_map.get(g, "grey"),
+            marker=BASELINE_MARKER if is_adamw else marker_map.get(g, "o"),
+            ls=BASELINE_LS_CURVE if is_adamw else linestyle_map.get(g, "-"),
+            lw=BASELINE_LW_CURVE if is_adamw else LINE_WIDTH,
+            zorder=BASELINE_ZORDER if is_adamw else 5,
+            is_adamw=is_adamw,
+        )
+        group_agg.append((g, xs, means, stds, is_nonfinite, style))
+
+    # ── compute y-axis bounds before pass 2 ──────────────────────────────
+    if in_range_losses or all_losses:
+        lo = min(in_range_losses + all_losses) - 0.005
+        hi = (max(in_range_losses) if in_range_losses
+              else max(all_losses)) + 0.01
+        hi = min(hi + 0.005, lo + 0.16)
+    else:
+        lo, hi = 0.0, 1.0
+    # y_cap = clamping height for OOR / diverged. Just inside the axis top,
+    # but never below max(in_range) (else legit in-range points would clip).
+    if in_range_losses:
+        max_in_range = max(in_range_losses)
+        y_cap = max(max_in_range + 0.003, hi - 0.006)
+    else:
+        y_cap = hi - 0.006
+
+    # Surface in-range points clipped by y_cap (rare — only when a finite
+    # mean is above the cap).
+    clipped = []
+    for g, xs, means, _stds, is_nonfinite, _style in group_agg:
+        for lr, m, nf in zip(xs, means, is_nonfinite):
+            if not nf and m > y_cap:
+                clipped.append((g, lr, m))
+    if clipped:
+        print(f"  [clipped from left panel y_cap={y_cap:.3f}] {len(clipped)} run(s):")
+        for g, lr, fl in sorted(clipped):
+            print(f"    {g} η={lr:.0e} final={fl:.4f}")
+
+    # ── PASS 2: render lines + markers ───────────────────────────────────
+    for g, xs, means, stds, is_nonfinite, style in group_agg:
+        ys_clamped = [y_cap if (nf or m > y_cap) else m
+                      for m, nf in zip(means, is_nonfinite)]
+        is_oor = [nf or m > y_cap for m, nf in zip(means, is_nonfinite)]
+        if normalize_x_to_optimum and any(not o for o in is_oor):
+            in_pairs = [(xs[i], means[i]) for i, o in enumerate(is_oor) if not o]
+            eta_star = min(in_pairs, key=lambda p: p[1])[0]
+            if eta_star > 0:
+                xs = [x / eta_star for x in xs]
+        color, marker, ls, lw, zorder, is_adamw = (
+            style["color"], style["marker"], style["ls"],
+            style["lw"], style["zorder"], style["is_adamw"])
+        # Connecting line through clamped means.
+        ax.plot(xs, ys_clamped, color=color, lw=lw, ls=ls, zorder=zorder,
+                label=f"{g} (baseline)" if is_adamw else g)
+        # In-range markers + ±σ error bars.
+        in_idx = [i for i, o in enumerate(is_oor) if not o]
+        if in_idx:
+            ax.errorbar(
+                [xs[i] for i in in_idx],
+                [means[i] for i in in_idx],
+                yerr=[stds[i] for i in in_idx],
+                color=color, marker=marker, markersize=MARKER_SIZE,
+                ls="", zorder=zorder + 1,
+                capsize=4, capthick=lw * 0.6, elinewidth=lw * 0.6,
+            )
+        # Hollow markers for OOR / diverged means.
+        oor_x = [xs[i] for i, o in enumerate(is_oor) if o]
+        oor_y = [ys_clamped[i] for i, o in enumerate(is_oor) if o]
+        if oor_x:
+            ax.plot(oor_x, oor_y, color=color, marker=marker,
+                    markersize=MARKER_SIZE + 4, markerfacecolor="none",
+                    markeredgewidth=2.2, ls="", zorder=zorder + 2)
+
+    ax.set_xscale("log")
+    ax.set_xlabel(r"$\eta / \eta^\star$ (log)" if normalize_x_to_optimum else "η (log)",
+                  fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel("Final eval loss", fontsize=AXIS_LABEL_FONTSIZE)
+    if normalize_x_to_optimum:
+        ax.axvline(1.0, color="grey", ls=":", lw=0.8, alpha=0.6, zorder=0)
+    ax.tick_params(labelsize=TICK_LABEL_FONTSIZE)
+    ax.grid(True, alpha=0.25, lw=0.6, which="major")
+    ax.grid(True, alpha=0.10, lw=0.5, which="minor")
+    ax.set_title(title, fontsize=PANEL_TITLE_FONTSIZE)
+    if in_range_losses or all_losses:
+        lo = min(in_range_losses + all_losses) - 0.005
+        hi = (max(in_range_losses) if in_range_losses
+              else max(all_losses)) + 0.01
+        hi = min(hi + 0.005, lo + 0.16)
+        ax.set_ylim(lo, hi)
+
+    if legend:
+        ax.legend(**LEGEND_KW)
+
+
+def plot_best_eta_curves(ax, runs, group_key_fn: Callable[[dict], str],
+                         color_map: dict, *, ref_curves: list[tuple] | None = None,
+                         title: str = "Best η per group — training curves",
+                         x_tick_step: int = 200,
+                         legend: bool = True,
+                         adamw_group_keys: set[str] | None = None,
+                         marker_map: dict | None = None,
+                         linestyle_map: dict | None = None) -> None:
+    """Right panel: training curves for the best (lowest final loss) η per group.
+
+    `ref_curves` is a list of 7-tuples
+    (label, evs, color, ls, lw, marker, std_evs). When `std_evs` carries
+    non-zero std (multi-seed), a ±σ shaded band is drawn behind the line.
+    """
+    adamw_group_keys = adamw_group_keys or set()
+    marker_map = marker_map or {}
+    linestyle_map = linestyle_map or {}
+
+    if ref_curves:
+        for label, evs, color, ls, lw, marker, std_evs in ref_curves:
+            xs = [e["step"] for e in evs]
+            ys = [e["eval_loss"] for e in evs]
+            if std_evs is not None and any(s["eval_loss"] > 0 for s in std_evs):
+                stds = [s["eval_loss"] for s in std_evs]
+                lo = [y - s for y, s in zip(ys, stds)]
+                hi = [y + s for y, s in zip(ys, stds)]
+                ax.fill_between(xs, lo, hi, color=color, alpha=0.18,
+                                zorder=BASELINE_ZORDER - 1, linewidth=0)
+            ax.plot(xs, ys,
+                    color=color, lw=lw, ls=ls, marker=marker,
+                    markersize=MARKER_SIZE, label=label,
+                    zorder=BASELINE_ZORDER)
+
+    best = {}
+    for cfg, evs in runs:
+        g = group_key_fn(cfg)
+        fl = evs[-1]["eval_loss"]
+        if g not in best or fl < best[g][2]:
+            best[g] = (cfg, evs, fl)
+    for g, (cfg, evs, fl) in sorted(best.items(), key=lambda kv: kv[1][2]):
+        is_adamw = g in adamw_group_keys
+        label = (f"{g} (baseline, η={cfg['lr']:.0e}, final={fl:.4f})"
+                 if is_adamw else f"{g} (η={cfg['lr']:.0e}, final={fl:.4f})")
+        ax.plot([e["step"] for e in evs], [e["eval_loss"] for e in evs],
+                color=BASELINE_COLOR if is_adamw else color_map.get(g, "grey"),
+                marker=BASELINE_MARKER if is_adamw else marker_map.get(g, "o"),
+                markersize=MARKER_SIZE,
+                lw=BASELINE_LW_CURVE if is_adamw else LINE_WIDTH,
+                ls=BASELINE_LS_CURVE if is_adamw else linestyle_map.get(g, "-"),
+                zorder=BASELINE_ZORDER if is_adamw else 5,
+                label=label)
+    ax.set_xlabel("Step", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel("Eval loss", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.tick_params(labelsize=TICK_LABEL_FONTSIZE)
+    ax.grid(True, alpha=0.25, lw=0.6)
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(x_tick_step))
+    ax.set_title(title, fontsize=PANEL_TITLE_FONTSIZE)
+    if legend:
+        ax.legend(**LEGEND_KW)
+
+
+def plot_leaderboard_by_rank(best: dict, baseline_optimizer: str = "adamw",
+                              color_map: dict | None = None,
+                              marker_map: dict | None = None,
+                              linestyle_map: dict | None = None,
+                              suptitle: str = "Best eval vs rank"):
+    """Single-panel leaderboard: best-η eval loss vs rank, one line per optimizer.
+
+    ``marker_map`` overrides the per-optimizer marker shape (default "o").
+    ``linestyle_map`` overrides the per-optimizer linestyle (default "-").
+    """
+    color_map = color_map or {}
+    marker_map = marker_map or {}
+    linestyle_map = linestyle_map or {}
+    baseline_floor = {r: best[(baseline_optimizer, r)][2]
+                      for (opt, r) in best if opt == baseline_optimizer}
+    ranks = sorted(baseline_floor)
+
+    series = {}
+    for (opt, r), (_cfg, _evs, fl) in best.items():
+        series.setdefault(opt, []).append((r, fl))
+    for opt in series:
+        series[opt].sort()
+
+    n_optimizers = len(series)
+    legend_ncol = max(1, min(4, (n_optimizers + 7) // 8))
+    legend_rows = (n_optimizers + legend_ncol - 1) // legend_ncol
+    plot_height = 5.0
+    legend_height = 0.30 * legend_rows + 0.5
+    fig_height = plot_height + legend_height
+    fig, ax = plt.subplots(figsize=(11, fig_height), constrained_layout=True)
+    all_losses = []
+    for opt, points in sorted(series.items()):
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        is_baseline = opt == baseline_optimizer
+        ax.plot(xs, ys,
+                color=BASELINE_COLOR if is_baseline else color_map.get(opt, "grey"),
+                lw=BASELINE_LW_CURVE if is_baseline else LINE_WIDTH,
+                ls=BASELINE_LS_CURVE if is_baseline else linestyle_map.get(opt, "-"),
+                marker=BASELINE_MARKER if is_baseline else marker_map.get(opt, "o"),
+                markersize=MARKER_SIZE,
+                label=f"{opt} (baseline)" if is_baseline else opt,
+                zorder=BASELINE_ZORDER if is_baseline else 5)
+        all_losses.extend(ys)
+
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(ranks)
+    ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter())
+    ax.set_xlabel("LoRA rank r")
+    ax.set_ylabel("Best-η final eval loss")
+    ax.set_title(suptitle, fontsize=12, fontweight="bold")
+    if all_losses:
+        lo = min(all_losses) - 0.005
+        hi = min(all_losses) + 0.05
+        ax.set_ylim(lo, hi)
+    ax.grid(True, alpha=0.25, lw=0.6)
+    legend_kw = dict(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.12),
+        ncol=legend_ncol,
+        fontsize=11 if n_optimizers > 8 else 13,
+        frameon=True,
+        handlelength=2.2,
+        handletextpad=0.6,
+        labelspacing=0.4,
+        columnspacing=1.5,
+    )
+    ax.legend(**legend_kw)
+    return fig, ax

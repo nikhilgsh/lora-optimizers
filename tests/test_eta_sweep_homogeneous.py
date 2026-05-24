@@ -15,7 +15,7 @@ filter to add.
 """
 import pytest
 
-from lora_playground.plot_utils import _eta_sweep_points
+from lora_playground.plotting.overlays import _eta_sweep_points
 
 
 def _run(optimizer, lr, final, max_steps=4000, lora_r=64, log_group="g"):

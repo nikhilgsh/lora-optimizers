@@ -143,7 +143,7 @@ EXPECTED_IN_CLOSURE = frozenset({
 # Files that MUST NOT be in train's closure (analysis / loader / exclusion only).
 EXPECTED_OUT_OF_CLOSURE = frozenset({
     "lora_playground/loader.py",
-    "lora_playground/plot_utils.py",
+    "lora_playground/plotting",   # analysis-side package — never in train.py closure
     "lora_playground/manifest.py",
     "lora_playground/invariants.py",
     "lora_playground/run_exclusions.py",

@@ -24,7 +24,7 @@ from typing import Any, Callable
 from .manifest import (
     SERIES_AXIS_FIELDS, live_manifests_newest_first, load_manifests, warn_untagged,
 )
-from .plot_utils import (
+from .plotting import (
     DIVERGE_THRESHOLD, OPTIM_COLORS, RUNTIME_FIELDS, has_runs, load_sweep,
     max_loss, merge_runs, parse_flag,
 )

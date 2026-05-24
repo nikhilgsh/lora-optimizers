@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
-from lora_playground.plot_utils import (
+from lora_playground.plotting import (
     OPTIM_COLORS, max_loss, merge_runs, parse_flag, load_sweep,
     plot_leaderboard_by_rank, standard_sweep_figure,
 )

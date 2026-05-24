@@ -30,11 +30,11 @@ def _fresh_imports():
     import importlib
 
     import lora_playground.run_cache as rc
-    import lora_playground.plot_utils as pu
+    import lora_playground.plotting.loading as pl
 
     rc.reset()
-    pu._LOAD_RUN_CACHE.clear()
-    pu._LOAD_SWEEP_CACHE.clear()
+    pl._LOAD_RUN_CACHE.clear()
+    pl._LOAD_SWEEP_CACHE.clear()
     # Manifest cache lives at module level.
     import lora_playground.manifest as mf
     mf._LOAD_MANIFESTS_CACHE.clear()
@@ -71,11 +71,8 @@ def _phase_timings(logs_root: str) -> None:
         live_manifests_newest_first,
         load_manifests,
     )
-    from lora_playground.plot_utils import (
-        _LOAD_SWEEP_CACHE,
-        has_runs,
-        load_sweep,
-    )
+    from lora_playground.plotting import has_runs, load_sweep
+    from lora_playground.plotting.loading import _LOAD_SWEEP_CACHE
 
     print("\n--- phase timings (cold) ---")
 

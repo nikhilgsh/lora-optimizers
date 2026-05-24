@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import pytest
 
 from matplotlib.colors import to_rgba
-from lora_playground.plot_utils import (
+from lora_playground.plotting import (
     plot_eta_vs_final, standard_sweep_figure, BASELINE_COLOR,
 )
 

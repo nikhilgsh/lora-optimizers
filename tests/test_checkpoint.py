@@ -241,7 +241,7 @@ def test_loader_merges_resume_segments(tmp_path):
     into one (cfg, evs) per task index. Step-union semantics: each step
     appears once; segments are step-disjoint by design."""
     import json as _json
-    from lora_playground.plot_utils import load_sweep
+    from lora_playground.plotting import load_sweep
 
     group_dir = tmp_path / "tg" / "run_info" / "logs"
     group_dir.mkdir(parents=True)

@@ -33,34 +33,30 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lora_playground.loader import RUNTIME_FIELDS, _denylist_key
+from lora_playground.loader import RUNTIME_FIELDS as LOADER_RUNTIME_FIELDS, _denylist_key
 from lora_playground.manifest import (
     live_manifests_newest_first,
     load_manifests,
 )
-from lora_playground.plot_utils import (
-    _HIDDEN_AXIS_RUNTIME_FIELDS,
-    _hidden_axis_diffs,
-    has_runs,
-    load_sweep,
-)
+from lora_playground.plotting import RUNTIME_FIELDS as PLOTTING_RUNTIME_FIELDS, has_runs, load_sweep
+from lora_playground.plotting.merge import _hidden_axis_diffs
 
 
 _LOGS_ROOT = ROOT / "logs"
 
 
 def test_runtime_field_lists_match_across_modules():
-    """``loader.RUNTIME_FIELDS`` and the local copy in plot_utils must match.
+    """``loader.RUNTIME_FIELDS`` and ``plotting.RUNTIME_FIELDS`` must match.
 
-    They're duplicated to avoid an import cycle (loader imports from
-    plot_utils). The duplication is fine; silent drift between the two
-    is not — divergence would mean the dedup key and the collision-check
-    disagree about what counts as runtime metadata.
+    They're duplicated to avoid an import cycle (loader imports from plotting).
+    The duplication is fine; silent drift between the two is not — divergence
+    would mean the dedup key and the collision-check disagree about what
+    counts as runtime metadata.
     """
-    assert RUNTIME_FIELDS == _HIDDEN_AXIS_RUNTIME_FIELDS, (
-        "loader.RUNTIME_FIELDS and plot_utils._HIDDEN_AXIS_RUNTIME_FIELDS "
-        f"have drifted: only-in-loader={RUNTIME_FIELDS - _HIDDEN_AXIS_RUNTIME_FIELDS}, "
-        f"only-in-plot_utils={_HIDDEN_AXIS_RUNTIME_FIELDS - RUNTIME_FIELDS}. "
+    assert LOADER_RUNTIME_FIELDS == PLOTTING_RUNTIME_FIELDS, (
+        "loader.RUNTIME_FIELDS and plotting.RUNTIME_FIELDS have drifted: "
+        f"only-in-loader={LOADER_RUNTIME_FIELDS - PLOTTING_RUNTIME_FIELDS}, "
+        f"only-in-plotting={PLOTTING_RUNTIME_FIELDS - LOADER_RUNTIME_FIELDS}. "
         "Update both lists together."
     )
 
@@ -84,7 +80,7 @@ def test_logs_have_no_silent_collisions():
         for cfg, evs in load_sweep(group, str(_LOGS_ROOT)):
             cfg = dict(cfg)
             cfg["log_group"] = group
-            k = _denylist_key(cfg, RUNTIME_FIELDS)
+            k = _denylist_key(cfg, LOADER_RUNTIME_FIELDS)
             existing = seen.get(k)
             if existing is None:
                 seen[k] = (cfg, group)

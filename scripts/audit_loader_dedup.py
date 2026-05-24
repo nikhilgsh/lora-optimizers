@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from lora_playground.loader import load_runs
-from lora_playground.plot_utils import series_id
+from lora_playground.plotting import series_id
 
 
 def main():

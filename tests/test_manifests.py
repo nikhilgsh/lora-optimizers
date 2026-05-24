@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lora_playground.plot_utils import has_runs
+from lora_playground.plotting import has_runs
 
 
 PILOT_SUFFIXES = ("_500",)
@@ -79,7 +79,7 @@ def test_optim_colors_are_unique() -> None:
     closes the same drift class as the manifest contract one layer up.
     """
     from collections import Counter
-    from lora_playground.plot_utils import OPTIM_COLORS
+    from lora_playground.plotting import OPTIM_COLORS
 
     counts = Counter(OPTIM_COLORS.values())
     dups = {color: cnt for color, cnt in counts.items() if cnt > 1}
@@ -91,9 +91,49 @@ def test_optim_colors_are_unique() -> None:
         msg = (
             f"{len(dups)} color collision(s) in OPTIM_COLORS:\n"
             + "\n".join(details)
-            + "\nFix: assign distinct hex colors. See lora_playground/plot_utils.py."
+            + "\nFix: assign distinct hex colors. See lora_playground/plotting/colors.py."
         )
         raise AssertionError(msg)
+
+
+def test_ssc_overlay_palette_does_not_collide_with_ns_axis() -> None:
+    """`ssc_overlay_palette` must return colors that are visually distinct
+    from `NS_AXIS_COLORS`. The historical failure was a Reds-cmap light end
+    landing near tab-orange (NS=5); switching to Purples + a guard prevents
+    a recurrence."""
+    from lora_playground.plotting import NS_AXIS_COLORS, ssc_overlay_palette
+
+    # Spot check across the range of n we'd reasonably ask for (1–8 c values).
+    for n in range(1, 9):
+        palette = ssc_overlay_palette(n)
+        assert len(palette) == n
+        # ssc_overlay_palette already validates internally; the call would have
+        # raised ColorCollisionError otherwise.
+    # Empty case is well-defined.
+    assert ssc_overlay_palette(0) == []
+
+
+def test_assert_palette_distinct_catches_reds_orange_collision() -> None:
+    """The guard must reject the original failure mode: a Reds-cmap light shade
+    next to tab-orange (NS=5). If this regression slips through, future overlay
+    palettes can silently fuse with the NS axis."""
+    import matplotlib.pyplot as plt
+    from lora_playground.plotting import (
+        NS_AXIS_COLORS,
+        ColorCollisionError,
+        assert_palette_distinct_from_reserved,
+    )
+    from lora_playground.plotting.colors import _rgb_to_hex
+
+    reds_light = _rgb_to_hex(plt.get_cmap("Reds")(0.45))
+    try:
+        assert_palette_distinct_from_reserved([reds_light], name="reds-test")
+    except ColorCollisionError:
+        return  # expected
+    raise AssertionError(
+        f"Reds(0.45) = {reds_light} should collide with tab-orange "
+        f"({NS_AXIS_COLORS[5]}) but the guard passed."
+    )
 
 
 def test_standard_sweep_figure_appends_rank() -> None:
@@ -104,7 +144,7 @@ def test_standard_sweep_figure_appends_rank() -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from lora_playground.plot_utils import standard_sweep_figure
+    from lora_playground.plotting import standard_sweep_figure
 
     # Synthetic minimal runs: one adamw + one candidate, all at lora_r=16.
     fake_evs = [{"step": 200 * (i + 1), "eval_loss": 1.0 - 0.05 * i, "lr": 3e-4}
@@ -159,7 +199,7 @@ def test_optim_choices_have_color_entries() -> None:
     the notebook's filter (``c["optimizer"] in OPTIM_COLORS``) silently drops it.
     """
     from lora_playground.optim import OPTIMIZER_CHOICES
-    from lora_playground.plot_utils import OPTIM_COLORS
+    from lora_playground.plotting import OPTIM_COLORS
 
     # SVD oracle modes use training_mode rather than optimizer name and are
     # always 'adamw' — exempt them from the registry-vs-colors check.
@@ -168,7 +208,7 @@ def test_optim_choices_have_color_entries() -> None:
     assert not missing, (
         f"{len(missing)} optimizer(s) in OPTIMIZER_CHOICES without OPTIM_COLORS entry:\n"
         + "\n".join(f"  {o}" for o in missing)
-        + "\nFix: add to OPTIM_COLORS in lora_playground/plot_utils.py."
+        + "\nFix: add to OPTIM_COLORS in lora_playground/plotting/colors.py."
     )
 
 

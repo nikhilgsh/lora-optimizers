@@ -28,11 +28,8 @@ sys.path.insert(0, str(_REPO))
 
 from lora_playground import run_cache
 from lora_playground.manifest import load_manifests, live_manifests_newest_first
-from lora_playground.plot_utils import (
-    _LOAD_SWEEP_CACHE,
-    has_runs,
-    load_sweep,
-)
+from lora_playground.plotting import has_runs, load_sweep
+from lora_playground.plotting.loading import _LOAD_SWEEP_CACHE
 
 
 def main() -> int:
