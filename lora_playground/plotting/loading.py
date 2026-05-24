@@ -221,6 +221,19 @@ def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[
     return [(dict(cfg), evs) for cfg, evs in runs]
 
 
+def clear_run_caches() -> None:
+    """Clear both in-process loader caches (per-file + per-sweep).
+
+    Useful as the first cell of an analysis notebook after a loader code
+    change (e.g. new CLI-flag backfill) — file mtimes haven't changed, so
+    the (mtime, size)-keyed entries are stale even though the parser logic
+    has moved. Cross-session pickle cache (run_cache.py) keys differently
+    and refreshes via its own staleness check; this is the in-process tier.
+    """
+    _LOAD_RUN_CACHE.clear()
+    _LOAD_SWEEP_CACHE.clear()
+
+
 def has_runs(group: str, logs_root: str = "../logs") -> bool:
     """True if the group has at least one populated `log_NN.out` (or any
     `log_NN.out.resume_K` sibling)."""

@@ -58,6 +58,7 @@ from .colors import (
 
 # Loading
 from .loading import (
+    clear_run_caches,
     has_runs,
     load_run,
     load_sweep,
