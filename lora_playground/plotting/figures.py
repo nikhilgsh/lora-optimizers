@@ -258,3 +258,166 @@ def standard_sweep_figure(runs, group_key_fn, color_map, *,
         adamw_group_keys=adamw_overlap_groups,
         **kwargs,
     )
+
+
+def sweep_figure_with_auto_ylim(
+    runs,
+    group_key_fn,
+    color_map,
+    *,
+    reference_runs,
+    suptitle: str = "",
+    final_ylim_kwargs: dict | None = None,
+    traj_ylim_kwargs: dict | None = None,
+    **kwargs,
+):
+    """`standard_sweep_figure(...)` + post-process each returned panel pair
+    with `auto_ylim_for_final_panel` (left) and `auto_ylim_for_trajectory_panel`
+    (right).
+
+    Wraps the common pattern: render the canonical 2-panel figure, then
+    tighten each panel's y-axis around the non-divergent population so
+    converged-region differences stay visible. `final_ylim_kwargs` and
+    `traj_ylim_kwargs` are forwarded to the respective auto-ylim helpers.
+
+    Returns the same shape as `standard_sweep_figure`: a single
+    `(fig, axes, n_kept, n_dropped)` tuple for single-rank input, or a list
+    of such tuples for multi-rank input.
+    """
+    from .panels import auto_ylim_for_final_panel, auto_ylim_for_trajectory_panel
+
+    out = standard_sweep_figure(
+        runs, group_key_fn, color_map,
+        reference_runs=reference_runs, suptitle=suptitle, **kwargs,
+    )
+    results = out if isinstance(out, list) else [out]
+    final_kw = final_ylim_kwargs or {}
+    traj_kw = traj_ylim_kwargs or {}
+    for fig, axes, _n_keep, _n_drop in results:
+        # Recover the rank for this figure from the suptitle (single-rank
+        # standard_sweep_figure auto-appends " at r=N"). Falls back to None
+        # — auto_ylim_* treats lora_r=None as "all ranks".
+        title = fig._suptitle.get_text() if fig._suptitle else ""
+        rank = None
+        for r_try in (256, 128, 64, 32, 16):
+            if f"r={r_try}" in title:
+                rank = r_try
+                break
+        axes[0].set_ylim(*auto_ylim_for_final_panel(runs, lora_r=rank, **final_kw))
+        axes[1].set_ylim(*auto_ylim_for_trajectory_panel(runs, lora_r=rank, **traj_kw))
+    return out
+
+
+def compare_variants_figure(
+    variants: dict,
+    *,
+    common_where: dict,
+    ref_label: str,
+    logs_root: str = "../logs",
+    sigma_ref: float = 0.0007,
+    suptitle: str | None = None,
+    colors: dict | None = None,
+    markers: dict | None = None,
+    figsize: tuple[float, float] = (13, 5),
+    max_steps: int = 4000,
+):
+    """Compare named optimizer variants at a fixed config; 2-panel + tables.
+
+    `variants` maps `label -> extra_where_dict`. Each variant is loaded as
+    `load_runs(where={**common_where, **extra}, ...)`. The figure shows
+    final-loss vs lr (left) and best-lr trajectory (right). Δ vs `ref_label`
+    is reported in σ-units (`sigma_ref`).
+
+    Returns
+    -------
+    (fig, table_df, summary_df) — `table_df` has lr as index and one column
+    per variant; `summary_df` has ('variant', 'best_lr', 'final', 'delta',
+    'delta_sigma').
+    """
+    import pandas as pd
+    from lora_playground.loader import load_runs
+
+    per_variant = {}
+    for label, extra in variants.items():
+        runs = load_runs(
+            where={**common_where, **extra},
+            logs_root=logs_root,
+            warn_cross_commit=False,
+        )
+        d = {}
+        for c, h in runs:
+            if not h or h[-1].get("step") != max_steps:
+                continue
+            lr = float(c["lr"])
+            f = h[-1]["eval_loss"]
+            if lr not in d or f < d[lr][0]:
+                d[lr] = (f, c, h)
+        per_variant[label] = d
+
+    # Final-loss table (rows = lr, columns = variant).
+    all_lr = sorted({lr for v in per_variant.values() for lr in v})
+    table_df = pd.DataFrame(
+        {label: [per_variant[label].get(lr, (None,))[0] for lr in all_lr]
+         for label in variants},
+        index=pd.Index(all_lr, name="lr"),
+    )
+
+    # Best per variant + Δ vs ref.
+    if ref_label not in per_variant or not per_variant[ref_label]:
+        ref_best = None
+    else:
+        ref_best = min(per_variant[ref_label].values(), key=lambda v: v[0])[0]
+    summary_rows = []
+    for label, d in per_variant.items():
+        if not d:
+            continue
+        best_lr = min(d, key=lambda lr: d[lr][0])
+        final = d[best_lr][0]
+        delta = (final - ref_best) if ref_best is not None and label != ref_label else None
+        summary_rows.append({
+            "variant": label, "best_lr": best_lr, "final": final,
+            "delta": delta,
+            "delta_sigma": (delta / sigma_ref) if delta is not None else None,
+        })
+    summary_df = pd.DataFrame(summary_rows)
+
+    if colors is None:
+        cmap = plt.get_cmap("tab10")
+        colors = {label: cmap(i % 10) for i, label in enumerate(variants)}
+    if markers is None:
+        marker_cycle = ["o", "s", "^", "D", "v", "P", "X"]
+        markers = {label: marker_cycle[i % len(marker_cycle)] for i, label in enumerate(variants)}
+
+    fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize)
+    for label, d in per_variant.items():
+        if not d:
+            continue
+        lrs = sorted(d)
+        finals = [d[lr][0] for lr in lrs]
+        ax_lr.plot(lrs, finals, marker=markers[label], ms=6, lw=1.4,
+                   color=colors[label], label=label)
+    ax_lr.set_xscale("log")
+    ax_lr.set_xlabel("lr")
+    ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
+    ax_lr.set_title("final loss vs lr")
+    ax_lr.grid(True, alpha=0.3)
+    ax_lr.legend(fontsize=9)
+
+    for label, d in per_variant.items():
+        if not d:
+            continue
+        best_lr = min(d, key=lambda lr: d[lr][0])
+        final, _, h = d[best_lr]
+        ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
+                     marker=markers[label], ms=3, lw=1.4, color=colors[label],
+                     label=f"{label}  (lr={best_lr:g}, final={final:.4f})")
+    ax_traj.set_xlabel("step")
+    ax_traj.set_ylabel("eval_loss")
+    ax_traj.set_title("best-lr trajectory")
+    ax_traj.grid(True, alpha=0.3)
+    ax_traj.legend(fontsize=9)
+
+    if suptitle:
+        fig.suptitle(suptitle)
+    plt.tight_layout()
+    return fig, table_df, summary_df

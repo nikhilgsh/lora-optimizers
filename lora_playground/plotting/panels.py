@@ -32,6 +32,99 @@ def _infer_min_step(runs) -> int | None:
     return max(targets) if targets else None
 
 
+def _non_divergent_finals(
+    runs, lora_r: int | None, divergent_ratio: float,
+) -> tuple[list[float], float | None]:
+    """Final eval_losses for runs at `lora_r` (or all ranks if None) that
+    are within `divergent_ratio * best`. NaN/inf are excluded.
+
+    Returns `(converged_finals, best_final)` or `([], None)` when no finite
+    final losses are present.
+    """
+    finite = (
+        e[-1]["eval_loss"] for c, e in runs
+        if e and (lora_r is None or c.get("lora_r") == lora_r)
+        and isinstance(e[-1].get("eval_loss"), (int, float))
+        and math.isfinite(e[-1]["eval_loss"])
+    )
+    finals = list(finite)
+    if not finals:
+        return [], None
+    best = min(finals)
+    cap = divergent_ratio * best
+    return [v for v in finals if v <= cap], best
+
+
+def auto_ylim_for_final_panel(
+    runs,
+    *,
+    lora_r: int | None = None,
+    divergent_ratio: float = 1.5,
+    lower_pad: float = 0.010,
+    upper_pad: float = 0.012,
+    fallback: tuple[float, float] = (0.505, 0.620),
+) -> tuple[float, float]:
+    """Y-axis bounds for an η-vs-final-loss panel — tight around the
+    non-divergent population so converged-region differences stay visible.
+
+    A run counts as "divergent" if its final eval_loss exceeds
+    `divergent_ratio × best_final`. Divergent runs are excluded from the
+    upper bound (they still render on the panel, but go off-axis at the top,
+    which is the right visual signal).
+
+    `lora_r=None` aggregates across all ranks. `fallback` is returned when
+    no finite finals are present.
+    """
+    converged, best = _non_divergent_finals(runs, lora_r, divergent_ratio)
+    if not converged:
+        return fallback
+    return (best - lower_pad, max(converged) + upper_pad)
+
+
+def auto_ylim_for_trajectory_panel(
+    runs,
+    *,
+    lora_r: int | None = None,
+    warmup_frac: float = 0.2,
+    divergent_ratio: float = 1.5,
+    lower_pad: float = 0.010,
+    upper_pad: float = 0.010,
+    fallback: tuple[float, float] = (0.505, 0.620),
+) -> tuple[float, float]:
+    """Y-axis bounds for a per-step training-curve panel.
+
+    Upper bound = max eval_loss across post-warmup eval events of
+    non-divergent runs (final ≤ `divergent_ratio × best_final`). Excluding
+    the early-training spike from the upper bound keeps late-training
+    differences visible.
+    """
+    converged, best = _non_divergent_finals(runs, lora_r, divergent_ratio)
+    if not converged:
+        return fallback
+    converged_cap = divergent_ratio * best
+    post_warmup: list[float] = []
+    for cfg, evs in runs:
+        if not evs or (lora_r is not None and cfg.get("lora_r") != lora_r):
+            continue
+        last = evs[-1].get("eval_loss")
+        if not (isinstance(last, (int, float)) and math.isfinite(last)):
+            continue
+        if last > converged_cap:
+            continue
+        max_step = max((ev.get("step") or 0) for ev in evs) or 1
+        cutoff = warmup_frac * max_step
+        for ev in evs:
+            v = ev.get("eval_loss")
+            if not (isinstance(v, (int, float)) and math.isfinite(v)):
+                continue
+            if (ev.get("step") or 0) < cutoff:
+                continue
+            post_warmup.append(v)
+    if not post_warmup:
+        return (best - lower_pad, max(converged) + upper_pad)
+    return (best - lower_pad, max(post_warmup) + upper_pad)
+
+
 def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                       color_map: dict, *, hlines: list[tuple] | None = None,
                       ref_eta_sweeps: list[tuple] | None = None,

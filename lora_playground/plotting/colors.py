@@ -251,28 +251,12 @@ OPTIM_MARKERS = {
 }
 
 
-# ─── ablation-axis style constants ────────────────────────────────────────────
-# Color/linestyle conventions for ns_iters × picard ablation cells. Library guard
-# `assert_palette_distinct_from_reserved` rejects overlay palettes that visually
-# collide with these axis colors.
-
-NS_AXIS_COLORS = {
-    2:  "#1f77b4",  # tab blue
-    5:  "#ff7f0e",  # tab orange
-    10: "#2ca02c",  # tab green
-}
-
-PICARD_LINESTYLES = {
-    1: "-",   # solid
-    3: "--",  # dashed
-}
-
-
 # ─── overlay palette safety: no-collision guard ──────────────────────────────
 
 class ColorCollisionError(ValueError):
     """Raised when an overlay palette contains a color visually too close to a
-    reserved axis color (NS_AXIS_COLORS, OPTIM_COLORS entry, etc.)."""
+    reserved axis color (e.g. an OPTIM_COLORS entry or a per-notebook axis
+    convention)."""
 
 
 def _hex_to_rgb(c) -> tuple[float, float, float]:
@@ -305,21 +289,19 @@ def _rgb_to_hex(c) -> str:
 
 def assert_palette_distinct_from_reserved(
     candidates,
-    reserved=None,
+    reserved,
     *,
     min_distance: float = 0.30,
     name: str = "overlay",
 ) -> None:
     """Raise ColorCollisionError if any candidate color is within min_distance
-    (RGB Euclidean) of a reserved color. Default reserved set is NS_AXIS_COLORS.
+    (RGB Euclidean) of a reserved color.
 
-    min_distance=0.30 was tuned against the failure mode of Reds-cmap(0.45)
+    min_distance=0.30 was tuned against the failure mode of `Reds`-cmap(0.45)
     (a pinkish-orange around `#e3927e`) vs tab orange `#ff7f0e` (distance
     ≈ 0.28) — the Reds light end was the original collision and 0.30 is the
     threshold that flags it while leaving Purples and pure cyans/magentas safe.
     """
-    if reserved is None:
-        reserved = list(NS_AXIS_COLORS.values())
     bad: list[tuple[str, str, float]] = []
     for c in candidates:
         c_hex = c if isinstance(c, str) else _rgb_to_hex(c)
@@ -336,22 +318,39 @@ def assert_palette_distinct_from_reserved(
         )
 
 
-def ssc_overlay_palette(n_c_values: int, *, reserved=None) -> list[str]:
-    """Return `n_c_values` distinct colors for SSC c-value overlay series,
-    validated not to collide with `reserved` (default: NS_AXIS_COLORS).
+def overlay_palette(
+    n: int,
+    *,
+    reserved,
+    cmap: str = "Purples",
+    value_range: tuple[float, float] = (0.55, 0.95),
+    name: str = "overlay",
+) -> list[str]:
+    """Return `n` sequential colors from `cmap` over `value_range`, validated
+    not to collide with `reserved`.
 
-    Uses the Purples colormap, indexed in [0.55, 0.95] so smaller c gets a
-    lighter shade and larger c a darker shade. The lower bound is set at 0.55
-    so even the lightest overlay is clearly visible against a white background.
+    Designed for overlay series where order should read as a visual
+    progression (smaller index → lighter shade). The default value_range
+    `(0.55, 0.95)` skips the very-light low end of most sequential colormaps
+    so even the lightest overlay shade is legible against a white background.
+
+    Use Purples for overlays on figures whose primary axis uses tab10
+    (blue/orange/green) — Purples sits in a hue region far from those. For
+    overlays on a different reserved set, pass a different `cmap`.
+
+    Example:
+        NS_AXIS = {2: '#1f77b4', 5: '#ff7f0e', 10: '#2ca02c'}
+        colors = overlay_palette(len(cs), reserved=NS_AXIS.values())
     """
     import matplotlib.pyplot as plt
 
-    if n_c_values <= 0:
+    if n <= 0:
         return []
-    cmap = plt.get_cmap("Purples")
+    cmap_obj = plt.get_cmap(cmap)
+    lo, hi = value_range
     palette = [
-        _rgb_to_hex(cmap(0.55 + 0.40 * (i / max(n_c_values - 1, 1))))
-        for i in range(n_c_values)
+        _rgb_to_hex(cmap_obj(lo + (hi - lo) * (i / max(n - 1, 1))))
+        for i in range(n)
     ]
-    assert_palette_distinct_from_reserved(palette, reserved=reserved, name="SSC c-overlay")
+    assert_palette_distinct_from_reserved(palette, reserved, name=name)
     return palette

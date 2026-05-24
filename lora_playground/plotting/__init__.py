@@ -1,23 +1,25 @@
 """Plotting package for the LoRA optimizer-comparison playground.
 
-Submodule layout (one concern per file):
-  - :mod:`.style`      style constants (fonts, line widths, baseline styling)
-  - :mod:`.colors`     optimizer color/family registries, marker overrides,
-                       ablation-axis style constants, overlay-palette guard
-  - :mod:`.loading`    per-task log loading + caching
-  - :mod:`.dedup`      series-identity, label-collision detection, baseline/
-                       variant filtering
-  - :mod:`.merge`      sweep merging with hidden-axis collision detection,
-                       diverged-run filtering, ``RUNTIME_FIELDS``
-  - :mod:`.overlays`   AdamW (and secondary) baseline overlays
-  - :mod:`.panels`     single-axis renderers (η-vs-final, best-η curves,
-                       leaderboard)
-  - :mod:`.figures`    high-level 2-panel entry points
-                       (``standard_sweep_figure``, ``two_panel_sweep_figure``)
-  - :mod:`.ablations`  canned ablation figures used directly from notebooks
+Submodule layout (one concern per file, all generic):
+  - :mod:`.style`     style constants (fonts, line widths, baseline styling)
+  - :mod:`.colors`    optimizer color/family registries, marker overrides,
+                      and the overlay-palette collision guard
+  - :mod:`.loading`   per-task log loading + caching
+  - :mod:`.dedup`     series-identity, label-collision detection, baseline/
+                      variant filtering
+  - :mod:`.merge`     sweep merging with hidden-axis collision detection,
+                      diverged-run filtering, ``RUNTIME_FIELDS``
+  - :mod:`.overlays`  AdamW (and secondary) baseline overlays
+  - :mod:`.panels`    single-axis renderers + auto-ylim helpers
+                      (η-vs-final, best-η curves, leaderboard)
+  - :mod:`.figures`   high-level entry points: ``standard_sweep_figure``,
+                      ``sweep_figure_with_auto_ylim``,
+                      ``compare_variants_figure``
 
-The public API surfaces every name a notebook / test / script needs. Internal
-helpers are underscore-prefixed and live in their submodule.
+The public API surfaces every name a notebook / test / script needs.
+Internal helpers are underscore-prefixed and live in their submodule.
+Project-specific composition (slug→short-name dicts, ablation-axis colors,
+buggy-commit lists, etc.) belongs in the notebook, not here.
 """
 from __future__ import annotations
 
@@ -47,13 +49,11 @@ from .style import (
 from .colors import (
     ColorCollisionError,
     M_LINESTYLES,
-    NS_AXIS_COLORS,
     OPTIM_COLORS,
     OPTIM_FAMILIES,
     OPTIM_MARKERS,
-    PICARD_LINESTYLES,
     assert_palette_distinct_from_reserved,
-    ssc_overlay_palette,
+    overlay_palette,
 )
 
 # Loading
@@ -88,8 +88,10 @@ from .merge import (
 # Overlays
 from .overlays import baseline_overlay
 
-# Panel renderers
+# Panel renderers + auto-ylim helpers
 from .panels import (
+    auto_ylim_for_final_panel,
+    auto_ylim_for_trajectory_panel,
     plot_best_eta_curves,
     plot_eta_vs_final,
     plot_leaderboard_by_rank,
@@ -97,13 +99,8 @@ from .panels import (
 
 # High-level figure entry points
 from .figures import (
-    standard_sweep_figure,
-    two_panel_sweep_figure,
-)
-
-# Ablation helpers
-from .ablations import (
-    CHORD_TIGHT_CLEAN,
     compare_variants_figure,
-    ns_iters_ssc_overlay_figure,
+    standard_sweep_figure,
+    sweep_figure_with_auto_ylim,
+    two_panel_sweep_figure,
 )

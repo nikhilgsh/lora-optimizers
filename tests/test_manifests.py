@@ -96,30 +96,33 @@ def test_optim_colors_are_unique() -> None:
         raise AssertionError(msg)
 
 
-def test_ssc_overlay_palette_does_not_collide_with_ns_axis() -> None:
-    """`ssc_overlay_palette` must return colors that are visually distinct
-    from `NS_AXIS_COLORS`. The historical failure was a Reds-cmap light end
-    landing near tab-orange (NS=5); switching to Purples + a guard prevents
-    a recurrence."""
-    from lora_playground.plotting import NS_AXIS_COLORS, ssc_overlay_palette
+_TAB10_NS_AXIS = ("#1f77b4", "#ff7f0e", "#2ca02c")  # tab10 blue/orange/green
+_TAB10_ORANGE = "#ff7f0e"
 
-    # Spot check across the range of n we'd reasonably ask for (1–8 c values).
+
+def test_overlay_palette_does_not_collide_with_tab10() -> None:
+    """`overlay_palette` with default Purples cmap must return colors that are
+    visually distinct from the tab10 blue/orange/green axis (the conventional
+    reserved set for ablation panels). Historical failure was a `Reds`-cmap
+    light end landing near tab orange; switching to Purples + a guard prevents
+    a recurrence."""
+    from lora_playground.plotting import overlay_palette
+
+    # Spot check across the range of n we'd reasonably ask for (1–8 series).
     for n in range(1, 9):
-        palette = ssc_overlay_palette(n)
+        palette = overlay_palette(n, reserved=_TAB10_NS_AXIS)
         assert len(palette) == n
-        # ssc_overlay_palette already validates internally; the call would have
-        # raised ColorCollisionError otherwise.
-    # Empty case is well-defined.
-    assert ssc_overlay_palette(0) == []
+        # overlay_palette validates internally; the call would have raised
+        # ColorCollisionError otherwise.
+    assert overlay_palette(0, reserved=_TAB10_NS_AXIS) == []
 
 
 def test_assert_palette_distinct_catches_reds_orange_collision() -> None:
-    """The guard must reject the original failure mode: a Reds-cmap light shade
-    next to tab-orange (NS=5). If this regression slips through, future overlay
-    palettes can silently fuse with the NS axis."""
+    """The guard must reject the original failure mode: a `Reds`-cmap light
+    shade next to tab orange. If this regression slips through, future overlay
+    palettes can silently fuse with a reserved axis color."""
     import matplotlib.pyplot as plt
     from lora_playground.plotting import (
-        NS_AXIS_COLORS,
         ColorCollisionError,
         assert_palette_distinct_from_reserved,
     )
@@ -127,12 +130,14 @@ def test_assert_palette_distinct_catches_reds_orange_collision() -> None:
 
     reds_light = _rgb_to_hex(plt.get_cmap("Reds")(0.45))
     try:
-        assert_palette_distinct_from_reserved([reds_light], name="reds-test")
+        assert_palette_distinct_from_reserved(
+            [reds_light], reserved=_TAB10_NS_AXIS, name="reds-test",
+        )
     except ColorCollisionError:
         return  # expected
     raise AssertionError(
-        f"Reds(0.45) = {reds_light} should collide with tab-orange "
-        f"({NS_AXIS_COLORS[5]}) but the guard passed."
+        f"Reds(0.45) = {reds_light} should collide with tab orange "
+        f"({_TAB10_ORANGE}) but the guard passed."
     )
 
 
