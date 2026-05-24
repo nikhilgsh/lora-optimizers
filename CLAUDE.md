@@ -92,7 +92,13 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
   - `sbatch_24h_h100.sh` — H100 24h
   - For Blackwell sweeps needing >8h, write a custom pending sbatch with a longer `--time` and the Blackwell directives copied from `sbatch_blackwell.sh`.
 - **Default to `sbatch_24h.sh` (or 24h-equivalent) for**: any sweep at r ≥ 128, any sweep at ≥6000 training steps, any sweep using a new/un-measured optimizer family at production scale, any sweep where prior runs on similar workloads finished in >70% of wall.
-- **Blackwell reservation (Flatiron cluster).** Blackwell RTX PRO 6000 nodes (workergpu[171-182, ...]) are gated behind SLURM reservation `rocky9`. Every Blackwell sbatch MUST include `#SBATCH --reservation=rocky9` or the job sits PD with `ReqNodeNotAvail,_UnavailableNodes:workergpuXXX` indefinitely (node state shows `IDLE+DRAIN+RESERVED`). If a Blackwell job is already PD without the reservation, fix in place: `scontrol update jobid=<id> reservation=rocky9` — typically starts within seconds. A100 / H100 jobs do NOT need this reservation.
+- **`rocky9` reservation (Flatiron cluster).** Gates **multiple GPU classes**, not just Blackwell. Every sbatch hitting one of these MUST include `#SBATCH --reservation=rocky9` or the job sits PD with `ReqNodeNotAvail,_UnavailableNodes:workergpuXXX` indefinitely (node state shows `IDLE+RESERVED` or `MIXED+RESERVED`):
+  - **Blackwell RTX PRO 6000** (`-p gpu --constraint=rtxblackwell`, workergpu[171-193])
+  - **gpuxl H200** (`-p gpuxl --constraint=h200`, workergpu[301-324])
+  - **gpuxl H100** (`-p gpuxl --constraint=h100`, workergpu[201-226]) — some nodes
+  - **Always check** `scontrol show reservation rocky9` for the live node list before assuming a (partition, constraint) is reservation-free.
+
+  If a job is already PD without the reservation: `scontrol update jobid=<id> reservation=rocky9` — typically starts within seconds. The `-p gpu --constraint=a100` / `-p gpu --constraint=h100_pcie` paths do NOT need this reservation.
 - **Per-task `--cpus-per-task`**: 8 for the standard sbatch templates here.
 
 ## Coding Conventions
