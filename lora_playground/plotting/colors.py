@@ -318,6 +318,86 @@ def assert_palette_distinct_from_reserved(
         )
 
 
+def distinct_palette(
+    n: int,
+    *,
+    reserved,
+    source: str | list = "tab10",
+    min_distance: float = 0.30,
+    name: str = "distinct",
+) -> list[str]:
+    """Return `n` qualitative colors, each visually distinct from `reserved`
+    and from each other (pairwise RGB distance > min_distance).
+
+    Use when overlay series should be read as independent values (e.g. SSC
+    c-knob), not as a gradient. For sequential progression (light-to-dark
+    of one hue), use `overlay_palette` instead.
+
+    Source = a matplotlib qualitative colormap name ('tab10', 'tab20',
+    'Set1', 'Set2', 'Set3', 'Paired', 'Accent', 'Dark2', …) or a list of
+    candidate hex strings. The default 'tab10' provides 10 hues designed
+    for categorical distinguishability.
+
+    Selection is greedy farthest-first over candidates that pass the
+    reserved filter — each pick maximizes the minimum distance to the
+    already-selected set ∪ reserved. Raises ColorCollisionError if the
+    candidate pool can't yield `n` colors satisfying min_distance.
+    """
+    import matplotlib.pyplot as plt
+
+    if n <= 0:
+        return []
+
+    # Enumerate candidates from the source palette.
+    if isinstance(source, str):
+        cmap = plt.get_cmap(source)
+        # ListedColormap exposes .colors directly; LinearSegmentedColormap
+        # we sample at integer indices up to N (caller responsibility).
+        if hasattr(cmap, "colors"):
+            candidates = [_rgb_to_hex(c) for c in cmap.colors]
+        else:
+            # Fallback: 10 evenly-spaced samples.
+            candidates = [_rgb_to_hex(cmap(i / 9)) for i in range(10)]
+    else:
+        candidates = [c if isinstance(c, str) else _rgb_to_hex(c) for c in source]
+
+    reserved_hex = [r if isinstance(r, str) else _rgb_to_hex(r) for r in reserved]
+
+    # Filter candidates that are too close to any reserved color.
+    eligible = [
+        c for c in candidates
+        if all(_color_distance(c, r) >= min_distance for r in reserved_hex)
+    ]
+
+    # Greedy farthest-first selection.
+    picked: list[str] = []
+    pool = list(eligible)
+    while len(picked) < n and pool:
+        if not picked:
+            # Seed: first eligible candidate.
+            picked.append(pool.pop(0))
+            continue
+        # Pick candidate that maximizes min distance to (picked ∪ reserved).
+        anchors = picked + reserved_hex
+        best_idx, best_min_d = -1, -1.0
+        for i, c in enumerate(pool):
+            d = min(_color_distance(c, a) for a in anchors)
+            if d > best_min_d:
+                best_min_d, best_idx = d, i
+        if best_min_d < min_distance:
+            break  # remaining candidates too close to picked set
+        picked.append(pool.pop(best_idx))
+
+    if len(picked) < n:
+        raise ColorCollisionError(
+            f"{name}: source palette {source!r} yielded only {len(picked)} "
+            f"color(s) at min_distance={min_distance} given {len(reserved_hex)} "
+            f"reserved color(s); requested {n}. Try a larger source ('tab20', "
+            f"'Set3', a custom list), or lower min_distance."
+        )
+    return picked
+
+
 def overlay_palette(
     n: int,
     *,

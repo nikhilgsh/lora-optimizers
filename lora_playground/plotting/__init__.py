@@ -53,6 +53,7 @@ from .colors import (
     OPTIM_FAMILIES,
     OPTIM_MARKERS,
     assert_palette_distinct_from_reserved,
+    distinct_palette,
     overlay_palette,
 )
 
