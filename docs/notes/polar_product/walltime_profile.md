@@ -863,3 +863,20 @@ Real remaining levers are algorithmic, not implementation:
 - **NS=5 → NS=3 in gram-NS:** drops ~40% of polar map cost (a few ms). Needs trajectory equivalence validation.
 
 Both are real algorithmic decisions and out of scope for an implementation-only lever search.
+
+## SSC κ-adaptive: per-step eigvalsh overhead (Blackwell, packed_v1, 2026-05-24)
+
+The κ-adaptive SSC variant (`--polar_method ssc --ssc_kappa <κ>`) replaces fixed `c` with a per-pair `c` solved from a target rank-normalized energy. The cheapest realization adds, per polar call: one $r \times d$ → $r \times r$ gram bmm, one `torch.linalg.eigvalsh` on the $r \times r$ gram (eigenvalues only, no eigenvectors), and an $O(r)$ vectorized log-bisection. The SSC application itself stays on the existing MISR kernel — no SVD.
+
+Per-step eigvalsh on small $r \times r$ is launch-bound on Blackwell (this profile already documented this effect for eigh-based whitening, ~5× slower than Higham at $r=128$). Measurement at the production sweep shape:
+
+| variant | tps | wall (60 steps, no compile) | per-step | ratio vs fixed-c |
+|---|---:|---:|---:|---:|
+| fixed-c (`--ssc_c 0.3`) | 4659 tok/s | 37.3 s | 0.62 s/step | 1.00× |
+| κ-adaptive (`--ssc_kappa 0.30`) | 2392 tok/s | 72.6 s | 1.21 s/step | **1.95×** |
+
+Config: chord-tight-clean, picard=3, NS=5, gram, r=64, batch=2×accum=8, seq=512, Blackwell node (RTX PRO 6000), bf16, packed_v1, no `--compile` (per CLAUDE.md's ratio-test rule). Eval loss at step 60 matched to 1 ulp (0.6262 vs 0.6265), confirming behavioral equivalence — the wall delta is pure eigvalsh overhead, not extra useful compute.
+
+**Implication for sbatch sizing.** Fixed-c c=0.3 r=64 4k took ~1.6h/cell compiled in the existing leaderboard sweep. κ-adaptive at the same config should take ~3.2h/cell, hence `--time=4h` with margin for the κ-adaptive r=64 4k 12-cell sweep (`slurm_pending/chord_tight_clean_ssc_kappa_r64_lrsweep_4k_blackwell.sbatch`).
+
+**If the κ-adaptive variant proves out (drops below the fixed-c plateau by >1σ_AdamW)**, the obvious cost cut is to amortize the spectrum probe via a refresh schedule analogous to `precond_refresh_every` — solve `c` every $N$ steps, hold between refreshes. At $N \approx 10$ the eigvalsh overhead drops below 0.1 s/step (1.3× vs fixed instead of 1.95×). Until results justify, the per-step variant is the upper-bound-on-quality probe.
