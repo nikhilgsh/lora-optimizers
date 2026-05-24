@@ -600,6 +600,7 @@ def load_runs(
     warn_cross_commit: bool = True,
     unique_on: tuple[str, ...] | None = None,
     allow_axes: tuple[str, ...] = (),
+    quiet: bool = False,
 ) -> list[tuple[dict, list[dict]]]:
     """Load all runs whose cfg matches every predicate in ``where``.
 
@@ -849,7 +850,8 @@ def load_runs(
             more = max(0, n - len(ex))
             tail = f" (e.g. {ex_str}" + (f", +{more} more" if more else "") + ")" if ex else ""
             parts.append(f"{n} for {reason!r}{tail}")
-        print(f"  [loader] excluded {total} run(s): " + "; ".join(parts))
+        if not quiet:
+            print(f"  [loader] excluded {total} run(s): " + "; ".join(parts))
 
     # where-key validation: if the user filtered on a field that doesn't
     # appear in ANY non-excluded cfg in the loaded pool, the result is

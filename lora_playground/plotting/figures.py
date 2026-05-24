@@ -63,7 +63,6 @@ def two_panel_sweep_figure(runs, group_key_fn, color_map, *,
     # still shows the partial training curve.
     if min_step is _INFER_MIN_STEP:
         min_step = _infer_min_step(keep) or CANONICAL_HORIZON
-        print(f"  [auto] min_step inferred from cfg['max_steps']: {min_step}")
     keep_for_right = keep
     keep_for_left = keep
     if min_step is not None:
@@ -343,6 +342,7 @@ def compare_variants_figure(
             where={**common_where, **extra},
             logs_root=logs_root,
             warn_cross_commit=False,
+            quiet=True,
         )
         d = {}
         for c, h in runs:
