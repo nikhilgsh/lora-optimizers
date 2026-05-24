@@ -49,6 +49,13 @@ _CONFIG_DICT_ALIASES = {
         getattr(opt, "beta2", None),
     ),
     "lr": _extract_lr,
+    # Stored as `self._higham_compute_dtype` (None or torch.float16) — invert
+    # the conversion back to the "fp32"/"fp16" string the __init__ accepts.
+    "higham_compute_dtype": lambda opt: (
+        "fp16"
+        if getattr(opt, "_higham_compute_dtype", None) is not None
+        else "fp32"
+    ),
 }
 
 
