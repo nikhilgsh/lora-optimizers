@@ -319,6 +319,9 @@ def compare_variants_figure(
     markers: dict | None = None,
     figsize: tuple[float, float] = (13, 5),
     max_steps: int = 4000,
+    allow_partial: bool = False,
+    prefetched_runs: list | None = None,
+    variant_key=None,
 ):
     """Compare named optimizer variants at a fixed config; 2-panel + tables.
 
@@ -336,23 +339,53 @@ def compare_variants_figure(
     import pandas as pd
     from lora_playground.loader import load_runs
 
+    # per_variant[label] = {lr: (final_or_last_loss, cfg, history)}
+    # per_variant_partial[label] = same shape, only runs that haven't yet reached max_steps
     per_variant = {}
+    per_variant_partial = {}
+
+    if prefetched_runs is not None:
+        # Single-load mode: caller provides all runs + a variant_key function.
+        # Avoids the 8x-load_runs penalty when many small variants share
+        # filesystem scans. variant_key returns None to skip a run, else
+        # the variant label that run belongs to.
+        if variant_key is None:
+            raise ValueError("prefetched_runs requires variant_key callable")
+        runs_by_variant: dict = {label: [] for label in variants}
+        for c, h in prefetched_runs:
+            label = variant_key(c)
+            if label is not None and label in runs_by_variant:
+                runs_by_variant[label].append((c, h))
+    else:
+        runs_by_variant = None
+
     for label, extra in variants.items():
-        runs = load_runs(
-            where={**common_where, **extra},
-            logs_root=logs_root,
-            warn_cross_commit=False,
-            quiet=True,
-        )
-        d = {}
+        if runs_by_variant is not None:
+            runs = runs_by_variant[label]
+        else:
+            runs = load_runs(
+                where={**common_where, **extra},
+                logs_root=logs_root,
+                warn_cross_commit=False,
+                quiet=True,
+            )
+        d, d_partial = {}, {}
         for c, h in runs:
-            if not h or h[-1].get("step") != max_steps:
+            if not h:
                 continue
             lr = float(c["lr"])
-            f = h[-1]["eval_loss"]
-            if lr not in d or f < d[lr][0]:
-                d[lr] = (f, c, h)
+            last_step = h[-1].get("step")
+            last_loss = h[-1]["eval_loss"]
+            if last_step == max_steps:
+                if lr not in d or last_loss < d[lr][0]:
+                    d[lr] = (last_loss, c, h)
+            elif allow_partial:
+                # Track the most-progressed partial run per lr (so trajectory
+                # panel shows the longest in-progress curve).
+                if lr not in d_partial or last_step > d_partial[lr][3]:
+                    d_partial[lr] = (last_loss, c, h, last_step)
         per_variant[label] = d
+        per_variant_partial[label] = d_partial
 
     # Final-loss table (rows = lr, columns = variant).
     all_lr = sorted({lr for v in per_variant.values() for lr in v})
@@ -403,14 +436,23 @@ def compare_variants_figure(
     ax_lr.grid(True, alpha=0.3)
     ax_lr.legend(fontsize=9)
 
-    for label, d in per_variant.items():
-        if not d:
-            continue
-        best_lr = min(d, key=lambda lr: d[lr][0])
-        final, _, h = d[best_lr]
-        ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
-                     marker=markers[label], ms=3, lw=1.4, color=colors[label],
-                     label=f"{label}  (lr={best_lr:g}, final={final:.4f})")
+    for label in variants:
+        d = per_variant.get(label, {})
+        d_partial = per_variant_partial.get(label, {}) if allow_partial else {}
+        if d:
+            best_lr = min(d, key=lambda lr: d[lr][0])
+            final, _, h = d[best_lr]
+            ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
+                         marker=markers[label], ms=3, lw=1.4, color=colors[label],
+                         label=f"{label}  (lr={best_lr:g}, final={final:.4f})")
+        elif d_partial:
+            # No completed runs — fall back to partial: pick best by latest eval.
+            best_lr = min(d_partial, key=lambda lr: d_partial[lr][0])
+            last_loss, _, h, last_step = d_partial[best_lr]
+            ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
+                         marker=markers[label], ms=3, lw=1.2, color=colors[label],
+                         linestyle="--",
+                         label=f"{label}  (lr={best_lr:g}, partial @{last_step}: {last_loss:.4f})")
     ax_traj.set_xlabel("step")
     ax_traj.set_ylabel("eval_loss")
     ax_traj.set_title("best-lr trajectory")
