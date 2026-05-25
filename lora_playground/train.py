@@ -690,12 +690,46 @@ def make_parser():
                              "per-step solving (default). Independent caches per Picard inner iter. "
                              "Only consulted when --polar_method ssc and --ssc_kappa are set.")
     parser.add_argument("--ssc_kappa_solver", type=str, default="eigvalsh",
-                        choices=["eigvalsh", "bulk"],
+                        choices=["eigvalsh", "bulk", "misr_bisect"],
                         help="κ-adaptive c solver. 'eigvalsh' = exact bisection on full "
                              "r×r spectrum (production default; launch-bound on small r). "
                              "'bulk' = closed-form c_bulk = sqrt(μ(1-κ)/(κ-μ)) from F-norm "
                              "only (no eigvalsh, matmul-free). Bulk is a concave-Jensen "
                              "approximation; biases slightly toward larger c on spread spectra.")
+    parser.add_argument("--ssc_kappa_bisect_iters", type=int, default=3,
+                        help="K for --ssc_kappa_solver misr_bisect. Warm-started bisection in "
+                             "log-c using K MISR runs. K=3 gives ~6%% accuracy with window=0.5.")
+    parser.add_argument("--ssc_kappa_bisect_mode", type=str, default="sequential",
+                        choices=["sequential", "parallel"],
+                        help="Bisection strategy for --ssc_kappa_solver misr_bisect. "
+                             "'sequential' = K MISR launches, classical bisection (default). "
+                             "'parallel' = K log-spaced candidates per pair in one batched "
+                             "MISR launch on (K*N, r, d); argmin |κ-target| picks the winner. "
+                             "Parallel is coarser per K (residual log_window/(K-1) vs "
+                             "log_window/2^K) but launches once — wins when launch-bound at "
+                             "small r. To match seq-K=3 accuracy use par-K=9.")
+    parser.add_argument("--ssc_kappa_cache_share_picard",
+                        type=lambda s: str(s).lower() not in {"0", "false", "no"},
+                        default=True,
+                        help="κ-adaptive SSC: share the per-pair cached c across Picard inner "
+                             "iterations (n=0 solves; n=1 reuses). Snapshot drift analysis shows "
+                             "|Δc|/c is p50<1.1%%, p99<3.3%% at production η — sharing halves the "
+                             "per-step eigvalsh/MISR-bisect work with negligible dA/dB drift. "
+                             "Default True (safe speedup); set False to reproduce per-(side, n) "
+                             "cache behavior. Only consulted when --polar_method ssc, "
+                             "--ssc_kappa set, and --picard_iters > 1.")
+    parser.add_argument("--ssc_kappa_cross_group_eigvalsh",
+                        type=lambda s: str(s).lower() not in {"0", "false", "no"},
+                        default=True,
+                        help="κ-adaptive SSC: batch eigvalsh across shape groups. "
+                             "Stacks per-group (Ng, r, r) Grams into one (N_total, r, r) "
+                             "eigvalsh + bisect per (side, picard iter) — at OLMo-2-1B "
+                             "all-linear (3 shape groups, picard=2), collapses 12 small "
+                             "eigvalsh launches into 4. Pure speedup at uniform r across "
+                             "groups; silently disabled if r differs or fw_linearization=full. "
+                             "Default True. Only consulted when --magnitude_rule "
+                             "spectral_chord_tight_clean, --polar_method ssc, --ssc_kappa set, "
+                             "and --ssc_kappa_solver eigvalsh.")
     parser.add_argument("--ssc_kappa_warmup_steps", type=int, default=5,
                         help="κ-adaptive SSC: refresh every step for the first M steps before "
                              "honoring --ssc_kappa_refresh_every. At LoRA init the polar input's "
@@ -1100,6 +1134,10 @@ def main():
         ssc_kappa_refresh_every=args.ssc_kappa_refresh_every,
         ssc_kappa_warmup_steps=args.ssc_kappa_warmup_steps,
         ssc_kappa_solver=args.ssc_kappa_solver,
+        ssc_kappa_bisect_iters=args.ssc_kappa_bisect_iters,
+        ssc_kappa_bisect_mode=args.ssc_kappa_bisect_mode,
+        ssc_kappa_cache_share_picard=args.ssc_kappa_cache_share_picard,
+        ssc_kappa_cross_group_eigvalsh=args.ssc_kappa_cross_group_eigvalsh,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -1221,6 +1259,10 @@ def main():
             "ssc_kappa_refresh_every": args.ssc_kappa_refresh_every,
             "ssc_kappa_warmup_steps": args.ssc_kappa_warmup_steps,
             "ssc_kappa_solver": args.ssc_kappa_solver,
+            "ssc_kappa_bisect_iters": args.ssc_kappa_bisect_iters,
+            "ssc_kappa_bisect_mode": args.ssc_kappa_bisect_mode,
+            "ssc_kappa_cache_share_picard": args.ssc_kappa_cache_share_picard,
+            "ssc_kappa_cross_group_eigvalsh": args.ssc_kappa_cross_group_eigvalsh,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,

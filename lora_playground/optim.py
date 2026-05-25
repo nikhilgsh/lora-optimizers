@@ -2294,18 +2294,13 @@ def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
         log_mid = 0.5 * (log_lo + log_hi)
         c = log_mid.exp()                                            # (N,)
         H = _ssc_misr_batched(Xf_flat, c=c, nsteps=nsteps)           # (N, r, d)
-        # κ(H) = ‖H‖²_F / (r · σ_max(H)²). σ_max via 4-iter power iter on H.
+        # κ(H) = ‖H‖²_F / (r · σ_max(H)²).
+        # Closed form for σ_max(H_c(X)) when X is pre-rescaled (σ_max(X)=1):
+        #     σ_max(H_c(X)) = h_c(1) = c / √(c²+1).
+        # No power iter needed; just one F-norm reduction per candidate.
         F2 = (H ** 2).sum(dim=(-2, -1)).clamp_min(eps)               # (N,)
-        # Cheap σ_max via gram trace upper bound + power iter (4 iters).
-        # For r=256 H is (N, r, d), gram H H^T is (N, r, r). 4 power iters.
-        v = torch.randn(N, r, 1, device=device, dtype=dtype)
-        v = v / v.norm(dim=(-2, -1), keepdim=True).clamp_min(eps)
-        G_H = torch.bmm(H, H.transpose(-2, -1))                      # (N, r, r)
-        for _ in range(4):
-            v = torch.bmm(G_H, v)
-            v = v / v.norm(dim=(-2, -1), keepdim=True).clamp_min(eps)
-        sigma_max_H_sq = (v.transpose(-2, -1) @ G_H @ v).squeeze(-1).squeeze(-1).clamp_min(eps)
-        kappa_current = F2 / (r * sigma_max_H_sq)                    # (N,)
+        sigma_max_H_sq = c.pow(2) / (c.pow(2) + 1.0)                 # (N,)
+        kappa_current = F2 / (r * sigma_max_H_sq.clamp_min(eps))     # (N,)
         # κ is monotone DECREASING in c (small c flattens spectrum → high κ).
         too_high = kappa_current > target
         log_lo = torch.where(too_high, log_mid, log_lo)
@@ -2317,6 +2312,91 @@ def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
     out = last_out.reshape(*orig_leading, *last_out.shape[-2:])
     c_solved = last_c.reshape(*orig_leading) if orig_leading else last_c
     return (out.transpose(-2, -1) if tall else out), c_solved
+
+
+def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
+                                   c_init=None, log_window=0.5):
+    """K-way batched parallel-grid variant of `_ssc_misr_bisect_batched`.
+
+    Instead of K sequential bisection steps (each launching one MISR call on
+    N pairs), place K candidate c values uniformly in log-c on the bracket
+    [log(c_init) - log_window, log(c_init) + log_window] per pair, run ONE
+    MISR call on a (K*N, r, d) batched input with c of shape (K*N,), and
+    post-select the candidate whose κ_current is closest to the target.
+
+    Tradeoff vs. sequential bisection
+    ---------------------------------
+    Sequential bisect halves the bracket each step → K=3 narrows to
+    log_window/2^3 = log_window/8 (≈ ±0.0625 in log-c for window=0.5).
+    Parallel-grid is a one-shot evaluation; K=3 candidates over a full
+    ±log_window bracket land on a residual grid of log_window/(K-1) ≈
+    log_window/2 (≈ ±0.25 in log-c for K=3, window=0.5). To match K=3
+    sequential we need K=9 parallel (or shrink log_window 4×). The win is
+    a single batched matmul launch instead of K — at small r, MISR is
+    launch-bound and the parallel cost is roughly that of one sequential
+    iteration, so for launch-bound regimes (e.g. r=256, small N) it pays
+    even at K=5–9.
+
+    Returns (out, c_solved). Same shapes/semantics as the sequential path.
+    `c_init` is REQUIRED here (parallel grid only makes sense with a warm
+    start — full-range parallel-3 would be ~10× coarser than parallel-3
+    on a warm bracket).
+    """
+    if X.shape[-2] == 0 or X.shape[-1] == 0:
+        return X.float(), torch.zeros(X.shape[:-2], device=X.device)
+    if c_init is None:
+        raise ValueError(
+            "_ssc_misr_bisect_batched_kpar requires c_init (warm start); "
+            "full-range parallel-grid is too coarse to be useful."
+        )
+    if K < 1:
+        raise ValueError(f"K must be ≥ 1, got {K}")
+
+    Xf = X.float()
+    tall = Xf.shape[-2] > Xf.shape[-1]
+    if tall:
+        Xf = Xf.transpose(-2, -1)
+    orig_leading = Xf.shape[:-2]
+    Xf_flat = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
+    N, r, d = Xf_flat.shape
+    device, dtype = Xf_flat.device, Xf_flat.dtype
+
+    log_c_mid = c_init.to(device=device, dtype=dtype).log().reshape(-1)  # (N,)
+    if K == 1:
+        offsets = torch.zeros(1, device=device, dtype=dtype)
+    else:
+        offsets = torch.linspace(-log_window, log_window, K,
+                                  device=device, dtype=dtype)             # (K,)
+    # (K, N) grid of log-c candidates.
+    log_c_grid = log_c_mid.unsqueeze(0) + offsets.unsqueeze(1)            # (K, N)
+    c_grid = log_c_grid.exp()                                              # (K, N)
+
+    # Stack X along leading dim K. We broadcast the SAME X across the K
+    # candidates (X doesn't depend on c). Total batched MISR input is
+    # (K*N, r, d) with c of shape (K*N,).
+    X_rep = Xf_flat.unsqueeze(0).expand(K, N, r, d).reshape(K * N, r, d)
+    c_flat = c_grid.reshape(K * N)
+    H_all = _ssc_misr_batched(X_rep, c=c_flat, nsteps=nsteps, eps=eps)
+    # H_all may have been internally tall-transposed by _ssc_misr_batched;
+    # we passed (K*N, r, d) with r ≤ d (already in smaller-side view), so
+    # no transpose happened inside and H_all is (K*N, r, d).
+    H_all = H_all.reshape(K, N, r, d)
+
+    F2 = (H_all ** 2).sum(dim=(-2, -1)).clamp_min(eps)                    # (K, N)
+    sigma_max_H_sq = c_grid.pow(2) / (c_grid.pow(2) + 1.0)                # (K, N)
+    kappa_grid = F2 / (r * sigma_max_H_sq.clamp_min(eps))                 # (K, N)
+
+    target = torch.full((N,), float(kappa), device=device, dtype=dtype)
+    # Pick the candidate index (per pair) minimizing |κ(c_k) - target|.
+    diffs = (kappa_grid - target.unsqueeze(0)).abs()                       # (K, N)
+    winner = diffs.argmin(dim=0)                                           # (N,)
+    pair_idx = torch.arange(N, device=device)
+    c_solved = c_grid[winner, pair_idx]                                    # (N,)
+    out_flat = H_all[winner, pair_idx]                                     # (N, r, d)
+
+    out = out_flat.reshape(*orig_leading, *out_flat.shape[-2:])
+    c_out = c_solved.reshape(*orig_leading) if orig_leading else c_solved
+    return (out.transpose(-2, -1) if tall else out), c_out
 
 
 def _ssc_adaptive_kappa_bulk_batched(X, kappa, nsteps=10, eps=1e-12):
@@ -3105,7 +3185,10 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_method="ns",
                  ssc_c=None, ssc_nsteps=10, ssc_kappa=None,
                  ssc_kappa_refresh_every=1, ssc_kappa_warmup_steps=5,
-                 ssc_kappa_solver="eigvalsh",
+                 ssc_kappa_solver="eigvalsh", ssc_kappa_bisect_iters=3,
+                 ssc_kappa_bisect_mode="sequential",
+                 ssc_kappa_cache_share_picard=True,
+                 ssc_kappa_cross_group_eigvalsh=True,
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
@@ -3300,11 +3383,45 @@ class AdamPolarProductLoRA(Optimizer):
         # κ-solver dispatch: "eigvalsh" = exact bisection on full r×r spectrum
         # (production default); "bulk" = closed-form c_bulk = sqrt(μ(1-κ)/(κ-μ))
         # from F-norm only, no eigvalsh.
-        if ssc_kappa_solver not in ("eigvalsh", "bulk"):
+        if ssc_kappa_solver not in ("eigvalsh", "bulk", "misr_bisect"):
             raise ValueError(
-                f"ssc_kappa_solver must be 'eigvalsh' or 'bulk', got {ssc_kappa_solver!r}"
+                f"ssc_kappa_solver must be 'eigvalsh', 'bulk', or 'misr_bisect', got {ssc_kappa_solver!r}"
             )
         self.ssc_kappa_solver = ssc_kappa_solver
+        self.ssc_kappa_bisect_iters = int(ssc_kappa_bisect_iters)
+        # Optimization B: amortize κ-adaptive eigvalsh across shape groups.
+        # When True (default — pure speedup at uniform r across groups), a
+        # pre-pass in `_step_batched` computes c per (side, Picard iter) by
+        # stacking all groups' (Ng, r, r) grams into one (N_total, r, r)
+        # eigvalsh + bisection call, then scatters c into each group's
+        # `gs['_xgroup_c_pre']` so the per-group polar pipeline skips its
+        # own eigvalsh and runs only the MISR apply. 12 launches at 3
+        # groups × 2 sides × 2 Picard iters collapse to 4.
+        # Requires polar_method='ssc' + ssc_kappa set + solver='eigvalsh' +
+        # uniform r across groups; silently disables otherwise.
+        self.ssc_kappa_cross_group_eigvalsh = bool(ssc_kappa_cross_group_eigvalsh)
+        # Optimization A: share the κ-adaptive cached c across Picard inner
+        # iterations. At picard=2, the cross-coupling correction at n=1 nudges
+        # the polar input X_*_eff slightly from the n=0 X_* — snapshot drift
+        # analysis (docs/notes/polar_product/walltime_profile.md §Snapshot-
+        # derived c-drift) shows |Δc|/c is p50<1.1%, p99<3.3% at production η.
+        # Sharing the n=0 c for n=1 halves the eigvalsh / MISR-bisect calls per
+        # step with negligible dA/dB drift. Default True (safe speedup); set
+        # False to reproduce the per-(side, n) cache behavior. Only consulted
+        # when polar_method='ssc' and ssc_kappa is not None.
+        self.ssc_kappa_cache_share_picard = bool(ssc_kappa_cache_share_picard)
+        # 'sequential' = K MISR launches, classical bisection (default, backward
+        # compat). 'parallel' = K log-spaced candidates evaluated in one
+        # batched MISR launch of (K*N, r, d) input; argmin |κ-target| picks
+        # the winner. Coarser per K (residual ~log_window/(K-1) vs.
+        # log_window/2^K) but only one launch — wins when launch-bound at
+        # small r. See `_ssc_misr_bisect_batched_kpar`.
+        if ssc_kappa_bisect_mode not in ("sequential", "parallel"):
+            raise ValueError(
+                f"ssc_kappa_bisect_mode must be 'sequential' or 'parallel', "
+                f"got {ssc_kappa_bisect_mode!r}"
+            )
+        self.ssc_kappa_bisect_mode = ssc_kappa_bisect_mode
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
         # (Adam direction norms before any cross-term correction). The
@@ -3826,6 +3943,299 @@ class AdamPolarProductLoRA(Optimizer):
             return self._step_batched()
         return self._step_per_pair()
 
+    def _xgroup_section_a_dryrun(self, gs, lr):
+        """Non-mutating prediction of the per-group prep stage (Adam,
+        sigma_AB-hoist, precond refresh) used to feed the cross-group
+        eigvalsh pre-flight. Bit-identical to what the main loop in
+        `_step_batched` will compute moments later, because we use the
+        same fp32 ops in the same order; just on temporary copies so the
+        actual state buffers are left for the main loop to mutate.
+
+        Assumes `gs['A_stack']`, `gs['B_stack']`, `gs['gA_stack']`,
+        `gs['gB_stack']` are already populated (the main loop stages
+        these unconditionally at the top of its iteration; we hoist that
+        out to a separate top-level pass when xgroup_active).
+        """
+        indices = gs['indices']
+        step_count = self.pair_state[indices[0]]['step']  # incremented upstream
+
+        # Adam (non-mutating). out_of_place ops only.
+        m_A = self.beta1 * gs['m_A'] + (1.0 - self.beta1) * gs['gA_stack']
+        m_B = self.beta1 * gs['m_B'] + (1.0 - self.beta1) * gs['gB_stack']
+        v_A = self.beta2 * gs['v_A'] + (1.0 - self.beta2) * gs['gA_stack'].pow(2)
+        v_B = self.beta2 * gs['v_B'] + (1.0 - self.beta2) * gs['gB_stack'].pow(2)
+        bc1 = 1.0 - self.beta1 ** step_count
+        bc2 = 1.0 - self.beta2 ** step_count
+        u_A = (m_A / bc1) / ((v_A / bc2).sqrt() + self.eps)
+        u_B = (m_B / bc1) / ((v_B / bc2).sqrt() + self.eps)
+
+        # sigma_AB hoist (read-only on A_stack/B_stack; v_init read-only).
+        sigma_A_hoist, _ = _sigma_max_power_iter_batched(
+            gs['A_stack'], v_init=gs.get('v_sigma_A'), n_iters=8)
+        sigma_B_hoist, _ = _sigma_max_power_iter_batched(
+            gs['B_stack'], v_init=gs.get('v_sigma_B'), n_iters=8)
+
+        # Precond refresh prediction. Mirrors the main loop's gating.
+        if (step_count - 1) % self.precond_refresh_every == 0:
+            if self.disable_whitening:
+                SA_half_inv = torch.eye(
+                    gs['SA_half_inv'].shape[-1],
+                    dtype=gs['SA_half_inv'].dtype,
+                    device=gs['SA_half_inv'].device,
+                ).expand_as(gs['SA_half_inv']).contiguous()
+                SB_half_inv = torch.eye(
+                    gs['SB_half_inv'].shape[-1],
+                    dtype=gs['SB_half_inv'].dtype,
+                    device=gs['SB_half_inv'].device,
+                ).expand_as(gs['SB_half_inv']).contiguous()
+            else:
+                SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
+                SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
+                if self.precond_method == "higham":
+                    from .utils import spd_inv_sqrt_higham_batched
+                    SA_half_inv = spd_inv_sqrt_higham_batched(
+                        SA_grams, n_iters=self.higham_iters, eps=self.delta,
+                        eps_relative=self.precond_delta_relative,
+                        lam_max=sigma_A_hoist.pow(2),
+                        compute_dtype=self._higham_compute_dtype,
+                    )
+                    SB_half_inv = spd_inv_sqrt_higham_batched(
+                        SB_grams, n_iters=self.higham_iters, eps=self.delta,
+                        eps_relative=self.precond_delta_relative,
+                        lam_max=sigma_B_hoist.pow(2),
+                        compute_dtype=self._higham_compute_dtype,
+                    )
+                else:
+                    # Per-pair eigh fallback rarely paired with the cross-group
+                    # optimization at production scale; fall through to disable.
+                    return None
+        else:
+            SA_half_inv = gs['SA_half_inv']
+            SB_half_inv = gs['SB_half_inv']
+
+        return {
+            'u_A': u_A, 'u_B': u_B,
+            'SA_half_inv': SA_half_inv, 'SB_half_inv': SB_half_inv,
+            'sigma_A': sigma_A_hoist, 'sigma_B': sigma_B_hoist,
+            'A_f': gs['A_stack'], 'B_f': gs['B_stack'],
+        }
+
+    def _xgroup_ssc_kappa_preflight(self, per_group_args, lr):
+        """Optimization B: cross-shape-group eigvalsh batching for κ-adaptive SSC.
+
+        Mirrors the picard math from `_chord_tight_clean_polar_pipeline` but
+        stacks (X X^T) Grams across all shape groups into one eigvalsh +
+        bisection call per (side, picard_iter). Each group has a different
+        d_in / d_out but the SAME r (LoRA rank), so the Grams are uniformly
+        (Ng, r, r) and stackable along the leading axis.
+
+        Populates `gs['_xgroup_c_pre'][(side, n)] = c_per_pair` for each
+        group; the subsequent per-group pipeline call sees this cache and
+        skips its own eigvalsh.
+
+        Cost: replaces 2 * picard_iters * G eigvalsh launches with
+        2 * picard_iters launches. The duplicate MISR/matmul work in the
+        pre-pass is small relative to eigvalsh launch overhead at r=256.
+
+        Args
+        ----
+        per_group_args : list of dict, one per shape group, with keys:
+            gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, sigma_A, sigma_B
+        lr : float — learning rate (shared across groups).
+
+        No return value — mutates each gs['_xgroup_c_pre'].
+        """
+        G = len(per_group_args)
+        if G == 0:
+            return
+        # Uniform-r invariant. LoRA rank is the same across shape groups in
+        # all currently-supported base models (OLMo-2-1B groups qkvo / gate-up
+        # / down all share r=lora_r). Cross-group stacking relies on this:
+        # grams are (Ng, r, r) and only stackable along the batch axis when r
+        # matches. If a future base model violates this, the gating logic in
+        # `_step_batched` must split the preflight per-r-bucket before
+        # invocation rather than silently degrading.
+        r_first = per_group_args[0]['A_f'].shape[-2]
+        for entry in per_group_args[1:]:
+            r_other = entry['A_f'].shape[-2]
+            if r_other != r_first:
+                raise RuntimeError(
+                    f"_xgroup_ssc_kappa_preflight: heterogeneous LoRA rank "
+                    f"across shape groups (r={r_first} vs r={r_other}); "
+                    "cross-group eigvalsh batching requires uniform r. "
+                    "Either set --ssc_kappa_cross_group_eigvalsh false to "
+                    "fall back to per-group eigvalsh, or split per-r-bucket "
+                    "in the caller."
+                )
+        r = r_first
+
+        # Set up per-group state mirroring the pipeline §2.2–§2.5.
+        states = []
+        for entry in per_group_args:
+            gs = entry['gs']
+            A_f = entry['A_f']
+            B_f = entry['B_f']
+            u_A = entry['u_A']
+            u_B = entry['u_B']
+            SA_half_inv = entry['SA_half_inv']
+            SB_half_inv = entry['SB_half_inv']
+            sigma_A = entry['sigma_A']
+            sigma_B = entry['sigma_B']
+            N = A_f.shape[0]
+            device, dtype = A_f.device, A_f.dtype
+            # §2.2 σ_max already hoisted upstream (sigma_A, sigma_B).
+            s_AB = sigma_A + sigma_B
+            rho = lr / (s_AB + 1e-30)
+            # §2.4 whitened Adam direction.
+            X_A = SB_half_inv @ u_A
+            X_B = u_B @ SA_half_inv
+            # §2.5 pre-rescale via power-iter σ_max. Use cached warm-start
+            # vectors from the gs (separate keys from the pipeline's, since
+            # the pipeline will recompute its own σ_max(X_*) on the same X).
+            # Sharing the warm-start vector across pre-pass and pipeline is
+            # safe and slightly accelerates convergence.
+            sigma_XA, v_sigma_XA = _sigma_max_power_iter_batched(
+                X_A, v_init=gs.get('v_sigma_XA'), n_iters=8)
+            sigma_XB, v_sigma_XB = _sigma_max_power_iter_batched(
+                X_B, v_init=gs.get('v_sigma_XB'), n_iters=8)
+            # NOTE: do NOT write these back to gs here — the pipeline below
+            # will run the same power-iter starting from the same v_init and
+            # write its own (identical) results back. Avoids ordering hazard.
+            inv_XA = (1.0 / (sigma_XA + 1e-30)).unsqueeze(-1).unsqueeze(-1)
+            inv_XB = (1.0 / (sigma_XB + 1e-30)).unsqueeze(-1).unsqueeze(-1)
+            X_A = X_A * inv_XA
+            X_B = X_B * inv_XB
+            u_A_local = u_A * inv_XA
+            u_B_local = u_B * inv_XB
+            # Reset / install the cross-group c cache.
+            gs['_xgroup_c_pre'] = {}
+            states.append({
+                'gs': gs, 'A_f': A_f, 'B_f': B_f,
+                'u_A': u_A_local, 'u_B': u_B_local,
+                'X_A': X_A, 'X_B': X_B,
+                'SA_half_inv': SA_half_inv, 'SB_half_inv': SB_half_inv,
+                'sigma_A': sigma_A, 'sigma_B': sigma_B,
+                'rho': rho, 'N': N, 'device': device, 'dtype': dtype,
+                'dA': torch.zeros_like(u_A_local),
+                'dB': torch.zeros_like(u_B_local),
+            })
+
+        # Respect Optimization A (`ssc_kappa_cache_share_picard`): when
+        # the per-group pipeline reuses n=0's solved c for n=1, the
+        # pre-flight should only solve at n=0 and replicate c into the
+        # (side, 1) cache slot. Otherwise the pipeline would see fresh
+        # n=1 c from pre-flight while the share_picard semantics say
+        # "reuse n=0 c" — a silent divergence vs the legacy path.
+        share_picard = bool(self.ssc_kappa_cache_share_picard)
+        # Picard outer loop: at each n, build X_A_eff/X_B_eff per group,
+        # cross-group eigvalsh+bisect → scatter c → MISR per group →
+        # update dA/dB per group for next iter.
+        n_iters_to_solve = 1 if share_picard else self.picard_iters
+        for n in range(n_iters_to_solve):
+            # ---- A side ----
+            X_A_eff_list = []
+            for st in states:
+                if n == 0:
+                    X_A_eff_list.append(st['X_A'])
+                else:
+                    A_f, B_f = st['A_f'], st['B_f']
+                    BT_dB_A = B_f.transpose(-2, -1) @ st['dB'] @ A_f
+                    u_A_eff = st['u_A'] + (1.0 / lr) * BT_dB_A
+                    if self.fw_linearization == "full":
+                        # Full-FW self-terms (S_B_full @ dA). Skip here since
+                        # cross-group with full-FW is not the production path;
+                        # if both flags are set, disable the optimization.
+                        return
+                    X_A_eff_list.append(st['SB_half_inv'] @ u_A_eff)
+            # d_in differs per group (e.g., OLMo qkvo d=2048 vs gate-up d=8192),
+            # so we cannot cat X tensors along the batch axis. Compute grams
+            # per group (each (Ng, r, r) — uniform shape) and cat those.
+            G_X_list = [X @ X.transpose(-2, -1) for X in X_A_eff_list]
+            G_X_stack = torch.cat(G_X_list, dim=0)  # (sum Ng, r, r)
+            lam = torch.linalg.eigvalsh(G_X_stack).clamp_min(0.0)
+            lam_max = lam.max(dim=-1, keepdim=True).values.clamp_min(1e-12)
+            s_sq = lam / lam_max
+            c_all = _solve_c_from_kappa_batched(
+                s_sq, self.ssc_kappa, c_lo=1e-3, c_hi=1e3, iters=40,
+            )
+            # Scatter c back per group; run MISR per group to get P_A for dA.
+            offset = 0
+            for st, X_eff in zip(states, X_A_eff_list):
+                Ng = X_eff.shape[0]
+                c_g = c_all[offset:offset + Ng]
+                offset += Ng
+                st['gs']['_xgroup_c_pre'][('A', n)] = c_g.detach()
+                P_A = _ssc_misr_batched(X_eff, c=c_g, nsteps=self.ssc_nsteps).float()
+                st['P_A'] = P_A
+                st['X_A_eff'] = X_eff
+
+            # ---- B side ----
+            X_B_eff_list = []
+            for st in states:
+                if n == 0:
+                    X_B_eff_list.append(st['X_B'])
+                else:
+                    A_f, B_f = st['A_f'], st['B_f']
+                    B_dA_AT = B_f @ st['dA'] @ A_f.transpose(-2, -1)
+                    u_B_eff = st['u_B'] + (1.0 / lr) * B_dA_AT
+                    X_B_eff_list.append(u_B_eff @ st['SA_half_inv'])
+            # Grams are X^T X for B (X_B is (Ng, d_out, r)).
+            G_X_list = [X.transpose(-2, -1) @ X for X in X_B_eff_list]
+            G_X_stack = torch.cat(G_X_list, dim=0)  # (sum Ng, r, r)
+            lam = torch.linalg.eigvalsh(G_X_stack).clamp_min(0.0)
+            lam_max = lam.max(dim=-1, keepdim=True).values.clamp_min(1e-12)
+            s_sq = lam / lam_max
+            c_all = _solve_c_from_kappa_batched(
+                s_sq, self.ssc_kappa, c_lo=1e-3, c_hi=1e3, iters=40,
+            )
+            offset = 0
+            for st, X_eff in zip(states, X_B_eff_list):
+                Ng = X_eff.shape[0]
+                c_g = c_all[offset:offset + Ng]
+                offset += Ng
+                st['gs']['_xgroup_c_pre'][('B', n)] = c_g.detach()
+                P_B = _ssc_misr_batched(X_eff, c=c_g, nsteps=self.ssc_nsteps).float()
+                st['P_B'] = P_B
+                st['X_B_eff'] = X_eff
+
+            # ---- Compute dA, dB for n+1 (skip if last iter) ----
+            if n + 1 < n_iters_to_solve:
+                for st in states:
+                    geo_A = st['SB_half_inv'] @ st['P_A']
+                    geo_B = st['P_B'] @ st['SA_half_inv']
+                    op_geoA_b, _ = _sigma_max_power_iter_batched(
+                        geo_A, v_init=None, n_iters=8)
+                    op_geoB_b, _ = _sigma_max_power_iter_batched(
+                        geo_B, v_init=None, n_iters=8)
+                    rho_unsq = st['rho'].unsqueeze(-1).unsqueeze(-1)
+                    op_geoA = (op_geoA_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                    op_geoB = (op_geoB_b + 1e-30).unsqueeze(-1).unsqueeze(-1)
+                    st['dA'] = -(rho_unsq / op_geoA) * geo_A
+                    st['dB'] = -(self.lora_plus_multiplier * rho_unsq / op_geoB) * geo_B
+
+        # When share_picard, replicate the n=0 c into the remaining
+        # picard slots so the per-group `_polar` fast-path picks it up
+        # for n>=1 and produces the same MISR output as the share_picard
+        # cache would have.
+        if share_picard:
+            for st in states:
+                c_pre = st['gs']['_xgroup_c_pre']
+                c_A0 = c_pre.get(('A', 0))
+                c_B0 = c_pre.get(('B', 0))
+                for n_extra in range(1, self.picard_iters):
+                    if c_A0 is not None:
+                        c_pre[('A', n_extra)] = c_A0
+                    if c_B0 is not None:
+                        c_pre[('B', n_extra)] = c_B0
+                # Also populate the share_picard cache key the per-group
+                # pipeline will look up at refresh-due boundaries on the
+                # next step. Mirrors what the per-group eigvalsh path
+                # would have written via `gs[cache_key] = c_solved.detach()`.
+                if c_A0 is not None:
+                    st['gs']['ssc_c_cached_A'] = c_A0
+                if c_B0 is not None:
+                    st['gs']['ssc_c_cached_B'] = c_B0
+
     def _chord_tight_clean_polar_pipeline(
         self, gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
         sigma_A=None, sigma_B=None, step_count=None,
@@ -3861,6 +4271,16 @@ class AdamPolarProductLoRA(Optimizer):
                 # Input is post-§2.5-rescale so σ_max(X) ≈ 1; ssc_c is in
                 # those units (c ≲ 1 produces meaningful clipping).
                 if self.ssc_kappa is not None:
+                    # Optimization B fast path: cross-group eigvalsh has
+                    # already computed c for this (side, n) in a pre-pass
+                    # in `_step_batched`. Skip eigvalsh + bisect; just MISR.
+                    xg_pre = gs.get('_xgroup_c_pre')
+                    if xg_pre is not None and (side, n) in xg_pre:
+                        c_pre = xg_pre[(side, n)]
+                        out = _ssc_misr_batched(X, c=c_pre, nsteps=self.ssc_nsteps)
+                        if side is not None:
+                            gs[f'ssc_c_last_{side}'] = c_pre.detach()
+                        return out.float()
                     # κ-adaptive: solve c per-pair per-step from target κ
                     # (Appendix C.5 state-dependent interpretation).
                     # Refresh schedule: when ssc_kappa_refresh_every>1, solve
@@ -3871,8 +4291,30 @@ class AdamPolarProductLoRA(Optimizer):
                     # matching precond_refresh_every).
                     N = self.ssc_kappa_refresh_every
                     M = self.ssc_kappa_warmup_steps
-                    cache_key = f'ssc_c_cached_{side}_n{n}'
-                    refresh_due = (
+                    # Optimization A: when share_picard=True (default), use one
+                    # cache slot per side, shared across Picard inner iters
+                    # (n=0 solves; n=1 reuses). When False, fall back to per-n
+                    # caches (pre-flag behavior). See __init__ for the drift
+                    # justification.
+                    share_picard = self.ssc_kappa_cache_share_picard
+                    if share_picard:
+                        cache_key = f'ssc_c_cached_{side}'
+                        stamp_key = f'ssc_c_cached_{side}_step'
+                    else:
+                        cache_key = f'ssc_c_cached_{side}_n{n}'
+                        stamp_key = None
+                    # Picard-share short-circuit: at n>0, if n=0 already solved
+                    # (and stamped) this step, reuse without re-solving — this
+                    # is the optimization, independent of the cross-step
+                    # refresh schedule (N).
+                    picard_reuse = (
+                        share_picard
+                        and n is not None and n > 0
+                        and cache_key in gs
+                        and stamp_key is not None
+                        and gs.get(stamp_key) == step_count
+                    )
+                    refresh_due = (not picard_reuse) and (
                         N == 1
                         or step_count is None
                         or step_count <= M
@@ -3884,15 +4326,43 @@ class AdamPolarProductLoRA(Optimizer):
                             out, c_solved = _ssc_adaptive_kappa_bulk_batched(
                                 X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
                             )
+                        elif self.ssc_kappa_solver == "misr_bisect":
+                            # Warm-start from prior c if cached; else fall back
+                            # to eigvalsh once to seed (K=3 with full-range
+                            # bracket is too coarse for a fresh start).
+                            c_init = gs.get(cache_key)
+                            if c_init is None:
+                                out, c_solved = _ssc_adaptive_kappa_batched(
+                                    X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                                )
+                            else:
+                                if self.ssc_kappa_bisect_mode == "parallel":
+                                    out, c_solved = _ssc_misr_bisect_batched_kpar(
+                                        X, kappa=self.ssc_kappa,
+                                        K=self.ssc_kappa_bisect_iters,
+                                        nsteps=self.ssc_nsteps, c_init=c_init,
+                                    )
+                                else:
+                                    out, c_solved = _ssc_misr_bisect_batched(
+                                        X, kappa=self.ssc_kappa,
+                                        K=self.ssc_kappa_bisect_iters,
+                                        nsteps=self.ssc_nsteps, c_init=c_init,
+                                    )
                         else:
                             out, c_solved = _ssc_adaptive_kappa_batched(
                                 X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
                             )
-                        if N > 1:
+                        if N > 1 or share_picard:
                             # Stash for the next N-1 steps. Detach to break
                             # any spurious autograd ties (we run under
-                            # @torch.no_grad anyway).
+                            # @torch.no_grad anyway). When share_picard=True,
+                            # also stash at N=1 so the n=1 Picard inner iter
+                            # can reuse the c solved at n=0; stamp the step so
+                            # the n>0 short-circuit only triggers within the
+                            # same step.
                             gs[cache_key] = c_solved.detach()
+                            if share_picard and stamp_key is not None:
+                                gs[stamp_key] = step_count
                     else:
                         cached_c = gs[cache_key]
                         out = _ssc_misr_batched(
@@ -4103,24 +4573,89 @@ class AdamPolarProductLoRA(Optimizer):
                     last_diag = self.pair_state.get(i, {}).get('last_diag')
                     _emit_non_finite_event(step_now, i, name, checks, last_diag)
 
+        # Optimization B (cross-group eigvalsh batching for κ-adaptive SSC):
+        # When active, run Adam + precond + sigma_AB-hoist for every shape
+        # group up-front, then call `_xgroup_ssc_kappa_preflight` once to
+        # compute c per (side, picard iter) via a single stacked eigvalsh.
+        # The main per-group loop below skips its own eigvalsh calls
+        # (intercepted in `_chord_tight_clean_polar_pipeline._polar`).
+        xgroup_active = (
+            self.ssc_kappa_cross_group_eigvalsh
+            and self.magnitude_rule == "spectral_chord_tight_clean"
+            and self.polar_method == "ssc"
+            and self.ssc_kappa is not None
+            and self.ssc_kappa_solver == "eigvalsh"
+            and self.fw_linearization != "full"
+            and len(self.group_state) > 1
+        )
+
         diag_records = []
+
+        # Cross-group eigvalsh pre-flight (Optimization B). Runs ONCE
+        # before the per-group main loop, stages each group's stacked
+        # tensors and increments pair_state['step'], runs a non-mutating
+        # dry-run of Adam+precond+sigma_hoist, then invokes the cross-
+        # group eigvalsh that populates gs['_xgroup_c_pre']. The main
+        # loop below detects '_xgroup_prestaged' and skips redundant
+        # stacking/increment. Adam/precond/sigma_hoist re-run for real
+        # (with mutations) — bit-identical to dry-run since we mirror
+        # the exact op sequence in fp32.
+        for gs in self.group_state:
+            gs.pop('_xgroup_c_pre', None)
+            gs.pop('_xgroup_prestaged', None)
+        if xgroup_active:
+            per_group_args = []
+            for gs in self.group_state:
+                indices = gs['indices']
+                A_list = [self.pairs[gi][0] for gi in indices]
+                B_list = [self.pairs[gi][1] for gi in indices]
+                for j, gi in enumerate(indices):
+                    if A_list[j].grad is None or B_list[j].grad is None:
+                        raise ValueError(
+                            "Gradients are required for AdamPolarProductLoRA update.")
+                    self.pair_state[gi]['step'] += 1
+                gs['A_stack'] = torch.stack(A_list).float()
+                gs['B_stack'] = torch.stack(B_list).float()
+                gs['gA_stack'] = torch.stack([A.grad for A in A_list]).float()
+                gs['gB_stack'] = torch.stack([B.grad for B in B_list]).float()
+                gs['_xgroup_prestaged'] = True
+                prep = self._xgroup_section_a_dryrun(gs, lr)
+                if prep is None:
+                    # Dry-run unsupported (e.g., per-pair eigh) — disable
+                    # the optimization for this step, fall back to the
+                    # legacy per-group path.
+                    for gs2 in self.group_state:
+                        gs2.pop('_xgroup_prestaged', None)
+                    xgroup_active = False
+                    break
+                per_group_args.append({'gs': gs, **prep})
+            if xgroup_active:
+                self._xgroup_ssc_kappa_preflight(per_group_args, lr)
+
         for gs in self.group_state:
             N = gs['N']
             indices = gs['indices']
 
-            # Stack params + grads. `torch.stack` is one launch per buffer
-            # (vs N copy_ launches for the per-pair pattern); for OLMo r=64
-            # with N=64 in the largest group, that's ~3 ms saved per step.
-            A_list = [self.pairs[gi][0] for gi in indices]
-            B_list = [self.pairs[gi][1] for gi in indices]
-            for j, gi in enumerate(indices):
-                if A_list[j].grad is None or B_list[j].grad is None:
-                    raise ValueError("Gradients are required for AdamPolarProductLoRA update.")
-                self.pair_state[gi]['step'] += 1
-            gs['A_stack'] = torch.stack(A_list).float()
-            gs['B_stack'] = torch.stack(B_list).float()
-            gs['gA_stack'] = torch.stack([A.grad for A in A_list]).float()
-            gs['gB_stack'] = torch.stack([B.grad for B in B_list]).float()
+            if gs.pop('_xgroup_prestaged', False):
+                # Stacks + step increment already done in the pre-flight
+                # phase above. Recover A_list/B_list for the apply step
+                # at the end of this iteration.
+                A_list = [self.pairs[gi][0] for gi in indices]
+                B_list = [self.pairs[gi][1] for gi in indices]
+            else:
+                # Stack params + grads. `torch.stack` is one launch per buffer
+                # (vs N copy_ launches for the per-pair pattern); for OLMo r=64
+                # with N=64 in the largest group, that's ~3 ms saved per step.
+                A_list = [self.pairs[gi][0] for gi in indices]
+                B_list = [self.pairs[gi][1] for gi in indices]
+                for j, gi in enumerate(indices):
+                    if A_list[j].grad is None or B_list[j].grad is None:
+                        raise ValueError("Gradients are required for AdamPolarProductLoRA update.")
+                    self.pair_state[gi]['step'] += 1
+                gs['A_stack'] = torch.stack(A_list).float()
+                gs['B_stack'] = torch.stack(B_list).float()
+                gs['gA_stack'] = torch.stack([A.grad for A in A_list]).float()
+                gs['gB_stack'] = torch.stack([B.grad for B in B_list]).float()
 
             # Diagnostic snapshot stash (gated). A/B here are the values the
             # §9 step is about to consume — they're the algorithm inputs at
@@ -9012,6 +9547,10 @@ def build_optimizer(
     ssc_kappa_refresh_every: int = 1,
     ssc_kappa_warmup_steps: int = 5,
     ssc_kappa_solver: str = "eigvalsh",
+    ssc_kappa_bisect_iters: int = 3,
+    ssc_kappa_cache_share_picard: bool = True,
+    ssc_kappa_bisect_mode: str = "sequential",
+    ssc_kappa_cross_group_eigvalsh: bool = True,
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
@@ -9416,6 +9955,10 @@ def build_optimizer(
             ssc_kappa_refresh_every=ssc_kappa_refresh_every,
             ssc_kappa_warmup_steps=ssc_kappa_warmup_steps,
             ssc_kappa_solver=ssc_kappa_solver,
+            ssc_kappa_bisect_iters=ssc_kappa_bisect_iters,
+            ssc_kappa_bisect_mode=ssc_kappa_bisect_mode,
+            ssc_kappa_cache_share_picard=ssc_kappa_cache_share_picard,
+            ssc_kappa_cross_group_eigvalsh=ssc_kappa_cross_group_eigvalsh,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,
