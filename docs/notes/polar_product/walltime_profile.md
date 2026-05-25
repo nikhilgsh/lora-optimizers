@@ -930,3 +930,33 @@ Script: `scripts/bench/ssc_kappa_drift_snapshot.py`; CSV at `notebooks/snapshot_
 ### Note on isolated-op microbenches
 
 A `scripts/bench/ssc_kappa_eigvalsh_timing.py` script times `_ssc_adaptive_kappa_batched` / `_ssc_misr_batched` / `_newton_schulz_gram_batched` in isolation on a single shape group. These are useful for component-level reasoning, but the per-call ms numbers do NOT translate directly to "fraction-of-step" — production runs hit 2–3 shape groups, multiple Picard iters, and Higham/Adam/matmul work that the isolated op doesn't capture. Always cite the end-to-end fraction-of-step table above when reasoning about budget; treat isolated-op timings as upper bounds on the component's possible contribution, not as the contribution itself.
+
+### Compiled-mode κ-adaptive (Blackwell, r=256, picard=2, 2026-05-25)
+
+Production-faithful re-bench with `--compile`. The compile floor is much lower than no-compile, so absolute fixed-c gets ~13× cheaper and the κ-adaptive *ratio vs fixed-c* shifts substantially (the no-compile 1.06× ratio above was on a much fatter fixed-c baseline). All measurements 50 steps, eval_every=10, bs=2×accum=8, seq=512, all-linear, κ=0.6, `--ssc_nsteps 20`, `--higham_iters 16` (both at the snapshot-validated convergence floor — n=10 default was under-converged at r=256). Steady-state per-step from last eval interval. Logs under `logs/bench_ssc_drift/v2_*.log`.
+
+| variant | per-step | × fixed-c | × AdamW | eval@50 |
+|---|---:|---:|---:|---:|
+| AdamW (lr=1e-2, eval diverged) | 0.424 s | 0.83× | 1.00× | — |
+| fixed-c (n20, higham16) | 0.514 s | 1.00× | 1.21× | 0.6266 |
+| κ-adaptive eigvalsh, R=1 (no amortization) | 1.637 s | 3.18× | 3.86× | 0.6253 |
+| κ-adaptive eigvalsh, R=5+W=5 (refresh) | 0.739 s | 1.44× | 1.74× | 0.6252 |
+| **kpar K=3 R=5+W=5 share=True** (legacy) | **0.518 s** | **1.01×** | **1.22×** | 0.6251 |
+| **kpar K=3 R=5+W=5 share=False** (correct) | **0.525 s** | **1.02×** | **1.24×** | 0.6254 |
+| kpar K=5 R=5+W=5 share=True | 0.524 s | 1.02× | 1.24× | 0.6251 |
+| kpar K=3 R=5+W=5 bs=32 | 0.907 s | 1.00× (vs implied fixed-c bs=32) | 1.11× | 0.6066 |
+
+Recommended production default: `--ssc_kappa_solver misr_bisect --ssc_kappa_bisect_mode parallel --ssc_kappa_bisect_iters 3 --ssc_kappa_refresh_every 5 --ssc_kappa_warmup_steps 5 --ssc_kappa_cache_share_picard False --ssc_nsteps 20 --higham_iters 16`. ~2% overhead over compiled fixed-c at r=256.
+
+**Why kpar beats eigvalsh+refresh in compile-mode**: refresh-on-eigvalsh still pays eigvalsh launches on the 1-in-N refresh steps (plus the cross-group preflight). kpar replaces eigvalsh entirely after warmup with K batched MISR launches — much cheaper in launch-bound compiled mode.
+
+### kpar c-accuracy verification (in-training eigvalsh comparison, 2026-05-25)
+
+The `--ssc_kappa_diagnose_eigvalsh` flag emits per-pair `|log(c_used) - log(c_eigvalsh)|` every polar call (doubles eigvalsh work; diagnostic only). Trajectories on side A at production config (kpar K=3 R=5+W=5):
+
+- **Warmup steps 1-5 (forced eigvalsh per commit 423d17e)**: log_err = 0 at n=0 and at n=1 (when share=False). Earlier bug — using kpar with B=0-init cached c at step 2 — produced log_err of factor 100×; fixed by routing warmup through eigvalsh regardless of solver.
+- **Refresh steps post-warmup (6, 11, 16, …)**: log_err_max stays in narrow band 0.23–0.26 for all refreshes over 50 steps. Confirms c is being re-selected each refresh, not frozen at the warmup-eigvalsh value.
+- **Between refreshes (cached-c reuse)**: log_err grows from ~0.33 (1 step after refresh) → ~0.67 (4 steps after refresh), then resets at the next refresh — sawtooth pattern consistent with K=3 grid resolution + per-step drift ~0.04 max.
+- **Side A n=1 with share=True**: log_err = 1.0–1.6 (factor 3-5× wrong) across all steps. Reusing n=0's c at n=1 is meaningfully wrong because side A's X spectrum changes between Picard iters via `B^T @ dB @ A`. The legacy snapshot test measured downstream dA error and missed this. Fixed by `share=False` (now the default), which costs +1.3% wall (0.518 → 0.525 s/step) and restores log_err to ~0.3 at n=1.
+
+Cost note: kpar's c moves in discrete K=3 grid increments (factor `e^±0.5 ≈ 1.65×`). K=5 gives finer discretization (factor `e^±0.25 ≈ 1.28×`) at +1.1% wall amortized. Production default is K=3; bump to K=5 if you observe c trajectories with large outlier jumps. Cleanest pure tracking would use sequential bisect mode (3 halvings → factor `≈1.06×`), un-measured for compile-mode wall.
