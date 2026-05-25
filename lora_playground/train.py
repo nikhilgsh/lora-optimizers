@@ -734,6 +734,14 @@ def make_parser():
                              "Default True. Only consulted when --magnitude_rule "
                              "spectral_chord_tight_clean, --polar_method ssc, --ssc_kappa set, "
                              "and --ssc_kappa_solver eigvalsh.")
+    parser.add_argument("--ssc_kappa_diagnose_eigvalsh",
+                        type=lambda s: str(s).lower() not in {"0", "false", "no"},
+                        default=False,
+                        help="DIAGNOSTIC: at every polar call, also solve c via "
+                             "eigvalsh on the same X and log per-pair |log(c_used) - "
+                             "log(c_eigvalsh)|. Doubles eigvalsh work — only enable "
+                             "for accuracy validation runs (e.g. kpar K=3 R=5). Per-step "
+                             "events emit as JSONL `ssc_c_diag` with p50/p99/max log-error.")
     parser.add_argument("--ssc_kappa_warmup_steps", type=int, default=5,
                         help="κ-adaptive SSC: refresh every step for the first M steps before "
                              "honoring --ssc_kappa_refresh_every. At LoRA init the polar input's "
@@ -1142,6 +1150,7 @@ def main():
         ssc_kappa_bisect_mode=args.ssc_kappa_bisect_mode,
         ssc_kappa_cache_share_picard=args.ssc_kappa_cache_share_picard,
         ssc_kappa_cross_group_eigvalsh=args.ssc_kappa_cross_group_eigvalsh,
+        ssc_kappa_diagnose_eigvalsh=args.ssc_kappa_diagnose_eigvalsh,
         beta1=args.beta1,
         beta2=args.beta2,
     )

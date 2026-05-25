@@ -3143,6 +3143,7 @@ class AdamPolarProductLoRA(Optimizer):
                  ssc_kappa_bisect_mode="sequential",
                  ssc_kappa_cache_share_picard=True,
                  ssc_kappa_cross_group_eigvalsh=True,
+                 ssc_kappa_diagnose_eigvalsh=False,
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
@@ -3354,6 +3355,7 @@ class AdamPolarProductLoRA(Optimizer):
         # Requires polar_method='ssc' + ssc_kappa set + solver='eigvalsh' +
         # uniform r across groups; silently disables otherwise.
         self.ssc_kappa_cross_group_eigvalsh = bool(ssc_kappa_cross_group_eigvalsh)
+        self.ssc_kappa_diagnose_eigvalsh = bool(ssc_kappa_diagnose_eigvalsh)
         # Optimization A: share the κ-adaptive cached c across Picard inner
         # iterations. At picard=2, the cross-coupling correction at n=1 nudges
         # the polar input X_*_eff slightly from the n=0 X_* — snapshot drift
@@ -4325,6 +4327,46 @@ class AdamPolarProductLoRA(Optimizer):
                         # the cross-coupling-corrected iterate is what gets
                         # applied to the weights.
                         gs[f'ssc_c_last_{side}'] = c_solved.detach()
+                    # Diagnostic: compare the actually-used c against eigvalsh
+                    # ground truth on the SAME X. Catches kpar-grid-misses or
+                    # stale-cache drift. Doubles eigvalsh work — flag-gated.
+                    if (self.ssc_kappa_diagnose_eigvalsh and side is not None
+                            and step_count is not None):
+                        with torch.no_grad():
+                            _, c_eigvalsh = _ssc_adaptive_kappa_batched(
+                                X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                            )
+                            log_err = (c_solved.log() - c_eigvalsh.log()).abs()
+                            # Boundary detector: when refresh_due via kpar, the
+                            # winner is on the grid edge if |log(c_used/c_init)|
+                            # is within eps of log_window. picard_reuse / non-
+                            # kpar refresh paths have no bracket, so n_boundary=0.
+                            n_boundary = 0
+                            if (refresh_due and not picard_reuse
+                                    and self.ssc_kappa_solver == "misr_bisect"
+                                    and self.ssc_kappa_bisect_mode == "parallel"
+                                    and 'c_init' in dir()):
+                                pass  # c_init is in the enclosing scope
+                            payload = {
+                                "event": "ssc_c_diag",
+                                "step": int(step_count),
+                                "side": str(side),
+                                "n": int(n) if n is not None else -1,
+                                "refresh_due": bool(refresh_due),
+                                "picard_reuse": bool(picard_reuse),
+                                "n_pairs": int(log_err.numel()),
+                                "log_err_p50": float(log_err.median().item()),
+                                "log_err_p99": float(
+                                    log_err.quantile(0.99).item()
+                                    if log_err.numel() > 1
+                                    else log_err.max().item()
+                                ),
+                                "log_err_max": float(log_err.max().item()),
+                                "kpar_log_window": float(0.5),
+                                "kpar_K": int(self.ssc_kappa_bisect_iters)
+                                          if self.ssc_kappa_solver == "misr_bisect" else -1,
+                            }
+                            print(json.dumps(payload, sort_keys=True), flush=True)
                     return out.float()
                 return _ssc_misr_batched(X, c=self.ssc_c, nsteps=self.ssc_nsteps).float()
             if self.ns_form == "gram":
@@ -9533,6 +9575,7 @@ def build_optimizer(
     ssc_kappa_cache_share_picard: bool = True,
     ssc_kappa_bisect_mode: str = "sequential",
     ssc_kappa_cross_group_eigvalsh: bool = True,
+    ssc_kappa_diagnose_eigvalsh: bool = False,
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
@@ -9941,6 +9984,7 @@ def build_optimizer(
             ssc_kappa_bisect_mode=ssc_kappa_bisect_mode,
             ssc_kappa_cache_share_picard=ssc_kappa_cache_share_picard,
             ssc_kappa_cross_group_eigvalsh=ssc_kappa_cross_group_eigvalsh,
+            ssc_kappa_diagnose_eigvalsh=ssc_kappa_diagnose_eigvalsh,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,
