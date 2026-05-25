@@ -124,6 +124,8 @@ Mechanism probes (cosine trajectories, conditioning, etc.) run to the same horiz
 
 **Data-pipeline boundary (2026-05-08): `unpacked_v0` → `packed_v1`.** New runs default to `packed_v1` (sequence-packed train side, pad-to-max eval, prompt-masked loss). Numbers across versions are NOT comparable — prompt-mask alone changes the loss objective, and packing changes per-step token density. Filter analyses with `load_runs(where={"data_pipeline_version": ...})`. AdamW noise-floor re-anchor under `packed_v1` is mandatory before any new optimizer Δ claim transfers; until then, optimizer-vs-optimizer comparisons must stay within a single version. See `docs/notes/polar_product/data_pipeline_followups.md` and `lora_playground/data.py`.
 
+**Timing benches: `--optim_diagnostics_every 1` is a trap.** `_emit_basic_diagnostics` does a per-pair `B @ dA` matmul on the OUTER `(d_out, d_in)` shape PLUS ~10 `float(tensor)` syncs per pair. At r=256 all-linear (112 pairs) called every step, this adds ~5+ s/step of pure instrumentation — verified to be the entire "15× chord-tight vs AdamW" wall delta. Production sbatches default to `--optim_diagnostics_every 80`; bench cells measuring per-step wall, tok/s, or fraction-of-step MUST use ≥20 (preferably `--no-log_basic_diagnostics`). If a bench needs per-step c-trajectories or similar, run a SECOND non-timing cell with `--optim_diagnostics_every 1` for the trajectory and the timing cell with diagnostics off — do not conflate the two.
+
 ## Sweep manifests — pointer to a mechanically-enforced contract
 
 This section is a **navigation aid**, not the contract itself. The contract is enforced mechanically by three choke points; this doc just tells you where to look when one of them refuses:
