@@ -714,14 +714,18 @@ def make_parser():
                              "small r. To match seq-K=3 accuracy use par-K=9.")
     parser.add_argument("--ssc_kappa_cache_share_picard",
                         type=lambda s: str(s).lower() not in {"0", "false", "no"},
-                        default=True,
+                        default=False,
                         help="κ-adaptive SSC: share the per-pair cached c across Picard inner "
-                             "iterations (n=0 solves; n=1 reuses). Snapshot drift analysis shows "
-                             "|Δc|/c is p50<1.1%%, p99<3.3%% at production η — sharing halves the "
-                             "per-step eigvalsh/MISR-bisect work with negligible dA/dB drift. "
-                             "Default True (safe speedup); set False to reproduce per-(side, n) "
-                             "cache behavior. Only consulted when --polar_method ssc, "
-                             "--ssc_kappa set, and --picard_iters > 1.")
+                             "iterations (n=0 solves; n=1 reuses). The original snapshot test "
+                             "measured DOWNSTREAM dA error (p50<1.1%%, p99<3.3%%) and concluded "
+                             "share=True was safe. The in-training eigvalsh-comparison diagnostic "
+                             "(--ssc_kappa_diagnose_eigvalsh) later showed share=True produces "
+                             "factor 3-5x c-error on side A at n=1: side A's X spectrum changes "
+                             "significantly between Picard iters due to the B^T @ dB @ A cross-"
+                             "coupling correction, so reusing n=0's c at n=1 is meaningfully wrong. "
+                             "Default flipped to False (correctness > 1.3%% wall savings); set "
+                             "True only to reproduce legacy runs. Only consulted when "
+                             "--polar_method ssc, --ssc_kappa set, and --picard_iters > 1.")
     parser.add_argument("--ssc_kappa_cross_group_eigvalsh",
                         type=lambda s: str(s).lower() not in {"0", "false", "no"},
                         default=True,
