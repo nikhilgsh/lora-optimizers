@@ -689,6 +689,13 @@ def make_parser():
                              "(amortizes the eigvalsh+bisection across N steps). N=1 reproduces "
                              "per-step solving (default). Independent caches per Picard inner iter. "
                              "Only consulted when --polar_method ssc and --ssc_kappa are set.")
+    parser.add_argument("--ssc_kappa_solver", type=str, default="eigvalsh",
+                        choices=["eigvalsh", "bulk"],
+                        help="κ-adaptive c solver. 'eigvalsh' = exact bisection on full "
+                             "r×r spectrum (production default; launch-bound on small r). "
+                             "'bulk' = closed-form c_bulk = sqrt(μ(1-κ)/(κ-μ)) from F-norm "
+                             "only (no eigvalsh, matmul-free). Bulk is a concave-Jensen "
+                             "approximation; biases slightly toward larger c on spread spectra.")
     parser.add_argument("--ssc_kappa_warmup_steps", type=int, default=5,
                         help="κ-adaptive SSC: refresh every step for the first M steps before "
                              "honoring --ssc_kappa_refresh_every. At LoRA init the polar input's "
@@ -1092,6 +1099,7 @@ def main():
         ssc_kappa=args.ssc_kappa,
         ssc_kappa_refresh_every=args.ssc_kappa_refresh_every,
         ssc_kappa_warmup_steps=args.ssc_kappa_warmup_steps,
+        ssc_kappa_solver=args.ssc_kappa_solver,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -1211,6 +1219,8 @@ def main():
             "ssc_nsteps": args.ssc_nsteps,
             "ssc_kappa": args.ssc_kappa,
             "ssc_kappa_refresh_every": args.ssc_kappa_refresh_every,
+            "ssc_kappa_warmup_steps": args.ssc_kappa_warmup_steps,
+            "ssc_kappa_solver": args.ssc_kappa_solver,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,

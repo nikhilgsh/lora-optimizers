@@ -2214,6 +2214,125 @@ def _solve_c_from_kappa_batched(s_sq, kappa, c_lo=1e-3, c_hi=1e3, iters=40):
     return (0.5 * (log_lo + log_hi)).exp()
 
 
+def _ssc_bulk_c_from_kappa_batched(X, kappa, eps=1e-8):
+    """Closed-form c from κ-bulk: μ-only approximation to κ(c).
+
+    Replace the exact κ(c) = (1/r) Σ s_i² (1+1/c²) / (1+s_i²/c²) with a
+    bulk-Jensen approximation that uses ONLY μ = ‖X‖²_F / r:
+        κ_bulk(c) := μ (1+c²) / (μ+c²)
+    Solving κ_bulk(c) = κ_target yields the closed form
+        c_bulk² = μ (1-κ) / (κ-μ)   when κ > μ
+    No eigvalsh, no bisection — just one F-norm and a few scalar ops per pair.
+
+    Assumes X has been §2.5-rescaled so σ_max(X) ≈ 1 (hence μ ∈ (1/r, 1]).
+    When κ_target ≤ μ + eps the target is unreachable in bulk; we return
+    c_lo (small) which makes MISR produce a near-polar output. Same
+    saturation semantics as `_solve_c_from_kappa_batched`.
+
+    Caveat: κ(c) is concave in λ, so Jensen gives κ_bulk ≥ κ_true on average.
+    This biases c_bulk slightly larger than c_true on spread spectra. Validated
+    empirically against eigvalsh on snapshots (`scripts/bench/ssc_kappa_bulk_vs_eigvalsh.py`).
+    """
+    # Operate on the smaller-side view; X is (N, r, d) with r ≤ d after a
+    # tall-transpose (matches `_ssc_misr_batched` convention).
+    Xf = X.float()
+    tall = Xf.shape[-2] > Xf.shape[-1]
+    if tall:
+        Xf = Xf.transpose(-2, -1)
+    orig_leading = Xf.shape[:-2]
+    Xf_flat = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
+    N, r, _ = Xf_flat.shape
+    F2 = (Xf_flat ** 2).sum(dim=(-2, -1))                # (N,) ‖X‖²_F
+    mu = (F2 / r).clamp(eps, 1.0 - eps)
+    target = torch.full_like(mu, float(kappa))
+    denom = (target - mu).clamp_min(eps)                 # κ > μ required
+    c2 = mu * (1.0 - target) / denom
+    c = c2.clamp_min(1e-6).sqrt()
+    return c.reshape(*orig_leading) if orig_leading else c
+
+
+def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
+                              c_init=None, log_window=0.5):
+    """Solve c via warm-started bisection in log-c using MISR forward as the
+    κ evaluator. K MISR runs total; final run is the apply.
+
+    For each candidate c, κ(c) = ‖H_c(X)‖²_F / (r · σ_max(H_c(X))²) =
+    stable_rank(H_c(X)) / r. Bisection on this against the target κ.
+
+    Warm-start: if `c_init` (N,) provided, initial bracket is [c_init/e^window,
+    c_init · e^window] so K=3 gives a factor e^(window/4) ≈ 1.13× accuracy at
+    window=0.5. Without c_init, full range [1e-3, 1e3] (K=3 too coarse — fall
+    back to eigvalsh first step).
+
+    Returns (out, c_solved).
+    """
+    if X.shape[-2] == 0 or X.shape[-1] == 0:
+        return X.float(), torch.zeros(X.shape[:-2], device=X.device)
+    Xf = X.float()
+    tall = Xf.shape[-2] > Xf.shape[-1]
+    if tall:
+        Xf = Xf.transpose(-2, -1)
+    orig_leading = Xf.shape[:-2]
+    Xf_flat = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
+    N, r, _ = Xf_flat.shape
+    device, dtype = Xf_flat.device, Xf_flat.dtype
+
+    # Warm-started log-c bracket. Without init, fall through full range; the
+    # first-step caller is expected to use eigvalsh (or warmup) to seed c_init.
+    if c_init is not None:
+        log_c_mid = c_init.to(device=device, dtype=dtype).log()
+        log_lo = log_c_mid - log_window
+        log_hi = log_c_mid + log_window
+    else:
+        log_lo = torch.full((N,), float(np.log(1e-3)), device=device, dtype=dtype)
+        log_hi = torch.full((N,), float(np.log(1e3)), device=device, dtype=dtype)
+    target = torch.full((N,), float(kappa), device=device, dtype=dtype)
+
+    last_out = None
+    last_c = None
+    for k in range(K):
+        log_mid = 0.5 * (log_lo + log_hi)
+        c = log_mid.exp()                                            # (N,)
+        H = _ssc_misr_batched(Xf_flat, c=c, nsteps=nsteps)           # (N, r, d)
+        # κ(H) = ‖H‖²_F / (r · σ_max(H)²). σ_max via 4-iter power iter on H.
+        F2 = (H ** 2).sum(dim=(-2, -1)).clamp_min(eps)               # (N,)
+        # Cheap σ_max via gram trace upper bound + power iter (4 iters).
+        # For r=256 H is (N, r, d), gram H H^T is (N, r, r). 4 power iters.
+        v = torch.randn(N, r, 1, device=device, dtype=dtype)
+        v = v / v.norm(dim=(-2, -1), keepdim=True).clamp_min(eps)
+        G_H = torch.bmm(H, H.transpose(-2, -1))                      # (N, r, r)
+        for _ in range(4):
+            v = torch.bmm(G_H, v)
+            v = v / v.norm(dim=(-2, -1), keepdim=True).clamp_min(eps)
+        sigma_max_H_sq = (v.transpose(-2, -1) @ G_H @ v).squeeze(-1).squeeze(-1).clamp_min(eps)
+        kappa_current = F2 / (r * sigma_max_H_sq)                    # (N,)
+        # κ is monotone DECREASING in c (small c flattens spectrum → high κ).
+        too_high = kappa_current > target
+        log_lo = torch.where(too_high, log_mid, log_lo)
+        log_hi = torch.where(too_high, log_hi, log_mid)
+        last_out = H
+        last_c = c
+
+    # last_out is from the Kth bisection step; that's our apply.
+    out = last_out.reshape(*orig_leading, *last_out.shape[-2:])
+    c_solved = last_c.reshape(*orig_leading) if orig_leading else last_c
+    return (out.transpose(-2, -1) if tall else out), c_solved
+
+
+def _ssc_adaptive_kappa_bulk_batched(X, kappa, nsteps=10, eps=1e-12):
+    """SSC κ-adaptive using the bulk closed-form c. Drop-in replacement for
+    `_ssc_adaptive_kappa_batched`: returns (H_c(X), c_per_pair).
+
+    No eigvalsh, no bisection. Cost is dominated by the MISR application
+    itself (matmul-bound).
+    """
+    if X.shape[-2] == 0 or X.shape[-1] == 0:
+        return X.float(), torch.zeros(X.shape[:-2], device=X.device)
+    c = _ssc_bulk_c_from_kappa_batched(X, kappa, eps=eps)
+    out = _ssc_misr_batched(X, c=c, nsteps=nsteps)
+    return out, c
+
+
 def _ssc_adaptive_kappa_batched(X, kappa, nsteps=10, eps=1e-12,
                                 c_lo=1e-3, c_hi=1e3, bisect_iters=40):
     """SPECTRA Soft Spectral Clipping with the threshold c solved per-pair
@@ -2986,6 +3105,7 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_method="ns",
                  ssc_c=None, ssc_nsteps=10, ssc_kappa=None,
                  ssc_kappa_refresh_every=1, ssc_kappa_warmup_steps=5,
+                 ssc_kappa_solver="eigvalsh",
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
@@ -3177,6 +3297,14 @@ class AdamPolarProductLoRA(Optimizer):
                 f"ssc_kappa_warmup_steps must be ≥ 0, got {ssc_kappa_warmup_steps!r}"
             )
         self.ssc_kappa_warmup_steps = int(ssc_kappa_warmup_steps)
+        # κ-solver dispatch: "eigvalsh" = exact bisection on full r×r spectrum
+        # (production default); "bulk" = closed-form c_bulk = sqrt(μ(1-κ)/(κ-μ))
+        # from F-norm only, no eigvalsh.
+        if ssc_kappa_solver not in ("eigvalsh", "bulk"):
+            raise ValueError(
+                f"ssc_kappa_solver must be 'eigvalsh' or 'bulk', got {ssc_kappa_solver!r}"
+            )
+        self.ssc_kappa_solver = ssc_kappa_solver
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
         # (Adam direction norms before any cross-term correction). The
@@ -3664,6 +3792,36 @@ class AdamPolarProductLoRA(Optimizer):
             }) + "\n")
             _s.stdout.flush()
             return None
+        # Per-section CudaTimer profiling (env-gated). Attaches `_step_timer`
+        # so all `maybe_time(timer, name)` scopes in _step_batched and
+        # _chord_tight_clean_polar_pipeline accumulate timings. After the step,
+        # dump per-section ms summary as JSONL and reset for the next step.
+        if os.environ.get("LORA_PROFILE_OPTIM", "0") == "1":
+            from ._step_timer import CudaTimer
+            device = next(iter(self.pairs))[0].device if self.pairs else torch.device("cuda")
+            if not hasattr(self, "_step_timer") or self._step_timer is None:
+                self._step_timer = CudaTimer(device)
+            self._step_timer.reset()
+            if eligible:
+                self._step_batched()
+            else:
+                self._step_per_pair()
+            summary = self._step_timer.summary()
+            step_n = (next(iter(self.pair_state.values())).get('step', -1)
+                      if self.pair_state else -1)
+            payload = {
+                "event": "optim_step_timing",
+                "step": int(step_n),
+                "path": "batched" if eligible else "per_pair",
+                "sections": {
+                    name: {"ms": stats["total_ms"], "n": int(stats["n"]),
+                           "mean_ms": stats["mean_ms"]}
+                    for name, stats in summary.items()
+                },
+                "total_section_ms": float(sum(s["total_ms"] for s in summary.values())),
+            }
+            print(json.dumps(payload, sort_keys=True), flush=True)
+            return None
         if eligible:
             return self._step_batched()
         return self._step_per_pair()
@@ -3722,9 +3880,14 @@ class AdamPolarProductLoRA(Optimizer):
                         or cache_key not in gs
                     )
                     if refresh_due:
-                        out, c_solved = _ssc_adaptive_kappa_batched(
-                            X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
-                        )
+                        if self.ssc_kappa_solver == "bulk":
+                            out, c_solved = _ssc_adaptive_kappa_bulk_batched(
+                                X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                            )
+                        else:
+                            out, c_solved = _ssc_adaptive_kappa_batched(
+                                X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                            )
                         if N > 1:
                             # Stash for the next N-1 steps. Detach to break
                             # any spurious autograd ties (we run under
@@ -8848,6 +9011,7 @@ def build_optimizer(
     ssc_kappa: float | None = None,
     ssc_kappa_refresh_every: int = 1,
     ssc_kappa_warmup_steps: int = 5,
+    ssc_kappa_solver: str = "eigvalsh",
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
@@ -9251,6 +9415,7 @@ def build_optimizer(
             ssc_kappa=ssc_kappa,
             ssc_kappa_refresh_every=ssc_kappa_refresh_every,
             ssc_kappa_warmup_steps=ssc_kappa_warmup_steps,
+            ssc_kappa_solver=ssc_kappa_solver,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,

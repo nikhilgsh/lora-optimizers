@@ -883,19 +883,28 @@ Config: chord-tight-clean, picard=3, NS=5, gram, r=64, batch=2×accum=8, seq=512
 
 ### End-to-end refresh sweep (Blackwell, picard=2, r=256, packed_v1, 2026-05-25)
 
-Production-faithful config (no `--compile`, 100 steps, lr=1e-2, batch=2×accum=8, seq=512, all-linear, η=1e-2), κ=0.6.
+Production-faithful config (no `--compile`, 100 steps, lr=1e-2, batch=2×accum=8, seq=512, all-linear, κ=0.6). Steady-state per-step from intermediate evals (eval_every=20), computed as (train_elapsed[100] − train_elapsed[20]) / 80 — warmup-corrected.
 
-| variant | wall (100 steps) | per-step | tok/s | eval_loss@100 | Δ vs N=1 | wall fraction |
-|---|---:|---:|---:|---:|---:|---:|
-| κ-adaptive, N=1 | 862 s | 8.62 s | 340 | 0.6096 | — | 1.00 |
-| κ-adaptive, N=10 | 665 s | 6.65 s | 441 | 0.6102 | +0.0006 | **0.77** |
-| κ-adaptive, N=50 | (running) | — | — | — | — | — |
+| variant | per-step | × fixed-c | eigvalsh share | eval@100 | Δ vs N=1 (σ_AdamW) |
+|---|---:|---:|---:|---:|---:|
+| AdamW | 0.57 s | 0.09× | — | (diverged*) | — |
+| NS polar (no SSC) | 6.46 s | 1.00× | 0 | 0.6058 | — |
+| fixed-c SSC c=0.3 | 6.46 s | 1.00× | 0 | 0.6122 | — |
+| κ-adaptive **N=1** (per-step) | 8.66 s | 1.34× | **25%** | 0.6096 | — |
+| κ-adaptive **N=5 + warmup 5** | **6.87 s** | **1.06×** | **5%** | 0.6097 | +0.2σ |
+| κ-adaptive **N=10 + warmup 5** | **6.69 s** | **1.04×** | **3%** | 0.6098 | +0.3σ |
 
-**Interpretation.** N=10 cuts step wall by 23%, recovering most of the κ-adaptive eigvalsh overhead. The Δeval=+0.0006 ≈ 1σ_AdamW (multi-seed AdamW noise floor at the canonical horizon). Cache hit verified from per-step c logs: ssc_c_A_median is constant across blocks of 10 steps and jumps at refresh boundaries (steps 1, 11, 21, ...).
+\*AdamW eval_loss = 7.90 at lr=1e-2 (lr too high for AdamW; included for timing only — σ_AdamW reference is at lr=3e-4).
 
-**Reading the fraction-of-step.** Implied eigvalsh share of N=1 step: $(8.62 - 6.65)/8.62 \cdot 10/9 \approx 25\%$ of step wall is the κ-adaptive eigvalsh+bisection cost at r=256 picard=2. At smaller r this share shrinks (eigvalsh on r×r grows with r²-ish, other ops grow faster).
+**Reading the table.** SSC adds zero overhead over NS at fixed-c (the chord-tight pipeline dominates; SSC vs polar is free). κ-adaptive at N=1 (per-step eigvalsh+bisection) adds **25% of step wall** vs fixed-c. The refresh schedule cuts this to **5%** at N=5 or **3%** at N=10, while eval_loss stays within 0.3σ_AdamW of N=1.
 
-Logs: `logs/bench_ssc_drift/refresh_r256_N{1,10,50}.log`. Bench script: `scripts/bench/ssc_kappa_refresh_bench.sh`. Analyzer: `scripts/bench/ssc_kappa_refresh_analyze.py`.
+**Cache hit verified** from per-step c logs (`ssc_c_A_median` constant across the cadence window, jumps at refresh boundaries; saturated step-1 c never gets cached when warmup ≥ 1).
+
+**Recommended production default: `--ssc_kappa_refresh_every 5 --ssc_kappa_warmup_steps 5`** at r=256. N=10 gives marginal additional speedup (~3% of step) but the snapshot drift analysis shows worse worst-case c-staleness on side A.
+
+**At smaller r the eigvalsh share shrinks** (eigvalsh on r×r grows with r²–r³, but other optimizer ops grow at least linearly with r·d). Refresh is most impactful at r=256+; at r=16 the κ-adaptive overhead is already a small fraction.
+
+Logs: `logs/bench_ssc_drift/refresh_r256_N{1,5,10}.log` and `logs/bench_ssc_drift/anchor_{fixedc,ns,adamw}.log`. Bench sbatches: `slurm_pending/ssc_bench_*.sbatch`. Analyzers: `scripts/bench/ssc_kappa_refresh_analyze.py`, `ssc_kappa_cache_drift_analyze.py`.
 
 ### Snapshot-derived c-drift (Blackwell, 2026-05-25)
 
