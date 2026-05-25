@@ -2214,43 +2214,6 @@ def _solve_c_from_kappa_batched(s_sq, kappa, c_lo=1e-3, c_hi=1e3, iters=40):
     return (0.5 * (log_lo + log_hi)).exp()
 
 
-def _ssc_bulk_c_from_kappa_batched(X, kappa, eps=1e-8):
-    """Closed-form c from κ-bulk: μ-only approximation to κ(c).
-
-    Replace the exact κ(c) = (1/r) Σ s_i² (1+1/c²) / (1+s_i²/c²) with a
-    bulk-Jensen approximation that uses ONLY μ = ‖X‖²_F / r:
-        κ_bulk(c) := μ (1+c²) / (μ+c²)
-    Solving κ_bulk(c) = κ_target yields the closed form
-        c_bulk² = μ (1-κ) / (κ-μ)   when κ > μ
-    No eigvalsh, no bisection — just one F-norm and a few scalar ops per pair.
-
-    Assumes X has been §2.5-rescaled so σ_max(X) ≈ 1 (hence μ ∈ (1/r, 1]).
-    When κ_target ≤ μ + eps the target is unreachable in bulk; we return
-    c_lo (small) which makes MISR produce a near-polar output. Same
-    saturation semantics as `_solve_c_from_kappa_batched`.
-
-    Caveat: κ(c) is concave in λ, so Jensen gives κ_bulk ≥ κ_true on average.
-    This biases c_bulk slightly larger than c_true on spread spectra. Validated
-    empirically against eigvalsh on snapshots (`scripts/bench/ssc_kappa_bulk_vs_eigvalsh.py`).
-    """
-    # Operate on the smaller-side view; X is (N, r, d) with r ≤ d after a
-    # tall-transpose (matches `_ssc_misr_batched` convention).
-    Xf = X.float()
-    tall = Xf.shape[-2] > Xf.shape[-1]
-    if tall:
-        Xf = Xf.transpose(-2, -1)
-    orig_leading = Xf.shape[:-2]
-    Xf_flat = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
-    N, r, _ = Xf_flat.shape
-    F2 = (Xf_flat ** 2).sum(dim=(-2, -1))                # (N,) ‖X‖²_F
-    mu = (F2 / r).clamp(eps, 1.0 - eps)
-    target = torch.full_like(mu, float(kappa))
-    denom = (target - mu).clamp_min(eps)                 # κ > μ required
-    c2 = mu * (1.0 - target) / denom
-    c = c2.clamp_min(1e-6).sqrt()
-    return c.reshape(*orig_leading) if orig_leading else c
-
-
 def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
                               c_init=None, log_window=0.5):
     """Solve c via warm-started bisection in log-c using MISR forward as the
@@ -2315,8 +2278,7 @@ def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
 
 
 def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
-                                   c_init=None, log_window=0.5,
-                                   nsteps_eval=None):
+                                   c_init=None, log_window=0.5):
     """K-way batched parallel-grid variant of `_ssc_misr_bisect_batched`.
 
     Instead of K sequential bisection steps (each launching one MISR call on
@@ -2354,12 +2316,8 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
         raise ValueError(f"K must be ≥ 1, got {K}")
     # κ-evaluator needs MISR to have converged so that σ_max(H_c(X)) ≈ c/√(c²+1).
     # At high lr / large r, small-c candidates have badly conditioned (I + XX^T/c²)
-    # and 10 MISR steps don't converge → wrong κ → wrong winner. Bumping ONLY the
-    # eval pass (on K*N inputs) and keeping the apply pass at `nsteps` (on N
-    # winner-only inputs) restores accuracy with sub-2x total cost (eval pass
-    # dominates).
-    if nsteps_eval is None:
-        nsteps_eval = 2 * nsteps
+    # and few MISR steps don't converge → wrong κ → wrong winner. The caller is
+    # responsible for picking `nsteps` large enough; r=256 needs ≥20.
 
     Xf = X.float()
     tall = Xf.shape[-2] > Xf.shape[-1]
@@ -2385,15 +2343,14 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
     # (K*N, r, d) with c of shape (K*N,).
     X_rep = Xf_flat.unsqueeze(0).expand(K, N, r, d).reshape(K * N, r, d)
     c_flat = c_grid.reshape(K * N)
-    # Eval pass: run MISR at nsteps_eval (≥ nsteps) to converge the κ-evaluator
-    # closed-form σ_max(H) = c/√(c²+1). Used ONLY for winner selection.
-    H_eval = _ssc_misr_batched(X_rep, c=c_flat, nsteps=nsteps_eval, eps=eps)
-    # H_eval may have been internally tall-transposed by _ssc_misr_batched;
-    # we passed (K*N, r, d) with r ≤ d (already in smaller-side view), so
-    # no transpose happened inside and H_eval is (K*N, r, d).
-    H_eval = H_eval.reshape(K, N, r, d)
+    # MISR on all K*N candidates; the H values feed both winner selection
+    # (via the closed-form κ check below) and the returned output for the
+    # winner. nsteps must be large enough for σ_max(H_c(X)) ≈ c/√(c²+1) to
+    # hold accurately at the smallest candidate c (r=256 needs ≥20).
+    H_all = _ssc_misr_batched(X_rep, c=c_flat, nsteps=nsteps, eps=eps)
+    H_all = H_all.reshape(K, N, r, d)
 
-    F2 = (H_eval ** 2).sum(dim=(-2, -1)).clamp_min(eps)                   # (K, N)
+    F2 = (H_all ** 2).sum(dim=(-2, -1)).clamp_min(eps)                    # (K, N)
     sigma_max_H_sq = c_grid.pow(2) / (c_grid.pow(2) + 1.0)                # (K, N)
     kappa_grid = F2 / (r * sigma_max_H_sq.clamp_min(eps))                 # (K, N)
 
@@ -2403,33 +2360,11 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
     winner = diffs.argmin(dim=0)                                           # (N,)
     pair_idx = torch.arange(N, device=device)
     c_solved = c_grid[winner, pair_idx]                                    # (N,)
-    # Apply pass: re-run MISR on the winner-only (N, r, d) batch at the
-    # original `nsteps` so out_par matches what downstream apply would
-    # compute. When nsteps_eval == nsteps, this is wasted work — skip it
-    # by reusing H_eval to preserve the original single-pass behavior.
-    if nsteps_eval == nsteps:
-        out_flat = H_eval[winner, pair_idx]                                # (N, r, d)
-    else:
-        c_win = c_grid[winner, pair_idx]                                    # (N,)
-        out_flat = _ssc_misr_batched(Xf_flat, c=c_win, nsteps=nsteps, eps=eps)
+    out_flat = H_all[winner, pair_idx]                                     # (N, r, d)
 
     out = out_flat.reshape(*orig_leading, *out_flat.shape[-2:])
     c_out = c_solved.reshape(*orig_leading) if orig_leading else c_solved
     return (out.transpose(-2, -1) if tall else out), c_out
-
-
-def _ssc_adaptive_kappa_bulk_batched(X, kappa, nsteps=10, eps=1e-12):
-    """SSC κ-adaptive using the bulk closed-form c. Drop-in replacement for
-    `_ssc_adaptive_kappa_batched`: returns (H_c(X), c_per_pair).
-
-    No eigvalsh, no bisection. Cost is dominated by the MISR application
-    itself (matmul-bound).
-    """
-    if X.shape[-2] == 0 or X.shape[-1] == 0:
-        return X.float(), torch.zeros(X.shape[:-2], device=X.device)
-    c = _ssc_bulk_c_from_kappa_batched(X, kappa, eps=eps)
-    out = _ssc_misr_batched(X, c=c, nsteps=nsteps)
-    return out, c
 
 
 def _ssc_adaptive_kappa_batched(X, kappa, nsteps=10, eps=1e-12,
@@ -3206,7 +3141,6 @@ class AdamPolarProductLoRA(Optimizer):
                  ssc_kappa_refresh_every=1, ssc_kappa_warmup_steps=5,
                  ssc_kappa_solver="eigvalsh", ssc_kappa_bisect_iters=3,
                  ssc_kappa_bisect_mode="sequential",
-                 ssc_kappa_bisect_nsteps_eval=None,
                  ssc_kappa_cache_share_picard=True,
                  ssc_kappa_cross_group_eigvalsh=True,
                  anderson_m=0, anderson_reg=1e-10,
@@ -3401,11 +3335,11 @@ class AdamPolarProductLoRA(Optimizer):
             )
         self.ssc_kappa_warmup_steps = int(ssc_kappa_warmup_steps)
         # κ-solver dispatch: "eigvalsh" = exact bisection on full r×r spectrum
-        # (production default); "bulk" = closed-form c_bulk = sqrt(μ(1-κ)/(κ-μ))
-        # from F-norm only, no eigvalsh.
-        if ssc_kappa_solver not in ("eigvalsh", "bulk", "misr_bisect"):
+        # (production default); "misr_bisect" = warm-started K-candidate
+        # bisection on MISR F-norm, no eigvalsh after warmup.
+        if ssc_kappa_solver not in ("eigvalsh", "misr_bisect"):
             raise ValueError(
-                f"ssc_kappa_solver must be 'eigvalsh', 'bulk', or 'misr_bisect', got {ssc_kappa_solver!r}"
+                f"ssc_kappa_solver must be 'eigvalsh' or 'misr_bisect', got {ssc_kappa_solver!r}"
             )
         self.ssc_kappa_solver = ssc_kappa_solver
         self.ssc_kappa_bisect_iters = int(ssc_kappa_bisect_iters)
@@ -3442,15 +3376,6 @@ class AdamPolarProductLoRA(Optimizer):
                 f"got {ssc_kappa_bisect_mode!r}"
             )
         self.ssc_kappa_bisect_mode = ssc_kappa_bisect_mode
-        # MISR nsteps for the κ-evaluator pass in the 'parallel' bisect mode.
-        # None ⇒ kpar default (2 × ssc_nsteps), needed because the closed-form
-        # σ_max(H) = c/√(c²+1) requires MISR convergence; at r=256/high-lr the
-        # default 10 underconverges small-c candidates → bracket-boundary
-        # winners. Apply pass stays at ssc_nsteps.
-        self.ssc_kappa_bisect_nsteps_eval = (
-            None if ssc_kappa_bisect_nsteps_eval is None
-            else int(ssc_kappa_bisect_nsteps_eval)
-        )
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
         # (Adam direction norms before any cross-term correction). The
@@ -4351,11 +4276,7 @@ class AdamPolarProductLoRA(Optimizer):
                         or cache_key not in gs
                     )
                     if refresh_due:
-                        if self.ssc_kappa_solver == "bulk":
-                            out, c_solved = _ssc_adaptive_kappa_bulk_batched(
-                                X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
-                            )
-                        elif self.ssc_kappa_solver == "misr_bisect":
+                        if self.ssc_kappa_solver == "misr_bisect":
                             # Warm-start from prior c if cached; else fall back
                             # to eigvalsh once to seed (K=3 with full-range
                             # bracket is too coarse for a fresh start).
@@ -4370,7 +4291,6 @@ class AdamPolarProductLoRA(Optimizer):
                                         X, kappa=self.ssc_kappa,
                                         K=self.ssc_kappa_bisect_iters,
                                         nsteps=self.ssc_nsteps, c_init=c_init,
-                                        nsteps_eval=self.ssc_kappa_bisect_nsteps_eval,
                                     )
                                 else:
                                     out, c_solved = _ssc_misr_bisect_batched(
@@ -4618,6 +4538,38 @@ class AdamPolarProductLoRA(Optimizer):
             and self.fw_linearization != "full"
             and len(self.group_state) > 1
         )
+        # Skip preflight when no group needs a c-refresh this step. Without this
+        # gate the preflight runs unconditionally, paying full eigvalsh + MISR +
+        # power-iter cost every step and silently bypassing the refresh schedule
+        # that the per-group fast path would otherwise honor.
+        if xgroup_active:
+            N_refresh = self.ssc_kappa_refresh_every
+            M_warmup = self.ssc_kappa_warmup_steps
+            share_picard = self.ssc_kappa_cache_share_picard
+            any_refresh_needed = False
+            for gs in self.group_state:
+                indices = gs['indices']
+                if not indices:
+                    continue
+                s_post = self.pair_state[indices[0]]['step'] + 1
+                if share_picard:
+                    cache_missing = (
+                        'ssc_c_cached_A' not in gs
+                        or 'ssc_c_cached_B' not in gs
+                    )
+                else:
+                    cache_missing = any(
+                        f'ssc_c_cached_{side}_n{n}' not in gs
+                        for side in ('A', 'B')
+                        for n in range(self.picard_iters)
+                    )
+                if (cache_missing or N_refresh == 1
+                        or s_post <= M_warmup
+                        or (s_post - 1) % N_refresh == 0):
+                    any_refresh_needed = True
+                    break
+            if not any_refresh_needed:
+                xgroup_active = False
 
         diag_records = []
 
@@ -9580,7 +9532,6 @@ def build_optimizer(
     ssc_kappa_bisect_iters: int = 3,
     ssc_kappa_cache_share_picard: bool = True,
     ssc_kappa_bisect_mode: str = "sequential",
-    ssc_kappa_bisect_nsteps_eval: int | None = None,
     ssc_kappa_cross_group_eigvalsh: bool = True,
     beta1: float = 0.9,
     beta2: float = 0.999,
@@ -9988,7 +9939,6 @@ def build_optimizer(
             ssc_kappa_solver=ssc_kappa_solver,
             ssc_kappa_bisect_iters=ssc_kappa_bisect_iters,
             ssc_kappa_bisect_mode=ssc_kappa_bisect_mode,
-            ssc_kappa_bisect_nsteps_eval=ssc_kappa_bisect_nsteps_eval,
             ssc_kappa_cache_share_picard=ssc_kappa_cache_share_picard,
             ssc_kappa_cross_group_eigvalsh=ssc_kappa_cross_group_eigvalsh,
             magnitude_rule="spectral_chord_tight_clean",

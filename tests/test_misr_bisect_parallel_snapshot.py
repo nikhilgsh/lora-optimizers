@@ -98,23 +98,28 @@ def test_kpar_vs_eigvalsh_on_snapshot(run_key, label):
     groups_A = _whitened_X_from_snapshot(snap, side='A')
     groups_B = _whitened_X_from_snapshot(snap, side='B')
 
+    # MISR nsteps for kpar — must be high enough that σ_max(H_c(X)) ≈ c/√(c²+1)
+    # is accurate at the smallest candidate c (r=256 needs ≥20 per the
+    # MISR convergence diagnostic; r=64 is fine at 10 but 20 is uniform).
+    kpar_nsteps = 20
     log_errors = []
     winner_consistency_max = 0.0
     for side_label, groups in [('A', groups_A), ('B', groups_B)]:
         for shape_key, X in groups:
             # Ground truth c via eigvalsh.
             _, c_true = _ssc_adaptive_kappa_batched(
-                X, kappa=kappa, nsteps=10,
+                X, kappa=kappa, nsteps=kpar_nsteps,
             )
             # Parallel-grid K=9, init at c_true (ideal warm start).
             out_par, c_par = _ssc_misr_bisect_batched_kpar(
-                X, kappa=kappa, K=K_par, nsteps=10,
+                X, kappa=kappa, K=K_par, nsteps=kpar_nsteps,
                 c_init=c_true, log_window=log_window,
             )
             log_err = (c_par.log() - c_true.log()).abs()
             log_errors.extend(log_err.tolist())
-            # Winner consistency: out_par for the winner should equal MISR(X, c_par).
-            out_check = _ssc_misr_batched(X, c=c_par, nsteps=10)
+            # Winner consistency: out_par for the winner should equal MISR at
+            # the same nsteps used inside kpar (single-pass — no apply step).
+            out_check = _ssc_misr_batched(X, c=c_par, nsteps=kpar_nsteps)
             consistency = (out_par - out_check).abs().max().item()
             winner_consistency_max = max(winner_consistency_max, consistency)
 

@@ -1,36 +1,34 @@
 """Snapshot-based behavioral verification for SSC κ-adaptive Picard-share
-cache (Optimization A).
+cache (Optimization A) — REALISTIC variant.
 
-The unit test (`test_ssc_kappa_cache_share.py`) verifies the cache slots
-are wired correctly. THIS test verifies the realized `dA`, `dB`
-trajectory difference between share=True and share=False is within the
-predicted snapshot-drift envelope, on real per-pair optimizer state.
+Replays the chord-tight-clean polar pipeline DIRECTLY with snapshot
+(A, B, u_A, u_B) — bypasses Adam moment re-derivation so the X the
+polar pipeline sees matches what production sees on the snapshot step.
 
-Procedure: load one snapshot step from a recorded chord-tight production
-run, replay the chord-tight-clean pipeline at picard=2, κ=0.6 twice
-(share=False vs True), and compare realized per-pair dA/dB.
+This is the same X-construction the c-drift bench uses
+(`scripts/bench/ssc_kappa_drift_snapshot.py`).
 
-Pass thresholds (loose, since at picard=2 the n=1 cross-coupling
-multiplies a small c-diff into a slightly larger dA diff):
-- median per-pair max(‖ΔdA‖_F/‖dA‖_F, ‖ΔdB‖_F/‖dB‖_F) < 3%
-- p99 < 8%
-- max < 15%
-
-If snapshot files not present, test skips.
+Coverage:
+- All 4 snapshot keys (RUN_A, RUN_C r=64; RUN_B r=256 high-lr; RUN_D r=256 low-lr).
+- All available snapshot steps per key (skip step 0 — degenerate B=0 init).
+- All 112 pairs per snapshot (qkvo + gate/up + down shape groups).
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
-import torch.nn as nn
 
-from lora_playground.optim import AdamPolarProductLoRA
-from lora_playground.snapshot_analysis.snapshots import (
-    SNAP_ROOTS, STEPS_BY_ROOT, RUN_A, RUN_B, load_snapshot,
+from lora_playground.optim import (
+    _ssc_adaptive_kappa_batched, _ssc_misr_batched,
 )
+from lora_playground.snapshot_analysis.snapshots import (
+    SNAP_ROOTS, STEPS_BY_ROOT, RUN_A, RUN_B, RUN_C, RUN_D, load_snapshot,
+)
+from lora_playground.utils import spd_frac_power_inv
 
 
 def _have_snapshot(run_key):
@@ -39,163 +37,175 @@ def _have_snapshot(run_key):
             and STEPS_BY_ROOT.get(run_key))
 
 
-def _build_model_from_snapshot(snap, max_pairs=None):
-    """Build a fake LoRA model whose adapters carry A, B from the snapshot
-    pair_state. Returns (model, pair_aux) where pair_aux is the list of
-    (u_A, u_B) per adapter — used as a synthetic grad to drive the step.
+def _spd_half_inv_loop(S, eps=1e-6):
+    out = torch.empty_like(S)
+    for i in range(S.shape[0]):
+        out[i] = spd_frac_power_inv(S[i], gamma=0.5, eps=eps)
+    return out
 
-    Only includes pairs where the snapshot has 'A', 'B', 'u_A', 'u_B'
-    (i.e., the §9 diagnostic stash).
-    """
-    pair_state = snap["pair_state"]
-    items = []
+
+def _group_by_shape(pair_state):
+    groups = defaultdict(list)
     for pi, p in pair_state.items():
         if not all(k in p for k in ("A", "B", "u_A", "u_B")):
             continue
-        items.append((pi, p))
-    if max_pairs is not None:
-        items = items[:max_pairs]
-    if not items:
-        return None, None, None
-
-    class _Pair(nn.Module):
-        def __init__(self, A, B):
-            super().__init__()
-            r, d_in = A.shape
-            d_out = B.shape[0]
-            self.lora_A = nn.ModuleDict({"default": nn.Linear(d_in, r, bias=False)})
-            self.lora_B = nn.ModuleDict({"default": nn.Linear(r, d_out, bias=False)})
-            with torch.no_grad():
-                self.lora_A["default"].weight.copy_(A.float())
-                self.lora_B["default"].weight.copy_(B.float())
-
-    class _Model(nn.Module):
-        def __init__(self, pairs):
-            super().__init__()
-            self.adapters = nn.ModuleList([_Pair(A, B) for A, B in pairs])
-
-    pairs_AB = [(p["A"].float().cpu(), p["B"].float().cpu()) for _, p in items]
-    u_pairs = [(p["u_A"].float().cpu(), p["u_B"].float().cpu()) for _, p in items]
-    model = _Model(pairs_AB)
-    return model, u_pairs, [pi for pi, _ in items]
+        A, B = p["A"].float(), p["B"].float()
+        u_A, u_B = p["u_A"].float(), p["u_B"].float()
+        key = (A.shape[0], A.shape[1], B.shape[0])
+        groups[key].append((pi, A, B, u_A, u_B))
+    return groups
 
 
-def _seed_grads_from_u(model, u_pairs):
-    """Drive the optimizer step with u_A, u_B as the gradients. The
-    optimizer will compute Adam(grad) → u_adam internally; we don't
-    perfectly reproduce the snapshot's u (which is post-Adam-RMS), but
-    the shape/scale is realistic and identical across share=True/False —
-    only their c-cache strategy differs, which is what we're measuring.
+def _stack(group):
+    A = torch.stack([g[1] for g in group])
+    B = torch.stack([g[2] for g in group])
+    u_A = torch.stack([g[3] for g in group])
+    u_B = torch.stack([g[4] for g in group])
+    return A, B, u_A, u_B
+
+
+def _picard_step_per_group(A, B, u_A, u_B, kappa, eta, picard_iters, ssc_nsteps,
+                          share_picard, eps=1e-6):
+    """Replay one chord-tight-clean polar pipeline call (per shape group) at
+    picard=2 with the given cache_share policy.
+
+    Returns dA, dB (same shape as A, B) realized by the pipeline. Mirrors
+    `_chord_tight_clean_polar_pipeline` body but is decoupled from the
+    optimizer-class wiring so the test isolates the c-cache-policy effect.
     """
-    for adapter, (uA, uB) in zip(model.adapters, u_pairs):
-        adapter.lora_A["default"].weight.grad = uA.clone()
-        adapter.lora_B["default"].weight.grad = uB.clone()
+    N, r, _ = A.shape
+    # Whitening (Higham not used here; eigh-based for test determinism).
+    SA = A @ A.transpose(-2, -1)
+    SB = B.transpose(-2, -1) @ B
+    SA_half_inv = _spd_half_inv_loop(SA, eps)
+    SB_half_inv = _spd_half_inv_loop(SB, eps)
+
+    # σ_max(A), σ_max(B) → ρ
+    sigma_A = torch.stack([torch.linalg.matrix_norm(a, ord=2) for a in A])
+    sigma_B = torch.stack([torch.linalg.matrix_norm(b, ord=2) for b in B])
+    rho = eta / (sigma_A + sigma_B + 1e-30)
+
+    # Whitened input + §2.5 pre-rescale
+    X_A = SB_half_inv @ u_A
+    X_B = u_B @ SA_half_inv
+    sigma_XA = torch.stack([torch.linalg.matrix_norm(x, ord=2) for x in X_A])
+    sigma_XB = torch.stack([torch.linalg.matrix_norm(x, ord=2) for x in X_B])
+    inv_XA = (1.0 / (sigma_XA + 1e-30)).view(N, 1, 1)
+    inv_XB = (1.0 / (sigma_XB + 1e-30)).view(N, 1, 1)
+    X_A = X_A * inv_XA
+    X_B = X_B * inv_XB
+    u_A_r = u_A * inv_XA
+    u_B_r = u_B * inv_XB
+
+    dA = torch.zeros_like(A)
+    dB = torch.zeros_like(B)
+    cache_A = {}
+    cache_B = {}
+
+    for n in range(picard_iters):
+        if n == 0:
+            X_A_eff, X_B_eff = X_A, X_B
+        else:
+            u_A_eff = u_A_r + (1.0 / eta) * (B.transpose(-2, -1) @ dB @ A)
+            u_B_eff = u_B_r + (1.0 / eta) * (B @ dA @ A.transpose(-2, -1))
+            X_A_eff = SB_half_inv @ u_A_eff
+            X_B_eff = u_B_eff @ SA_half_inv
+
+        # c-cache logic — mirrors _chord_tight_clean_polar_pipeline._polar.
+        if share_picard:
+            # One slot per side, shared across n.
+            if 'c_A' not in cache_A or n == 0:
+                _, c_A = _ssc_adaptive_kappa_batched(X_A_eff, kappa=kappa, nsteps=ssc_nsteps)
+                cache_A['c_A'] = c_A
+            c_A = cache_A['c_A']
+            P_A = _ssc_misr_batched(X_A_eff, c=c_A, nsteps=ssc_nsteps)
+
+            if 'c_B' not in cache_B or n == 0:
+                _, c_B = _ssc_adaptive_kappa_batched(X_B_eff, kappa=kappa, nsteps=ssc_nsteps)
+                cache_B['c_B'] = c_B
+            c_B = cache_B['c_B']
+            P_B = _ssc_misr_batched(X_B_eff, c=c_B, nsteps=ssc_nsteps)
+        else:
+            P_A, c_A = _ssc_adaptive_kappa_batched(X_A_eff, kappa=kappa, nsteps=ssc_nsteps)
+            P_B, c_B = _ssc_adaptive_kappa_batched(X_B_eff, kappa=kappa, nsteps=ssc_nsteps)
+
+        geo_A = SB_half_inv @ P_A
+        geo_B = P_B @ SA_half_inv
+        op_geoA = torch.stack([torch.linalg.matrix_norm(g, ord=2) for g in geo_A])
+        op_geoB = torch.stack([torch.linalg.matrix_norm(g, ord=2) for g in geo_B])
+        dA = -(rho / (op_geoA + 1e-30)).view(N, 1, 1) * geo_A
+        dB = -(rho / (op_geoB + 1e-30)).view(N, 1, 1) * geo_B
+
+    return dA, dB
 
 
-def _make_opt(model, share_picard):
-    return AdamPolarProductLoRA(
-        model,
-        lr=3e-2,
-        betas=(0.9, 0.999),
-        delta=1e-6,
-        eps=1e-8,
-        ns_steps=5,
-        lora_plus_multiplier=1.0,
-        log_basic_diagnostics=False,
-        picard_iters=2,
-        precond_refresh_every=1,
-        precond_method="higham",
-        magnitude_rule="spectral_chord_tight_clean",
-        ns_form="rect",
-        polar_method="ssc",
-        ssc_kappa=0.6,
-        ssc_nsteps=10,
-        ssc_kappa_refresh_every=1,
-        ssc_kappa_warmup_steps=0,
-        ssc_kappa_solver="eigvalsh",
-        ssc_kappa_cache_share_picard=share_picard,
-    )
-
-
-def _snapshot_deltas(A_before, A_after, B_before, B_after):
-    """Return per-pair (ΔA, ΔB) as fp32 CPU tensors."""
-    return (
-        (A_after.detach().cpu().float() - A_before.detach().cpu().float()),
-        (B_after.detach().cpu().float() - B_before.detach().cpu().float()),
-    )
-
-
-def _run_one(run_key, step, max_pairs=16):
+def _run_step(run_key, step, kappa=0.6, eta=3e-2, picard_iters=2, ssc_nsteps=10):
     snap = load_snapshot(step, root=SNAP_ROOTS[run_key])
-    model_no, u_pairs, pair_ids = _build_model_from_snapshot(snap, max_pairs=max_pairs)
-    if model_no is None:
-        pytest.skip(f"{run_key} step {step} has no pairs with §9 diagnostic stash")
-    # Two parallel models with identical initial state.
-    model_sh = type(model_no)(
-        [(adapter.lora_A["default"].weight.detach().clone(),
-          adapter.lora_B["default"].weight.detach().clone())
-         for adapter in model_no.adapters]
-    )
-
-    # Capture initial A, B for each.
-    A0_no = [a.lora_A["default"].weight.detach().clone() for a in model_no.adapters]
-    B0_no = [a.lora_B["default"].weight.detach().clone() for a in model_no.adapters]
-    A0_sh = [a.lora_A["default"].weight.detach().clone() for a in model_sh.adapters]
-    B0_sh = [a.lora_B["default"].weight.detach().clone() for a in model_sh.adapters]
-
-    opt_no = _make_opt(model_no, share_picard=False)
-    opt_sh = _make_opt(model_sh, share_picard=True)
-
-    _seed_grads_from_u(model_no, u_pairs)
-    _seed_grads_from_u(model_sh, u_pairs)
-
-    opt_no.step()
-    opt_sh.step()
-
+    groups = _group_by_shape(snap['pair_state'])
+    if not groups:
+        return []
     diffs = []
-    for i, adapter in enumerate(model_no.adapters):
-        dA_no, dB_no = _snapshot_deltas(
-            A0_no[i], adapter.lora_A["default"].weight,
-            B0_no[i], adapter.lora_B["default"].weight,
-        )
-        dA_sh, dB_sh = _snapshot_deltas(
-            A0_sh[i], model_sh.adapters[i].lora_A["default"].weight,
-            B0_sh[i], model_sh.adapters[i].lora_B["default"].weight,
-        )
-        nA = torch.linalg.norm(dA_no)
-        nB = torch.linalg.norm(dB_no)
-        if nA < 1e-20 or nB < 1e-20:
-            continue
-        relA = float(torch.linalg.norm(dA_sh - dA_no) / nA)
-        relB = float(torch.linalg.norm(dB_sh - dB_no) / nB)
-        diffs.append(max(relA, relB))
+    for shape_key, group in groups.items():
+        A, B, u_A, u_B = _stack(group)
+        dA_no, dB_no = _picard_step_per_group(
+            A, B, u_A, u_B, kappa, eta, picard_iters, ssc_nsteps, share_picard=False)
+        dA_sh, dB_sh = _picard_step_per_group(
+            A, B, u_A, u_B, kappa, eta, picard_iters, ssc_nsteps, share_picard=True)
+        for i in range(A.shape[0]):
+            nA = torch.linalg.norm(dA_no[i])
+            nB = torch.linalg.norm(dB_no[i])
+            if nA < 1e-20 or nB < 1e-20:
+                continue
+            relA = float(torch.linalg.norm(dA_sh[i] - dA_no[i]) / nA)
+            relB = float(torch.linalg.norm(dB_sh[i] - dB_no[i]) / nB)
+            diffs.append(max(relA, relB))
     return diffs
 
 
-def _assert_envelope(diffs, run_label, step):
-    assert diffs, f"{run_label} step {step}: no comparable pairs"
-    arr = np.array(diffs)
+@pytest.mark.parametrize("run_key,label,eta", [
+    (RUN_A, "RUN_A-r64-lr3e-2", 3e-2),
+    (RUN_C, "RUN_C-r64-lr1e-1", 1e-1),
+    (RUN_B, "RUN_B-r256-lr1e-1", 1e-1),
+    (RUN_D, "RUN_D-r256-lr1e-3", 1e-3),
+])
+def test_share_picard_drift_realistic(run_key, label, eta):
+    """All 4 snapshot keys × all post-init steps × all 112 pairs.
+
+    Realism: invokes the polar pipeline with snapshot's actual (A, B, u_A, u_B)
+    — bypasses Adam re-derivation so X matches production.
+
+    RUN_D (η=1e-3, two orders below production) is the saturated-c regime per
+    prior snapshot drift analysis — bounds are looser.
+    """
+    if not _have_snapshot(run_key):
+        pytest.skip(f"snapshot files for {run_key} not present")
+    steps = [s for s in STEPS_BY_ROOT[run_key] if s > 0]
+
+    is_low_eta = run_key == RUN_D
+    p50_thresh = 0.15 if is_low_eta else 0.03
+    p99_thresh = 0.50 if is_low_eta else 0.08
+    max_thresh = 1.50 if is_low_eta else 0.15
+
+    all_diffs = []
+    rows = []
+    for step in steps:
+        diffs = _run_step(run_key, step, kappa=0.6, eta=eta)
+        if not diffs:
+            continue
+        arr = np.array(diffs)
+        rows.append((step, len(arr), float(np.median(arr)),
+                     float(np.percentile(arr, 99)), float(arr.max())))
+        all_diffs.extend(diffs)
+
+    print(f"\n[{label}] {len(rows)} steps:")
+    for step, n, p50, p99, pm in rows:
+        print(f"  step={step:>4}  N={n:>3}  p50={p50:.4f}  p99={p99:.4f}  max={pm:.4f}")
+    assert all_diffs, f"{label}: no comparable pairs"
+    arr = np.array(all_diffs)
     p50 = float(np.median(arr))
     p99 = float(np.percentile(arr, 99))
     pmax = float(arr.max())
-    print(f"\n[{run_label} step={step}] N={len(arr)}  "
-          f"p50={p50:.4f}  p99={p99:.4f}  max={pmax:.4f}")
-    assert p50 < 0.03, f"{run_label}: median diff {p50:.4f} >= 3%"
-    assert p99 < 0.08, f"{run_label}: p99 diff {p99:.4f} >= 8%"
-    assert pmax < 0.15, f"{run_label}: max diff {pmax:.4f} >= 15%"
-
-
-@pytest.mark.parametrize("run_key,label", [
-    (RUN_A, "RUN_A-r64-lr3e-2"),
-    (RUN_B, "RUN_B-r256-lr1e-1"),
-])
-def test_share_picard_drift_within_envelope(run_key, label):
-    if not _have_snapshot(run_key):
-        pytest.skip(f"snapshot files for {run_key} not present")
-    steps = STEPS_BY_ROOT[run_key]
-    # Pick a mid-training step (avoid step 0 init artifacts and the last
-    # step which may be partial).
-    step = steps[len(steps) // 2] if len(steps) > 1 else steps[0]
-
-    diffs = _run_one(run_key, step, max_pairs=16)
-    _assert_envelope(diffs, label, step)
+    print(f"  POOLED N={len(arr)}  p50={p50:.4f}  p99={p99:.4f}  max={pmax:.4f}")
+    assert p50 < p50_thresh, f"{label}: pooled median {p50:.4f} >= {p50_thresh}"
+    assert p99 < p99_thresh, f"{label}: pooled p99 {p99:.4f} >= {p99_thresh}"
+    assert pmax < max_thresh, f"{label}: pooled max {pmax:.4f} >= {max_thresh}"
