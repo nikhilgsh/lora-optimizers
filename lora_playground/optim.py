@@ -2985,6 +2985,7 @@ class AdamPolarProductLoRA(Optimizer):
                  polar_sigma_power=None,
                  polar_method="ns",
                  ssc_c=None, ssc_nsteps=10, ssc_kappa=None,
+                 ssc_kappa_refresh_every=1, ssc_kappa_warmup_steps=5,
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
@@ -3149,6 +3150,33 @@ class AdamPolarProductLoRA(Optimizer):
         self.ssc_c = ssc_c
         self.ssc_kappa = ssc_kappa
         self.ssc_nsteps = ssc_nsteps
+        # Amortize κ-adaptive eigvalsh+bisection: refresh per-pair cached c
+        # every N steps; in between, apply _ssc_misr_batched directly with the
+        # cached c. N=1 reproduces per-step solving (current default behavior).
+        # Cache lives on the group state per (side, Picard-iter-index) so n=0
+        # and n=1 calls have independent caches. Only consulted when
+        # polar_method='ssc' and ssc_kappa is not None.
+        if ssc_kappa_refresh_every < 1:
+            raise ValueError(
+                f"ssc_kappa_refresh_every must be ≥ 1, got {ssc_kappa_refresh_every!r}"
+            )
+        if ssc_kappa_refresh_every != 1 and ssc_kappa is None:
+            raise ValueError(
+                "ssc_kappa_refresh_every>1 requires --ssc_kappa (κ-adaptive SSC)"
+            )
+        self.ssc_kappa_refresh_every = int(ssc_kappa_refresh_every)
+        # Warmup: refresh-every-step for the first M steps before honoring the
+        # refresh-every-N cadence. Motivation: at LoRA init B=0 ⇒ the polar
+        # input's spectrum is extremely concentrated; κ-target=0.6 is
+        # unreachable and bisection saturates at c_lo, producing a degenerate
+        # near-polar c. Holding that saturated c for N>1 steps applies a
+        # qualitatively wrong operator. Refresh-every-step lets the spectrum
+        # spread out before caching kicks in. M=0 = no warmup.
+        if ssc_kappa_warmup_steps < 0:
+            raise ValueError(
+                f"ssc_kappa_warmup_steps must be ≥ 0, got {ssc_kappa_warmup_steps!r}"
+            )
+        self.ssc_kappa_warmup_steps = int(ssc_kappa_warmup_steps)
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
         # (Adam direction norms before any cross-term correction). The
@@ -3642,7 +3670,7 @@ class AdamPolarProductLoRA(Optimizer):
 
     def _chord_tight_clean_polar_pipeline(
         self, gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
-        sigma_A=None, sigma_B=None,
+        sigma_A=None, sigma_B=None, step_count=None,
     ):
         """Algorithm 2′ — chord-tight-clean polar pipeline. Walkthrough +
         FLOP budget: `docs/notes/polar_product/algorithm_clean_implementation.md`.
@@ -3669,7 +3697,7 @@ class AdamPolarProductLoRA(Optimizer):
         def _b11(t):
             return t.unsqueeze(-1).unsqueeze(-1)
 
-        def _polar(X, side=None):
+        def _polar(X, side=None, n=None):
             if self.polar_method == "ssc":
                 # SPECTRA soft spectral clipping in place of NS polar map.
                 # Input is post-§2.5-rescale so σ_max(X) ≈ 1; ssc_c is in
@@ -3677,9 +3705,37 @@ class AdamPolarProductLoRA(Optimizer):
                 if self.ssc_kappa is not None:
                     # κ-adaptive: solve c per-pair per-step from target κ
                     # (Appendix C.5 state-dependent interpretation).
-                    out, c_solved = _ssc_adaptive_kappa_batched(
-                        X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                    # Refresh schedule: when ssc_kappa_refresh_every>1, solve
+                    # c every N steps and reuse cached c between refreshes
+                    # via the cheap _ssc_misr_batched (no eigvalsh+bisect).
+                    # Cache key is per-(side, Picard iter n) so n=0/n=1 don't
+                    # collide. Refresh boundary uses step_count (1-indexed
+                    # matching precond_refresh_every).
+                    N = self.ssc_kappa_refresh_every
+                    M = self.ssc_kappa_warmup_steps
+                    cache_key = f'ssc_c_cached_{side}_n{n}'
+                    refresh_due = (
+                        N == 1
+                        or step_count is None
+                        or step_count <= M
+                        or (step_count - 1) % N == 0
+                        or cache_key not in gs
                     )
+                    if refresh_due:
+                        out, c_solved = _ssc_adaptive_kappa_batched(
+                            X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                        )
+                        if N > 1:
+                            # Stash for the next N-1 steps. Detach to break
+                            # any spurious autograd ties (we run under
+                            # @torch.no_grad anyway).
+                            gs[cache_key] = c_solved.detach()
+                    else:
+                        cached_c = gs[cache_key]
+                        out = _ssc_misr_batched(
+                            X, c=cached_c, nsteps=self.ssc_nsteps,
+                        )
+                        c_solved = cached_c
                     if side is not None:
                         # Stash the realized per-pair c for diagnostic logging.
                         # Last polar call wins (n=k-1 of Picard); fine since
@@ -3796,8 +3852,8 @@ class AdamPolarProductLoRA(Optimizer):
                     X_B_eff = u_B_eff @ SA_half_inv
 
                 # Polar map via Newton-Schulz (canonical: gram, fp16+restart).
-                P_A = _polar(X_A_eff, side='A')
-                P_B = _polar(X_B_eff, side='B')
+                P_A = _polar(X_A_eff, side='A', n=n)
+                P_B = _polar(X_B_eff, side='B', n=n)
 
                 # HTMuon σ→σ^p sub-mode (silent when htmuon_p is None).
                 # Applies U Σ^p V^T = (X Xᵀ)^(p/2) · polar(X).
@@ -4026,6 +4082,7 @@ class AdamPolarProductLoRA(Optimizer):
                 _clean_result = self._chord_tight_clean_polar_pipeline(
                     gs, A_f, B_f, u_A, u_B, SA_half_inv, SB_half_inv, lr, timer,
                     sigma_A=sigma_A_hoist, sigma_B=sigma_B_hoist,
+                    step_count=step_count,
                 )
                 u_A = _clean_result['u_A']
                 u_B = _clean_result['u_B']
@@ -8789,6 +8846,8 @@ def build_optimizer(
     ssc_c: float | None = None,
     ssc_nsteps: int = 10,
     ssc_kappa: float | None = None,
+    ssc_kappa_refresh_every: int = 1,
+    ssc_kappa_warmup_steps: int = 5,
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
@@ -9190,6 +9249,8 @@ def build_optimizer(
             ssc_c=ssc_c,
             ssc_nsteps=ssc_nsteps,
             ssc_kappa=ssc_kappa,
+            ssc_kappa_refresh_every=ssc_kappa_refresh_every,
+            ssc_kappa_warmup_steps=ssc_kappa_warmup_steps,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,

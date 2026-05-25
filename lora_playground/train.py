@@ -684,6 +684,18 @@ def make_parser():
                              "concentrated LoRA polar inputs imply useful κ ≳ 0.1.")
     parser.add_argument("--ssc_nsteps", type=int, default=10,
                         help="MISR (matrix iterative soft-clipping) iteration count for SSC. Default 10.")
+    parser.add_argument("--ssc_kappa_refresh_every", type=int, default=1,
+                        help="κ-adaptive SSC: refresh per-pair cached c every N steps "
+                             "(amortizes the eigvalsh+bisection across N steps). N=1 reproduces "
+                             "per-step solving (default). Independent caches per Picard inner iter. "
+                             "Only consulted when --polar_method ssc and --ssc_kappa are set.")
+    parser.add_argument("--ssc_kappa_warmup_steps", type=int, default=5,
+                        help="κ-adaptive SSC: refresh every step for the first M steps before "
+                             "honoring --ssc_kappa_refresh_every. At LoRA init the polar input's "
+                             "spectrum is rank-deficient ⇒ κ-target unreachable ⇒ bisection "
+                             "saturates at c_lo and a degenerate c gets cached. Default 5 covers "
+                             "the early-step spread-out window. Only consulted when --ssc_kappa "
+                             "and --ssc_kappa_refresh_every > 1.")
     parser.add_argument("--polar_sigma_power", type=float, default=None,
                         help="HTMuon (arXiv:2603.10067) σ → σ^p generalized polar. "
                              "None = use Newton-Schulz (default Muon polar). "
@@ -1078,6 +1090,8 @@ def main():
         ssc_c=args.ssc_c,
         ssc_nsteps=args.ssc_nsteps,
         ssc_kappa=args.ssc_kappa,
+        ssc_kappa_refresh_every=args.ssc_kappa_refresh_every,
+        ssc_kappa_warmup_steps=args.ssc_kappa_warmup_steps,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -1196,6 +1210,7 @@ def main():
             "ssc_c": args.ssc_c,
             "ssc_nsteps": args.ssc_nsteps,
             "ssc_kappa": args.ssc_kappa,
+            "ssc_kappa_refresh_every": args.ssc_kappa_refresh_every,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,

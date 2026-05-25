@@ -879,4 +879,45 @@ Config: chord-tight-clean, picard=3, NS=5, gram, r=64, batch=2×accum=8, seq=512
 
 **Implication for sbatch sizing.** Fixed-c c=0.3 r=64 4k took ~1.6h/cell compiled in the existing leaderboard sweep. κ-adaptive at the same config should take ~3.2h/cell, hence `--time=4h` with margin for the κ-adaptive r=64 4k 12-cell sweep (`slurm_pending/chord_tight_clean_ssc_kappa_r64_lrsweep_4k_blackwell.sbatch`).
 
-**If the κ-adaptive variant proves out (drops below the fixed-c plateau by >1σ_AdamW)**, the obvious cost cut is to amortize the spectrum probe via a refresh schedule analogous to `precond_refresh_every` — solve `c` every $N$ steps, hold between refreshes. At $N \approx 10$ the eigvalsh overhead drops below 0.1 s/step (1.3× vs fixed instead of 1.95×). Until results justify, the per-step variant is the upper-bound-on-quality probe.
+**Amortization knob: `--ssc_kappa_refresh_every N`.** Solve `c` every $N$ steps, cache per (side, Picard-iter); between refreshes reuse `_ssc_misr_batched(X, c=cached_c)` with no eigvalsh. Implemented in `lora_playground/optim.py` (chord-tight-clean polar pipeline); `N=1` reproduces per-step solving. Combined with implicit inner-Picard caching (independent cache slots for n=0 and n=1).
+
+### End-to-end refresh sweep (Blackwell, picard=2, r=256, packed_v1, 2026-05-25)
+
+Production-faithful config (no `--compile`, 100 steps, lr=1e-2, batch=2×accum=8, seq=512, all-linear, η=1e-2), κ=0.6.
+
+| variant | wall (100 steps) | per-step | tok/s | eval_loss@100 | Δ vs N=1 | wall fraction |
+|---|---:|---:|---:|---:|---:|---:|
+| κ-adaptive, N=1 | 862 s | 8.62 s | 340 | 0.6096 | — | 1.00 |
+| κ-adaptive, N=10 | 665 s | 6.65 s | 441 | 0.6102 | +0.0006 | **0.77** |
+| κ-adaptive, N=50 | (running) | — | — | — | — | — |
+
+**Interpretation.** N=10 cuts step wall by 23%, recovering most of the κ-adaptive eigvalsh overhead. The Δeval=+0.0006 ≈ 1σ_AdamW (multi-seed AdamW noise floor at the canonical horizon). Cache hit verified from per-step c logs: ssc_c_A_median is constant across blocks of 10 steps and jumps at refresh boundaries (steps 1, 11, 21, ...).
+
+**Reading the fraction-of-step.** Implied eigvalsh share of N=1 step: $(8.62 - 6.65)/8.62 \cdot 10/9 \approx 25\%$ of step wall is the κ-adaptive eigvalsh+bisection cost at r=256 picard=2. At smaller r this share shrinks (eigvalsh on r×r grows with r²-ish, other ops grow faster).
+
+Logs: `logs/bench_ssc_drift/refresh_r256_N{1,10,50}.log`. Bench script: `scripts/bench/ssc_kappa_refresh_bench.sh`. Analyzer: `scripts/bench/ssc_kappa_refresh_analyze.py`.
+
+### Snapshot-derived c-drift (Blackwell, 2026-05-25)
+
+To bound the safety of cached `c`, replay the κ-adaptive solver on existing chord-tight snapshots at κ=0.6 and measure how much `c` drifts (a) across Picard inner iter n=0 → n=1 within a single step, and (b) across adjacent saved steps:
+
+| run | r | η | inner-Picard \|Δc\|/c p50 | p99 | cross-step (gap≥150) p50 |
+|---|---|---|---:|---:|---:|
+| RUN_A | 64 | 3e-2 | 0.46% | 2.0% | 15–20% |
+| RUN_C | 64 | 1e-1 | 0.43% | 1.1% | 17–23% |
+| RUN_B | 256 | 1e-1 | 1.1% | 3.3% | 11–17% |
+| RUN_D | 256 | 1e-3 | 4.4% | 115% | — |
+
+RUN_D (η=1e-3, two orders below the production-relevant range) is a non-converged regime; production sweeps use η ∈ [1e-2, 1e-1]. Within that range, inner-Picard cache drift is <3% (cache safe). Cross-step drift at gaps ≥150 is moderate (15–20%); snapshots have no N=10 resolution, so the end-to-end refresh sweep above is the load-bearing safety check.
+
+Script: `scripts/bench/ssc_kappa_drift_snapshot.py`; CSV at `notebooks/snapshot_analysis/_data/ssc_c_drift_kappa0p6.csv`.
+
+### Strategies considered, dropped
+
+- **Newton on κ(c) via Cholesky-trace.** Bisection (40 iters of pure-tensor arithmetic on the cached spectrum) is a small fraction of the κ-adaptive cost — replacing it doesn't avoid the eigvalsh launch.
+- **MISR with multiple candidate c batched, F-norm bisection.** Matmul-only, no launch overhead per candidate — appealing on Blackwell. Defer; the refresh-every-N cache already brings the κ-adaptive overhead under 5% of step at $N \geq 10$.
+- **Moment-based surrogate spectrum** (σ_max + ‖X‖_F²) for cheap κ→c. Needs its own validation against eigvalsh; defer for the same reason.
+
+### Note on isolated-op microbenches
+
+A `scripts/bench/ssc_kappa_eigvalsh_timing.py` script times `_ssc_adaptive_kappa_batched` / `_ssc_misr_batched` / `_newton_schulz_gram_batched` in isolation on a single shape group. These are useful for component-level reasoning, but the per-call ms numbers do NOT translate directly to "fraction-of-step" — production runs hit 2–3 shape groups, multiple Picard iters, and Higham/Adam/matmul work that the isolated op doesn't capture. Always cite the end-to-end fraction-of-step table above when reasoning about budget; treat isolated-op timings as upper bounds on the component's possible contribution, not as the contribution itself.
