@@ -708,6 +708,14 @@ def make_parser():
                              "Parallel is coarser per K (residual log_window/(K-1) vs "
                              "log_window/2^K) but launches once — wins when launch-bound at "
                              "small r. To match seq-K=3 accuracy use par-K=9.")
+    parser.add_argument("--ssc_kappa_bisect_nsteps_eval", type=int, default=None,
+                        help="MISR nsteps for the κ-evaluator pass of "
+                             "--ssc_kappa_bisect_mode parallel. Default None ⇒ 2 × "
+                             "--ssc_nsteps. The closed-form σ_max(H) = c/√(c²+1) "
+                             "used to compute κ assumes MISR converged; at large rank "
+                             "/ high lr, small-c candidates underconverge at the apply "
+                             "nsteps and the bisect winner sticks at the bracket boundary. "
+                             "Apply pass stays at --ssc_nsteps on the winner only.")
     parser.add_argument("--ssc_kappa_cache_share_picard",
                         type=lambda s: str(s).lower() not in {"0", "false", "no"},
                         default=True,
@@ -1136,6 +1144,7 @@ def main():
         ssc_kappa_solver=args.ssc_kappa_solver,
         ssc_kappa_bisect_iters=args.ssc_kappa_bisect_iters,
         ssc_kappa_bisect_mode=args.ssc_kappa_bisect_mode,
+        ssc_kappa_bisect_nsteps_eval=args.ssc_kappa_bisect_nsteps_eval,
         ssc_kappa_cache_share_picard=args.ssc_kappa_cache_share_picard,
         ssc_kappa_cross_group_eigvalsh=args.ssc_kappa_cross_group_eigvalsh,
         beta1=args.beta1,
@@ -1261,6 +1270,7 @@ def main():
             "ssc_kappa_solver": args.ssc_kappa_solver,
             "ssc_kappa_bisect_iters": args.ssc_kappa_bisect_iters,
             "ssc_kappa_bisect_mode": args.ssc_kappa_bisect_mode,
+            "ssc_kappa_bisect_nsteps_eval": args.ssc_kappa_bisect_nsteps_eval,
             "ssc_kappa_cache_share_picard": args.ssc_kappa_cache_share_picard,
             "ssc_kappa_cross_group_eigvalsh": args.ssc_kappa_cross_group_eigvalsh,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
