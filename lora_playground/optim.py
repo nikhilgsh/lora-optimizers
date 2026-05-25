@@ -3151,6 +3151,7 @@ class AdamPolarProductLoRA(Optimizer):
                  ssc_kappa_cache_ema_beta=None,
                  ssc_kappa_cross_group_eigvalsh=True,
                  ssc_kappa_diagnose_eigvalsh=False,
+                 ssc_kappa_diagnose_start_step=1,
                  ssc_kappa_diag_ema_beta=None,
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
@@ -3159,8 +3160,10 @@ class AdamPolarProductLoRA(Optimizer):
                  disable_whitening=False,
                  precond_delta_relative=False,
                  log_non_finite=False,
+                 log_non_finite_start_step=1,
                  debug_optimizer_state=False,
                  debug_optimizer_state_every=1,
+                 debug_optimizer_state_start_step=1,
                  debug_snapshot_dir=None,
                  debug_snapshot_limit=8,
                  debug_abort_on_non_finite=False,
@@ -3184,8 +3187,12 @@ class AdamPolarProductLoRA(Optimizer):
         # kernel launches per step). Default OFF; turn on for
         # NaN-debugging runs.
         self.log_non_finite = bool(log_non_finite)
+        self.log_non_finite_start_step = max(1, int(log_non_finite_start_step))
         self.debug_optimizer_state = bool(debug_optimizer_state)
         self.debug_optimizer_state_every = max(1, int(debug_optimizer_state_every))
+        self.debug_optimizer_state_start_step = max(
+            1, int(debug_optimizer_state_start_step)
+        )
         self.debug_snapshot_dir = debug_snapshot_dir
         self.debug_snapshot_limit = int(debug_snapshot_limit)
         self.debug_abort_on_non_finite = bool(debug_abort_on_non_finite)
@@ -3364,6 +3371,9 @@ class AdamPolarProductLoRA(Optimizer):
         # uniform r across groups; silently disables otherwise.
         self.ssc_kappa_cross_group_eigvalsh = bool(ssc_kappa_cross_group_eigvalsh)
         self.ssc_kappa_diagnose_eigvalsh = bool(ssc_kappa_diagnose_eigvalsh)
+        self.ssc_kappa_diagnose_start_step = max(
+            1, int(ssc_kappa_diagnose_start_step)
+        )
         if ssc_kappa_diag_ema_beta is not None:
             if not (0.0 <= float(ssc_kappa_diag_ema_beta) < 1.0):
                 raise ValueError(
@@ -4397,8 +4407,12 @@ class AdamPolarProductLoRA(Optimizer):
                     # Diagnostic: compare the actually-used c against eigvalsh
                     # ground truth on the SAME X. Catches kpar-grid-misses or
                     # stale-cache drift. Doubles eigvalsh work — flag-gated.
-                    if (self.ssc_kappa_diagnose_eigvalsh and side is not None
-                            and step_count is not None):
+                    if (
+                        self.ssc_kappa_diagnose_eigvalsh
+                        and side is not None
+                        and step_count is not None
+                        and step_count >= self.ssc_kappa_diagnose_start_step
+                    ):
                         with torch.no_grad():
                             _, c_eigvalsh = _ssc_adaptive_kappa_batched(
                                 X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
@@ -4520,6 +4534,7 @@ class AdamPolarProductLoRA(Optimizer):
                             if (
                                 self.debug_optimizer_state
                                 and step_count % self.debug_optimizer_state_every == 0
+                                and step_count >= self.debug_optimizer_state_start_step
                             ):
                                 pair_indices = list(gs.get('indices', []))
                                 pair_names = [
@@ -4750,7 +4765,11 @@ class AdamPolarProductLoRA(Optimizer):
         # turn on with --log_non_finite for NaN-debugging runs.
         step_now = (next(iter(self.pair_state.values())).get('step', 0) + 1
                     if self.pair_state else 1)
-        if self.log_non_finite:
+        log_non_finite_now = (
+            self.log_non_finite
+            and step_now >= self.log_non_finite_start_step
+        )
+        if log_non_finite_now:
             for i, (A, B) in enumerate(self.pairs):
                 gA, gB = A.grad, B.grad
                 checks = {
@@ -5301,6 +5320,7 @@ class AdamPolarProductLoRA(Optimizer):
             if (
                 self.debug_optimizer_state
                 and step_count % self.debug_optimizer_state_every == 0
+                and step_count >= self.debug_optimizer_state_start_step
             ):
                 stats = {
                     "A_norm": _tensor_norm_by_pair(A_f),
@@ -5361,7 +5381,7 @@ class AdamPolarProductLoRA(Optimizer):
             # Gated on log_non_finite — adds ~5-10% wall on top of the
             # top-of-step check.
             bad_where = None
-            if self.log_non_finite:
+            if log_non_finite_now:
                 bad_where = _emit_non_finite_chain(
                     step_count,
                     chain_tensors,
@@ -5524,7 +5544,7 @@ class AdamPolarProductLoRA(Optimizer):
                 torch._foreach_add_(B_list, list(dB_native.unbind(0)))
                 torch._foreach_zero_([A.grad for A in A_list])
                 torch._foreach_zero_([B.grad for B in B_list])
-            if self.log_non_finite:
+            if log_non_finite_now:
                 bad_after = {}
                 for local_idx, A_param in enumerate(A_list):
                     if bool(~torch.isfinite(A_param).all()):
@@ -9802,8 +9822,10 @@ def build_optimizer(
     precond_ema_beta: float = 0.99,
     precond_delta: float = 1e-6,
     log_non_finite: bool = False,
+    log_non_finite_start_step: int = 1,
     debug_optimizer_state: bool = False,
     debug_optimizer_state_every: int = 1,
+    debug_optimizer_state_start_step: int = 1,
     debug_snapshot_dir: str | None = None,
     debug_snapshot_limit: int = 8,
     debug_abort_on_non_finite: bool = False,
@@ -9846,6 +9868,7 @@ def build_optimizer(
     ssc_kappa_bisect_nsteps_eval: int | None = None,
     ssc_kappa_cross_group_eigvalsh: bool = True,
     ssc_kappa_diagnose_eigvalsh: bool = False,
+    ssc_kappa_diagnose_start_step: int = 1,
     ssc_kappa_diag_ema_beta: float | None = None,
     beta1: float = 0.9,
     beta2: float = 0.999,
@@ -10258,14 +10281,17 @@ def build_optimizer(
             ssc_kappa_cache_ema_beta=ssc_kappa_cache_ema_beta,
             ssc_kappa_cross_group_eigvalsh=ssc_kappa_cross_group_eigvalsh,
             ssc_kappa_diagnose_eigvalsh=ssc_kappa_diagnose_eigvalsh,
+            ssc_kappa_diagnose_start_step=ssc_kappa_diagnose_start_step,
             ssc_kappa_diag_ema_beta=ssc_kappa_diag_ema_beta,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,
             higham_compute_dtype=higham_compute_dtype,
             log_non_finite=log_non_finite,
+            log_non_finite_start_step=log_non_finite_start_step,
             debug_optimizer_state=debug_optimizer_state,
             debug_optimizer_state_every=debug_optimizer_state_every,
+            debug_optimizer_state_start_step=debug_optimizer_state_start_step,
             debug_snapshot_dir=debug_snapshot_dir,
             debug_snapshot_limit=debug_snapshot_limit,
             debug_abort_on_non_finite=debug_abort_on_non_finite,

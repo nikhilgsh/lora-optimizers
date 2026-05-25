@@ -567,12 +567,23 @@ def make_parser():
                              "non-finite. ~10%% wall overhead at r=256 from "
                              "the ~448+~20*N isfinite kernel launches per step. "
                              "Default OFF; turn on for NaN-debugging runs.")
+    parser.add_argument("--log_non_finite_start_step", type=int, default=1,
+                        help="When --log_non_finite is enabled, skip its "
+                             "isfinite scans before this optimizer step. "
+                             "Useful for near-window NaN tracing without "
+                             "paying diagnostic overhead for early steps. "
+                             "Default 1 preserves existing behavior.")
     parser.add_argument("--debug_optimizer_state", action="store_true",
                         help="Emit verbose per-pair optimizer scalar telemetry "
                              "for the polar-product batched path. Debug-only; "
                              "one JSON event per shape group per selected step.")
     parser.add_argument("--debug_optimizer_state_every", type=int, default=1,
                         help="Step cadence for --debug_optimizer_state.")
+    parser.add_argument("--debug_optimizer_state_start_step", type=int, default=1,
+                        help="When --debug_optimizer_state is enabled, skip "
+                             "verbose optimizer-state events before this "
+                             "optimizer step. Default 1 preserves existing "
+                             "behavior.")
     parser.add_argument("--debug_snapshot_dir", default=None,
                         help="Directory for optimizer non-finite .pt snapshots. "
                              "When set, the polar-product optimizer saves the "
@@ -756,6 +767,11 @@ def make_parser():
                              "log(c_eigvalsh)|. Doubles eigvalsh work — only enable "
                              "for accuracy validation runs (e.g. kpar K=3 R=5). Per-step "
                              "events emit as JSONL `ssc_c_diag` with p50/p99/max log-error.")
+    parser.add_argument("--ssc_kappa_diagnose_start_step", type=int, default=1,
+                        help="When --ssc_kappa_diagnose_eigvalsh is enabled, "
+                             "start emitting eigvalsh c-reference diagnostics "
+                             "at this optimizer step. Default 1 preserves "
+                             "existing behavior.")
     parser.add_argument("--ssc_kappa_diag_ema_beta", type=float, default=None,
                         help="DIAGNOSTIC: when --ssc_kappa_diagnose_eigvalsh is enabled, "
                              "also maintain a per-cache log-space EMA of eigvalsh true c "
@@ -1142,8 +1158,10 @@ def main():
         precond_delta_relative=args.precond_delta_relative,
         higham_compute_dtype=args.higham_compute_dtype,
         log_non_finite=args.log_non_finite,
+        log_non_finite_start_step=args.log_non_finite_start_step,
         debug_optimizer_state=args.debug_optimizer_state,
         debug_optimizer_state_every=args.debug_optimizer_state_every,
+        debug_optimizer_state_start_step=args.debug_optimizer_state_start_step,
         debug_snapshot_dir=args.debug_snapshot_dir,
         debug_snapshot_limit=args.debug_snapshot_limit,
         debug_abort_on_non_finite=args.debug_abort_on_non_finite,
@@ -1172,6 +1190,7 @@ def main():
         ssc_kappa_cache_ema_beta=args.ssc_kappa_cache_ema_beta,
         ssc_kappa_cross_group_eigvalsh=args.ssc_kappa_cross_group_eigvalsh,
         ssc_kappa_diagnose_eigvalsh=args.ssc_kappa_diagnose_eigvalsh,
+        ssc_kappa_diagnose_start_step=args.ssc_kappa_diagnose_start_step,
         ssc_kappa_diag_ema_beta=args.ssc_kappa_diag_ema_beta,
         beta1=args.beta1,
         beta2=args.beta2,
@@ -1300,7 +1319,11 @@ def main():
             "ssc_kappa_cache_share_picard": args.ssc_kappa_cache_share_picard,
             "ssc_kappa_cache_ema_beta": args.ssc_kappa_cache_ema_beta,
             "ssc_kappa_cross_group_eigvalsh": args.ssc_kappa_cross_group_eigvalsh,
+            "ssc_kappa_diagnose_eigvalsh": args.ssc_kappa_diagnose_eigvalsh,
+            "ssc_kappa_diagnose_start_step": args.ssc_kappa_diagnose_start_step,
             "ssc_kappa_diag_ema_beta": args.ssc_kappa_diag_ema_beta,
+            "log_non_finite_start_step": args.log_non_finite_start_step,
+            "debug_optimizer_state_start_step": args.debug_optimizer_state_start_step,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,
