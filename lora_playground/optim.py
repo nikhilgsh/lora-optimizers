@@ -4282,8 +4282,18 @@ class AdamPolarProductLoRA(Optimizer):
                             # Warm-start from prior c if cached; else fall back
                             # to eigvalsh once to seed (K=3 with full-range
                             # bracket is too coarse for a fresh start).
+                            # ALSO: during warmup (step_count <= M_warmup), the
+                            # polar input X spectrum changes rapidly (B starts
+                            # at zero with lora_init_b=zero; SB^{-1/2} is
+                            # damping-only at step 1, then drastically different
+                            # at step 2). Cached c from step 1 is meaningless
+                            # for step 2's spectrum → kpar bracket misses
+                            # true c → 100x errors observed in DIAG. Force
+                            # eigvalsh during warmup to bypass.
                             c_init = gs.get(cache_key)
-                            if c_init is None:
+                            in_warmup = (step_count is not None
+                                         and step_count <= M)
+                            if c_init is None or in_warmup:
                                 out, c_solved = _ssc_adaptive_kappa_batched(
                                     X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
                                 )
