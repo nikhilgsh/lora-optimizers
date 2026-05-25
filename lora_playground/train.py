@@ -682,13 +682,10 @@ def make_parser():
                              "c is solved per-pair per-step via bisection. "
                              "Achievable range: (‖s‖²/r, 1] on the §2.5-rescaled spectrum; "
                              "concentrated LoRA polar inputs imply useful κ ≳ 0.1.")
-    parser.add_argument("--ssc_nsteps", type=int, default=20,
+    parser.add_argument("--ssc_nsteps", type=int, default=10,
                         help="MISR (matrix iterative soft-clipping) iteration count for SSC. "
-                             "Default 20: the snapshot convergence diagnostic shows nsteps=10 "
-                             "is materially under-converged at r=256 (POOLED p99 = 33% relative "
-                             "F-residual on RUN_B), nsteps=16 converges, nsteps=20 has safety "
-                             "margin and adds <2% wall vs nsteps=10 in compiled Blackwell timing "
-                             "(scripts/bench/ssc_misr_convergence_snapshot.py).")
+                             "Default 10 matches the production-validated SSC κ-adaptive runs; "
+                             "increase only as an explicit behavior change.")
     parser.add_argument("--ssc_kappa_refresh_every", type=int, default=1,
                         help="κ-adaptive SSC: refresh per-pair cached c every N steps "
                              "(amortizes the eigvalsh+bisection across N steps). N=1 reproduces "
@@ -712,6 +709,12 @@ def make_parser():
                              "Parallel is coarser per K (residual log_window/(K-1) vs "
                              "log_window/2^K) but launches once — wins when launch-bound at "
                              "small r. To match seq-K=3 accuracy use par-K=9.")
+    parser.add_argument("--ssc_kappa_bisect_nsteps_eval", type=int, default=None,
+                        help="MISR nsteps for the parallel MISR-bisect κ-evaluator pass. "
+                             "Default None means 2 × --ssc_nsteps. The winner apply pass "
+                             "stays at --ssc_nsteps, preserving the production SSC apply "
+                             "behavior while making candidate scoring less sensitive to "
+                             "MISR under-convergence.")
     parser.add_argument("--ssc_kappa_cache_share_picard",
                         type=lambda s: str(s).lower() not in {"0", "false", "no"},
                         default=False,
@@ -726,6 +729,13 @@ def make_parser():
                              "Default flipped to False (correctness > 1.3%% wall savings); set "
                              "True only to reproduce legacy runs. Only consulted when "
                              "--polar_method ssc, --ssc_kappa set, and --picard_iters > 1.")
+    parser.add_argument("--ssc_kappa_cache_ema_beta", type=float, default=None,
+                        help="κ-adaptive SSC: when set, cache a log-space EMA of freshly "
+                             "solved c values for warm-starts and non-refresh reuse steps. "
+                             "Refresh steps still apply the freshly solved c; the EMA only "
+                             "changes the cached value used between refreshes and as the "
+                             "next kpar warm start. Default None preserves last-value cache "
+                             "behavior.")
     parser.add_argument("--ssc_kappa_cross_group_eigvalsh",
                         type=lambda s: str(s).lower() not in {"0", "false", "no"},
                         default=True,
@@ -746,6 +756,11 @@ def make_parser():
                              "log(c_eigvalsh)|. Doubles eigvalsh work — only enable "
                              "for accuracy validation runs (e.g. kpar K=3 R=5). Per-step "
                              "events emit as JSONL `ssc_c_diag` with p50/p99/max log-error.")
+    parser.add_argument("--ssc_kappa_diag_ema_beta", type=float, default=None,
+                        help="DIAGNOSTIC: when --ssc_kappa_diagnose_eigvalsh is enabled, "
+                             "also maintain a per-cache log-space EMA of eigvalsh true c "
+                             "and log errors against that smoothed reference. Default None "
+                             "logs only instantaneous true-c errors.")
     parser.add_argument("--ssc_kappa_warmup_steps", type=int, default=5,
                         help="κ-adaptive SSC: refresh every step for the first M steps before "
                              "honoring --ssc_kappa_refresh_every. At LoRA init the polar input's "
@@ -1152,9 +1167,12 @@ def main():
         ssc_kappa_solver=args.ssc_kappa_solver,
         ssc_kappa_bisect_iters=args.ssc_kappa_bisect_iters,
         ssc_kappa_bisect_mode=args.ssc_kappa_bisect_mode,
+        ssc_kappa_bisect_nsteps_eval=args.ssc_kappa_bisect_nsteps_eval,
         ssc_kappa_cache_share_picard=args.ssc_kappa_cache_share_picard,
+        ssc_kappa_cache_ema_beta=args.ssc_kappa_cache_ema_beta,
         ssc_kappa_cross_group_eigvalsh=args.ssc_kappa_cross_group_eigvalsh,
         ssc_kappa_diagnose_eigvalsh=args.ssc_kappa_diagnose_eigvalsh,
+        ssc_kappa_diag_ema_beta=args.ssc_kappa_diag_ema_beta,
         beta1=args.beta1,
         beta2=args.beta2,
     )
@@ -1278,8 +1296,11 @@ def main():
             "ssc_kappa_solver": args.ssc_kappa_solver,
             "ssc_kappa_bisect_iters": args.ssc_kappa_bisect_iters,
             "ssc_kappa_bisect_mode": args.ssc_kappa_bisect_mode,
+            "ssc_kappa_bisect_nsteps_eval": args.ssc_kappa_bisect_nsteps_eval,
             "ssc_kappa_cache_share_picard": args.ssc_kappa_cache_share_picard,
+            "ssc_kappa_cache_ema_beta": args.ssc_kappa_cache_ema_beta,
             "ssc_kappa_cross_group_eigvalsh": args.ssc_kappa_cross_group_eigvalsh,
+            "ssc_kappa_diag_ema_beta": args.ssc_kappa_diag_ema_beta,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
             "beta1": args.beta1,
             "beta2": args.beta2,

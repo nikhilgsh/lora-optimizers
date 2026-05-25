@@ -2260,7 +2260,8 @@ def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
         # κ(H) = ‖H‖²_F / (r · σ_max(H)²).
         # Closed form for σ_max(H_c(X)) when X is pre-rescaled (σ_max(X)=1):
         #     σ_max(H_c(X)) = h_c(1) = c / √(c²+1).
-        # No power iter needed; just one F-norm reduction per candidate.
+        # This assumes MISR has converged; the production sequential path is
+        # kept for parity, while the parallel path can use a larger eval pass.
         F2 = (H ** 2).sum(dim=(-2, -1)).clamp_min(eps)               # (N,)
         sigma_max_H_sq = c.pow(2) / (c.pow(2) + 1.0)                 # (N,)
         kappa_current = F2 / (r * sigma_max_H_sq.clamp_min(eps))     # (N,)
@@ -2278,7 +2279,8 @@ def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
 
 
 def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
-                                   c_init=None, log_window=0.5):
+                                   c_init=None, log_window=0.5,
+                                   nsteps_eval=None):
     """K-way batched parallel-grid variant of `_ssc_misr_bisect_batched`.
 
     Instead of K sequential bisection steps (each launching one MISR call on
@@ -2314,10 +2316,12 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
         )
     if K < 1:
         raise ValueError(f"K must be ≥ 1, got {K}")
-    # κ-evaluator needs MISR to have converged so that σ_max(H_c(X)) ≈ c/√(c²+1).
-    # At high lr / large r, small-c candidates have badly conditioned (I + XX^T/c²)
-    # and few MISR steps don't converge → wrong κ → wrong winner. The caller is
-    # responsible for picking `nsteps` large enough; r=256 needs ≥20.
+    # The κ scorer uses the closed-form σmax of the converged SSC map. At
+    # production apply nsteps=10 the small-c candidates at r=256 can be
+    # under-converged, so use a more-converged eval pass for winner selection
+    # while keeping the winner apply at `nsteps`.
+    if nsteps_eval is None:
+        nsteps_eval = 2 * nsteps
 
     Xf = X.float()
     tall = Xf.shape[-2] > Xf.shape[-1]
@@ -2343,14 +2347,12 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
     # (K*N, r, d) with c of shape (K*N,).
     X_rep = Xf_flat.unsqueeze(0).expand(K, N, r, d).reshape(K * N, r, d)
     c_flat = c_grid.reshape(K * N)
-    # MISR on all K*N candidates; the H values feed both winner selection
-    # (via the closed-form κ check below) and the returned output for the
-    # winner. nsteps must be large enough for σ_max(H_c(X)) ≈ c/√(c²+1) to
-    # hold accurately at the smallest candidate c (r=256 needs ≥20).
-    H_all = _ssc_misr_batched(X_rep, c=c_flat, nsteps=nsteps, eps=eps)
-    H_all = H_all.reshape(K, N, r, d)
+    # Eval pass: run MISR at nsteps_eval (usually 2× apply nsteps) so the
+    # closed-form σmax used by the κ scorer is accurate enough at small c.
+    H_eval = _ssc_misr_batched(X_rep, c=c_flat, nsteps=nsteps_eval, eps=eps)
+    H_eval = H_eval.reshape(K, N, r, d)
 
-    F2 = (H_all ** 2).sum(dim=(-2, -1)).clamp_min(eps)                    # (K, N)
+    F2 = (H_eval ** 2).sum(dim=(-2, -1)).clamp_min(eps)                   # (K, N)
     sigma_max_H_sq = c_grid.pow(2) / (c_grid.pow(2) + 1.0)                # (K, N)
     kappa_grid = F2 / (r * sigma_max_H_sq.clamp_min(eps))                 # (K, N)
 
@@ -2360,7 +2362,10 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
     winner = diffs.argmin(dim=0)                                           # (N,)
     pair_idx = torch.arange(N, device=device)
     c_solved = c_grid[winner, pair_idx]                                    # (N,)
-    out_flat = H_all[winner, pair_idx]                                     # (N, r, d)
+    if nsteps_eval == nsteps:
+        out_flat = H_eval[winner, pair_idx]                                # (N, r, d)
+    else:
+        out_flat = _ssc_misr_batched(Xf_flat, c=c_solved, nsteps=nsteps, eps=eps)
 
     out = out_flat.reshape(*orig_leading, *out_flat.shape[-2:])
     c_out = c_solved.reshape(*orig_leading) if orig_leading else c_solved
@@ -3141,9 +3146,12 @@ class AdamPolarProductLoRA(Optimizer):
                  ssc_kappa_refresh_every=1, ssc_kappa_warmup_steps=5,
                  ssc_kappa_solver="eigvalsh", ssc_kappa_bisect_iters=3,
                  ssc_kappa_bisect_mode="sequential",
+                 ssc_kappa_bisect_nsteps_eval=None,
                  ssc_kappa_cache_share_picard=False,
+                 ssc_kappa_cache_ema_beta=None,
                  ssc_kappa_cross_group_eigvalsh=True,
                  ssc_kappa_diagnose_eigvalsh=False,
+                 ssc_kappa_diag_ema_beta=None,
                  anderson_m=0, anderson_reg=1e-10,
                  core_remix_alpha=0.0,
                  exact_chord=False,
@@ -3356,16 +3364,44 @@ class AdamPolarProductLoRA(Optimizer):
         # uniform r across groups; silently disables otherwise.
         self.ssc_kappa_cross_group_eigvalsh = bool(ssc_kappa_cross_group_eigvalsh)
         self.ssc_kappa_diagnose_eigvalsh = bool(ssc_kappa_diagnose_eigvalsh)
+        if ssc_kappa_diag_ema_beta is not None:
+            if not (0.0 <= float(ssc_kappa_diag_ema_beta) < 1.0):
+                raise ValueError(
+                    "ssc_kappa_diag_ema_beta must be in [0, 1) or None, "
+                    f"got {ssc_kappa_diag_ema_beta!r}"
+                )
+            if not self.ssc_kappa_diagnose_eigvalsh:
+                raise ValueError(
+                    "ssc_kappa_diag_ema_beta requires "
+                    "--ssc_kappa_diagnose_eigvalsh"
+                )
+            self.ssc_kappa_diag_ema_beta = float(ssc_kappa_diag_ema_beta)
+        else:
+            self.ssc_kappa_diag_ema_beta = None
         # Optimization A: share the κ-adaptive cached c across Picard inner
         # iterations. At picard=2, the cross-coupling correction at n=1 nudges
         # the polar input X_*_eff slightly from the n=0 X_* — snapshot drift
         # analysis (docs/notes/polar_product/walltime_profile.md §Snapshot-
         # derived c-drift) shows |Δc|/c is p50<1.1%, p99<3.3% at production η.
         # Sharing the n=0 c for n=1 halves the eigvalsh / MISR-bisect calls per
-        # step with negligible dA/dB drift. Default True (safe speedup); set
-        # False to reproduce the per-(side, n) cache behavior. Only consulted
+        # step, but the production reference used independent per-(side, n)
+        # cache slots. Default False preserves that behavior. Only consulted
         # when polar_method='ssc' and ssc_kappa is not None.
         self.ssc_kappa_cache_share_picard = bool(ssc_kappa_cache_share_picard)
+        if ssc_kappa_cache_ema_beta is not None:
+            if not (0.0 <= float(ssc_kappa_cache_ema_beta) < 1.0):
+                raise ValueError(
+                    "ssc_kappa_cache_ema_beta must be in [0, 1) or None, "
+                    f"got {ssc_kappa_cache_ema_beta!r}"
+                )
+            if ssc_kappa is None:
+                raise ValueError(
+                    "ssc_kappa_cache_ema_beta requires --ssc_kappa "
+                    "(κ-adaptive SSC)"
+                )
+            self.ssc_kappa_cache_ema_beta = float(ssc_kappa_cache_ema_beta)
+        else:
+            self.ssc_kappa_cache_ema_beta = None
         # 'sequential' = K MISR launches, classical bisection (default, backward
         # compat). 'parallel' = K log-spaced candidates evaluated in one
         # batched MISR launch of (K*N, r, d) input; argmin |κ-target| picks
@@ -3378,6 +3414,10 @@ class AdamPolarProductLoRA(Optimizer):
                 f"got {ssc_kappa_bisect_mode!r}"
             )
         self.ssc_kappa_bisect_mode = ssc_kappa_bisect_mode
+        self.ssc_kappa_bisect_nsteps_eval = (
+            None if ssc_kappa_bisect_nsteps_eval is None
+            else int(ssc_kappa_bisect_nsteps_eval)
+        )
         # When True, override the polar pipeline's per-iterate RMS-align so
         # the step magnitude is rescaled to the ORIGINAL ‖u_A‖, ‖u_B‖
         # (Adam direction norms before any cross-term correction). The
@@ -4247,7 +4287,7 @@ class AdamPolarProductLoRA(Optimizer):
                     # matching precond_refresh_every).
                     N = self.ssc_kappa_refresh_every
                     M = self.ssc_kappa_warmup_steps
-                    # Optimization A: when share_picard=True (default), use one
+                    # Optimization A: when share_picard=True, use one
                     # cache slot per side, shared across Picard inner iters
                     # (n=0 solves; n=1 reuses). When False, fall back to per-n
                     # caches (pre-flag behavior). See __init__ for the drift
@@ -4277,6 +4317,7 @@ class AdamPolarProductLoRA(Optimizer):
                         or (step_count - 1) % N == 0
                         or cache_key not in gs
                     )
+                    in_warmup = (step_count is not None and step_count <= M)
                     if refresh_due:
                         if self.ssc_kappa_solver == "misr_bisect":
                             # Warm-start from prior c if cached; else fall back
@@ -4291,8 +4332,6 @@ class AdamPolarProductLoRA(Optimizer):
                             # true c → 100x errors observed in DIAG. Force
                             # eigvalsh during warmup to bypass.
                             c_init = gs.get(cache_key)
-                            in_warmup = (step_count is not None
-                                         and step_count <= M)
                             if c_init is None or in_warmup:
                                 out, c_solved = _ssc_adaptive_kappa_batched(
                                     X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
@@ -4303,6 +4342,7 @@ class AdamPolarProductLoRA(Optimizer):
                                         X, kappa=self.ssc_kappa,
                                         K=self.ssc_kappa_bisect_iters,
                                         nsteps=self.ssc_nsteps, c_init=c_init,
+                                        nsteps_eval=self.ssc_kappa_bisect_nsteps_eval,
                                     )
                                 else:
                                     out, c_solved = _ssc_misr_bisect_batched(
@@ -4322,7 +4362,24 @@ class AdamPolarProductLoRA(Optimizer):
                             # can reuse the c solved at n=0; stamp the step so
                             # the n>0 short-circuit only triggers within the
                             # same step.
-                            gs[cache_key] = c_solved.detach()
+                            c_cache = c_solved.detach()
+                            beta = self.ssc_kappa_cache_ema_beta
+                            if (
+                                beta is not None
+                                and cache_key in gs
+                                and not in_warmup
+                            ):
+                                prev = gs[cache_key].to(
+                                    device=c_cache.device, dtype=c_cache.dtype
+                                )
+                                # c is positive and diagnostics are log-error
+                                # based, so smooth in log-c units.
+                                c_cache = (
+                                    beta * prev.clamp_min(1e-30).log()
+                                    + (1.0 - beta)
+                                    * c_cache.clamp_min(1e-30).log()
+                                ).exp()
+                            gs[cache_key] = c_cache
                             if share_picard and stamp_key is not None:
                                 gs[stamp_key] = step_count
                     else:
@@ -4347,6 +4404,27 @@ class AdamPolarProductLoRA(Optimizer):
                                 X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
                             )
                             log_err = (c_solved.log() - c_eigvalsh.log()).abs()
+                            abs_err = (c_solved - c_eigvalsh).abs()
+                            rel_err = abs_err / c_eigvalsh.abs().clamp_min(1e-30)
+                            c_ema_ref = None
+                            ema_beta = self.ssc_kappa_diag_ema_beta
+                            if ema_beta is not None:
+                                ema_key = f'{cache_key}_diag_true_ema'
+                                c_true_detached = c_eigvalsh.detach()
+                                if ema_key in gs and not in_warmup:
+                                    prev = gs[ema_key].to(
+                                        device=c_true_detached.device,
+                                        dtype=c_true_detached.dtype,
+                                    )
+                                    c_ema_ref = (
+                                        ema_beta
+                                        * prev.clamp_min(1e-30).log()
+                                        + (1.0 - ema_beta)
+                                        * c_true_detached.clamp_min(1e-30).log()
+                                    ).exp()
+                                else:
+                                    c_ema_ref = c_true_detached
+                                gs[ema_key] = c_ema_ref.detach()
                             # Boundary detector: when refresh_due via kpar, the
                             # winner is on the grid edge if |log(c_used/c_init)|
                             # is within eps of log_window. picard_reuse / non-
@@ -4357,6 +4435,15 @@ class AdamPolarProductLoRA(Optimizer):
                                     and self.ssc_kappa_bisect_mode == "parallel"
                                     and 'c_init' in dir()):
                                 pass  # c_init is in the enclosing scope
+                            def _put_stats(payload, prefix, values):
+                                payload[f"{prefix}_p50"] = float(values.median().item())
+                                payload[f"{prefix}_p99"] = float(
+                                    values.quantile(0.99).item()
+                                    if values.numel() > 1
+                                    else values.max().item()
+                                )
+                                payload[f"{prefix}_max"] = float(values.max().item())
+
                             payload = {
                                 "event": "ssc_c_diag",
                                 "step": int(step_count),
@@ -4372,11 +4459,113 @@ class AdamPolarProductLoRA(Optimizer):
                                     else log_err.max().item()
                                 ),
                                 "log_err_max": float(log_err.max().item()),
+                                "abs_err_p50": float(abs_err.median().item()),
+                                "abs_err_p99": float(
+                                    abs_err.quantile(0.99).item()
+                                    if abs_err.numel() > 1
+                                    else abs_err.max().item()
+                                ),
+                                "abs_err_max": float(abs_err.max().item()),
+                                "rel_err_p50": float(rel_err.median().item()),
+                                "rel_err_p99": float(
+                                    rel_err.quantile(0.99).item()
+                                    if rel_err.numel() > 1
+                                    else rel_err.max().item()
+                                ),
+                                "rel_err_max": float(rel_err.max().item()),
+                                "c_used_p50": float(c_solved.median().item()),
+                                "c_used_p99": float(
+                                    c_solved.quantile(0.99).item()
+                                    if c_solved.numel() > 1
+                                    else c_solved.max().item()
+                                ),
+                                "c_used_max": float(c_solved.max().item()),
+                                "c_true_p50": float(c_eigvalsh.median().item()),
+                                "c_true_p99": float(
+                                    c_eigvalsh.quantile(0.99).item()
+                                    if c_eigvalsh.numel() > 1
+                                    else c_eigvalsh.max().item()
+                                ),
+                                "c_true_max": float(c_eigvalsh.max().item()),
                                 "kpar_log_window": float(0.5),
                                 "kpar_K": int(self.ssc_kappa_bisect_iters)
                                           if self.ssc_kappa_solver == "misr_bisect" else -1,
                             }
+                            if c_ema_ref is not None:
+                                ema_log_err = (
+                                    c_solved.log() - c_ema_ref.log()
+                                ).abs()
+                                ema_abs_err = (c_solved - c_ema_ref).abs()
+                                ema_rel_err = (
+                                    ema_abs_err
+                                    / c_ema_ref.abs().clamp_min(1e-30)
+                                )
+                                true_ema_log_err = (
+                                    c_eigvalsh.log() - c_ema_ref.log()
+                                ).abs()
+                                true_ema_abs_err = (c_eigvalsh - c_ema_ref).abs()
+                                true_ema_rel_err = (
+                                    true_ema_abs_err
+                                    / c_ema_ref.abs().clamp_min(1e-30)
+                                )
+                                payload["diag_ema_beta"] = float(ema_beta)
+                                _put_stats(payload, "ema_ref_log_err", ema_log_err)
+                                _put_stats(payload, "ema_ref_abs_err", ema_abs_err)
+                                _put_stats(payload, "ema_ref_rel_err", ema_rel_err)
+                                _put_stats(payload, "true_ema_log_err", true_ema_log_err)
+                                _put_stats(payload, "true_ema_abs_err", true_ema_abs_err)
+                                _put_stats(payload, "true_ema_rel_err", true_ema_rel_err)
+                                _put_stats(payload, "c_ema", c_ema_ref)
                             print(json.dumps(payload, sort_keys=True), flush=True)
+                            if (
+                                self.debug_optimizer_state
+                                and step_count % self.debug_optimizer_state_every == 0
+                            ):
+                                pair_indices = list(gs.get('indices', []))
+                                pair_names = [
+                                    self.pair_names[gi]
+                                    if gi < len(self.pair_names) else f"pair_{gi}"
+                                    for gi in pair_indices
+                                ]
+                                pair_payload = {
+                                    "event": "ssc_c_pair_diag",
+                                    "step": int(step_count),
+                                    "side": str(side),
+                                    "n": int(n) if n is not None else -1,
+                                    "refresh_due": bool(refresh_due),
+                                    "picard_reuse": bool(picard_reuse),
+                                    "pair_indices": [int(i) for i in pair_indices],
+                                    "pair_names": pair_names,
+                                    "c_used": _json_list_from_tensor(c_solved),
+                                    "c_true": _json_list_from_tensor(c_eigvalsh),
+                                    "log_err": _json_list_from_tensor(log_err),
+                                    "abs_err": _json_list_from_tensor(abs_err),
+                                    "rel_err": _json_list_from_tensor(rel_err),
+                                }
+                                if c_ema_ref is not None:
+                                    pair_payload.update({
+                                        "diag_ema_beta": float(ema_beta),
+                                        "c_ema": _json_list_from_tensor(c_ema_ref),
+                                        "ema_ref_log_err": _json_list_from_tensor(
+                                            ema_log_err
+                                        ),
+                                        "ema_ref_abs_err": _json_list_from_tensor(
+                                            ema_abs_err
+                                        ),
+                                        "ema_ref_rel_err": _json_list_from_tensor(
+                                            ema_rel_err
+                                        ),
+                                        "true_ema_log_err": _json_list_from_tensor(
+                                            true_ema_log_err
+                                        ),
+                                        "true_ema_abs_err": _json_list_from_tensor(
+                                            true_ema_abs_err
+                                        ),
+                                        "true_ema_rel_err": _json_list_from_tensor(
+                                            true_ema_rel_err
+                                        ),
+                                    })
+                                print(json.dumps(pair_payload, sort_keys=True), flush=True)
                     return out.float()
                 return _ssc_misr_batched(X, c=self.ssc_c, nsteps=self.ssc_nsteps).float()
             if self.ns_form == "gram":
@@ -5153,6 +5342,8 @@ class AdamPolarProductLoRA(Optimizer):
                     "SB_diag_max": B_f.pow(2).sum(dim=-2).amax(dim=-1),
                     "SA_trace": A_f.pow(2).sum(dim=(-1, -2)),
                     "SB_trace": B_f.pow(2).sum(dim=(-1, -2)),
+                    "ssc_c_A": gs.get('ssc_c_last_A'),
+                    "ssc_c_B": gs.get('ssc_c_last_B'),
                 }
                 _emit_optimizer_pair_stats(
                     step_count,
@@ -5333,6 +5524,73 @@ class AdamPolarProductLoRA(Optimizer):
                 torch._foreach_add_(B_list, list(dB_native.unbind(0)))
                 torch._foreach_zero_([A.grad for A in A_list])
                 torch._foreach_zero_([B.grad for B in B_list])
+            if self.log_non_finite:
+                bad_after = {}
+                for local_idx, A_param in enumerate(A_list):
+                    if bool(~torch.isfinite(A_param).all()):
+                        bad_after.setdefault("A_after", []).append(local_idx)
+                for local_idx, B_param in enumerate(B_list):
+                    if bool(~torch.isfinite(B_param).all()):
+                        bad_after.setdefault("B_after", []).append(local_idx)
+                if bad_after and _is_main_process():
+                    where = {
+                        name: [
+                            {
+                                "local": int(li),
+                                "global": int(indices[li]),
+                                "pair_name": (
+                                    self.pair_names[indices[li]]
+                                    if indices[li] < len(self.pair_names)
+                                    else f"pair_{indices[li]}"
+                                ),
+                            }
+                            for li in local_idxs
+                        ]
+                        for name, local_idxs in bad_after.items()
+                    }
+                    print(json.dumps({
+                        "event": "non_finite_after_apply",
+                        "step": int(step_count),
+                        "where": where,
+                    }, sort_keys=True), flush=True)
+                    bad_locals = sorted({
+                        int(li)
+                        for local_idxs in bad_after.values()
+                        for li in local_idxs
+                    })
+                    A_after = torch.stack([p.detach().float() for p in A_list])
+                    B_after = torch.stack([p.detach().float() for p in B_list])
+                    for local_bad in bad_locals:
+                        self._save_debug_snapshot(
+                            reason="non_finite_after_apply",
+                            step_count=step_count,
+                            group_state=gs,
+                            local_idx=local_bad,
+                            global_idx=indices[local_bad],
+                            tensors={
+                                **chain_tensors,
+                                "A_before": A_f,
+                                "B_before": B_f,
+                                "A_after": A_after,
+                                "B_after": B_after,
+                                "dA_native": dA_native,
+                                "dB_native": dB_native,
+                                "gA": gs['gA_stack'],
+                                "gB": gs['gB_stack'],
+                                "m_A": gs['m_A'],
+                                "m_B": gs['m_B'],
+                                "v_A": gs['v_A'],
+                                "v_B": gs['v_B'],
+                            },
+                            scalars=stats or {},
+                            where=where,
+                        )
+                    if self.debug_abort_on_non_finite:
+                        raise RuntimeError(
+                            f"Non-finite optimizer parameter after apply at "
+                            f"step {step_count}; "
+                            f"snapshot_dir={self.debug_snapshot_dir!r}"
+                        )
 
         if self.log_basic_diagnostics and diag_records:
             step_count_any = self.pair_state[0]['step']
@@ -9576,16 +9834,19 @@ def build_optimizer(
     polar_method: str = "ns",
     polar_core_remix_alpha: float = 0.0,
     ssc_c: float | None = None,
-    ssc_nsteps: int = 20,
+    ssc_nsteps: int = 10,
     ssc_kappa: float | None = None,
     ssc_kappa_refresh_every: int = 1,
     ssc_kappa_warmup_steps: int = 5,
     ssc_kappa_solver: str = "eigvalsh",
     ssc_kappa_bisect_iters: int = 3,
     ssc_kappa_cache_share_picard: bool = False,
+    ssc_kappa_cache_ema_beta: float | None = None,
     ssc_kappa_bisect_mode: str = "sequential",
+    ssc_kappa_bisect_nsteps_eval: int | None = None,
     ssc_kappa_cross_group_eigvalsh: bool = True,
     ssc_kappa_diagnose_eigvalsh: bool = False,
+    ssc_kappa_diag_ema_beta: float | None = None,
     beta1: float = 0.9,
     beta2: float = 0.999,
     precond_delta_relative: bool = False,
@@ -9992,9 +10253,12 @@ def build_optimizer(
             ssc_kappa_solver=ssc_kappa_solver,
             ssc_kappa_bisect_iters=ssc_kappa_bisect_iters,
             ssc_kappa_bisect_mode=ssc_kappa_bisect_mode,
+            ssc_kappa_bisect_nsteps_eval=ssc_kappa_bisect_nsteps_eval,
             ssc_kappa_cache_share_picard=ssc_kappa_cache_share_picard,
+            ssc_kappa_cache_ema_beta=ssc_kappa_cache_ema_beta,
             ssc_kappa_cross_group_eigvalsh=ssc_kappa_cross_group_eigvalsh,
             ssc_kappa_diagnose_eigvalsh=ssc_kappa_diagnose_eigvalsh,
+            ssc_kappa_diag_ema_beta=ssc_kappa_diag_ema_beta,
             magnitude_rule="spectral_chord_tight_clean",
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,
