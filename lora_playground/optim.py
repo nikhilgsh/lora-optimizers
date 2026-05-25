@@ -9524,7 +9524,7 @@ def build_optimizer(
     polar_method: str = "ns",
     polar_core_remix_alpha: float = 0.0,
     ssc_c: float | None = None,
-    ssc_nsteps: int = 10,
+    ssc_nsteps: int = 20,
     ssc_kappa: float | None = None,
     ssc_kappa_refresh_every: int = 1,
     ssc_kappa_warmup_steps: int = 5,

@@ -682,8 +682,13 @@ def make_parser():
                              "c is solved per-pair per-step via bisection. "
                              "Achievable range: (‖s‖²/r, 1] on the §2.5-rescaled spectrum; "
                              "concentrated LoRA polar inputs imply useful κ ≳ 0.1.")
-    parser.add_argument("--ssc_nsteps", type=int, default=10,
-                        help="MISR (matrix iterative soft-clipping) iteration count for SSC. Default 10.")
+    parser.add_argument("--ssc_nsteps", type=int, default=20,
+                        help="MISR (matrix iterative soft-clipping) iteration count for SSC. "
+                             "Default 20: the snapshot convergence diagnostic shows nsteps=10 "
+                             "is materially under-converged at r=256 (POOLED p99 = 33% relative "
+                             "F-residual on RUN_B), nsteps=16 converges, nsteps=20 has safety "
+                             "margin and adds <2% wall vs nsteps=10 in compiled Blackwell timing "
+                             "(scripts/bench/ssc_misr_convergence_snapshot.py).")
     parser.add_argument("--ssc_kappa_refresh_every", type=int, default=1,
                         help="κ-adaptive SSC: refresh per-pair cached c every N steps "
                              "(amortizes the eigvalsh+bisection across N steps). N=1 reproduces "

@@ -114,7 +114,7 @@ def main():
         (RUN_D, "RUN_D r=256 lr=1e-3"),
     ]:
         _diagnose_run(run_key, label, kappa=0.6,
-                      ref_nsteps=60, test_nsteps=(10, 20, 30, 40))
+                      ref_nsteps=60, test_nsteps=(12, 14, 15, 16, 18, 20))
 
 
 if __name__ == "__main__":
