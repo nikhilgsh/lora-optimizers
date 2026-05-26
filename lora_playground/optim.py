@@ -4646,6 +4646,9 @@ class AdamPolarProductLoRA(Optimizer):
         P_A = P_B = geo_A = geo_B = None
         op_geoA_b = op_geoB_b = None
         op_geoA = op_geoB = None
+        BT_dB_A = B_dA_AT = None
+        dA_prev_picard = dB_prev_picard = None
+        X_A_eff = X_B_eff = None
 
         slots_A = gs.setdefault('v_op_geoA_slots', [None] * self.picard_iters)
         slots_B = gs.setdefault('v_op_geoB_slots', [None] * self.picard_iters)
@@ -4678,6 +4681,8 @@ class AdamPolarProductLoRA(Optimizer):
                 else:
                     # 1/η cross-coupling on the whitened polar input:
                     # X_A^eff = S_B^{-1/2} (u_A + (1/η) Bᵀ dB A).
+                    dA_prev_picard = dA
+                    dB_prev_picard = dB
                     BT_dB_A = B_f.transpose(-2, -1) @ dB @ A_f       # (N, r, d_in)
                     B_dA_AT = B_f @ dA @ A_f.transpose(-2, -1)       # (N, d_out, r)
                     u_A_eff = u_A + (1.0 / lr) * BT_dB_A
@@ -4738,6 +4743,12 @@ class AdamPolarProductLoRA(Optimizer):
             "op_geoA_b": op_geoA_b, "op_geoB_b": op_geoB_b,
             "op_geoA": op_geoA, "op_geoB": op_geoB,
             "dA": dA, "dB": dB,
+            "dA_prev_picard": dA_prev_picard,
+            "dB_prev_picard": dB_prev_picard,
+            "BT_dB_A": BT_dB_A,
+            "B_dA_AT": B_dA_AT,
+            "X_A_eff": X_A_eff,
+            "X_B_eff": X_B_eff,
             "s_AB": s_AB,
         }
 
@@ -5047,6 +5058,12 @@ class AdamPolarProductLoRA(Optimizer):
                 s_AB = _clean_result['s_AB']
                 dA = _clean_result['dA']
                 dB = _clean_result['dB']
+                dA_prev_picard = _clean_result['dA_prev_picard']
+                dB_prev_picard = _clean_result['dB_prev_picard']
+                BT_dB_A = _clean_result['BT_dB_A']
+                B_dA_AT = _clean_result['B_dA_AT']
+                X_A_eff = _clean_result['X_A_eff']
+                X_B_eff = _clean_result['X_B_eff']
             else:
                 # Unit-polar normalization of u_A, u_B for chord-tight family.
                 # The Picard coefficient 2/(ρ·s) was derived assuming the base
@@ -5309,6 +5326,12 @@ class AdamPolarProductLoRA(Optimizer):
                 "picard_coeff_s": locals().get('picard_coeff_s'),
                 "u_A_eff": u_A_eff, "u_B_eff": u_B_eff,
                 "X_A": locals().get('X_A'), "X_B": locals().get('X_B'),
+                "X_A_eff": locals().get('X_A_eff'),
+                "X_B_eff": locals().get('X_B_eff'),
+                "BT_dB_A": locals().get('BT_dB_A'),
+                "B_dA_AT": locals().get('B_dA_AT'),
+                "dA_prev_picard": locals().get('dA_prev_picard'),
+                "dB_prev_picard": locals().get('dB_prev_picard'),
                 "P_A": locals().get('P_A'), "P_B": locals().get('P_B'),
                 "geo_A": locals().get('geo_A'), "geo_B": locals().get('geo_B'),
                 "op_geoA_b": locals().get('op_geoA_b'),
