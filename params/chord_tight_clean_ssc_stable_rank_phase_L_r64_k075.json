@@ -1,0 +1,12 @@
+{
+  "lr": ["1e-3", "3e-3", "1e-2", "3e-2", "1e-1"],
+  "optimizer": ["adam-polar-product-lora-coupled-spectral-chord-tight-clean"],
+  "lora_plus_multiplier": ["1.0"],
+  "seed": ["0"],
+  "polar_method": ["ssc"],
+  "ssc_c": ["none"],
+  "ssc_kappa": ["0.75"],
+  "ssc_kappa_solver": ["stable_rank"],
+  "ssc_nsteps": ["10"],
+  "muon_ns_steps": ["10"]
+}
