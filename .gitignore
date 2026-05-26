@@ -46,6 +46,8 @@ slurm_job_*_resize.csh
 
 # Regenerated notebook renders
 notebooks/_render/
+notebooks/snapshot_analysis/_data/
+notebooks/snapshot_analysis/_renders/
 
 # LaTeX build artifacts (scoped to docs/theory/)
 docs/theory/*.aux

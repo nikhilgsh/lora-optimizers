@@ -4,6 +4,8 @@ This document derives the block-coordinate-descent (BCD) variant of the polar-pr
 
 A companion document `algorithm_tight_chord_fw.md` derives the Frank-Wolfe / polar variant of the same program (Algorithm 2).
 
+**Position in the doc family.** This doc derives the $\kappa = 1$ clip-prox solver of the residual program. The repo-default optimizer parameterizes by a stable-rank target $\kappa \in (0, 1]$ and uses a smooth spectral surrogate (Soft Spectral Clipping); see `algorithm_ssc_kappa.md` for the primary derivation. Appendix C below (two-budget LMO, water-filling, SSC, fixed-$K$ NS) is now lifted to that doc as primary reading, but kept here as the original derivation site for the shape-control machinery.
+
 **Reading guide.**
 
 - **Notation reference (below)** — every symbol grounded in one place.

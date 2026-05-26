@@ -6,6 +6,8 @@ This document derives the Frank-Wolfe (FW) variant of the polar-product LoRA opt
 
 A companion document `algorithm_tight_chord.md` derives the block-coordinate-descent variant of the same program (Algorithm 1, clip-prox per-block solver). The two documents are independent; this one stands on its own.
 
+**Position in the doc family.** This doc derives the $\kappa = 1$ FW–polar solver of the residual program. The repo-default optimizer parameterizes by a stable-rank target $\kappa \in (0, 1]$ and replaces the polar LMO of §6 by a two-budget spectral-shape LMO; the practical implementation uses Soft Spectral Clipping (SSC) as a smooth surrogate to hard spectral water-filling. See `algorithm_ssc_kappa.md` for the primary derivation. The FW outer loop, cross-coupling correction (Lemma 1 of §7.3), Adam calibration (§5), and chain $\eta \to \rho \to (\tau_A, \tau_B)$ (§10) carry over unchanged to that doc; only the per-block LMO of §6 is generalized.
+
 **Reading guide.**
 
 - **Notation reference (below)** — every symbol grounded in one place.

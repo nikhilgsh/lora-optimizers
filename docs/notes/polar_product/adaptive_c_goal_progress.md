@@ -67,27 +67,61 @@ and avoids unstable NaN failure modes.
   `logs/bench_ssc_stable_rank/compiled_r256_p3n10h10_steps50_fixedc_c0p1.log`
   and
   `logs/bench_ssc_stable_rank/compiled_r256_p3n10h10_steps50_stable_rank_k0p75.log`.
-- Running: 4k r=256 stable-rank LR sweep, job `6446818`, group
+- Done: fresh focused CPU regression check after final sweep analysis:
+  `python -m pytest tests/test_chord_tight_clean.py::test_stable_rank_c_exact_on_one_spike_flat_tail tests/test_chord_tight_clean.py::test_stable_rank_c_is_finite_on_low_rank_inputs tests/test_chord_tight_clean.py::test_stable_rank_solver_routes_without_cache_state -q`
+  passed (`3 passed`).
+- Canceled auxiliary run: 4k r=256 stable-rank LR sweep, job `6446818`, group
   `chord_tight_clean_ssc_stable_rank_r256_k075_lr3sweep_4k_blackwell`.
   Cells are `lr ∈ {1e-2, 3e-2, 1e-1}` with `κ=0.75`, `ssc_nsteps=10`,
-  picard 3, `muon_ns_steps=5`, and diagnostics off. Startup verified all
-  three logs have `execution_source_dirty=false` and
-  `ssc_kappa_solver=stable_rank`. Latest checked progress: all three reached
-  step 400. This is now auxiliary evidence only: the fixed-c and exact
-  eigvalsh κ baselines selected for the main comparison use
-  `muon_ns_steps=10`.
-- Pending corrected run: add the same stable-rank LR grid with
-  `muon_ns_steps=10`, matching the existing r=256 fixed-c and exact κ
-  baselines. The corrected wrapper path has been smoke-tested at r=256,
-  `max_steps=1`, `κ=0.75`, `ssc_nsteps=10`; the config command and
-  `optimizer_config.ns_steps` both recorded `10`, and the smoke emitted a
-  finite eval.
-- Pending: training comparison across the useful LR neighborhood, not only
-  single best LR.
+  picard 3, `muon_ns_steps=5`, and diagnostics off. This run was canceled
+  because the fixed-c and exact eigvalsh κ baselines selected for the main
+  comparison use `muon_ns_steps=10`.
+- Done: corrected run, job `6446834`, group
+  `chord_tight_clean_ssc_stable_rank_r256_k075_lr3sweep_4k_ns10_blackwell`.
+  This is the main apples-to-apples comparison sweep: stable-rank LR grid
+  with `muon_ns_steps=10`, matching the existing r=256 fixed-c and exact κ
+  baselines. Job accounting reports `COMPLETED` with exit code `0:0`.
+  All three task logs have `execution_source_dirty=false`,
+  `ssc_kappa_solver=stable_rank`, `optimizer_config.ns_steps=10`, 20 finite
+  eval rows, final step 4000, zero bad evals, zero observed non-finite
+  gradients, and zero stderr error-pattern hits.
+  Final eval rows: `lr=0.01: 0.498675`, `lr=0.03: 0.496808`,
+  `lr=0.1: 0.506798`.
 
-## Next Gates
+## Prepared Baseline Comparison
 
-1. Submit the corrected `muon_ns_steps=10` stable-rank LR sweep.
-2. Wait for the corrected sweep to finish.
-3. Analyze stable-rank against existing fixed-c and exact eigvalsh
-   $\kappa(c)$ r=256 4k sweeps for best-LR loss and LR robustness.
+Comparison regime: `packed_v1`, r=256, `max_steps=4000`, picard 3,
+`higham_iters=10`, `ssc_nsteps=10`, `muon_ns_steps=10`, seed 0. Candidate
+pool was loaded through `lora_playground.loader.load_runs(where=...)` and
+showed one intended varying method axis: fixed c versus exact eigvalsh κ
+versus stable-rank κ.
+
+- Best fixed-c completed baseline: fixed `c=0.1`, best `lr=0.03`,
+  final eval loss `0.497904`; three-point LR robustness range over
+  `{0.01, 0.03, 0.1}` is `0.012316`.
+- Best exact eigvalsh κ completed baseline: exact `κ=0.6`, best `lr=0.03`,
+  final eval loss `0.496682`; three-point LR robustness range is `0.010981`.
+- Exact eigvalsh `κ=0.75`, the direct target for the current stable-rank run:
+  best `lr=0.03`, final eval loss `0.497561`; three-point LR robustness
+  range is `0.013460`.
+- Stable-rank `κ=0.75`: best `lr=0.03`, final eval loss `0.496808`;
+  three-point LR robustness range is `0.009990`. This beats fixed `c=0.1`
+  by `0.001097` at best LR and improves its LR-robustness range by
+  `0.002326`. It is `0.000126` above exact eigvalsh `κ=0.6` at best LR and
+  has a slightly smaller three-point LR range than exact eigvalsh `κ=0.6`.
+
+## Completion Audit
+
+- Optimizer path exists: yes, via `--ssc_kappa_solver stable_rank`.
+- Quality beats fixed-c: yes, stable-rank best loss `0.496808` beats fixed
+  `c=0.1` best loss `0.497904`, and the `{0.01, 0.03, 0.1}` LR range
+  `0.009990` beats fixed `c=0.1` range `0.012316`.
+- Quality approaches exact $\kappa(c)$: yes, stable-rank is within
+  `0.000126` of exact eigvalsh `κ=0.6` best loss and has a comparable or
+  better three-point LR range.
+- Overhead is $\le 2\%$: yes, matching-config Blackwell timing gives
+  `+1.10%` steady-state overhead versus fixed `c=0.1`.
+- No unstable NaNs: yes for this regime; the completed 4k sweep has zero bad
+  evals, zero observed non-finite gradients, and zero stderr error-pattern
+  hits. The stable-rank solver is stateless and rejects cache/EMA settings
+  that caused the kpar cached-c ratchet.
