@@ -834,6 +834,14 @@ def make_parser():
              "resubmission after wall-timeout.",
     )
     parser.add_argument(
+        "--resume_replay_original_dataloader", action="store_true",
+        help="DEBUG: when resuming, preserve the original single-pass dataloader "
+             "order by keeping the base seed/sampler epoch and skipping "
+             "resumed_step * grad_accum_steps microbatches before training. "
+             "This is intended for deterministic failure localization, not "
+             "normal wall-timeout resume.",
+    )
+    parser.add_argument(
         "--snapshot_steps", default="",
         help="Comma-separated step indices at which to write a diagnostic "
              "snapshot (pre-step A, B and pre-σmax u_A, u_B per pair, plus "
@@ -1410,17 +1418,47 @@ def main():
                 "resume_segment": resume_segment,
                 "ckpt_path": resume_state["ckpt_path"],
             })
-            # Reseed so the post-resume sampler advances to a new
-            # deterministic position. Continuous in expectation, not bitwise.
-            set_seed(args.seed + resume_state["step"])
+            if args.resume_replay_original_dataloader:
+                log_event({
+                    "event": "resume_replay_original_dataloader",
+                    "resumed_from_step": resume_state["step"],
+                    "microbatches_to_skip": (
+                        resume_state["step"] * args.grad_accum_steps
+                    ),
+                })
+            else:
+                # Reseed so the post-resume sampler advances to a new
+                # deterministic position. Continuous in expectation, not bitwise.
+                set_seed(args.seed + resume_state["step"])
     start_step = (resume_state["step"] + 1) if resume_state else 1
 
     # Under DDP, set_epoch on the DistributedSampler ensures different shuffle
     # ordering across epochs (only matters if we ever multi-epoch; the project
     # invariant is 1-pass so this is just a forward-compat call).
+    sampler_epoch = (
+        0
+        if resume_state is not None and args.resume_replay_original_dataloader
+        else resume_segment
+    )
     if train_sampler is not None:
-        train_sampler.set_epoch(resume_segment)
+        train_sampler.set_epoch(sampler_epoch)
     train_iter = iter(train_loader)
+    if resume_state is not None and args.resume_replay_original_dataloader:
+        microbatches_to_skip = resume_state["step"] * args.grad_accum_steps
+        skipped = 0
+        for _ in range(microbatches_to_skip):
+            try:
+                next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                next(train_iter)
+            skipped += 1
+        log_event({
+            "event": "resume_replay_dataloader_aligned",
+            "resumed_from_step": resume_state["step"],
+            "sampler_epoch": sampler_epoch,
+            "microbatches_skipped": skipped,
+        })
     total_tokens = resume_state["total_tokens"] if resume_state else 0
     eval_elapsed = 0.0
     # Windowed train-loss accumulator for `train_step` events.
