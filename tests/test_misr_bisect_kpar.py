@@ -46,6 +46,32 @@ def test_kpar_K1_returns_c_init():
     assert torch.allclose(out, H_ref, atol=1e-6)
 
 
+def test_kpar_clamps_tiny_warm_start_to_solver_floor():
+    X = _rescaled_X(N=3, r=4, d=16, seed=11)
+    c_init = torch.tensor([1e-20, 0.0, float("nan")])
+
+    out, c_solved = _ssc_misr_bisect_batched_kpar(
+        X, kappa=0.6, K=3, nsteps=8, c_init=c_init, log_window=0.5,
+    )
+
+    assert torch.isfinite(out).all()
+    assert torch.isfinite(c_solved).all()
+    assert (c_solved >= 1e-3).all()
+
+
+def test_sequential_bisect_clamps_tiny_warm_start_to_solver_floor():
+    X = _rescaled_X(N=3, r=4, d=16, seed=12)
+    c_init = torch.tensor([1e-20, 0.0, float("-inf")])
+
+    out, c_solved = _ssc_misr_bisect_batched(
+        X, kappa=0.6, K=3, nsteps=8, c_init=c_init, log_window=0.5,
+    )
+
+    assert torch.isfinite(out).all()
+    assert torch.isfinite(c_solved).all()
+    assert (c_solved >= 1e-3).all()
+
+
 def test_kpar_output_matches_misr_at_solved_c():
     """Property (2): for each pair, the returned H equals MISR(X, c_solved)."""
     X = _rescaled_X(N=5, r=8, d=32, seed=2)

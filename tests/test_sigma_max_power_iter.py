@@ -5,7 +5,11 @@ docs/papers/sigma_max_bench.py covers GPU timing separately.
 """
 import torch
 import pytest
-from lora_playground.optim import _sigma_max_power_iter
+import lora_playground.spectral as spectral
+from lora_playground.optim import (
+    _sigma_max_power_iter,
+    _sigma_max_power_iter_batched,
+)
 
 
 def _ground_truth(M):
@@ -107,6 +111,76 @@ def test_zero_matrix():
     M = torch.zeros(128, 2048)
     sigma, v = _sigma_max_power_iter(M, n_iters=8)
     assert float(sigma) == 0.0
+
+
+def test_batched_cold_start_uses_non_null_fallback_when_ones_cancels():
+    """Regression for Site-C σmax underestimation.
+
+    The batched helper used M·1 as its deterministic start. If row/column sums
+    cancel exactly, that start is zero and power iteration returns σ=0 for a
+    nonzero matrix. In chord-tight-clean this makes the update scale behave
+    like ρ / 1e-30, which can overflow the next Picard cross-term.
+    """
+    M = torch.tensor([[[1.0, -1.0], [2.0, -2.0]]])
+    sigma, v = _sigma_max_power_iter_batched(M, n_iters=8)
+    true_sigma = torch.linalg.svdvals(M)[..., 0]
+    torch.testing.assert_close(sigma, true_sigma, rtol=1e-5, atol=1e-6)
+    assert torch.isfinite(v).all()
+
+
+def test_batched_warm_start_recovers_when_vector_enters_nullspace():
+    """A valid-shape warm start can be useless for the current matrix.
+
+    If the cached vector is in the current smaller-side Gram nullspace, the
+    first power-iteration matvec is zero. The helper must fall back per batch
+    instead of returning σ=0 for a nonzero matrix.
+    """
+    M = torch.tensor([[[3.0, 0.0], [0.0, 0.0]]])
+    v_init = torch.tensor([[0.0, 1.0]])
+    sigma, v = _sigma_max_power_iter_batched(M, v_init=v_init, n_iters=8)
+    true_sigma = torch.linalg.svdvals(M)[..., 0]
+    torch.testing.assert_close(sigma, true_sigma, rtol=1e-5, atol=1e-6)
+    assert torch.isfinite(v).all()
+
+
+def test_batched_estimate_has_row_norm_floor_for_bad_warm_start():
+    """Even before iteration, σmax(M) is at least every row norm.
+
+    This pins the safety floor used by optimizer rescaling. A bad warm start
+    can make ||Mᵀv|| much smaller than this bound; returning that underestimate
+    would over-scale the update.
+    """
+    M = torch.tensor([[[3.0, 4.0], [0.0, 0.0]]])
+    v_init = torch.tensor([[0.0, 1.0]])
+    sigma, _ = _sigma_max_power_iter_batched(M, v_init=v_init, n_iters=0)
+    assert float(sigma[0]) == 5.0
+
+
+def test_batched_return_info_reports_guard_hits():
+    M = torch.tensor([[[3.0, 4.0], [0.0, 0.0]]])
+    v_init = torch.tensor([[0.0, 1.0]])
+    sigma, _, info = _sigma_max_power_iter_batched(
+        M, v_init=v_init, n_iters=0, return_info=True,
+    )
+    assert float(sigma[0]) == 5.0
+    assert bool(info["guard_hit"][0])
+    assert bool(info["floor"][0])
+    assert not bool(info["iter_fallback"][0])
+    assert not bool(info["ones_fallback"][0])
+    assert not bool(info["warm_start_fallback"][0])
+    assert float(info["sigma_raw"][0]) == 0.0
+    assert float(info["sigma_floor"][0]) == 5.0
+
+
+def test_batched_guard_can_be_disabled_for_counterfactual(monkeypatch):
+    monkeypatch.setattr(spectral, "_DISABLE_SIGMA_MAX_GUARD", True)
+    M = torch.tensor([[[1.0, -1.0], [2.0, -2.0]]])
+    sigma, _, info = _sigma_max_power_iter_batched(
+        M, n_iters=8, return_info=True,
+    )
+    assert float(sigma[0]) == 0.0
+    assert bool(info["guard_disabled"])
+    assert not bool(info["guard_hit"][0])
 
 
 def test_dtype_handling():

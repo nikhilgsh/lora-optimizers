@@ -67,7 +67,9 @@ class FakeLoRAModel(nn.Module):
 
 
 def _make_optimizer(model, *, picard_iters=2, ns_form="rect",
-                    precond_refresh_every=1):
+                    precond_refresh_every=1, log_non_finite=False,
+                    polar_method="ns", ssc_kappa=None,
+                    ssc_kappa_solver="eigvalsh"):
     return AdamPolarProductLoRA(
         model,
         lr=3e-3,
@@ -82,6 +84,10 @@ def _make_optimizer(model, *, picard_iters=2, ns_form="rect",
         precond_method="higham",
         magnitude_rule="spectral_chord_tight_clean",
         ns_form=ns_form,
+        polar_method=polar_method,
+        ssc_kappa=ssc_kappa,
+        ssc_kappa_solver=ssc_kappa_solver,
+        log_non_finite=log_non_finite,
     )
 
 
@@ -178,6 +184,138 @@ def test_update_op_norm_matches_rho(tiny_specs):
     # small slack; 5% is the same band as the polar-invariant test.
     torch.testing.assert_close(sA, rho, rtol=5e-2, atol=1e-6)
     torch.testing.assert_close(sB, rho, rtol=5e-2, atol=1e-6)
+
+
+def test_site_c_rescale_survives_nullspace_warm_start():
+    """Site-C σmax warm starts must not over-scale Picard updates.
+
+    The NaN trace first exposed an A-side Picard effective covector blow-up.
+    One local way to create that is for the σmax warm start used to rescale
+    `geo_A`/`geo_B` to lie in the current matrix's nullspace: power iteration
+    then estimates σ=0 for a nonzero `geo`, making `rho / (sigma + 1e-30)`
+    enormous and contaminating the next Picard cross-term.
+
+    This directly exercises the clean polar pipeline with Picard=2 and
+    adversarial per-Picard warm-start slots. The crafted rank-one inputs make
+    the bad vector `[0, 1]` a nullspace vector for both final `geo_*` matrices.
+    """
+    torch.manual_seed(0)
+    model = FakeLoRAModel([(2, 2, 2)], init_B_nonzero=True)
+    opt = _make_optimizer(model, picard_iters=2, ns_form="rect")
+    gs = opt.group_state[0]
+
+    A_f = torch.eye(2).view(1, 2, 2)
+    B_f = torch.eye(2).view(1, 2, 2)
+    u_A = torch.tensor([[[1.0, 0.0], [0.0, 0.0]]])
+    u_B = torch.tensor([[[1.0, 0.0], [0.0, 0.0]]])
+    eye = torch.eye(2).view(1, 2, 2)
+    bad_v = torch.tensor([[0.0, 1.0]])
+    gs["v_op_geoA_slots"] = [bad_v.clone(), bad_v.clone()]
+    gs["v_op_geoB_slots"] = [bad_v.clone(), bad_v.clone()]
+
+    res = opt._chord_tight_clean_polar_pipeline(
+        gs, A_f, B_f, u_A, u_B, eye, eye, opt.param_groups[0]["lr"],
+        timer=None, sigma_A=torch.tensor([1.0]), sigma_B=torch.tensor([1.0]),
+        step_count=1,
+    )
+
+    for name in ("u_A_eff", "u_B_eff", "BT_dB_A", "B_dA_AT", "dA", "dB"):
+        assert torch.isfinite(res[name]).all(), f"{name} became non-finite"
+    torch.testing.assert_close(res["op_geoA_b"], torch.ones(1), rtol=0, atol=0)
+    torch.testing.assert_close(res["op_geoB_b"], torch.ones(1), rtol=0, atol=0)
+    torch.testing.assert_close(
+        torch.linalg.svdvals(res["dA"].float())[..., 0],
+        res["rho"].float(), rtol=1e-6, atol=1e-8,
+    )
+    torch.testing.assert_close(
+        torch.linalg.svdvals(res["dB"].float())[..., 0],
+        res["rho"].float(), rtol=1e-6, atol=1e-8,
+    )
+
+
+def test_site_c_sigma_guard_hit_is_logged(capsys):
+    torch.manual_seed(0)
+    model = FakeLoRAModel([(2, 2, 2)], init_B_nonzero=True)
+    opt = _make_optimizer(
+        model, picard_iters=2, ns_form="rect", log_non_finite=True,
+    )
+    gs = opt.group_state[0]
+
+    A_f = torch.eye(2).view(1, 2, 2)
+    B_f = torch.eye(2).view(1, 2, 2)
+    u_A = torch.tensor([[[1.0, 0.0], [0.0, 0.0]]])
+    u_B = torch.tensor([[[1.0, 0.0], [0.0, 0.0]]])
+    eye = torch.eye(2).view(1, 2, 2)
+    bad_v = torch.tensor([[0.0, 1.0]])
+    gs["v_op_geoA_slots"] = [bad_v.clone(), bad_v.clone()]
+    gs["v_op_geoB_slots"] = [bad_v.clone(), bad_v.clone()]
+
+    opt._chord_tight_clean_polar_pipeline(
+        gs, A_f, B_f, u_A, u_B, eye, eye, opt.param_groups[0]["lr"],
+        timer=None, sigma_A=torch.tensor([1.0]), sigma_B=torch.tensor([1.0]),
+        step_count=1,
+    )
+
+    out = capsys.readouterr().out
+    assert '"event": "sigma_max_guard_hit"' in out
+    assert '"site": "site_c_geo"' in out
+    assert '"side": "A"' in out
+
+
+def test_debug_picard_trace_records_first_iter_tensors():
+    torch.manual_seed(0)
+    model = FakeLoRAModel([(2, 2, 2)], init_B_nonzero=True)
+    opt = _make_optimizer(
+        model, picard_iters=2, ns_form="rect", log_non_finite=True,
+    )
+    gs = opt.group_state[0]
+
+    A_f = torch.eye(2).view(1, 2, 2)
+    B_f = torch.eye(2).view(1, 2, 2)
+    u_A = torch.eye(2).view(1, 2, 2)
+    u_B = torch.eye(2).view(1, 2, 2)
+    u_B[0, 0, 0] = float("nan")
+    eye = torch.eye(2).view(1, 2, 2)
+
+    res = opt._chord_tight_clean_polar_pipeline(
+        gs, A_f, B_f, u_A, u_B, eye, eye, opt.param_groups[0]["lr"],
+        timer=None, sigma_A=torch.tensor([1.0]), sigma_B=torch.tensor([1.0]),
+        step_count=1,
+    )
+
+    trace = res["picard_trace"]
+    assert "P_B_n0" in trace
+    assert "dB_n0" in trace
+    assert "dB_n1" in trace
+    assert not torch.isfinite(trace["P_B_n0"]).all()
+    assert not torch.isfinite(trace["dB_n0"]).all()
+
+
+def test_debug_picard_trace_records_ssc_c_by_iteration():
+    torch.manual_seed(0)
+    model = FakeLoRAModel([(2, 2, 2)], init_B_nonzero=True)
+    opt = _make_optimizer(
+        model, picard_iters=2, ns_form="rect", log_non_finite=True,
+        polar_method="ssc", ssc_kappa=0.6,
+    )
+    gs = opt.group_state[0]
+
+    A_f = torch.eye(2).view(1, 2, 2)
+    B_f = torch.eye(2).view(1, 2, 2)
+    u_A = torch.eye(2).view(1, 2, 2)
+    u_B = torch.eye(2).view(1, 2, 2)
+    eye = torch.eye(2).view(1, 2, 2)
+
+    res = opt._chord_tight_clean_polar_pipeline(
+        gs, A_f, B_f, u_A, u_B, eye, eye, opt.param_groups[0]["lr"],
+        timer=None, sigma_A=torch.tensor([1.0]), sigma_B=torch.tensor([1.0]),
+        step_count=1,
+    )
+
+    trace = res["picard_trace"]
+    for key in ("ssc_c_A_n0", "ssc_c_B_n0", "ssc_c_A_n1", "ssc_c_B_n1"):
+        assert key in trace
+        assert torch.isfinite(trace[key]).all()
 
 
 def test_determinism(tiny_specs):
@@ -362,3 +500,56 @@ def test_ssc_adaptive_matches_fixed_c_round_trip():
                 f"trial={trial} c_target={c_target}: solved c={c_solved.tolist()} "
                 f"κ(c_target)={kappa.tolist()} rel_err={rel_err}"
             )
+
+
+def test_stable_rank_c_exact_on_one_spike_flat_tail():
+    """The stable-rank closure is exact for the spectrum it assumes."""
+    from lora_playground.optim import _stable_rank_c_from_kappa_batched
+
+    r, d = 8, 16
+    kappa = 0.75
+    m = 0.08
+    singulars = torch.tensor([1.0] + [math.sqrt(m)] * (r - 1))
+    X = torch.zeros(1, r, d)
+    X[0, torch.arange(r), torch.arange(r)] = singulars
+
+    c = _stable_rank_c_from_kappa_batched(X, kappa=kappa)
+    kappa_tail = (r * kappa - 1.0) / (r - 1)
+    expected = math.sqrt(m * (1.0 - kappa_tail) / (kappa_tail - m))
+    assert torch.allclose(c, torch.tensor([expected]), rtol=2e-5, atol=2e-6)
+
+
+def test_stable_rank_c_is_finite_on_low_rank_inputs():
+    """Rank-concentrated inputs should clip to a finite c, not underflow."""
+    from lora_playground.optim import _stable_rank_c_from_kappa_batched
+
+    X = torch.zeros(3, 8, 16)
+    X[:, 0, 0] = 1.0
+    c = _stable_rank_c_from_kappa_batched(X, kappa=0.75)
+
+    assert torch.isfinite(c).all()
+    assert torch.all(c >= 1e-3)
+    assert torch.all(c <= 1e3)
+
+
+def test_stable_rank_solver_routes_without_cache_state(tiny_specs):
+    """Optimizer dispatch for stable_rank is stateless and records finite c."""
+    torch.manual_seed(0)
+    model = FakeLoRAModel(tiny_specs, init_B_nonzero=True)
+    opt = _make_optimizer(
+        model,
+        picard_iters=2,
+        polar_method="ssc",
+        ssc_kappa=0.75,
+        ssc_kappa_solver="stable_rank",
+    )
+
+    _seed_grads(model, seed=7)
+    opt.step()
+
+    for gs in opt.group_state:
+        assert "ssc_c_last_A" in gs
+        assert "ssc_c_last_B" in gs
+        assert torch.isfinite(gs["ssc_c_last_A"]).all()
+        assert torch.isfinite(gs["ssc_c_last_B"]).all()
+        assert not any(k.startswith("ssc_c_cached") for k in gs)

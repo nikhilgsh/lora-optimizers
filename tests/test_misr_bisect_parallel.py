@@ -112,4 +112,6 @@ def test_parallel_grid_K1_degenerate():
     out, c_solved = _ssc_misr_bisect_batched_kpar(
         X, kappa=0.6, K=1, nsteps=5, c_init=c_init, log_window=0.5,
     )
-    assert torch.allclose(c_solved, c_init, atol=1e-6), "K=1 should return c_init"
+    assert torch.allclose(
+        c_solved, c_init.clamp(1e-3, 1e3), atol=1e-6,
+    ), "K=1 should return clamped c_init"

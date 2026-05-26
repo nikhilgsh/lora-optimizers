@@ -4,21 +4,23 @@ Saves PEFT adapter weights + optimizer state (including custom `pair_state` /
 `group_state`) + scheduler + step / total_tokens metadata. Used by `train.py`
 to resume from SLURM wall-timeouts.
 
-NOT bitwise-resumable: RNG state and dataloader offset are not preserved.
-After resume the sampler is reseeded with `(seed, step)` so the post-resume
-trajectory is stochastically continuous but not identical to an uninterrupted
-run. Within-sweep comparisons (same step index, same cfg) remain valid.
+Normal resume is not bitwise-resumable: by default the sampler is reseeded
+with `(seed, step)` so the post-resume trajectory is stochastically continuous
+but not identical to an uninterrupted run. Debug resumes can opt in to
+restoring checkpointed RNG state and replaying the original dataloader stream.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shutil
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import torch
 
 
@@ -37,6 +39,12 @@ _GROUP_STATE_PERSIST = (
     "v_sigma_A", "v_sigma_B",
     "v_op_geoA", "v_op_geoB",
     "v_XA", "v_XB",
+    "v_op_geoA_slots", "v_op_geoB_slots",
+    "ssc_c_last_A", "ssc_c_last_B",
+)
+_GROUP_STATE_PERSIST_PREFIXES = (
+    "ssc_c_cached_A",
+    "ssc_c_cached_B",
 )
 # pair_state keys that hold tensor VIEWS into group_state buffers (and must
 # not be re-pickled as independent storage). On save we clone them anyway;
@@ -57,6 +65,95 @@ def _meta_path(ckpt_dir: Path) -> Path:
     return ckpt_dir / "meta.json"
 
 
+def _checkpoint_value(v):
+    if isinstance(v, torch.Tensor):
+        return v.detach().clone().cpu()
+    if isinstance(v, list):
+        return [_checkpoint_value(x) for x in v]
+    if isinstance(v, tuple):
+        return tuple(_checkpoint_value(x) for x in v)
+    if isinstance(v, dict):
+        return {k: _checkpoint_value(x) for k, x in v.items()}
+    return v
+
+
+def _restore_value(v, *, device):
+    if isinstance(v, torch.Tensor):
+        return v.to(device)
+    if isinstance(v, list):
+        return [_restore_value(x, device=device) for x in v]
+    if isinstance(v, tuple):
+        return tuple(_restore_value(x, device=device) for x in v)
+    if isinstance(v, dict):
+        return {k: _restore_value(x, device=device) for k, x in v.items()}
+    return v
+
+
+def capture_rng_state() -> dict:
+    """Capture process RNG state for opt-in bitwise-debug resume."""
+    state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": None,
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = [
+            s.detach().clone().cpu() for s in torch.cuda.get_rng_state_all()
+        ]
+    return _checkpoint_value(state)
+
+
+def restore_rng_state(rng_state: Optional[dict]) -> dict:
+    """Restore a state captured by `capture_rng_state`.
+
+    Returns a small status dict for logging. Missing keys are tolerated so old
+    checkpoints remain loadable.
+    """
+    status = {
+        "python": False,
+        "numpy": False,
+        "torch_cpu": False,
+        "torch_cuda": False,
+        "torch_cuda_devices_restored": 0,
+        "torch_cuda_devices_available": (
+            torch.cuda.device_count() if torch.cuda.is_available() else 0
+        ),
+        "torch_cuda_devices_checkpointed": 0,
+    }
+    if not rng_state:
+        return status
+
+    if "python" in rng_state:
+        random.setstate(rng_state["python"])
+        status["python"] = True
+    if "numpy" in rng_state:
+        np.random.set_state(rng_state["numpy"])
+        status["numpy"] = True
+    if "torch_cpu" in rng_state:
+        torch.set_rng_state(rng_state["torch_cpu"].cpu())
+        status["torch_cpu"] = True
+
+    cuda_states = rng_state.get("torch_cuda")
+    if cuda_states is not None:
+        status["torch_cuda_devices_checkpointed"] = len(cuda_states)
+    if cuda_states is not None and torch.cuda.is_available():
+        n_restore = min(len(cuda_states), torch.cuda.device_count())
+        for device_idx, cuda_state in enumerate(cuda_states[:n_restore]):
+            torch.cuda.set_rng_state(cuda_state.cpu(), device=device_idx)
+        status["torch_cuda_devices_restored"] = n_restore
+        status["torch_cuda"] = n_restore == len(cuda_states) == torch.cuda.device_count()
+    return status
+
+
+def _keep_group_state_key(k, keep_keys):
+    if keep_keys is None:
+        return True
+    return k in keep_keys or any(
+        k.startswith(prefix) for prefix in _GROUP_STATE_PERSIST_PREFIXES
+    )
+
+
 def _filter_entries(entries, keep_keys=None):
     """Yield `(key, filtered_dict)` with tensor values detached/cloned/CPU.
 
@@ -71,12 +168,9 @@ def _filter_entries(entries, keep_keys=None):
     for key, entry in entries:
         kept = {}
         for k, v in entry.items():
-            if keep_keys is not None and k not in keep_keys:
+            if not _keep_group_state_key(k, keep_keys):
                 continue
-            if isinstance(v, torch.Tensor):
-                kept[k] = v.detach().clone().cpu()
-            else:
-                kept[k] = v
+            kept[k] = _checkpoint_value(v)
         yield key, kept
 
 
@@ -121,6 +215,7 @@ def save_checkpoint(
         ]
     if scheduler is not None:
         state_payload["scheduler"] = scheduler.state_dict()
+    state_payload["rng_state"] = capture_rng_state()
     torch.save(state_payload, _optim_path(tmp_dir))
 
     # 3. Sidecar JSON with scalar metadata.
@@ -165,6 +260,7 @@ def load_checkpoint(
     bare_model,
     optimizer,
     scheduler=None,
+    restore_rng: bool = False,
 ) -> Optional[dict]:
     """Resume in place. Returns `{step, total_tokens, resume_segment, ckpt_path}`
     or None if no usable checkpoint is present at the given path."""
@@ -240,16 +336,26 @@ def load_checkpoint(
                     device = ref.device if isinstance(ref, torch.Tensor) else "cpu"
                     dst[k] = v.to(device)
                 else:
-                    dst[k] = v
+                    ref = dst.get("m_A")
+                    device = ref.device if isinstance(ref, torch.Tensor) else "cpu"
+                    dst[k] = _restore_value(v, device=device)
 
     if scheduler is not None and "scheduler" in payload:
         scheduler.load_state_dict(payload["scheduler"])
+
+    rng_state = payload.get("rng_state")
+    rng_restore_status = None
+    if restore_rng:
+        rng_restore_status = restore_rng_state(rng_state)
 
     return {
         "step": int(meta["step"]),
         "total_tokens": int(meta["total_tokens"]),
         "resume_segment": int(meta["resume_segment"]),
         "ckpt_path": str(ckpt_dir),
+        "rng_state": rng_state,
+        "rng_state_present": rng_state is not None,
+        "rng_restore_status": rng_restore_status,
     }
 
 

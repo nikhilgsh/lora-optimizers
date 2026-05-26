@@ -1,6 +1,9 @@
 from lora_playground.train import (
+    _resume_replays_original_dataloader,
+    _resume_restores_rng_state,
     format_example,
     format_example_with_boundary,
+    make_parser,
     parse_target_modules,
 )
 
@@ -53,3 +56,15 @@ def test_format_instruction_output_empty_input():
 def test_parse_target_modules():
     assert parse_target_modules("all-linear") == "all-linear"
     assert parse_target_modules("q_proj,k_proj, v_proj") == ["q_proj", "k_proj", "v_proj"]
+
+
+def test_resume_debug_replay_implies_dataloader_replay_and_rng_restore():
+    args = make_parser().parse_args(["--resume_debug_replay"])
+    assert _resume_replays_original_dataloader(args) is True
+    assert _resume_restores_rng_state(args) is True
+
+
+def test_resume_replay_original_dataloader_does_not_restore_rng_by_default():
+    args = make_parser().parse_args(["--resume_replay_original_dataloader"])
+    assert _resume_replays_original_dataloader(args) is True
+    assert _resume_restores_rng_state(args) is False

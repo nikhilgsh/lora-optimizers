@@ -11,11 +11,21 @@
 #   3: lora_plus_multiplier (default 1.0)
 #   4: seed (default 0)
 #   5: lora_r (default 16)
+#   6: polar_method (default ns)
+#   7: ssc_c (default none)
+#   8: ssc_kappa (default none)
+#   9: ssc_kappa_solver (default eigvalsh)
+#  10: ssc_nsteps (default 10)
 lr=${1:-3e-3}
 optimizer=${2:-adam-polar-product-lora-coupled-spectral-chord-tight}
 lora_plus_multiplier=${3:-1.0}
 seed=${4:-0}
 lora_r=${5:-16}
+polar_method=${6:-ns}
+ssc_c=${7:-none}
+ssc_kappa=${8:-none}
+ssc_kappa_solver=${9:-eigvalsh}
+ssc_nsteps=${10:-10}
 
 wandb_args=()
 if [ -n "${WANDB_PROJECT:-}" ]; then
@@ -38,6 +48,17 @@ if [ "${LOG_HEAVY_DIAGNOSTICS:-0}" = "1" ]; then
     diag_args+=(--log_heavy_diagnostics)
 fi
 
+polar_args=(--polar_method "$polar_method")
+if [ "$polar_method" = "ssc" ]; then
+    polar_args+=(--ssc_nsteps "$ssc_nsteps")
+    if [ "$ssc_c" != "none" ] && [ -n "$ssc_c" ]; then
+        polar_args+=(--ssc_c "$ssc_c")
+    fi
+    if [ "$ssc_kappa" != "none" ] && [ -n "$ssc_kappa" ]; then
+        polar_args+=(--ssc_kappa "$ssc_kappa" --ssc_kappa_solver "$ssc_kappa_solver")
+    fi
+fi
+
 python train_lora.py \
     --data_dir data/magicoder_seq512_70k_packed \
     --data_pipeline_version packed_v1 \
@@ -56,6 +77,7 @@ python train_lora.py \
     --muon_ns_steps 5 \
     --precond_method higham \
     --picard_iters_override 3 \
+    "${polar_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 80 \
     "${wandb_args[@]}"

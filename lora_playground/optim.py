@@ -419,6 +419,67 @@ def _emit_non_finite_chain(step_count, intermediates, pair_names_in_group,
     return where
 
 
+def _emit_sigma_guard_event(step_count, *, site, side, n, guard_info,
+                            pair_names_in_group, group_global_indices):
+    """Emit when a σmax safety guard activates in a debug run.
+
+    The event is causal instrumentation: it distinguishes "the guarded helper
+    ran" from "the guard actually changed a dangerous denominator." It is only
+    called from debug-gated paths because the `.any().item()` checks synchronize.
+    """
+    if not _is_main_process() or not guard_info:
+        return None
+    hit_mask = guard_info.get("guard_hit")
+    if hit_mask is None:
+        return None
+    hit_mask = hit_mask.detach()
+    if not bool(hit_mask.any().item()):
+        return None
+
+    def _count(name):
+        t = guard_info.get(name)
+        return int(t.detach().sum().item()) if isinstance(t, torch.Tensor) else 0
+
+    local_idxs = hit_mask.nonzero(as_tuple=True)[0].tolist()
+    where = [
+        {"local": int(li),
+         "global": int(group_global_indices[li]),
+         "pair_name": pair_names_in_group[li]
+             if li < len(pair_names_in_group) else f"pair_{li}"}
+        for li in local_idxs
+    ]
+    raw = guard_info.get("sigma_raw")
+    floor = guard_info.get("sigma_floor")
+    payload = {
+        "event": "sigma_max_guard_hit",
+        "step": int(step_count),
+        "site": str(site),
+        "side": str(side),
+        "n": int(n) if n is not None else -1,
+        "n_pairs": int(hit_mask.numel()),
+        "n_hit": int(hit_mask.sum().item()),
+        "ones_fallback_count": _count("ones_fallback"),
+        "warm_start_fallback_count": _count("warm_start_fallback"),
+        "iter_fallback_count": _count("iter_fallback"),
+        "floor_count": _count("floor"),
+        "where": where,
+    }
+    if isinstance(raw, torch.Tensor) and isinstance(floor, torch.Tensor):
+        raw_hit = raw.detach()[hit_mask]
+        floor_hit = floor.detach()[hit_mask]
+        payload.update({
+            "sigma_raw_min": float(raw_hit.min().item()),
+            "sigma_raw_max": float(raw_hit.max().item()),
+            "sigma_floor_min": float(floor_hit.min().item()),
+            "sigma_floor_max": float(floor_hit.max().item()),
+            "floor_over_raw_max": float(
+                (floor_hit / raw_hit.clamp_min(1e-30)).max().item()
+            ),
+        })
+    print(json.dumps(payload, sort_keys=True, default=float), flush=True)
+    return payload
+
+
 def _emit_non_finite_event(step_count, pair_index, pair_name,
                            where, last_diag):
     """Emit one JSONL `non_finite_detected` event identifying a LoRA pair
@@ -2214,8 +2275,29 @@ def _solve_c_from_kappa_batched(s_sq, kappa, c_lo=1e-3, c_hi=1e3, iters=40):
     return (0.5 * (log_lo + log_hi)).exp()
 
 
+def _ssc_c_out_of_solver_domain(c, *, device, dtype, c_lo=1e-3, c_hi=1e3):
+    c = c.to(device=device, dtype=dtype).reshape(-1)
+    return (
+        ~torch.isfinite(c)
+        | (c < float(c_lo))
+        | (c > float(c_hi))
+    )
+
+
+def _sanitize_ssc_c_init(c_init, *, device, dtype, c_lo=1e-3, c_hi=1e3):
+    c = c_init.to(device=device, dtype=dtype).reshape(-1)
+    c = torch.nan_to_num(
+        c,
+        nan=1.0,
+        posinf=float(c_hi),
+        neginf=float(c_lo),
+    )
+    return c.clamp(min=float(c_lo), max=float(c_hi))
+
+
 def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
-                              c_init=None, log_window=0.5):
+                              c_init=None, log_window=0.5,
+                              c_lo=1e-3, c_hi=1e3):
     """Solve c via warm-started bisection in log-c using MISR forward as the
     κ evaluator. K MISR runs total; final run is the apply.
 
@@ -2242,13 +2324,18 @@ def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
 
     # Warm-started log-c bracket. Without init, fall through full range; the
     # first-step caller is expected to use eigvalsh (or warmup) to seed c_init.
+    log_floor = torch.tensor(float(c_lo), device=device, dtype=dtype).log()
+    log_ceil = torch.tensor(float(c_hi), device=device, dtype=dtype).log()
     if c_init is not None:
-        log_c_mid = c_init.to(device=device, dtype=dtype).log()
-        log_lo = log_c_mid - log_window
-        log_hi = log_c_mid + log_window
+        c_init = _sanitize_ssc_c_init(
+            c_init, device=device, dtype=dtype, c_lo=c_lo, c_hi=c_hi,
+        )
+        log_c_mid = c_init.log()
+        log_lo = (log_c_mid - log_window).clamp(min=log_floor, max=log_ceil)
+        log_hi = (log_c_mid + log_window).clamp(min=log_floor, max=log_ceil)
     else:
-        log_lo = torch.full((N,), float(np.log(1e-3)), device=device, dtype=dtype)
-        log_hi = torch.full((N,), float(np.log(1e3)), device=device, dtype=dtype)
+        log_lo = log_floor.expand(N).clone()
+        log_hi = log_ceil.expand(N).clone()
     target = torch.full((N,), float(kappa), device=device, dtype=dtype)
 
     last_out = None
@@ -2280,7 +2367,8 @@ def _ssc_misr_bisect_batched(X, kappa, K=3, nsteps=10, eps=1e-12,
 
 def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
                                    c_init=None, log_window=0.5,
-                                   nsteps_eval=None):
+                                   nsteps_eval=None, c_lo=1e-3,
+                                   c_hi=1e3, return_info=False):
     """K-way batched parallel-grid variant of `_ssc_misr_bisect_batched`.
 
     Instead of K sequential bisection steps (each launching one MISR call on
@@ -2302,7 +2390,10 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
     iteration, so for launch-bound regimes (e.g. r=256, small N) it pays
     even at K=5–9.
 
-    Returns (out, c_solved). Same shapes/semantics as the sequential path.
+    Returns (out, c_solved). If return_info=True, returns
+    (out, c_solved, info), where info includes whether the warm start had to
+    be clamped to the solver domain and whether the selected candidate was on
+    the parallel-grid edge. Same shapes/semantics as the sequential path.
     `c_init` is REQUIRED here (parallel grid only makes sense with a warm
     start — full-range parallel-3 would be ~10× coarser than parallel-3
     on a warm bracket).
@@ -2332,7 +2423,16 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
     N, r, d = Xf_flat.shape
     device, dtype = Xf_flat.device, Xf_flat.dtype
 
-    log_c_mid = c_init.to(device=device, dtype=dtype).log().reshape(-1)  # (N,)
+    c_init_raw = c_init.to(device=device, dtype=dtype).reshape(-1)
+    c_init_clamped = _ssc_c_out_of_solver_domain(
+        c_init_raw, device=device, dtype=dtype, c_lo=c_lo, c_hi=c_hi,
+    )
+    c_init = _sanitize_ssc_c_init(
+        c_init_raw, device=device, dtype=dtype, c_lo=c_lo, c_hi=c_hi,
+    )
+    log_c_mid = c_init.log().reshape(-1)  # (N,)
+    log_floor = torch.tensor(float(c_lo), device=device, dtype=dtype).log()
+    log_ceil = torch.tensor(float(c_hi), device=device, dtype=dtype).log()
     if K == 1:
         offsets = torch.zeros(1, device=device, dtype=dtype)
     else:
@@ -2340,6 +2440,7 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
                                   device=device, dtype=dtype)             # (K,)
     # (K, N) grid of log-c candidates.
     log_c_grid = log_c_mid.unsqueeze(0) + offsets.unsqueeze(1)            # (K, N)
+    log_c_grid = log_c_grid.clamp(min=log_floor, max=log_ceil)
     c_grid = log_c_grid.exp()                                              # (K, N)
 
     # Stack X along leading dim K. We broadcast the SAME X across the K
@@ -2359,6 +2460,7 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
     target = torch.full((N,), float(kappa), device=device, dtype=dtype)
     # Pick the candidate index (per pair) minimizing |κ(c_k) - target|.
     diffs = (kappa_grid - target.unsqueeze(0)).abs()                       # (K, N)
+    diffs = torch.where(torch.isfinite(diffs), diffs, torch.full_like(diffs, float("inf")))
     winner = diffs.argmin(dim=0)                                           # (N,)
     pair_idx = torch.arange(N, device=device)
     c_solved = c_grid[winner, pair_idx]                                    # (N,)
@@ -2369,7 +2471,23 @@ def _ssc_misr_bisect_batched_kpar(X, kappa, K=3, nsteps=10, eps=1e-12,
 
     out = out_flat.reshape(*orig_leading, *out_flat.shape[-2:])
     c_out = c_solved.reshape(*orig_leading) if orig_leading else c_solved
-    return (out.transpose(-2, -1) if tall else out), c_out
+    out = out.transpose(-2, -1) if tall else out
+    if return_info:
+        if K == 1:
+            edge_hit = torch.zeros_like(winner, dtype=torch.bool)
+        else:
+            edge_hit = (winner == 0) | (winner == K - 1)
+
+        def _info_shape(v):
+            return v.reshape(*orig_leading) if orig_leading else v
+
+        info = {
+            "c_init_clamped": _info_shape(c_init_clamped),
+            "edge_hit": _info_shape(edge_hit),
+            "winner": _info_shape(winner),
+        }
+        return out, c_out, info
+    return out, c_out
 
 
 def _ssc_adaptive_kappa_batched(X, kappa, nsteps=10, eps=1e-12,
@@ -2416,6 +2534,71 @@ def _ssc_adaptive_kappa_batched(X, kappa, nsteps=10, eps=1e-12,
     out = out_flat.reshape(*orig_leading, *out_flat.shape[-2:])
     c_out = c.reshape(*orig_leading)
     return (out.transpose(-2, -1) if tall else out), c_out
+
+
+def _stable_rank_c_from_kappa_batched(X, kappa, eps=1e-6,
+                                      c_lo=1e-3, c_hi=1e3):
+    """Cheap one-spike-plus-flat-tail SSC c estimate from stable rank.
+
+    Assumes X is already in the chord-tight §2.5 convention with
+    σ_max(X) ~= 1. The estimate replaces the full normalized spectrum by
+    one spike at 1 plus a flat tail whose mean squared singular value is
+
+        m = (r * μ - 1) / (r - 1),   μ = ||X||_F^2 / r.
+
+    Solving the flat-tail κ equation gives
+
+        c^2 = m * (1 - κ_tail) / (κ_tail - m),
+        κ_tail = (r * κ - 1) / (r - 1).
+
+    This is stateless and uses only a Frobenius-norm reduction. It deliberately
+    does not warm-start or cache c, avoiding the kpar edge-ratchet failure mode.
+    """
+    if X.shape[-2] == 0 or X.shape[-1] == 0:
+        return torch.zeros(X.shape[:-2], device=X.device)
+    Xf = X.float()
+    tall = Xf.shape[-2] > Xf.shape[-1]
+    if tall:
+        Xf = Xf.transpose(-2, -1)
+    orig_leading = Xf.shape[:-2]
+    Xf_flat = Xf.reshape(-1, Xf.shape[-2], Xf.shape[-1])
+    N, r, _ = Xf_flat.shape
+    device, dtype = Xf_flat.device, Xf_flat.dtype
+
+    if r <= 1:
+        return torch.full((*orig_leading,), float(c_hi),
+                          device=device, dtype=dtype)
+
+    mu = Xf_flat.square().sum(dim=(-2, -1)) / float(r)
+    m_tail = ((float(r) * mu - 1.0) / float(r - 1)).clamp(
+        float(eps), 1.0 - float(eps),
+    )
+    k_tail_value = (float(r) * float(kappa) - 1.0) / float(r - 1)
+    k_tail = torch.full_like(m_tail, k_tail_value).clamp(
+        float(eps), 1.0 - float(eps),
+    )
+
+    denom = (k_tail - m_tail).clamp_min(float(eps))
+    c2 = m_tail * (1.0 - k_tail) / denom
+    c = c2.sqrt().clamp(float(c_lo), float(c_hi))
+    c = torch.where(k_tail <= m_tail + float(eps),
+                    torch.full_like(c, float(c_hi)), c)
+    c = torch.where(k_tail >= 1.0 - float(eps),
+                    torch.full_like(c, float(c_lo)), c)
+    c = torch.nan_to_num(
+        c, nan=float(c_hi), posinf=float(c_hi), neginf=float(c_lo),
+    ).clamp(float(c_lo), float(c_hi))
+    return c.reshape(*orig_leading)
+
+
+def _ssc_adaptive_stable_rank_batched(X, kappa, nsteps=10, eps=1e-12,
+                                      c_lo=1e-3, c_hi=1e3):
+    """SSC with c chosen by `_stable_rank_c_from_kappa_batched`."""
+    c = _stable_rank_c_from_kappa_batched(
+        X, kappa=kappa, c_lo=c_lo, c_hi=c_hi,
+    )
+    out = _ssc_misr_batched(X, c=c, nsteps=nsteps, eps=eps)
+    return out, c
 
 
 def _polar_retract(X, nsteps=5, eps=1e-7):
@@ -3352,10 +3535,25 @@ class AdamPolarProductLoRA(Optimizer):
         self.ssc_kappa_warmup_steps = int(ssc_kappa_warmup_steps)
         # κ-solver dispatch: "eigvalsh" = exact bisection on full r×r spectrum
         # (production default); "misr_bisect" = warm-started K-candidate
-        # bisection on MISR F-norm, no eigvalsh after warmup.
-        if ssc_kappa_solver not in ("eigvalsh", "misr_bisect"):
+        # bisection on MISR F-norm, no eigvalsh after warmup; "stable_rank" =
+        # stateless one-spike-plus-flat-tail c from ||X||_F²/r.
+        if ssc_kappa_solver not in ("eigvalsh", "misr_bisect", "stable_rank"):
             raise ValueError(
-                f"ssc_kappa_solver must be 'eigvalsh' or 'misr_bisect', got {ssc_kappa_solver!r}"
+                "ssc_kappa_solver must be 'eigvalsh', 'misr_bisect', or "
+                f"'stable_rank', got {ssc_kappa_solver!r}"
+            )
+        if ssc_kappa_solver == "stable_rank" and ssc_kappa_refresh_every != 1:
+            raise ValueError(
+                "ssc_kappa_solver='stable_rank' is stateless and requires "
+                "ssc_kappa_refresh_every=1"
+            )
+        if ssc_kappa_solver == "stable_rank" and ssc_kappa_cache_share_picard:
+            raise ValueError(
+                "ssc_kappa_solver='stable_rank' does not use Picard cache sharing"
+            )
+        if ssc_kappa_solver == "stable_rank" and ssc_kappa_cache_ema_beta is not None:
+            raise ValueError(
+                "ssc_kappa_solver='stable_rank' does not use cache EMA"
             )
         self.ssc_kappa_solver = ssc_kappa_solver
         self.ssc_kappa_bisect_iters = int(ssc_kappa_bisect_iters)
@@ -4329,7 +4527,11 @@ class AdamPolarProductLoRA(Optimizer):
                     )
                     in_warmup = (step_count is not None and step_count <= M)
                     if refresh_due:
-                        if self.ssc_kappa_solver == "misr_bisect":
+                        if self.ssc_kappa_solver == "stable_rank":
+                            out, c_solved = _ssc_adaptive_stable_rank_batched(
+                                X, kappa=self.ssc_kappa, nsteps=self.ssc_nsteps,
+                            )
+                        elif self.ssc_kappa_solver == "misr_bisect":
                             # Warm-start from prior c if cached; else fall back
                             # to eigvalsh once to seed (K=3 with full-range
                             # bracket is too coarse for a fresh start).
@@ -4649,9 +4851,31 @@ class AdamPolarProductLoRA(Optimizer):
         BT_dB_A = B_dA_AT = None
         dA_prev_picard = dB_prev_picard = None
         X_A_eff = X_B_eff = None
+        picard_trace = {}
 
         slots_A = gs.setdefault('v_op_geoA_slots', [None] * self.picard_iters)
         slots_B = gs.setdefault('v_op_geoB_slots', [None] * self.picard_iters)
+        track_sigma_guard = (
+            bool(self.log_non_finite)
+            and step_count is not None
+            and _is_main_process()
+        )
+        if track_sigma_guard:
+            group_global_indices = list(gs.get('indices', range(N)))
+            pair_names_in_group = [
+                self.pair_names[gi] if gi < len(self.pair_names) else f"pair_{gi}"
+                for gi in group_global_indices
+            ]
+        else:
+            group_global_indices = None
+            pair_names_in_group = None
+
+        def _trace_picard(n, **items):
+            if not track_sigma_guard:
+                return
+            for name, value in items.items():
+                if value is not None:
+                    picard_trace[f"{name}_n{n}"] = value
 
         # Full-FW self-term grams (algorithm_tight_chord.md §6). Materialized
         # once outside the Picard loop; both r×r and constant across iters.
@@ -4717,10 +4941,28 @@ class AdamPolarProductLoRA(Optimizer):
                 # Site-C σ_max(geo). Warm-start keyed by Picard iter n via
                 # pre-allocated slot lists (dynamic-string dict keys would
                 # graph-break under torch.compile).
-                op_geoA_b, v_op_geoA = _sigma_max_power_iter_batched(
-                    geo_A, v_init=slots_A[n], n_iters=8)
-                op_geoB_b, v_op_geoB = _sigma_max_power_iter_batched(
-                    geo_B, v_init=slots_B[n], n_iters=8)
+                if track_sigma_guard:
+                    op_geoA_b, v_op_geoA, guard_A = _sigma_max_power_iter_batched(
+                        geo_A, v_init=slots_A[n], n_iters=8, return_info=True)
+                    op_geoB_b, v_op_geoB, guard_B = _sigma_max_power_iter_batched(
+                        geo_B, v_init=slots_B[n], n_iters=8, return_info=True)
+                    _emit_sigma_guard_event(
+                        step_count, site="site_c_geo", side="A", n=n,
+                        guard_info=guard_A,
+                        pair_names_in_group=pair_names_in_group,
+                        group_global_indices=group_global_indices,
+                    )
+                    _emit_sigma_guard_event(
+                        step_count, site="site_c_geo", side="B", n=n,
+                        guard_info=guard_B,
+                        pair_names_in_group=pair_names_in_group,
+                        group_global_indices=group_global_indices,
+                    )
+                else:
+                    op_geoA_b, v_op_geoA = _sigma_max_power_iter_batched(
+                        geo_A, v_init=slots_A[n], n_iters=8)
+                    op_geoB_b, v_op_geoB = _sigma_max_power_iter_batched(
+                        geo_B, v_init=slots_B[n], n_iters=8)
                 slots_A[n] = v_op_geoA
                 slots_B[n] = v_op_geoB
 
@@ -4730,6 +4972,31 @@ class AdamPolarProductLoRA(Optimizer):
                 # §2.7 Updates (caller applies A += dA, B += dB).
                 dA = -(rho_unsq / op_geoA) * geo_A
                 dB = -(self.lora_plus_multiplier * rho_unsq / op_geoB) * geo_B
+                trace_items = {
+                    "u_A_eff": u_A_eff,
+                    "u_B_eff": u_B_eff,
+                    "X_A_eff": X_A_eff,
+                    "X_B_eff": X_B_eff,
+                    "P_A": P_A,
+                    "P_B": P_B,
+                    "geo_A": geo_A,
+                    "geo_B": geo_B,
+                    "op_geoA_b": op_geoA_b,
+                    "op_geoB_b": op_geoB_b,
+                    "dA": dA,
+                    "dB": dB,
+                }
+                if n > 0:
+                    trace_items.update({
+                        "BT_dB_A": BT_dB_A,
+                        "B_dA_AT": B_dA_AT,
+                    })
+                if self.polar_method == "ssc" and self.ssc_kappa is not None:
+                    trace_items.update({
+                        "ssc_c_A": gs.get("ssc_c_last_A"),
+                        "ssc_c_B": gs.get("ssc_c_last_B"),
+                    })
+                _trace_picard(n, **trace_items)
 
         return {
             "u_A": u_A, "u_B": u_B,
@@ -4750,6 +5017,7 @@ class AdamPolarProductLoRA(Optimizer):
             "X_A_eff": X_A_eff,
             "X_B_eff": X_B_eff,
             "s_AB": s_AB,
+            "picard_trace": picard_trace,
         }
 
     @torch.no_grad()
@@ -5027,6 +5295,7 @@ class AdamPolarProductLoRA(Optimizer):
             # linear ρ = η/s, Picard-iter-keyed warm-start at site C). The
             # legacy gated branches in the else-block below stay untouched
             # for non-clean rules. See docs/notes/polar_product/algorithm_clean_implementation.md.
+            picard_trace = {}
             if self.magnitude_rule == "spectral_chord_tight_clean":
                 A_f = gs['A_stack']
                 B_f = gs['B_stack']
@@ -5064,6 +5333,7 @@ class AdamPolarProductLoRA(Optimizer):
                 B_dA_AT = _clean_result['B_dA_AT']
                 X_A_eff = _clean_result['X_A_eff']
                 X_B_eff = _clean_result['X_B_eff']
+                picard_trace = _clean_result.get('picard_trace') or {}
             else:
                 # Unit-polar normalization of u_A, u_B for chord-tight family.
                 # The Picard coefficient 2/(ρ·s) was derived assuming the base
@@ -5338,6 +5608,8 @@ class AdamPolarProductLoRA(Optimizer):
                 "op_geoB_b": locals().get('op_geoB_b'),
                 "dA": dA, "dB": dB,
             }
+            if picard_trace:
+                chain_tensors.update(picard_trace)
 
             stats = None
             if (

@@ -3,6 +3,7 @@
 CPU-only. Tests:
   - save/load adapter weights bitwise round-trip
   - save/load custom optimizer pair_state + group_state round-trip
+  - save/load process RNG state round-trip for debug replay
   - resume-then-continue produces same final state as continuing-without-save
     (uses a deterministic toy step with a fixed pseudo-gradient, since
     sampler reseed is not bitwise-equivalent)
@@ -10,9 +11,11 @@ CPU-only. Tests:
 from __future__ import annotations
 
 import json
+import random
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -129,6 +132,48 @@ def _equal_state(opt_a, opt_b):
                         f"group_state[{gi}][{k}] mismatch"
 
 
+def _assert_nested_equal(actual, expected, label):
+    if isinstance(expected, torch.Tensor):
+        assert isinstance(actual, torch.Tensor), f"{label} type mismatch"
+        assert torch.equal(actual, expected), f"{label} tensor mismatch"
+    elif isinstance(expected, list):
+        assert isinstance(actual, list), f"{label} type mismatch"
+        assert len(actual) == len(expected), f"{label} length mismatch"
+        for i, (a_item, e_item) in enumerate(zip(actual, expected)):
+            _assert_nested_equal(a_item, e_item, f"{label}[{i}]")
+    elif isinstance(expected, tuple):
+        assert isinstance(actual, tuple), f"{label} type mismatch"
+        assert len(actual) == len(expected), f"{label} length mismatch"
+        for i, (a_item, e_item) in enumerate(zip(actual, expected)):
+            _assert_nested_equal(a_item, e_item, f"{label}[{i}]")
+    else:
+        assert actual == expected, f"{label} scalar mismatch"
+
+
+def _next_rng_draws():
+    draws = {
+        "python": [random.random() for _ in range(3)],
+        "numpy": np.random.random(3),
+        "torch_cpu": torch.rand(3),
+    }
+    if torch.cuda.is_available():
+        draws["torch_cuda"] = [
+            torch.rand(3, device=f"cuda:{i}").cpu()
+            for i in range(torch.cuda.device_count())
+        ]
+    return draws
+
+
+def _assert_rng_draws_equal(actual, expected):
+    assert actual["python"] == expected["python"]
+    assert np.array_equal(actual["numpy"], expected["numpy"])
+    assert torch.equal(actual["torch_cpu"], expected["torch_cpu"])
+    if "torch_cuda" in expected:
+        assert len(actual["torch_cuda"]) == len(expected["torch_cuda"])
+        for a, e in zip(actual["torch_cuda"], expected["torch_cuda"]):
+            assert torch.equal(a, e)
+
+
 @pytest.mark.parametrize("optimizer_type", [
     "adam-lin-lora",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
@@ -177,6 +222,166 @@ def test_save_load_round_trip(tmp_path, optimizer_type):
 
     # Optimizer state matches on persisted keys.
     _equal_state(src_opt, dst_opt)
+
+
+def test_save_load_round_trips_adaptive_kappa_transient_group_state(tmp_path):
+    """Replay checkpoints must preserve adaptive-kappa warm starts.
+
+    These are transient group-state entries, but they affect the next step:
+    kpar refreshes warm-start from the previous cached c, and chord-tight-clean
+    uses per-Picard sigma power-iter warm starts. Dropping them makes a resumed
+    debug replay close but not identical to the uninterrupted run.
+    """
+    torch.manual_seed(0)
+    src_model = _PeftLikeWrapper(_ToyModel())
+    src_opt = _make_optimizer(
+        src_model.inner,
+        "adam-polar-product-lora-coupled-spectral-chord-tight",
+    )
+    gs = src_opt.group_state[0]
+    n_pairs = gs["N"]
+    r = gs["r"]
+    expected = {
+        "ssc_c_cached_A_n0": torch.linspace(0.1, 0.2, n_pairs),
+        "ssc_c_cached_B_n1": torch.linspace(0.3, 0.4, n_pairs),
+        "ssc_c_cached_A_step": 17,
+        "ssc_c_cached_B_step": 17,
+        "ssc_c_last_A": torch.linspace(0.5, 0.6, n_pairs),
+        "ssc_c_last_B": torch.linspace(0.7, 0.8, n_pairs),
+        "v_op_geoA_slots": [
+            torch.full((n_pairs, r), 1.25),
+            None,
+            torch.full((n_pairs, r), 2.5),
+        ],
+        "v_op_geoB_slots": [
+            torch.full((n_pairs, r), -1.25),
+            None,
+            torch.full((n_pairs, r), -2.5),
+        ],
+    }
+    gs.update(expected)
+
+    ckpt = ckpt_dir_for_step(tmp_path, step=17)
+    save_checkpoint(
+        ckpt,
+        bare_model=src_model,
+        optimizer=src_opt,
+        scheduler=None,
+        step=17,
+        total_tokens=123,
+        resume_segment=0,
+        cfg_snapshot={"command": "test"},
+    )
+
+    torch.manual_seed(99)
+    dst_model = _PeftLikeWrapper(_ToyModel())
+    dst_opt = _make_optimizer(
+        dst_model.inner,
+        "adam-polar-product-lora-coupled-spectral-chord-tight",
+    )
+    load_checkpoint(ckpt, bare_model=dst_model, optimizer=dst_opt)
+
+    dst_gs = dst_opt.group_state[0]
+    for key, expected_value in expected.items():
+        assert key in dst_gs, f"missing restored group_state key {key}"
+        _assert_nested_equal(dst_gs[key], expected_value, f"group_state[{key}]")
+
+
+def test_save_load_round_trips_rng_state_for_debug_replay(tmp_path):
+    """Opt-in debug replay can restore Python/NumPy/torch RNG state."""
+    torch.manual_seed(0)
+    src_model = _PeftLikeWrapper(_ToyModel())
+    src_opt = _make_optimizer(src_model.inner, "adam-lin-lora")
+
+    random.seed(123)
+    np.random.seed(456)
+    torch.manual_seed(789)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(987)
+
+    ckpt = ckpt_dir_for_step(tmp_path, step=1)
+    save_checkpoint(
+        ckpt,
+        bare_model=src_model,
+        optimizer=src_opt,
+        scheduler=None,
+        step=1,
+        total_tokens=0,
+        resume_segment=0,
+        cfg_snapshot={"command": "test"},
+    )
+    expected = _next_rng_draws()
+
+    # Perturb every RNG before load; restore_rng=True should put all streams
+    # back at the checkpoint boundary.
+    random.seed(999)
+    np.random.seed(999)
+    torch.manual_seed(999)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(999)
+
+    dst_model = _PeftLikeWrapper(_ToyModel())
+    dst_opt = _make_optimizer(dst_model.inner, "adam-lin-lora")
+    info = load_checkpoint(
+        ckpt,
+        bare_model=dst_model,
+        optimizer=dst_opt,
+        scheduler=None,
+        restore_rng=True,
+    )
+    assert info["rng_state_present"] is True
+    assert info["rng_restore_status"]["python"] is True
+    assert info["rng_restore_status"]["numpy"] is True
+    assert info["rng_restore_status"]["torch_cpu"] is True
+
+    payload = torch.load(ckpt / "optimizer.pt", map_location="cpu", weights_only=False)
+    assert "rng_state" in payload
+    if torch.cuda.is_available():
+        assert len(payload["rng_state"]["torch_cuda"]) == torch.cuda.device_count()
+    else:
+        assert payload["rng_state"]["torch_cuda"] is None
+
+    actual = _next_rng_draws()
+    _assert_rng_draws_equal(actual, expected)
+
+
+def test_load_checkpoint_without_rng_state_still_loads(tmp_path):
+    """Back-compat: old checkpoints predate RNG payloads."""
+    torch.manual_seed(0)
+    model = _PeftLikeWrapper(_ToyModel())
+    opt = _make_optimizer(model.inner, "adam-lin-lora")
+    ckpt = ckpt_dir_for_step(tmp_path, step=1)
+    save_checkpoint(
+        ckpt,
+        bare_model=model,
+        optimizer=opt,
+        scheduler=None,
+        step=1,
+        total_tokens=0,
+        resume_segment=0,
+        cfg_snapshot={},
+    )
+
+    optim_path = ckpt / "optimizer.pt"
+    payload = torch.load(optim_path, map_location="cpu", weights_only=False)
+    payload.pop("rng_state", None)
+    torch.save(payload, optim_path)
+
+    dst_model = _PeftLikeWrapper(_ToyModel())
+    dst_opt = _make_optimizer(dst_model.inner, "adam-lin-lora")
+    info = load_checkpoint(
+        ckpt,
+        bare_model=dst_model,
+        optimizer=dst_opt,
+        scheduler=None,
+        restore_rng=True,
+    )
+    assert info is not None
+    assert info["step"] == 1
+    assert info["rng_state_present"] is False
+    assert info["rng_restore_status"]["python"] is False
+    assert info["rng_restore_status"]["numpy"] is False
+    assert info["rng_restore_status"]["torch_cpu"] is False
 
 
 def test_load_from_parent_picks_latest(tmp_path):

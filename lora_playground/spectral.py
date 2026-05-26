@@ -45,6 +45,11 @@ import os
 import torch
 
 
+_DISABLE_SIGMA_MAX_GUARD = os.environ.get(
+    "LORA_DISABLE_SIGMA_MAX_GUARD", "0"
+) == "1"
+
+
 # ─── Shape A: plain σ_max ────────────────────────────────────────────────────
 
 
@@ -101,7 +106,8 @@ def sigma_max_power_iter(M, v_init=None, n_iters=8, eps=1e-30):
     return sigma, v
 
 
-def sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
+def sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30,
+                                 return_info=False):
     """Batched version of `sigma_max_power_iter`. M: (..., m, n).
 
     Returns (sigma: (...,), v: (..., k)) where k = min(m, n). Iterates
@@ -115,21 +121,98 @@ def sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
     (M @ ones-like) is used.
     """
     if M.numel() == 0:
-        return torch.zeros(M.shape[:-2], device=M.device, dtype=torch.float32), None
+        sigma = torch.zeros(M.shape[:-2], device=M.device, dtype=torch.float32)
+        if return_info:
+            empty = torch.zeros(M.shape[:-2], device=M.device, dtype=torch.bool)
+            return sigma, None, {
+                "ones_fallback": empty,
+                "warm_start_fallback": empty,
+                "iter_fallback": empty,
+                "floor": empty,
+                "guard_hit": empty,
+                "sigma_raw": sigma,
+                "sigma_floor": sigma,
+            }
+        return sigma, None
     Mf = M.float() if M.dtype != torch.float32 else M
     *batch, m, n = Mf.shape
     smaller_m = m <= n
     k = m if smaller_m else n
     expected_shape = (*batch, k)
-    # Deterministic fallback: M·ones (smaller_m=True) or M^T·ones — gives
-    # near-perfect overlap with the dominant singular vector for typical
-    # SPD/Gauss-like factor matrices.
+    # Deterministic fallback: M·ones (smaller_m=True) or M^T·ones usually gives
+    # strong overlap with the dominant singular vector. It can be exactly zero
+    # for cancellation-heavy matrices, so keep a non-null one-hot fallback: the
+    # row/column with largest norm guarantees nonzero overlap whenever M != 0.
     if smaller_m:
         ones_n = torch.ones(*batch, n, device=Mf.device, dtype=torch.float32)
-        v_fallback = (Mf @ ones_n.unsqueeze(-1)).squeeze(-1)
+        v_ones = (Mf @ ones_n.unsqueeze(-1)).squeeze(-1)
+        scores = Mf.square().sum(dim=-1)
     else:
         ones_m = torch.ones(*batch, m, device=Mf.device, dtype=torch.float32)
-        v_fallback = (Mf.transpose(-2, -1) @ ones_m.unsqueeze(-1)).squeeze(-1)
+        v_ones = (Mf.transpose(-2, -1) @ ones_m.unsqueeze(-1)).squeeze(-1)
+        scores = Mf.square().sum(dim=-2)
+
+    if _DISABLE_SIGMA_MAX_GUARD:
+        # Counterfactual/debug path: reproduce the legacy single-start behavior
+        # without one-hot fallback, per-iteration fallback, or row/column floor.
+        v_fallback = v_ones
+        if (v_init is None
+                or v_init.shape != expected_shape
+                or v_init.device != Mf.device
+                or v_init.dtype != torch.float32):
+            v = v_fallback
+        else:
+            v_norm = v_init.norm(dim=-1, keepdim=True)
+            degenerate = v_norm <= eps
+            v = torch.where(degenerate, v_fallback, v_init)
+        v = v / (v.norm(dim=-1, keepdim=True) + eps)
+        if smaller_m:
+            for _ in range(n_iters):
+                tmp = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1)
+                v = (Mf @ tmp.unsqueeze(-1)).squeeze(-1)
+                v = v / (v.norm(dim=-1, keepdim=True) + eps)
+            sigma = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
+        else:
+            for _ in range(n_iters):
+                tmp = (Mf @ v.unsqueeze(-1)).squeeze(-1)
+                v = (Mf.transpose(-2, -1) @ tmp.unsqueeze(-1)).squeeze(-1)
+                v = v / (v.norm(dim=-1, keepdim=True) + eps)
+            sigma = (Mf @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
+        if return_info:
+            empty = torch.zeros(tuple(batch), device=Mf.device, dtype=torch.bool)
+            return sigma, v, {
+                "ones_fallback": empty,
+                "warm_start_fallback": empty,
+                "iter_fallback": empty,
+                "floor": empty,
+                "guard_hit": empty,
+                "sigma_raw": sigma,
+                "sigma_floor": scores.max(dim=-1).values.clamp_min(0.0).sqrt(),
+                "guard_disabled": True,
+            }
+        return sigma, v
+
+    idx = scores.argmax(dim=-1, keepdim=True)
+    v_basis = torch.zeros(*batch, k, device=Mf.device, dtype=torch.float32)
+    v_basis.scatter_(-1, idx, 1.0)
+    ones_norm = v_ones.norm(dim=-1, keepdim=True)
+    ones_ok = torch.isfinite(ones_norm) & (ones_norm > eps)
+    ones_fallback_used = ~ones_ok.squeeze(-1)
+    v_fallback = torch.where(
+        ones_ok,
+        v_ones,
+        v_basis,
+    )
+
+    def _normalize_or_fallback(v_candidate):
+        v_norm = v_candidate.norm(dim=-1, keepdim=True)
+        ok = torch.isfinite(v_norm) & (v_norm > eps)
+        v_safe = torch.where(ok, v_candidate, v_fallback)
+        return v_safe / (v_safe.norm(dim=-1, keepdim=True) + eps), ~ok.squeeze(-1)
+
+    warm_start_fallback_used = torch.zeros(
+        tuple(batch), device=Mf.device, dtype=torch.bool,
+    )
     if (v_init is None
             or v_init.shape != expected_shape
             or v_init.device != Mf.device
@@ -144,21 +227,47 @@ def sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30):
         # collapse dA. Per-batch fallback to deterministic init when warm-start
         # is degenerate.
         v_norm = v_init.norm(dim=-1, keepdim=True)
-        degenerate = v_norm <= eps
+        degenerate = (~torch.isfinite(v_norm)) | (v_norm <= eps)
+        warm_start_fallback_used = degenerate.squeeze(-1)
         v = torch.where(degenerate, v_fallback, v_init)
-    v = v / (v.norm(dim=-1, keepdim=True) + eps)
+    v, iter_fallback_used = _normalize_or_fallback(v)
     if smaller_m:
         for _ in range(n_iters):
             tmp = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1)
             v = (Mf @ tmp.unsqueeze(-1)).squeeze(-1)
-            v = v / (v.norm(dim=-1, keepdim=True) + eps)
+            v, used = _normalize_or_fallback(v)
+            iter_fallback_used = iter_fallback_used | used
         sigma = (Mf.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
     else:
         for _ in range(n_iters):
             tmp = (Mf @ v.unsqueeze(-1)).squeeze(-1)
             v = (Mf.transpose(-2, -1) @ tmp.unsqueeze(-1)).squeeze(-1)
-            v = v / (v.norm(dim=-1, keepdim=True) + eps)
+            v, used = _normalize_or_fallback(v)
+            iter_fallback_used = iter_fallback_used | used
         sigma = (Mf @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
+    # Any row/column norm is a lower bound on ‖M‖₂. Enforce the largest such
+    # bound so a poor warm start cannot produce a catastrophic near-zero
+    # underestimate and blow up downstream rescaling.
+    sigma_floor = scores.max(dim=-1).values.clamp_min(0.0).sqrt()
+    sigma_raw = sigma
+    use_floor = sigma < sigma_floor
+    sigma = torch.maximum(sigma, sigma_floor)
+    v = torch.where(use_floor.unsqueeze(-1), v_basis, v)
+    if return_info:
+        return sigma, v, {
+            "ones_fallback": ones_fallback_used,
+            "warm_start_fallback": warm_start_fallback_used,
+            "iter_fallback": iter_fallback_used,
+            "floor": use_floor,
+            "guard_hit": (
+                ones_fallback_used
+                | warm_start_fallback_used
+                | iter_fallback_used
+                | use_floor
+            ),
+            "sigma_raw": sigma_raw,
+            "sigma_floor": sigma_floor,
+        }
     return sigma, v
 
 

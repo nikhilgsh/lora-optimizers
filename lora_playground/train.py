@@ -24,6 +24,7 @@ from .checkpoint import (
     ckpt_dir_for_step,
     load_checkpoint,
     prune_checkpoints,
+    restore_rng_state,
     save_checkpoint,
 )
 from .data import PackingCollator, PadToMaxCollator, pack_documents
@@ -57,6 +58,17 @@ from .training_kernel import (
 
 TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore", "ucv")
 DATA_PIPELINE_VERSIONS = ("packed_v1.1", "packed_v1", "unpacked_v0")
+
+
+def _resume_replays_original_dataloader(args) -> bool:
+    return bool(
+        getattr(args, "resume_replay_original_dataloader", False)
+        or getattr(args, "resume_debug_replay", False)
+    )
+
+
+def _resume_restores_rng_state(args) -> bool:
+    return bool(getattr(args, "resume_debug_replay", False))
 
 
 def format_example_with_boundary(example):
@@ -703,11 +715,13 @@ def make_parser():
                              "per-step solving (default). Independent caches per Picard inner iter. "
                              "Only consulted when --polar_method ssc and --ssc_kappa are set.")
     parser.add_argument("--ssc_kappa_solver", type=str, default="eigvalsh",
-                        choices=["eigvalsh", "misr_bisect"],
+                        choices=["eigvalsh", "misr_bisect", "stable_rank"],
                         help="κ-adaptive c solver. 'eigvalsh' = exact bisection on full "
                              "r×r spectrum (production default; launch-bound on small r). "
                              "'misr_bisect' = warm-started K-candidate bisection on MISR "
-                             "F-norm (no eigvalsh). Best when launch-bound at small r.")
+                             "F-norm (no eigvalsh). Best when launch-bound at small r. "
+                             "'stable_rank' = stateless one-spike-plus-flat-tail c from "
+                             "normalized stable rank; no eigvalsh, bisection, or c cache.")
     parser.add_argument("--ssc_kappa_bisect_iters", type=int, default=3,
                         help="K for --ssc_kappa_solver misr_bisect. Warm-started bisection in "
                              "log-c using K MISR runs. K=3 gives ~6%% accuracy with window=0.5.")
@@ -802,8 +816,9 @@ def make_parser():
         "--checkpoint_dir", default=None,
         help="Directory for step-continuous checkpoints (one `ckpt_step{N}` "
              "subdir per save). If unset, no checkpoints written. Use with "
-             "--resume_from to recover from SLURM wall-timeouts. Not "
-             "bitwise-resumable (sampler reseeds via (seed, step) after resume).",
+             "--resume_from to recover from SLURM wall-timeouts. Normal "
+             "resume reseeds via (seed, step); pass --resume_debug_replay "
+             "for opt-in bitwise-debug replay.",
     )
     parser.add_argument(
         "--checkpoint_every", type=int, default=None,
@@ -842,6 +857,14 @@ def make_parser():
              "normal wall-timeout resume.",
     )
     parser.add_argument(
+        "--resume_debug_replay", action="store_true",
+        help="DEBUG: bitwise-oriented resume path. Restores checkpointed "
+             "Python/NumPy/torch RNG state after rebuilding and aligning the "
+             "original dataloader stream. Implies "
+             "--resume_replay_original_dataloader. Old checkpoints without "
+             "RNG state still load but cannot fully restore RNG.",
+    )
+    parser.add_argument(
         "--snapshot_steps", default="",
         help="Comma-separated step indices at which to write a diagnostic "
              "snapshot (pre-step A, B and pre-σmax u_A, u_B per pair, plus "
@@ -858,6 +881,8 @@ def make_parser():
 
 def main():
     args = make_parser().parse_args()
+    resume_replay_original_dataloader = _resume_replays_original_dataloader(args)
+    resume_restore_rng_state = _resume_restores_rng_state(args)
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     set_seed(args.seed)
 
@@ -1418,7 +1443,16 @@ def main():
                 "resume_segment": resume_segment,
                 "ckpt_path": resume_state["ckpt_path"],
             })
-            if args.resume_replay_original_dataloader:
+            if resume_restore_rng_state:
+                log_event({
+                    "event": "resume_debug_replay",
+                    "resumed_from_step": resume_state["step"],
+                    "rng_state_present": bool(
+                        resume_state.get("rng_state_present", False)
+                    ),
+                    "replay_original_dataloader": True,
+                })
+            if resume_replay_original_dataloader:
                 log_event({
                     "event": "resume_replay_original_dataloader",
                     "resumed_from_step": resume_state["step"],
@@ -1437,13 +1471,13 @@ def main():
     # invariant is 1-pass so this is just a forward-compat call).
     sampler_epoch = (
         0
-        if resume_state is not None and args.resume_replay_original_dataloader
+        if resume_state is not None and resume_replay_original_dataloader
         else resume_segment
     )
     if train_sampler is not None:
         train_sampler.set_epoch(sampler_epoch)
     train_iter = iter(train_loader)
-    if resume_state is not None and args.resume_replay_original_dataloader:
+    if resume_state is not None and resume_replay_original_dataloader:
         microbatches_to_skip = resume_state["step"] * args.grad_accum_steps
         skipped = 0
         for _ in range(microbatches_to_skip):
@@ -1459,6 +1493,19 @@ def main():
             "sampler_epoch": sampler_epoch,
             "microbatches_skipped": skipped,
         })
+    if resume_state is not None and resume_restore_rng_state:
+        if resume_state.get("rng_state") is not None:
+            rng_status = restore_rng_state(resume_state["rng_state"])
+            log_event({
+                "event": "resume_debug_rng_restored",
+                "resumed_from_step": resume_state["step"],
+                **rng_status,
+            })
+        else:
+            log_event({
+                "event": "resume_debug_rng_missing",
+                "resumed_from_step": resume_state["step"],
+            })
     total_tokens = resume_state["total_tokens"] if resume_state else 0
     eval_elapsed = 0.0
     # Windowed train-loss accumulator for `train_step` events.
