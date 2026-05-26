@@ -322,6 +322,8 @@ def compare_variants_figure(
     allow_partial: bool = False,
     prefetched_runs: list | None = None,
     variant_key=None,
+    final_ylim: tuple[float, float] | None = None,
+    traj_ylim: tuple[float, float] | None = None,
 ):
     """Compare named optimizer variants at a fixed config; 2-panel + tables.
 
@@ -435,6 +437,8 @@ def compare_variants_figure(
     ax_lr.set_title("final loss vs lr")
     ax_lr.grid(True, alpha=0.3)
     ax_lr.legend(fontsize=9)
+    if final_ylim is not None:
+        ax_lr.set_ylim(*final_ylim)
 
     for label in variants:
         d = per_variant.get(label, {})
@@ -458,6 +462,8 @@ def compare_variants_figure(
     ax_traj.set_title("best-lr trajectory")
     ax_traj.grid(True, alpha=0.3)
     ax_traj.legend(fontsize=9)
+    if traj_ylim is not None:
+        ax_traj.set_ylim(*traj_ylim)
 
     if suptitle:
         fig.suptitle(suptitle)
