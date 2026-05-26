@@ -16,6 +16,7 @@
 #   8: ssc_kappa (default none)
 #   9: ssc_kappa_solver (default eigvalsh)
 #  10: ssc_nsteps (default 10)
+#  11: muon_ns_steps (default 5)
 lr=${1:-3e-3}
 optimizer=${2:-adam-polar-product-lora-coupled-spectral-chord-tight}
 lora_plus_multiplier=${3:-1.0}
@@ -26,6 +27,7 @@ ssc_c=${7:-none}
 ssc_kappa=${8:-none}
 ssc_kappa_solver=${9:-eigvalsh}
 ssc_nsteps=${10:-10}
+muon_ns_steps=${11:-5}
 
 wandb_args=()
 if [ -n "${WANDB_PROJECT:-}" ]; then
@@ -74,7 +76,7 @@ python train_lora.py \
     --seed "$seed" \
     --lora_r "$lora_r" \
     --lora_alpha "$lora_r" \
-    --muon_ns_steps 5 \
+    --muon_ns_steps "$muon_ns_steps" \
     --precond_method higham \
     --picard_iters_override 3 \
     "${polar_args[@]}" \

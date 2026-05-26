@@ -60,12 +60,34 @@ and avoids unstable NaN failure modes.
   `+0.10%`. Logs:
   `logs/bench_ssc_stable_rank/compiled_r256_steps50_fixedc.log` and
   `logs/bench_ssc_stable_rank/compiled_r256_steps50_stable_rank.log`.
+- Done: matching-config Blackwell timing bench for the existing 4k comparison
+  regime: picard 3, `--ssc_nsteps 10`, `--higham_iters 10`, diagnostics off.
+  Fixed-c `c=0.1` was `0.546859 s/step`; stable-rank `κ=0.75` was
+  `0.552898 s/step`, overhead `+1.10%`. Logs:
+  `logs/bench_ssc_stable_rank/compiled_r256_p3n10h10_steps50_fixedc_c0p1.log`
+  and
+  `logs/bench_ssc_stable_rank/compiled_r256_p3n10h10_steps50_stable_rank_k0p75.log`.
+- Running: 4k r=256 stable-rank LR sweep, job `6446818`, group
+  `chord_tight_clean_ssc_stable_rank_r256_k075_lr3sweep_4k_blackwell`.
+  Cells are `lr ∈ {1e-2, 3e-2, 1e-1}` with `κ=0.75`, `ssc_nsteps=10`,
+  picard 3, `muon_ns_steps=5`, and diagnostics off. Startup verified all
+  three logs have `execution_source_dirty=false` and
+  `ssc_kappa_solver=stable_rank`. Latest checked progress: all three reached
+  step 400. This is now auxiliary evidence only: the fixed-c and exact
+  eigvalsh κ baselines selected for the main comparison use
+  `muon_ns_steps=10`.
+- Pending corrected run: add the same stable-rank LR grid with
+  `muon_ns_steps=10`, matching the existing r=256 fixed-c and exact κ
+  baselines. The corrected wrapper path has been smoke-tested at r=256,
+  `max_steps=1`, `κ=0.75`, `ssc_nsteps=10`; the config command and
+  `optimizer_config.ns_steps` both recorded `10`, and the smoke emitted a
+  finite eval.
 - Pending: training comparison across the useful LR neighborhood, not only
   single best LR.
 
 ## Next Gates
 
-1. Use the canonical loader to identify existing fixed-c and exact
-   $\kappa(c)$ comparison data.
-2. Run only the missing stable-rank adaptive-c LR cells needed to judge best-LR
-   loss and LR robustness.
+1. Submit the corrected `muon_ns_steps=10` stable-rank LR sweep.
+2. Wait for the corrected sweep to finish.
+3. Analyze stable-rank against existing fixed-c and exact eigvalsh
+   $\kappa(c)$ r=256 4k sweeps for best-LR loss and LR robustness.
