@@ -3818,6 +3818,41 @@ class AdamPolarProductLoRA(Optimizer):
                 f"(§8 doesn't derive a cross-coupling coefficient without ρ); "
                 f"got picard_iters={picard_iters}")
 
+        # Refuse at construction if magnitude_rule is one that only the
+        # batched path implements AND the config disqualifies from the
+        # batched path. Without this guard, the optimizer silently falls
+        # back to `_step_per_pair`, which runs the adam_frobenius rescale
+        # for these rules (the post-`_polar_pipeline` chord-rescale at
+        # line ~6225 doesn't cover them) — produces wrong-magnitude updates
+        # and divergence. Better to fail loudly at construction than at
+        # step 10 of training.
+        if magnitude_rule in ("spectral_chord_tight_clean",
+                              "spectral_chord_tight_no_rho"):
+            disqualifiers = []
+            if self.operator_type != "polar":
+                disqualifiers.append(f"operator_type={self.operator_type!r}")
+            if self.polar_method not in ("ns", "ssc", "polar_express"):
+                disqualifiers.append(f"polar_method={self.polar_method!r}")
+            if self.polar_norm_dir != "frob":
+                disqualifiers.append(f"polar_norm_dir={self.polar_norm_dir!r}")
+            if self.polar_sigma_power is not None:
+                disqualifiers.append(
+                    f"polar_sigma_power={self.polar_sigma_power!r}")
+            if picard_iters > 1 and self.anderson_m > 0:
+                disqualifiers.append(
+                    f"anderson_m={self.anderson_m} with picard_iters>1")
+            if picard_iters > 1 and self.end_rms_align:
+                disqualifiers.append("end_rms_align=True with picard_iters>1")
+            if disqualifiers:
+                raise ValueError(
+                    f"magnitude_rule={magnitude_rule!r} is only implemented "
+                    f"in the batched optimizer path, but the following "
+                    f"config disqualifies it from batched eligibility: "
+                    f"{disqualifiers}. The per-pair fallback silently "
+                    f"miscomputes the magnitude for these rules; refuse "
+                    f"at construction instead of training a broken model."
+                )
+
         # Shape-group bookkeeping for the batched hot path. Pairs with the
         # same (A.shape, B.shape) get stacked into 3-D buffers; per-pair Adam
         # state is a view into the buffer, so both per-pair and batched paths
@@ -4053,7 +4088,7 @@ class AdamPolarProductLoRA(Optimizer):
             return False
         if self.operator_type != "polar":
             return False
-        if self.polar_method not in ("ns", "ssc"):
+        if self.polar_method not in ("ns", "ssc", "polar_express"):
             return False
         # adam_frobenius, spectral_chord, spectral_chord_tight, and
         # spectral_chord_direction (variant 1) all implemented in batched
@@ -4891,11 +4926,9 @@ class AdamPolarProductLoRA(Optimizer):
                     return out.float()
                 return _ssc_misr_batched(X, c=self.ssc_c, nsteps=self.ssc_nsteps).float()
             if self.polar_method == "polar_express":
-                # Amsel et al. 2505.16932 quintic-Remez polar, in batched
-                # Gram form (mirrors _newton_schulz_gram_batched). At picard=1
-                # this reproduces chord-tight (k=1 polar) with polar_express
-                # as the inner solver — equivalent to running the chord-tight
-                # _polar_pipeline but with batched-across-pairs speedup.
+                # Amsel et al. 2505.16932 quintic-Remez polar in batched Gram
+                # form. Mirrors the ns_form=gram path but with Polar Express
+                # coefficients in place of cubic Muon.
                 return _polar_express_gram_batched(X, nsteps=self.ns_steps).float()
             if self.ns_form == "gram":
                 return _newton_schulz_gram_batched(X, nsteps=self.ns_steps).float()
@@ -5619,13 +5652,23 @@ class AdamPolarProductLoRA(Optimizer):
                         # which still operates in fp32. Pattern mirrors
                         # modded-nanogpt train_gpt.py:187.
                         with maybe_time(timer, "polar_NS_A"):
-                            P_A = _newton_schulz_batched(
-                                X_A, nsteps=self.ns_steps, dtype=torch.bfloat16
-                            ).float()
+                            if self.polar_method == "polar_express":
+                                P_A = _polar_express_gram_batched(
+                                    X_A, nsteps=self.ns_steps,
+                                ).float()
+                            else:
+                                P_A = _newton_schulz_batched(
+                                    X_A, nsteps=self.ns_steps, dtype=torch.bfloat16
+                                ).float()
                         with maybe_time(timer, "polar_NS_B"):
-                            P_B = _newton_schulz_batched(
-                                X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
-                            ).float()
+                            if self.polar_method == "polar_express":
+                                P_B = _polar_express_gram_batched(
+                                    X_B, nsteps=self.ns_steps,
+                                ).float()
+                            else:
+                                P_B = _newton_schulz_batched(
+                                    X_B, nsteps=self.ns_steps, dtype=torch.bfloat16
+                                ).float()
                         with maybe_time(timer, "polar_unwhiten_rescale"):
                             if self.magnitude_rule == "spectral_chord_tight_no_rho":
                                 # §8 no-ρ: dA = -lr · S_B^{-1/2} polar(S_B^{-1/2} u_A)
@@ -6024,8 +6067,27 @@ class AdamPolarProductLoRA(Optimizer):
             if step_count_any % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count_any, diag_records)
 
+    # magnitude_rules that the batched path implements but `_step_per_pair`
+    # does NOT. Routing these through per-pair silently runs the
+    # adam_frobenius rescale instead of the intended chord/spectral rule
+    # — produces wrong-magnitude updates and divergence. Refuse loudly.
+    _MAGNITUDE_RULES_BATCHED_ONLY = frozenset({
+        "spectral_chord_tight_clean",
+        "spectral_chord_tight_no_rho",
+    })
+
     @torch.no_grad()
     def _step_per_pair(self, closure=None):
+        if self.magnitude_rule in self._MAGNITUDE_RULES_BATCHED_ONLY:
+            raise NotImplementedError(
+                f"_step_per_pair does not implement magnitude_rule="
+                f"{self.magnitude_rule!r} (the post-_polar_pipeline "
+                f"chord-rescale at line ~6225 only covers the legacy chord "
+                f"family). Use a config that satisfies "
+                f"_batched_path_eligible() — see that method for the "
+                f"requirements (polar_method ∈ {{ns, ssc, polar_express}}, "
+                f"compatible picard_iters / anderson / end_rms_align flags)."
+            )
         if closure is not None:
             with torch.enable_grad():
                 closure()
