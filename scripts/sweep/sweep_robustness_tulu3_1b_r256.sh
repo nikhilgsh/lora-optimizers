@@ -66,7 +66,7 @@ python train_lora.py \
     "${compile_args[@]}" \
     --batch_size "${BATCH_SIZE:-4}" \
     --grad_accum_steps "${GRAD_ACCUM:-4}" \
-    --max_steps "${MAX_STEPS:-9000}" \
+    --max_steps "${MAX_STEPS:-8970}" \
     --eval_every "${EVAL_EVERY:-250}" \
     --lr "$lr" \
     --optimizer "$optimizer" \
