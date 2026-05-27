@@ -39,6 +39,8 @@ from .snapshots import (
     RUN_B,
     RUN_C,
     RUN_D,
+    RUN_E,
+    RUN_F,
     RUNS,
     SNAP_ROOT,
     SNAP_ROOTS,
@@ -53,7 +55,7 @@ from .whitening import DELTA_ABS, spd_half_inv, whitened_NS_input
 __all__ = [
     # snapshots / registry
     'SNAP_ROOT', 'SNAP_ROOTS', 'STEPS', 'STEPS_BY_ROOT',
-    'RUNS', 'RUN_A', 'RUN_B', 'RUN_C', 'RUN_D',
+    'RUNS', 'RUN_A', 'RUN_B', 'RUN_C', 'RUN_D', 'RUN_E', 'RUN_F',
     'load_snapshot', 'clear_snapshot_cache',
     # moments
     'Mtilde', 'normalized_sigmas', 'normalized_sigmas_x', 'stable_rank',

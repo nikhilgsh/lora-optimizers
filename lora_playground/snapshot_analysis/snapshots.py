@@ -24,6 +24,12 @@ SNAP_ROOTS: dict[tuple, Path] = {
         Path('/mnt/ceph/users/nghosh/lora_snapshots/chord_tight_clean_snapshot_r256_k3_ns10_lr1e-1_blackwell/task_0'),
     ('1e-3', 256, 10, 'chord-tight-clean'):
         Path('/mnt/ceph/users/nghosh/lora_snapshots/chord_tight_clean_snapshot_r256_k3_ns10_lr1e-3_blackwell/task_0'),
+    # chord-tight k=1 (picard_iters_override=1, ns_steps=5) — OPC-1B
+    # leaderboard best-η for the ns+polar baseline arm at r=64 and r=256.
+    ('3e-2', 64, 5, 'chord-tight-k1'):
+        Path('/mnt/ceph/users/nghosh/lora_snapshots/chord_tight_r64_k1_snapshot_blackwell/task_0'),
+    ('3e-2', 256, 5, 'chord-tight-k1'):
+        Path('/mnt/ceph/users/nghosh/lora_snapshots/chord_tight_r256_k1_snapshot_blackwell/task_0'),
 }
 
 # Back-compat single-run entry: the lr=3e-2 r=64 run.
@@ -37,12 +43,16 @@ STEPS_BY_ROOT: dict[tuple, list[int]] = {
 STEPS: list[int] = STEPS_BY_ROOT.get(('3e-2', 64, 5, 'chord-tight'), [])
 
 # Named handles for the four canonical runs (matching the original notebook).
-RUN_A = ('3e-2', 64, 5, 'chord-tight')         # r=64  low  lr
-RUN_C = ('1e-1', 64, 5, 'chord-tight')         # r=64  high lr
-RUN_D = ('1e-3', 256, 10, 'chord-tight-clean')  # r=256 low  lr
-RUN_B = ('1e-1', 256, 10, 'chord-tight-clean')  # r=256 high lr
+RUN_A = ('3e-2', 64, 5, 'chord-tight')         # r=64  low  lr   (k=3)
+RUN_C = ('1e-1', 64, 5, 'chord-tight')         # r=64  high lr   (k=3)
+RUN_D = ('1e-3', 256, 10, 'chord-tight-clean')  # r=256 low  lr  (clean k=3)
+RUN_B = ('1e-1', 256, 10, 'chord-tight-clean')  # r=256 high lr  (clean k=3)
+RUN_E = ('3e-2', 64, 5, 'chord-tight-k1')      # r=64  best-η    (k=1)
+RUN_F = ('3e-2', 256, 5, 'chord-tight-k1')     # r=256 best-η    (k=1)
 
-RUNS: list[tuple] = [r for r in (RUN_A, RUN_C, RUN_D, RUN_B) if SNAP_ROOTS[r].exists()]
+RUNS: list[tuple] = [
+    r for r in (RUN_A, RUN_C, RUN_D, RUN_B, RUN_E, RUN_F) if SNAP_ROOTS[r].exists()
+]
 
 
 @lru_cache(maxsize=32)
