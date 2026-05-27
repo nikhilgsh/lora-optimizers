@@ -26,7 +26,8 @@ if [[ -z "${SWEEP_SCOPE:-}" ]]; then
     echo "              diagnostics, lin_scaled_investigation, polar_family," >&2
     echo "              winner_rerun, pilot, legacy," >&2
     echo "              tight_chord_paper, phase_L, longhorizon_1b," >&2
-    echo "              repack_baseline, lr_extension" >&2
+    echo "              repack_baseline, lr_extension," >&2
+    echo "              phase_L_robustness, dataset_robustness, model_robustness" >&2
     echo "" >&2
     echo "See lora_playground/manifest.py for the full schema." >&2
     exit 1

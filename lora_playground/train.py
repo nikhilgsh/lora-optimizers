@@ -1305,6 +1305,7 @@ def main():
             "dataset_name": args.dataset_name if not args.train_file else "json",
             "train_file": args.train_file,
             "eval_file": args.eval_file,
+            "data_dir": args.data_dir,
             "train_samples": len(train_dataset),
             "eval_samples": len(eval_dataset),
             "max_seq_length": args.max_seq_length,
