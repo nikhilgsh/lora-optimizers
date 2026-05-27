@@ -513,6 +513,14 @@ def make_parser():
              "runs that have gone permanently non-finite. Disable with "
              "--no-abort_on_nan_eval if you want to keep training through "
              "transient NaNs (e.g. debugging recovery dynamics).")
+    parser.add_argument(
+        "--abort_on_eval_loss_above", type=float, default=None,
+        help="If set, terminate the run on the first eval where finite "
+             "eval_loss exceeds this threshold. Catches catastrophic "
+             "divergence that stays finite (e.g. loss explodes to 5+ without "
+             "going NaN). Composes with --abort_on_nan_eval. Default: None "
+             "(disabled). Pick a value well above the legitimate loss "
+             "cluster to avoid aborting transiently-bad-but-recoverable runs.")
     parser.add_argument("--precond_gamma", type=float, default=0.5,
                         help="Fractional power for PSI-LoRA/KFAC-LoRA K-FAC scaling.")
     parser.add_argument("--precond_ema_beta", type=float, default=0.99,
@@ -1685,6 +1693,19 @@ def main():
                     "event": "abort_on_nan_eval",
                     "step": step,
                     "eval_loss": eval_loss,
+                })
+                run_completed_cleanly = False
+                break
+            if (
+                args.abort_on_eval_loss_above is not None
+                and math.isfinite(eval_loss)
+                and eval_loss > args.abort_on_eval_loss_above
+            ):
+                log_event({
+                    "event": "abort_on_eval_loss_above",
+                    "step": step,
+                    "eval_loss": eval_loss,
+                    "threshold": args.abort_on_eval_loss_above,
                 })
                 run_completed_cleanly = False
                 break

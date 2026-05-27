@@ -378,7 +378,12 @@ def compare_variants_figure(
             lr = float(c["lr"])
             last_step = h[-1].get("step")
             last_loss = h[-1]["eval_loss"]
-            if last_step == max_steps:
+            # An aborted run (loaded with cfg["_aborted"] set by load_run) is
+            # treated as completed-but-diverged: its last eval is the "final"
+            # so it surfaces in the leaderboard table at its diverged value
+            # instead of vanishing as a partial run.
+            is_aborted = c.get("_aborted") is not None
+            if last_step == max_steps or is_aborted:
                 if lr not in d or last_loss < d[lr][0]:
                     d[lr] = (last_loss, c, h)
             elif allow_partial:

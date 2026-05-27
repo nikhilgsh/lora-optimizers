@@ -60,6 +60,11 @@ if [ "$polar_method" = "ssc" ]; then
     fi
 fi
 
+abort_args=()
+if [ -n "${ABORT_ON_EVAL_LOSS_ABOVE:-}" ]; then
+    abort_args=(--abort_on_eval_loss_above "$ABORT_ON_EVAL_LOSS_ABOVE")
+fi
+
 ckpt_args=()
 if [ -n "${CHECKPOINT_DIR:-}" ]; then
     ckpt_args=(
@@ -100,4 +105,5 @@ python train_lora.py \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}" \
+    "${abort_args[@]}" \
     "${wandb_args[@]}"

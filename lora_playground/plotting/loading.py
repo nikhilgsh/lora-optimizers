@@ -94,6 +94,7 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
 
     config, evals, optim_steps = None, [], []
     init_override_mode = None
+    abort_event = None
     for line in Path(log_path).read_text().splitlines():
         line = line.strip()
         if not line:
@@ -102,14 +103,17 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if obj.get("event") == "config":
+        ev = obj.get("event")
+        if ev == "config":
             config = obj
-        elif obj.get("event") == "eval":
+        elif ev == "eval":
             evals.append(obj)
-        elif obj.get("event") == "optim_step":
+        elif ev == "optim_step":
             optim_steps.append(obj)
-        elif obj.get("event") == "lora_init_override":
+        elif ev == "lora_init_override":
             init_override_mode = obj.get("mode")
+        elif isinstance(ev, str) and ev.startswith("abort_on_"):
+            abort_event = obj
     if config is not None and evals:
         config["_log_filename"] = log_path.name
         config.setdefault("lr", evals[0]["lr"])
@@ -136,6 +140,12 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
             for k, v in parse_cli_command(cmd).items():
                 config.setdefault(k, v)
         config["_optim_steps"] = optim_steps
+        if abort_event is not None:
+            # Surface aborted runs to downstream analysis. Plotting primitives
+            # (e.g. compare_variants_figure) treat aborted runs as completed-
+            # but-diverged so they appear in the leaderboard table at their
+            # last eval, instead of silently vanishing as partial runs.
+            config["_aborted"] = abort_event
     if sig is not None:
         _LOAD_RUN_CACHE[path_str] = (sig, config, evals)
     return (None if config is None else dict(config)), evals
