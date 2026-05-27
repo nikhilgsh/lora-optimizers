@@ -1,7 +1,7 @@
 #!/bin/bash
-# Robustness pilot: OLMo-2-1B × metamath_1b_r256
-# × seq=2048 × global_batch=16 × r=256 × packed_v1.1.
-# Clone of sweep_phase_L_1b_r256.sh; only --data_dir differs (Tulu-3 cache
+# Robustness pilot: OLMo-2-1B × OpenMathInstruct-2 (2M subset, column-mapped)
+# × seq=2048 × global_batch=16 × r=64 × packed_v1.1.
+# Clone of sweep_phase_L_1b_r64.sh; only --data_dir differs (OpenMathInstruct-2 cache
 # vs opc-sft-stage2). See docs/plans/paper_plan.md and the robustness plan
 # at ~/.claude/plans/as-part-of-our-tender-quilt.md.
 #
@@ -57,7 +57,7 @@ if [ -n "${SNAPSHOT_DIR:-}" ]; then
 fi
 
 python train_lora.py \
-    --data_dir data/metamath_qa_packed_seq2048 \
+    --data_dir data/openmath_instruct_2_2m_packed_seq2048 \
     --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \
     --max_seq_length 2048 \
     --attn_implementation sdpa \
@@ -72,8 +72,8 @@ python train_lora.py \
     --optimizer "$optimizer" \
     --lora_plus_multiplier "$lora_plus_multiplier" \
     --seed "$seed" \
-    --lora_r 256 \
-    --lora_alpha 256 \
+    --lora_r 64 \
+    --lora_alpha 64 \
     --muon_ns_steps 5 \
     --precond_method higham \
     --picard_iters_override 1 \
