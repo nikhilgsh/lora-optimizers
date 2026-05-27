@@ -41,6 +41,16 @@ if [ "${LOG_HEAVY_DIAGNOSTICS:-0}" = "1" ]; then
     diag_args+=(--log_heavy_diagnostics)
 fi
 
+# Diagnostic snapshot flags. SNAPSHOT_DIR is injected per-task by submit.sh
+# when SNAPSHOTS=1 is set on the sbatch. SNAPSHOT_STEPS overridable.
+snapshot_args=()
+if [ -n "${SNAPSHOT_DIR:-}" ]; then
+    snapshot_args=(
+        --snapshot_dir "$SNAPSHOT_DIR"
+        --snapshot_steps "${SNAPSHOT_STEPS:-0,500,1000,2000,4000,6000,9000}"
+    )
+fi
+
 # Checkpoint flags: enabled by submit.sh setting CHECKPOINT_DIR per task.
 # When the env var is set, --checkpoint_dir AND --resume_from point at the
 # same directory. load_checkpoint is idempotent — first submission finds an
@@ -85,4 +95,5 @@ python train_lora.py \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}" \
+    "${snapshot_args[@]}" \
     "${wandb_args[@]}"

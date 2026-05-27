@@ -48,6 +48,16 @@ if [ -n "${CHECKPOINT_DIR:-}" ]; then
     fi
 fi
 
+# Diagnostic snapshot flags. SNAPSHOT_DIR is injected per-task by submit.sh
+# when SNAPSHOTS=1 is set on the sbatch. SNAPSHOT_STEPS overridable.
+snapshot_args=()
+if [ -n "${SNAPSHOT_DIR:-}" ]; then
+    snapshot_args=(
+        --snapshot_dir "$SNAPSHOT_DIR"
+        --snapshot_steps "${SNAPSHOT_STEPS:-0,500,1000,2000,4000,6000,9000}"
+    )
+fi
+
 python train_lora.py \
     --data_dir data/opc_sft_stage2_all_packed_seq2048 \
     --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \
@@ -72,4 +82,5 @@ python train_lora.py \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}" \
+    "${snapshot_args[@]}" \
     "${wandb_args[@]}"
