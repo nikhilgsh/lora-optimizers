@@ -429,13 +429,28 @@ def compare_variants_figure(
         markers = {label: marker_cycle[i % len(marker_cycle)] for i, label in enumerate(variants)}
 
     fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize)
-    for label, d in per_variant.items():
-        if not d:
+    for label in variants:
+        d = per_variant.get(label, {})
+        d_partial = per_variant_partial.get(label, {}) if allow_partial else {}
+        if not d and not d_partial:
             continue
-        lrs = sorted(d)
-        finals = [d[lr][0] for lr in lrs]
-        ax_lr.plot(lrs, finals, marker=markers[label], ms=6, lw=1.4,
-                   color=colors[label], label=label)
+        if d:
+            lrs = sorted(d)
+            finals = [d[lr][0] for lr in lrs]
+            ax_lr.plot(lrs, finals, marker=markers[label], ms=6, lw=1.4,
+                       color=colors[label], label=label)
+        # Partial overlay: hollow markers + dashed line so the eye reads them
+        # as in-flight, not final. Only draw lrs that don't already have a
+        # completed counterpart (avoids two markers per lr when some seeds
+        # finish before others).
+        partial_lrs = sorted(lr for lr in d_partial if lr not in d)
+        if partial_lrs:
+            partial_losses = [d_partial[lr][0] for lr in partial_lrs]
+            partial_label = f"{label} (partial)" if d else label
+            ax_lr.plot(partial_lrs, partial_losses, marker=markers[label],
+                       ms=6, lw=1.2, color=colors[label],
+                       markerfacecolor="white", linestyle="--",
+                       label=partial_label)
     ax_lr.set_xscale("log")
     ax_lr.set_xlabel("lr")
     ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
