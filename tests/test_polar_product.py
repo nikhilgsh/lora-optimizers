@@ -28,6 +28,7 @@ from lora_playground.optim import (
     AdamSOAPPolarProductLoRA,
     AdamuonPolarProductLoRA,
     PolarProductLoRA,
+    _chord_update_opnorm_power_iter,
     _clip_R_equal,
     _clip_adamw_capped,
     _newton_schulz,
@@ -893,6 +894,66 @@ def test_adam_polar_product_logs_finite_step_diagnostics(capsys):
     assert payload["finite_step_new_new_frac_median"] <= 1.0 + 1e-5
 
 
+def test_chord_update_opnorm_power_iter_matches_rank_one_exact():
+    torch.manual_seed(0)
+    d_out, d_in, r = 7, 9, 3
+    A = torch.zeros(r, d_in)
+    B = torch.zeros(d_out, r)
+    dA = torch.zeros(r, d_in)
+    dB = torch.zeros(d_out, r)
+    u = torch.randn(d_out)
+    v = torch.randn(d_in)
+    dB[:, 0] = u
+    dA[0, :] = v
+
+    sigma = _chord_update_opnorm_power_iter(A, B, dA, dB, n_iters=4)
+    expected = u.norm() * v.norm()
+    assert torch.allclose(sigma, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_chord_update_opnorm_power_iter_matches_direct_svd():
+    torch.manual_seed(4)
+    d_out, d_in, r = 8, 10, 4
+    A = torch.randn(r, d_in)
+    B = torch.randn(d_out, r)
+    dA = 0.05 * torch.randn(r, d_in)
+    dB = 0.05 * torch.randn(d_out, r)
+
+    sigma = _chord_update_opnorm_power_iter(A, B, dA, dB, n_iters=80)
+    dense = (B + dB) @ (A + dA) - B @ A
+    expected = torch.linalg.svdvals(dense).max()
+    assert torch.allclose(sigma, expected, rtol=2e-3, atol=1e-5)
+
+
+def test_chord_slack_basic_diagnostic_emitted_without_heavy(capsys):
+    torch.manual_seed(7)
+    m = TinyLoRAModel(d_in=8, d_out=6, r=4)
+    torch.manual_seed(13)
+    x = torch.randn(3, 8)
+    target = torch.randn(3, 8)
+    opt = AdamPolarProductLoRA(
+        m,
+        lr=1e-2,
+        magnitude_rule="spectral_chord_tight",
+        log_basic_diagnostics=True,
+        log_heavy_diagnostics=False,
+        diagnostics_every=1,
+    )
+
+    loss = ((m(x) - target) ** 2).mean()
+    loss.backward()
+    opt.step()
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert lines, "Expected optimizer diagnostics JSONL output"
+    payload = json.loads(lines[-1])
+    assert "chord_slack_median" in payload
+    assert "chord_slack_svd_direct_median" not in payload
+    assert isinstance(payload["chord_slack_median"], float)
+    assert payload["chord_slack_median"] == payload["chord_slack_median"]
+    assert payload["chord_slack_median"] >= 0.0
+
+
 # ---- Step 1 (local-model score diagnostic) ---------------------------------
 
 def test_local_model_score_emitted_at_picard_2():
@@ -1435,4 +1496,3 @@ def test_anderson_with_end_rms_align():
     assert d_accel <= 0.75 * d_plain + 1e-12, (
         f"Anderson (end_rms_align) failed to accelerate: "
         f"d_plain={d_plain:.3e}, d_accel={d_accel:.3e}.")
-

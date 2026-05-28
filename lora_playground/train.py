@@ -564,9 +564,9 @@ def make_parser():
                              "~2%% wall. ON by default. Disable with --no-log_basic_diagnostics "
                              "for absolute throughput.")
     parser.add_argument("--log_heavy_diagnostics", action=argparse.BooleanOptionalAction, default=False,
-                        help="Expensive probes: chord_slack via direct SVD on materialized chord "
-                             "matrix, higham accuracy reference (extra eigh), power-iter accuracy "
-                             "probes, Picard contraction/oscillation. ~10x wall at r=64. OFF by "
+                        help="Expensive probes: direct-SVD chord_slack cross-check, higham "
+                             "accuracy reference (extra eigh), power-iter accuracy probes, "
+                             "Picard contraction/oscillation. ~10x wall at r=64. OFF by "
                              "default; enable only for mechanism-investigation sweeps.")
     parser.add_argument("--optim_diagnostics_every", type=int, default=20,
                         help="Cadence (in optimizer steps) for both --log_basic_diagnostics and "

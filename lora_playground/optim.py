@@ -195,6 +195,7 @@ from .spectral import (
     sigma_max_power_iter_batched as _sigma_max_power_iter_batched,
     sigma_max_krylov_chol as _sigma_max_chol_eigvalsh,
     sigma_max_power_iter_nonsym as _sigma_max_power_iter_nonsym,
+    sigma_max_warm_power_iter_unfactored as _sigma_max_warm_power_iter_unfactored,
 )
 
 
@@ -346,6 +347,29 @@ def _finite_step_product_diagnostics(A_f, B_f, dA, dB, eps=1e-30):
         new_new_frac = (new_new_sq / (second_sq + eps)).clamp(0.0, 1.0)
         out["finite_step_new_new_frac"] = float(new_new_frac)
     return out
+
+
+def _chord_update_opnorm_power_iter(A_f, B_f, dA, dB, n_iters=8):
+    """Estimate ‖(B+dB)(A+dA) - BA‖₂ without materializing the dense update.
+
+    The chord update is represented as a single skinny product
+
+        ΔW = [B+dB, -B] @ [A+dA; A],
+
+    then estimated by plain power iteration on that product structure. This
+    intentionally avoids QR, Cholesky, eig/SVD, and the dense d_out × d_in
+    chord matrix; each iteration is only low-rank matvecs through the factors.
+    """
+    A_f = A_f.detach().to(torch.float32)
+    B_f = B_f.detach().to(torch.float32)
+    dA = dA.detach().to(torch.float32)
+    dB = dB.detach().to(torch.float32)
+    left = torch.cat((B_f + dB, -B_f), dim=-1)
+    right = torch.cat((A_f + dA, A_f), dim=-2)
+    sigma, _ = _sigma_max_warm_power_iter_unfactored(
+        left, right, n_iters=n_iters,
+    )
+    return sigma
 
 
 def _is_main_process() -> bool:
@@ -6824,7 +6848,20 @@ class AdamPolarProductLoRA(Optimizer):
             lr_f = float(lr)
             rho_f = float(rho.detach()) if torch.is_tensor(rho) else float(rho)
 
-            # Probe A — chord_slack via direct SVD (heavy).
+            # Probe A — chord_slack = ‖ΔW‖₂ / lr. Compute it with plain
+            # power iteration on the low-rank chord factors, not by forming
+            # the dense d_out × d_in matrix.
+            try:
+                sigma_chord = _chord_update_opnorm_power_iter(
+                    A_f, B_f, dA, dB, n_iters=8,
+                )
+                rec["chord_slack"] = float(sigma_chord / max(lr_f, 1e-30))
+            except Exception:
+                rec["chord_slack"] = float("nan")
+
+            # Optional direct-SVD cross-check. This is intentionally kept in
+            # the heavy tier and logged under a separate key so the cheap
+            # power-iteration diagnostic is always the canonical field.
             if self.log_heavy_diagnostics:
                 self._emit_heavy_chord_slack_diag(
                     rec, A_f=A_f, B_f=B_f, dA=dA, dB=dB, lr_f=lr_f,
@@ -7308,10 +7345,12 @@ class AdamPolarProductLoRA(Optimizer):
 
     @torch.no_grad()
     def _emit_heavy_chord_slack_diag(self, rec, *, A_f, B_f, dA, dB, lr_f):
-        """Probe A — chord_slack via direct SVD on the materialized chord
-        matrix. Gated on log_heavy_diagnostics. Only meaningful under
+        """Direct-SVD cross-check for chord_slack.
+
+        Gated on log_heavy_diagnostics. Only meaningful under
         spectral_chord_tight / spectral_chord_direction (caller enforces).
-        Mutates ``rec``.
+        Mutates ``rec`` by adding ``chord_slack_svd_direct`` and, when the
+        cheap power-iteration estimate is present, ``chord_slack_svd_relerr``.
         """
         # Probe A — chord slack u_chord = ‖B dA + dB A + dB dA‖_2 / lr.
         # ΔW = (B+dB)(A+dA) − BA. Direct SVD on the materialized
@@ -7350,7 +7389,13 @@ class AdamPolarProductLoRA(Optimizer):
                     sigma_chord = float("nan")
             except Exception:
                 sigma_chord = float("nan")
-            rec["chord_slack"] = sigma_chord / max(lr_f, 1e-30)
+            slack_direct = sigma_chord / max(lr_f, 1e-30)
+            rec["chord_slack_svd_direct"] = slack_direct
+            slack_power = rec.get("chord_slack")
+            if slack_power is not None and slack_power == slack_power:
+                rec["chord_slack_svd_relerr"] = (
+                    abs(slack_direct - slack_power) / max(abs(slack_direct), 1e-30)
+                )
 
 
 class AdamSOAPPolarProductLoRA(AdamPolarProductLoRA):
