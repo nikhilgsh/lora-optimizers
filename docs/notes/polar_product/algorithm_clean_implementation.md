@@ -254,6 +254,14 @@ Four σ-power-iter sites fire per step at $k = 2$:
 
 All sites use `n_iters = 8`, warm-started.
 
+## 6.1 Polar pre-norm: §2.5 + NS interaction (post-fix)
+
+§2.5 spec-normalizes the polar input so $\sigma_{\max}(X_A) = \sigma_{\max}(X_B) = 1$. Until the polar-pre-norm fix landed, the NS / polar-express primitives (`_newton_schulz_gram_batched`, `_polar_express_gram_batched`) applied a default Frobenius pre-norm $X \leftarrow X / \|X\|_F$ regardless of caller, which on a spec-normed input shrinks $\sigma_{\max}$ further by $1/\sqrt{\text{stable\_rank}} \approx 1/\sqrt{10}$ for the measured production spectrum. The 5-iter Schulz iteration then starts far from $\sigma=1$ and finishes incomplete (whitening fraction $\approx 0.72$ vs ideal 1.0), giving an effective polar map that resembles SSC with $c \approx 0.42$ rather than the intended Muon polar.
+
+After the fix, all polar primitives accept a `pre_norm ∈ {"frob","spec","none"}` kwarg. `_chord_tight_clean_polar_pipeline._polar` passes `pre_norm="none"` because §2.5 has already spec-normed the input — no second divisor fires. New runs reach whitening fraction $\approx 1.0$ (true polar) and behave like the converged SSC $c=0.2$ / polar-express-10 cluster rather than the incomplete NS-5 regime.
+
+Historical runs are tagged in the loader via `_derived["effective_polar_pre_norm"]`: pre-fix chord-tight-clean ns/polar_express runs carry `"frob"` (legacy buggy regime); post-fix runs carry `"none"`. The leaderboard notebook (`notebooks/opc_1b_leaderboard.ipynb` cell 3 `variant_key`) suffixes post-fix labels with `[post-fix]` for disambiguation. Empirically validated on a 4-arm 100-step test at $r=64$, $\eta=10^{-1}$: chord-tight ns ($\approx 0.93$ at step 100) matches SSC $c=0.42$ ($\approx 0.93$); SSC $c=0.20$ is offset by ${\sim}16\sigma$ ($\approx 0.96$), confirming that production NS-5 occupies a distinct (lower-whitening) regime.
+
 ## 7. Verification and remaining cleanup
 
 **Unit tests** (`tests/test_chord_tight_clean.py`):

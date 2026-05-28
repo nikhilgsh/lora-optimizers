@@ -1926,7 +1926,7 @@ class SVDCumulativeAdamW(AdamW):
         return loss
 
 
-def _newton_schulz(X, nsteps=5, eps=1e-7):
+def _newton_schulz(X, nsteps=5, eps=1e-7, pre_norm="frob"):
     """
     Newton-Schulz orthogonalization of X (float32). Canonical Muon: returns a
     matrix with approximately orthonormal rows (or cols, for tall X), Frobenius
@@ -1934,22 +1934,35 @@ def _newton_schulz(X, nsteps=5, eps=1e-7):
     point of Muon — the optimizer's step size is set by lr alone, not by the
     (highly variable, especially early-training) gradient magnitude.
 
-    Pre-normalize by spectral-norm proxy ||X||_F (only to bring singular values
-    into NS's basin of attraction near 1). Do NOT multiply back by the norm.
+    `pre_norm` controls the basin-bringing divisor applied to X before iteration:
+      - "frob" (default): X ← X / ‖X‖_F. Scale-invariant, ~free (one reduction).
+        Caveat: leaves σ_max(X) ≈ σ_max_orig / ‖X‖_F = 1/√(stable_rank), so
+        for a wide spectrum the Schulz iteration starts FAR from σ=1 and 5
+        iters do not fully converge (output spectrum is graded, not flat).
+      - "spec":  X ← X / σ_max(X). Forces σ_max=1 exactly; iteration starts
+        at the σ=1 fixed point for the top mode. Costs one power-iter.
+      - "none":  no divide. Trust the caller (e.g. when upstream applied a
+        spec-norm or §2.5-style pre-rescale).
     """
     X = X.float()
     tall = X.shape[0] > X.shape[1]
     if tall:
         X = X.T
     # X is now (r, d) with r ≤ d
-    norm = X.norm() + eps
-    X = X / norm
+    if pre_norm == "frob":
+        norm = X.norm() + eps
+        X = X / norm
+    elif pre_norm == "spec":
+        smax = torch.linalg.matrix_norm(X, ord=2) + eps
+        X = X / smax
+    elif pre_norm != "none":
+        raise ValueError(f"pre_norm must be one of {{'frob','spec','none'}}, got {pre_norm!r}")
     for _ in range(nsteps):
         X = 1.5 * X - 0.5 * X @ X.T @ X
     return X.T if tall else X
 
 
-def _newton_schulz_batched(X, nsteps=5, eps=1e-7, dtype=None):
+def _newton_schulz_batched(X, nsteps=5, eps=1e-7, dtype=None, pre_norm="frob"):
     """Batched Newton-Schulz over leading dims. X: (..., m, n) -> (..., m, n).
 
     Mirrors `_newton_schulz` (Muon orthogonalization, per-matrix Frobenius
@@ -1974,8 +1987,14 @@ def _newton_schulz_batched(X, nsteps=5, eps=1e-7, dtype=None):
     tall = X.shape[-2] > X.shape[-1]
     if tall:
         X = X.transpose(-2, -1)
-    norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
-    X = X / norm
+    if pre_norm == "frob":
+        norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
+        X = X / norm
+    elif pre_norm == "spec":
+        smax = torch.linalg.matrix_norm(X, ord=2).unsqueeze(-1).unsqueeze(-1) + eps
+        X = X / smax
+    elif pre_norm != "none":
+        raise ValueError(f"pre_norm must be one of {{'frob','spec','none'}}, got {pre_norm!r}")
     if dtype is not None and dtype != X.dtype:
         X = X.to(dtype)
     for _ in range(nsteps):
@@ -1991,6 +2010,7 @@ def _newton_schulz_gram_batched(
     dtype=torch.float16,
     restart_at=2,
     safety_factor=1.05,
+    pre_norm="frob",
 ):
     """Gram-form Newton-Schulz (Dao 2026, Algorithm 3 — Stabilized Gram NS).
 
@@ -2043,11 +2063,28 @@ def _newton_schulz_gram_batched(
     # X is now (batch, r, d) with r ≤ d.
     r = X.shape[-2]
 
-    # Frobenius pre-norm (per-matrix, fp32) with Dao's safety factor so the
-    # post-norm σ_max ≤ 1/safety_factor < 1 — gives margin for half-precision
-    # roundoff that can otherwise push singular values just above the NS basin.
-    norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
-    X_normed = X / (norm * safety_factor)
+    # Pre-norm (per-matrix, fp32) with Dao's safety factor so the post-norm
+    # σ_max ≤ 1/safety_factor < 1 — gives margin for half-precision roundoff
+    # that can otherwise push singular values just above the NS basin.
+    # pre_norm controls which divisor brings σ_max into the basin:
+    #   "frob": divide by ‖X‖_F (scale-invariant). Caveat: σ_max post-divide
+    #           = 1/√(stable_rank), so iteration starts far from σ=1 for wide
+    #           spectra (incomplete after 5 iters).
+    #   "spec": divide by σ_max(X) directly. Forces σ_max(X_normed) = 1; iteration
+    #           starts at the σ=1 fixed point for the top mode. One extra
+    #           power-iter cost; tightest output.
+    #   "none": no divide beyond safety_factor. Use when caller already
+    #           spec-normed (e.g. chord-tight-clean §2.5 pre-rescale).
+    if pre_norm == "frob":
+        norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
+        X_normed = X / (norm * safety_factor)
+    elif pre_norm == "spec":
+        smax = torch.linalg.matrix_norm(X, ord=2).unsqueeze(-1).unsqueeze(-1) + eps
+        X_normed = X / (smax * safety_factor)
+    elif pre_norm == "none":
+        X_normed = X / safety_factor
+    else:
+        raise ValueError(f"pre_norm must be one of {{'frob','spec','none'}}, got {pre_norm!r}")
 
     # State dtype for the iteration; reconstruction also runs in this dtype.
     iter_dtype = dtype
@@ -2745,6 +2782,7 @@ def _polar_express_gram_batched(
     dtype=torch.float32,
     safety_factor=1.05,
     restart_at=2,
+    pre_norm="frob",
 ):
     """Batched Stabilized Gram-form PolarExpress (Dao 2026, Algorithm 3, with
     Amsel quintic Remez coefficients arXiv:2505.16932 in place of cubic Muon).
@@ -2785,8 +2823,16 @@ def _polar_express_gram_batched(
     orig_leading = X.shape[:-2]
     X = X.reshape(-1, X.shape[-2], X.shape[-1])
     r = X.shape[-2]
-    norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
-    X_normed = X / (norm * safety_factor)
+    if pre_norm == "frob":
+        norm = X.flatten(-2).norm(dim=-1, keepdim=True).unsqueeze(-1) + eps
+        X_normed = X / (norm * safety_factor)
+    elif pre_norm == "spec":
+        smax = torch.linalg.matrix_norm(X, ord=2).unsqueeze(-1).unsqueeze(-1) + eps
+        X_normed = X / (smax * safety_factor)
+    elif pre_norm == "none":
+        X_normed = X / safety_factor
+    else:
+        raise ValueError(f"pre_norm must be one of {{'frob','spec','none'}}, got {pre_norm!r}")
 
     iter_dtype = dtype
     X0_iter = X_normed.to(iter_dtype)
@@ -3975,6 +4021,24 @@ class AdamPolarProductLoRA(Optimizer):
         )
         if eff is not None:
             out["effective_inner_polar"] = eff["label"]
+        # Polar pre-norm regime that the NS/polar-express primitive actually
+        # received. For chord-tight-clean (magnitude_rule="spectral_chord_tight_clean")
+        # we now pass pre_norm="none" because §2.5 has already spec-normed
+        # the polar input — passing "frob" would re-shrink σ_max by
+        # 1/√(stable_rank) and leave the 5-iter Schulz incomplete. For the
+        # plain chord-tight path (no §2.5), the default pre_norm="frob"
+        # is correct. SSC's MISR path has no Frob pre-norm to disable;
+        # tag it "ssc" so the loader can distinguish (vs None = not a
+        # polar-product optimizer at all).
+        polar_method = getattr(self, "polar_method", None)
+        magnitude_rule = getattr(self, "magnitude_rule", None)
+        if polar_method == "ssc":
+            out["effective_polar_pre_norm"] = "ssc"
+        elif polar_method in ("ns", "ns_hybrid", "polar_express"):
+            if magnitude_rule == "spectral_chord_tight_clean":
+                out["effective_polar_pre_norm"] = "none"
+            else:
+                out["effective_polar_pre_norm"] = "frob"
         return out
 
     def _polar_pipeline(self, u_A, u_B, SA_half_inv, SB_half_inv, lr):
@@ -4925,19 +4989,34 @@ class AdamPolarProductLoRA(Optimizer):
                                 print(json.dumps(pair_payload, sort_keys=True), flush=True)
                     return out.float()
                 return _ssc_misr_batched(X, c=self.ssc_c, nsteps=self.ssc_nsteps).float()
+            # §2.5 has already spec-normed X so σ_max(X) = 1. Pass
+            # pre_norm='none' so the NS/polar-express functions don't
+            # re-shrink the input via their default Frobenius pre-norm.
+            # A redundant Frob pre-norm here would divide σ_max further
+            # by ‖X‖_F = √(stable_rank), pushing the iterate far from
+            # the σ=1 fixed point and leaving 5-iter Schulz incomplete
+            # (whitening_fraction ≈ 0.72 instead of ≈ 1.0). The legacy
+            # behavior is recoverable by setting pre_norm='frob' below.
+            ctc_pre_norm = "none"
             if self.polar_method == "polar_express":
                 # Amsel et al. 2505.16932 quintic-Remez polar in batched Gram
                 # form. Mirrors the ns_form=gram path but with Polar Express
                 # coefficients in place of cubic Muon.
-                return _polar_express_gram_batched(X, nsteps=self.ns_steps).float()
+                return _polar_express_gram_batched(
+                    X, nsteps=self.ns_steps, pre_norm=ctc_pre_norm,
+                ).float()
             if self.ns_form == "gram":
-                return _newton_schulz_gram_batched(X, nsteps=self.ns_steps).float()
+                return _newton_schulz_gram_batched(
+                    X, nsteps=self.ns_steps, pre_norm=ctc_pre_norm,
+                ).float()
             if self.ns_form == "gram-norestart":
                 return _newton_schulz_gram_batched(
-                    X, nsteps=self.ns_steps, restart_at=None
+                    X, nsteps=self.ns_steps, restart_at=None,
+                    pre_norm=ctc_pre_norm,
                 ).float()
             return _newton_schulz_batched(
-                X, nsteps=self.ns_steps, dtype=torch.bfloat16
+                X, nsteps=self.ns_steps, dtype=torch.bfloat16,
+                pre_norm=ctc_pre_norm,
             ).float()
 
         # §2.2 σ_max(A), σ_max(B) → ρ = η/s. Warm-started power iter on raw

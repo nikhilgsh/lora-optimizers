@@ -215,6 +215,46 @@ def _derive_effective_inner_polar(cfg: dict, opt_cfg: dict) -> str | None:
     return None
 
 
+def _derive_effective_polar_pre_norm(cfg: dict, opt_cfg: dict) -> str | None:
+    """Forensic backfill for `effective_polar_pre_norm` on pre-fix runs.
+
+    Tag values:
+      "frob" — NS/polar-express called with Frobenius pre-norm (the historical
+               default in `_newton_schulz*` and `_polar_express_gram_batched`).
+               In the chord-tight-clean path this is REDUNDANT with §2.5's
+               spec-norm and SHRINKS σ_max by 1/√(stable_rank) → 5-iter
+               Schulz is incomplete (whitening_fraction ≈ 0.72 instead of 1.0).
+               All pre-fix chord-tight-clean ns/polar_express runs sit in this
+               regime; their nominal "ns-5 polar" was actually a graded,
+               tail-truncated polar.
+      "none" — NS/polar-express called with pre_norm="none" (post-fix). §2.5
+               already spec-normed; no second divisor; iteration starts at
+               σ=1. Whitening_fraction ≈ 1.0 (true polar).
+      "ssc"  — SSC path; the Frob-pre-norm concern doesn't apply (SSC has no
+               such pre-norm). Tagged distinctly so analysis can group by
+               polar map family.
+      None    — non-polar-product optimizer.
+
+    Pre-fix means: cfg has no `optimizer_effective.effective_polar_pre_norm`
+    field. After the polar-pre-norm fix landed, new runs emit the field
+    directly and this fallback is skipped (see _enrich_cfg precedence).
+    """
+    optimizer = cfg.get("optimizer", "") or ""
+    if "polar-product" not in optimizer:
+        return None
+    pm = opt_cfg.get("polar_method")
+    if pm == "ssc":
+        return "ssc"
+    if pm in ("ns", "ns_hybrid", "polar_express"):
+        # Universal pre-fix behavior: every NS/polar-express call hit the
+        # function's default Frobenius pre-norm. (Chord-tight-clean's §2.5
+        # didn't override it; the bug was that the redundant pre-norm
+        # silently fired anyway.)
+        return "frob"
+    # Optimizer-class fallback for runs predating the polar_method flag.
+    return "frob"
+
+
 def _derive_effective_picard_iters(cfg: dict, opt_cfg: dict) -> tuple[Any, bool]:
     """Returns (k_value, resolved_with_certainty).
 
@@ -388,6 +428,10 @@ def _enrich_cfg(cfg: dict) -> dict:
         derived["effective_inner_polar"] = opt_eff["effective_inner_polar"]
     else:
         derived["effective_inner_polar"] = _derive_effective_inner_polar(cfg, opt_cfg)
+    if "effective_polar_pre_norm" in opt_eff:
+        derived["effective_polar_pre_norm"] = opt_eff["effective_polar_pre_norm"]
+    else:
+        derived["effective_polar_pre_norm"] = _derive_effective_polar_pre_norm(cfg, opt_cfg)
     if "effective_picard_iters" in opt_eff:
         derived["effective_picard_iters"] = opt_eff["effective_picard_iters"]
         derived["effective_picard_iters_certain"] = True
@@ -408,6 +452,8 @@ def _enrich_cfg(cfg: dict) -> dict:
     cfg["effective_picard_iters"] = k
     if derived["effective_inner_polar"] is not None:
         cfg["effective_inner_polar"] = derived["effective_inner_polar"]
+    if derived["effective_polar_pre_norm"] is not None:
+        cfg["effective_polar_pre_norm"] = derived["effective_polar_pre_norm"]
     # Data pipeline version: explicit on new runs (>=2026-05-08), absent on
     # older runs which were all unpacked_v0 (legacy
     # DataCollatorForLanguageModeling, no prompt mask, dynamic shapes).
