@@ -68,3 +68,6 @@ slurm_pending/
 slurm_submitted/
 slurm_cancel_pending/
 slurm_cancel_submitted/
+
+# mu-monitor local tool state
+.mu_monitor/
