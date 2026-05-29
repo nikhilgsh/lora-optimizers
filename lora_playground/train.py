@@ -663,12 +663,10 @@ def make_parser():
                              "(adam-polar-product-lora-coupled). Default uses the "
                              "factory's hardcoded value (3 for coupled).")
     parser.add_argument("--polar_core_remix_alpha", type=float, default=0.0,
-                        help="Core-signal remix coefficient. α=0 (default): no "
-                             "remix. α=1/4: completed-core metric prediction "
-                             "(attenuates agreed mode S_+ by half, preserves "
-                             "disagreement mode S_-). Applied before Picard / "
-                             "polar pipeline; replaces row(A) / col(B) "
-                             "projections of (u_A, u_B) with remixed versions.")
+                        help="Experimental core-coordinate remix coefficient. "
+                             "0 disables it. Nonzero values replace the row(A) / "
+                             "col(B) projections of (u_A, u_B) with remixed "
+                             "versions before the Picard / polar pipeline.")
     parser.add_argument("--anderson_m", type=int, default=0,
                         help="Anderson(m) acceleration depth for the Picard inner "
                              "loop in adam-polar-product-lora-coupled. m=0 disables "

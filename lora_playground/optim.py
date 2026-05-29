@@ -3623,14 +3623,14 @@ class AdamPolarProductLoRA(Optimizer):
         # to land on it exactly. See docs/papers/htmuon_2603.10067.pdf and
         # scripts/bench/bench_htmuon_op.py for accuracy/timing.
         self.htmuon_p = htmuon_p
-        # Core-signal remix coefficient. α ∈ [0, 1]. 0 = no remix (baseline);
-        # 1/4 = the completed-core metric prediction (attenuates the agreed
-        # mode S_+ by half, preserves the disagreement mode S_-). Applied
+        # Experimental core-coordinate remix coefficient. alpha in [0, 1].
+        # 0 = no remix (baseline). Nonzero values modify the components of
+        # (u_A, u_B) visible through the r x r products u_A A^T and B^T u_B.
+        # This is a hypothesis-probe knob, not a validated policy. Applied
         # before the Picard loop / polar pipeline:
-        #   tilde_H_A = (1-α) H_A - α H_B,   H_A = u_A A^T  (r × r)
+        #   tilde_H_A = (1-alpha) H_A - alpha H_B,   H_A = u_A A^T  (r x r)
         # then the projections of (u_A, u_B) onto row(A) / col(B) are
         # replaced by the projections of the remixed core signals.
-        # See agreement_weighted_core_coupling_2026_05_03.md.
         if not (0.0 <= core_remix_alpha <= 1.0):
             raise ValueError(f"core_remix_alpha must be in [0, 1], got {core_remix_alpha!r}")
         self.core_remix_alpha = core_remix_alpha
@@ -6251,10 +6251,10 @@ class AdamPolarProductLoRA(Optimizer):
             SA_half_inv = state['SA_half_inv']
             SB_half_inv = state['SB_half_inv']
 
-            # Core-signal remix: replace the projections of (u_A, u_B) onto
-            # row(A) / col(B) with their disagreement-weighted versions. The
+            # Experimental core-coordinate remix: replace the projections of
+            # (u_A, u_B) onto row(A) / col(B) with remixed versions. The
             # exclusive (orthogonal) parts of (u_A, u_B) are unchanged.
-            # α=0: no-op (baseline). α=1/4: completed-core metric prediction.
+            # alpha=0: no-op (baseline). Nonzero alpha is an ablation knob.
             if self.core_remix_alpha > 0:
                 A_f_remix = A.float()
                 B_f_remix = B.float()
@@ -6759,16 +6759,15 @@ class AdamPolarProductLoRA(Optimizer):
                       "nrank_B_1e2", "stable_rank_A", "stable_rank_B"):
                 rec[k] = float("nan")
 
-        # AWC — Agreement-weighted core diagnostics. The two whitened
-        # core views S_A_aw = SB^{-1/2} (u_A A^T) SA^{-1/2} and
-        # S_B_aw = SB^{-1/2} (B^T u_B) SA^{-1/2} are both r×r. They
-        # are the two factor-side projections of the "shared dense
-        # update" the Adam directions imply. In a noise-free
-        # linearization S_A_aw = S_B_aw; disagreement measures
-        # asymmetric Adam-preconditioning + batch noise corrupting
-        # the shared signal. AWC hypothesis (mechanism for the
-        # rank-dependent k-flip): rank 64 should agree more than
-        # rank 16. See agreement_weighted_core_coupling_2026_05_03.md.
+        # AWC — Adam-direction compatibility diagnostic. Raw LoRA gradients
+        # from one dense gradient G obey (g_A A^T) = (B^T g_B). The matrices
+        # below apply the same core-coordinate check to Adam directions:
+        # S_A_aw = SB^{-1/2} (u_A A^T) SA^{-1/2},
+        # S_B_aw = SB^{-1/2} (B^T u_B) SA^{-1/2}. Their mismatch says the
+        # independently Adam-preconditioned A/B directions are incompatible
+        # with any single dense-gradient core. It does NOT by itself prove
+        # noise, usefulness, or which polar/SSC spectrum should be preferred;
+        # treat these fields as exploratory diagnostics only.
         # Cost: 2 r×r matmuls + norms per pair per step.
         H_A = u_A @ A_f.T                                   # (r, r)
         H_B = B_f.T @ u_B                                   # (r, r)
@@ -6788,13 +6787,10 @@ class AdamPolarProductLoRA(Optimizer):
         e_plus = (fsum ** 2) / 4.0
         e_minus = (fdiff ** 2) / 4.0
         rec["awc_q_agree"] = e_plus / (e_plus + e_minus + 1e-30)
-        # Disagreement-coupling coefficient (revised AWC v3, scalar
-        # per pair):
+        # Exploratory normalized disagreement scalar:
         #   λ_core = ||S_A - S_B||² / (2 (||S_A||² + ||S_B||²) + ε)
-        # In [0, 1]: 0 when S_A ≡ S_B (full agreement, "do not couple
-        # / would shrink useful agreed signal"); 1 when S_A ≡ −S_B
-        # (full disagreement). Predicts λ_core(r=16) < λ_core(r=64)
-        # under the revised mechanism story.
+        # In [0, 1]: 0 when S_A ≡ S_B; 1 when S_A ≡ -S_B. This is a
+        # compatibility residual, not a validated coupling policy.
         rec["awc_lambda_core"] = (fdiff ** 2) / (2.0 * (fA ** 2 + fB ** 2) + 1e-30)
 
         # Higham accuracy + S conditioning probe. Tracks the
@@ -7123,19 +7119,16 @@ class AdamPolarProductLoRA(Optimizer):
             rec["local_score_k3"] - rec["local_score_k1"]
         )
 
-        # Revised-AWC diagnostic. Tests the "Picard de-duplicates
-        # agreed shared-core signal" hypothesis (see
-        # agreement_weighted_core_coupling_2026_05_03.md and the
-        # revised reading after the first AWC sweep).
-        # Decompose each iterate's (dA, dB) into A-side and B-side
-        # core drives:
+        # Compatibility diagnostic over Picard iterates. Decompose each
+        # iterate's (dA, dB) into the r x r components visible through A and B:
         #   C_A^(k) = dA^(k) A^T G_A^{-1}     (r × r)
         #   C_B^(k) = G_B^{-1} B^T dB^(k)     (r × r)
         # Then sum/diff modes:
-        #   X_C^(k) = C_A + C_B  (agreed core)
-        #   X_D^(k) = C_A - C_B  (ownership)
-        # Track magnitude evolution and direction preservation
-        # across iterates k = 1, 2, 3. Cost: cheap r × r ops.
+        #   X_C^(k) = C_A + C_B
+        #   X_D^(k) = C_A - C_B
+        # These fields track magnitude evolution and direction preservation
+        # across k = 1, 2, 3. They do not by themselves prove de-duplication,
+        # signal quality, or a preferred NS/SSC spectrum.
         GA_inv = SA_half_inv @ SA_half_inv     # (r, r)
         GB_inv = SB_half_inv @ SB_half_inv     # (r, r)
         def _core_drives(dA_var, dB_var):
