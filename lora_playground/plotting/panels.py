@@ -60,17 +60,22 @@ def auto_ylim_for_final_panel(
     *,
     lora_r: int | None = None,
     divergent_ratio: float = 1.5,
+    iqr_k: float = 1.5,
     lower_pad: float = 0.010,
     upper_pad: float = 0.012,
     fallback: tuple[float, float] = (0.505, 0.620),
 ) -> tuple[float, float]:
     """Y-axis bounds for an η-vs-final-loss panel — tight around the
-    non-divergent population so converged-region differences stay visible.
+    converged cluster so converged-region differences stay visible.
 
-    A run counts as "divergent" if its final eval_loss exceeds
-    `divergent_ratio × best_final`. Divergent runs are excluded from the
-    upper bound (they still render on the panel, but go off-axis at the top,
-    which is the right visual signal).
+    Two-stage upper bound. (1) Hard divergence: a run whose final eval_loss
+    exceeds `divergent_ratio × best_final` is dropped. (2) Tukey upper fence:
+    among the survivors, drop runs above `Q3 + iqr_k × IQR`. Stage 2 matters
+    because a fixed multiple of best is too loose when the loss range is
+    compressed — at best ≈ 0.74, `1.5 × best ≈ 1.1` still admits clearly-worse
+    0.9 runs; the IQR fence adapts to the cluster's own spread and clips them.
+    Dropped runs still render but go off-axis at the top (the right visual
+    signal for divergence).
 
     `lora_r=None` aggregates across all ranks. `fallback` is returned when
     no finite finals are present.
@@ -78,7 +83,15 @@ def auto_ylim_for_final_panel(
     converged, best = _non_divergent_finals(runs, lora_r, divergent_ratio)
     if not converged:
         return fallback
-    return (best - lower_pad, max(converged) + upper_pad)
+    upper_val = max(converged)
+    if len(converged) >= 4:
+        import statistics
+        q1, _q2, q3 = statistics.quantiles(converged, n=4, method="inclusive")
+        fence = q3 + iqr_k * (q3 - q1)
+        inliers = [v for v in converged if v <= fence]
+        if inliers:
+            upper_val = min(upper_val, max(inliers))
+    return (best - lower_pad, upper_val + upper_pad)
 
 
 def auto_ylim_for_trajectory_panel(

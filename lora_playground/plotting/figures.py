@@ -14,7 +14,13 @@ import matplotlib.pyplot as plt
 from .dedup import assert_label_discriminates
 from .merge import report_diverged, split_diverged
 from .overlays import baseline_overlay
-from .panels import _infer_min_step, plot_best_eta_curves, plot_eta_vs_final
+from .panels import (
+    _infer_min_step,
+    auto_ylim_for_final_panel,
+    auto_ylim_for_trajectory_panel,
+    plot_best_eta_curves,
+    plot_eta_vs_final,
+)
 from .style import (
     CANONICAL_HORIZON, DEFAULT_FIGSIZE, DIVERGE_THRESHOLD, SUPTITLE_FONTSIZE,
 )
@@ -324,6 +330,8 @@ def compare_variants_figure(
     variant_key=None,
     final_ylim: tuple[float, float] | None = None,
     traj_ylim: tuple[float, float] | None = None,
+    auto_ylim: bool = True,
+    divergent_ratio: float = 1.5,
 ):
     """Compare named optimizer variants at a fixed config; 2-panel + tables.
 
@@ -331,6 +339,20 @@ def compare_variants_figure(
     `load_runs(where={**common_where, **extra}, ...)`. The figure shows
     final-loss vs lr (left) and best-lr trajectory (right). Δ vs `ref_label`
     is reported in σ-units (`sigma_ref`).
+
+    Y-limits: by default (`auto_ylim=True`) both panels exclude runs whose
+    final eval_loss exceeds `divergent_ratio × best_final` (default 1.5×) from
+    the upper bound. On the LEFT (final-vs-lr) panel a diverged run still
+    renders but goes off-axis at the top — the right visual signal for
+    divergence — instead of compressing the converged region into a flat line.
+    The RIGHT (trajectory) panel plots only the best-lr curve per variant, so
+    the bound is the FULL-curve max of the non-divergent variants: the whole
+    descent stays visible rather than clipping the early-training top off the
+    curves. This is the robust replacement for hand-tuning `final_ylim` to crop
+    diverged AdamW outliers. Passing an explicit `final_ylim`/`traj_ylim` always
+    overrides the auto bound for that panel; `auto_ylim=False` falls back to
+    matplotlib autoscale. Shared logic: `auto_ylim_for_final_panel` /
+    `auto_ylim_for_trajectory_panel`.
 
     Returns
     -------
@@ -442,6 +464,14 @@ def compare_variants_figure(
     ax_lr.set_title("final loss vs lr")
     ax_lr.grid(True, alpha=0.3)
     ax_lr.legend(fontsize=9)
+    # Robust auto-clip: drop diverged runs (final > divergent_ratio × best)
+    # out of the upper bound. Explicit final_ylim always wins.
+    if final_ylim is None and auto_ylim:
+        final_runs = [(cfg, h) for d in per_variant.values()
+                      for (_loss, cfg, h) in d.values()]
+        if final_runs:
+            final_ylim = auto_ylim_for_final_panel(
+                final_runs, divergent_ratio=divergent_ratio)
     if final_ylim is not None:
         ax_lr.set_ylim(*final_ylim)
 
@@ -467,6 +497,28 @@ def compare_variants_figure(
     ax_traj.set_title("best-lr trajectory")
     ax_traj.grid(True, alpha=0.3)
     ax_traj.legend(fontsize=9)
+    # Only best-lr-per-variant curves are plotted here, so the diverged high-lr
+    # runs are already absent; auto_ylim_for_trajectory_panel drops any
+    # fully-diverged variant (final > divergent_ratio × best). warmup_frac=0
+    # makes the upper bound the full-curve max of the non-divergent variants —
+    # so the entire descent is visible rather than clipping the early-training
+    # top off the curves. (The left panel still clips diverged finals off-axis.)
+    if traj_ylim is None and auto_ylim:
+        traj_runs = []
+        for label in variants:
+            d = per_variant.get(label, {})
+            d_partial = per_variant_partial.get(label, {}) if allow_partial else {}
+            if d:
+                best_lr = min(d, key=lambda lr: d[lr][0])
+                _, cfg, h = d[best_lr]
+                traj_runs.append((cfg, h))
+            elif d_partial:
+                best_lr = min(d_partial, key=lambda lr: d_partial[lr][0])
+                _, cfg, h, _ = d_partial[best_lr]
+                traj_runs.append((cfg, h))
+        if traj_runs:
+            traj_ylim = auto_ylim_for_trajectory_panel(
+                traj_runs, divergent_ratio=divergent_ratio, warmup_frac=0.0)
     if traj_ylim is not None:
         ax_traj.set_ylim(*traj_ylim)
 

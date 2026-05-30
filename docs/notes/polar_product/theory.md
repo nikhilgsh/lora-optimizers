@@ -146,7 +146,7 @@ $$X^\star = U\, \mathrm{diag}\!\bigl(\min(\sigma_i, \lambda)\bigr)\, V^\top, \qq
 
 Hybrid Picard, by contrast, takes $-\lambda \cdot \mathrm{polar}(C_X)$ — saturating *every* active singular mode to magnitude $\lambda$ instead of truncating only the modes that exceed it. Polar is the operator-norm-solve direction (max-inner-product unit-norm matrix); clipping is the actual prox of the squared-penalty subproblem the formulation specifies.
 
-**Consequence.** Polar erases the relative magnitudes of singular modes; clipping preserves sub-threshold modes at their unconstrained magnitudes. At small $r$ each mode is a $1/r$ fraction of the spectrum, so the relative-information loss from polar is larger at small $r$ — which matches the empirical pattern (hybrid Picard wins by 0.0097 at $r=64$ but loses to AdamW at $r=16$ when run with cross-coupling at $k=2$).
+**Consequence.** Polar erases the relative magnitudes of singular modes; clipping preserves sub-threshold modes at their unconstrained magnitudes. This gives a possible explanation for why clipping-like updates could behave differently from polar updates across ranks, but the rank-dependent validation pattern is empirical, not derived from this argument.
 
 ## Solved cases of $(\star)$
 

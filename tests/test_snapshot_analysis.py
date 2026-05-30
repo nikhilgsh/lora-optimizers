@@ -25,6 +25,12 @@ from lora_playground.snapshot_analysis import (
     whitened_NS_input,
 )
 from lora_playground.snapshot_analysis.moments import BETA1, BETA2, EPS
+from lora_playground.snapshot_analysis.calibration import (
+    _agreement_kappa_for_pair,
+    _chord_residual_norm_sq,
+    _linear_residual_norm_sq,
+    _simulate_chord_tight_ssc_update,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -164,3 +170,66 @@ def test_load_snapshot_cache_returns_same_object():
     b = load_snapshot(2000, root=SNAP_ROOT)
     assert a is b, 'LRU cache should return the same dict object'
     clear_snapshot_cache()
+
+
+def test_local_objective_residual_gram_identities():
+    """Snapshot c-sweeps score residuals without materializing full layers."""
+    torch.manual_seed(7)
+    r, d_in, d_out = 5, 11, 13
+    A = torch.randn(r, d_in)
+    B = torch.randn(d_out, r)
+    dA = torch.randn(r, d_in) * 0.03
+    dB = torch.randn(d_out, r) * 0.03
+
+    dense_linear = B @ dA + dB @ A
+    dense_chord = dense_linear + dB @ dA
+
+    assert torch.allclose(
+        _linear_residual_norm_sq(A, B, dA, dB),
+        dense_linear.square().sum(),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    assert torch.allclose(
+        _chord_residual_norm_sq(A, B, dA, dB),
+        dense_chord.square().sum(),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+def test_simulate_chord_tight_ssc_update_returns_finite_metrics(fake_pair):
+    out = _simulate_chord_tight_ssc_update(
+        fake_pair, lr=3e-2, c=0.3, picard_iters=2, delta_abs=1e-6,
+    )
+    for key in (
+        'obj_scaled_tangent', 'obj_scaled_chord',
+        'obj_raw_tangent', 'obj_raw_chord',
+        'sr_XA_eff', 'sr_XB_eff', 'rho',
+    ):
+        assert math.isfinite(out[key]), key
+
+
+def test_agreement_kappa_for_pair_returns_finite_metrics(fake_pair):
+    out = _agreement_kappa_for_pair(
+        fake_pair,
+        lr="3e-2",
+        lora_r=4,
+        ns=5,
+        variant="unit-test",
+        step=50,
+        pair_index=0,
+        delta_abs=1e-6,
+        device=None,
+    )
+    for key in (
+        'q_agree', 'snr_op',
+        'kappa_agree_opfloor', 'kappa_agree_meanfloor',
+        'kappa_input_A', 'kappa_input_B',
+        'kappa_target_opfloor_A', 'kappa_target_opfloor_B',
+        'c_opfloor_A', 'c_opfloor_B',
+    ):
+        assert math.isfinite(out[key]), key
+    assert 0.0 <= out['q_agree'] <= 1.0
+    assert out['kappa_target_opfloor_A'] >= out['kappa_input_A']
+    assert out['kappa_target_opfloor_B'] >= out['kappa_input_B']

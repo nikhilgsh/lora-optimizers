@@ -102,7 +102,7 @@ $$
 
 *Proof.* By von Neumann's trace inequality, $\langle C, R\rangle \le \sum_i s_i\,\sigma_i(R)$ with equality iff singular vectors are aligned. Subject to $\sigma_i(R) \le 1$, the maximum is $\sum_i s_i$, attained at $\sigma_i(R) \equiv 1$. ∎
 
-**Observation (wastefulness of polar).** Only the leading singular direction is *required* to saturate the op-norm cap to attain the leading contribution $s_1\,\sigma_1$. Lifting trailing directions to $\sigma_i(R) = 1$ contributes $s_i \ll 1$ to the inner product while adding $1$ to $\lVert R\rVert_F^2$ — a poor signal-to-noise trade. §5 fixes this by adding a second constraint that caps the Frobenius energy.
+**Observation (what the extra $\kappa$ budget changes).** For the pure operator-norm LMO above, polar is the exact optimizer; saturating every singular value is not a bug in that problem. The reason to add a second budget is different: if the downstream objective treats Frobenius energy as costly, or if small singular modes are empirically unreliable, then lifting every trailing mode to $\sigma_i(R)=1$ may be undesirable. That is an additional modeling assumption, not a consequence of the LMO itself. §5 studies the modified problem where $\lVert R\rVert_F^2/r$ is capped explicitly.
 
 ## 5. The two-budget LMO: fixed-$\kappa$ and hard water-filling
 

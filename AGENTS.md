@@ -65,6 +65,8 @@ docs/
 
 PEFT convention throughout — A: (r, d_in), B: (d_out, r), adapter output = `(alpha/r) * B @ A`. All optimizer math uses this orientation. See `docs/low_rank_peft_convention.md`.
 
+Terminology discipline: use **gauge** only for the exact LoRA reparameterization invariance / product-map kernel, e.g. transformations that leave `B @ A` unchanged or first-order factor updates in `ker(d(B @ A))`. Do not use "gauge" as a loose synonym for low-support, low-singular-value, weakly conditioned, or hard-to-interpret factor directions; name the measured quantity instead.
+
 Custom optimizers collect pairs via `collect_lora_pairs()` in `utils.py` and operate directly on `A.grad`/`B.grad` without going through PyTorch's standard parameter-group mechanics. They store per-pair state in `self.pair_state` (a plain dict) rather than `self.state` to avoid conflicts with `Optimizer.state`.
 
 ### Key Math Utilities (`utils.py`)
