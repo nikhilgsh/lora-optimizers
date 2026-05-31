@@ -81,9 +81,9 @@ def canonical_label(cfg: dict) -> str | None:
         return "AdamW"
     # SOAP (CurvatureWhitenLoRA) — a distinct optimizer, not the chord-tight
     # pipeline, so it has its own axes (refresh freq f, curvature EMA β, optional
-    # polar add-on) rather than ns/polar_method/damping. Two-sided per factor:
-    # full r×r eigenbasis on the small index + elementwise-Adam (diagonal) on the
-    # large index (large-side eigenbasis = identity per the paper's huge-dim case).
+    # polar add-on) rather than ns/polar_method/damping. Paper's ONE-SIDED variant
+    # (§7.1): eigenbasis on the small r index, identity on the large index
+    # (diagonal Adam there). Applied to both LoRA factors.
     opt = cfg.get("optimizer")
     if opt in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
         polar = " +polar" if opt == "curvature-whiten-polar-lora" else ""

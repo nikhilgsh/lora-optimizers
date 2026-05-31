@@ -1018,13 +1018,19 @@ class CurvatureWhitenLoRA(Optimizer):
     """SOAP for LoRA factors (Vyas et al. 2024, Algorithms 3 & 4).
 
     SOAP runs Adam in the eigenbasis of the Shampoo (gradient-Gram) preconditioner.
-    This is two-sided per factor: a full r×r eigenbasis on the small (rank-r) index
-    AND diagonal preconditioning on the large (d_in / d_out) index — the latter via
-    elementwise Adam, which is exactly SOAP's prescription for a huge dimension
-    (its eigenbasis fixed to identity, so the side is adapted diagonally, not
-    rotated). A full eigenbasis on the large side is the cost LoRA avoids. Both
-    LoRA factors A and B are preconditioned (eigenbases Q_A and Q_B on their r
-    indices).
+    This is the paper's **one-sided** variant (§7.1, Fig 6): the eigenbasis is built
+    on the small (rank-r) index only and the large (d_in / d_out) index keeps the
+    identity rotation (Q=I), so that side is adapted diagonally by the elementwise
+    Adam — NOT rotated. A full eigenbasis on the large side (true two-sided SOAP)
+    is the d×d cost LoRA exists to avoid, which §7.1 is precisely about skipping.
+    One-sided SOAP is applied to BOTH LoRA factors A and B (eigenbases Q_A, Q_B on
+    their respective r indices) — that "both factors" sense is distinct from the
+    paper's one-/two-sided axis, which is about a single matrix's two indices.
+
+    Update magnitude is Adam-scale (per-coordinate elementwise normalization, NOT
+    orthogonalized), so it takes Adam-scale learning rates (~1e-4), not the
+    Muon-scale lrs the chord-tight/polar family tolerates via spectral-norm
+    rescaling. ``use_polar`` orthogonalizes the rotated-back update (→ Muon-scale).
 
     Per factor (A: r×d_in, small side = rows; B: d_out×r, small side = cols):
 
