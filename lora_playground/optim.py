@@ -3527,7 +3527,8 @@ class AdamPolarProductLoRA(Optimizer):
                  debug_abort_on_non_finite=False,
                  ns_form="gram",
                  higham_compute_dtype="fp32",
-                 fw_linearization="anchored"):
+                 fw_linearization="anchored",
+                 curvature_whitening=False, curvature_beta=0.99):
         named = collect_lora_pairs_named(model, adapter_name)
         if not named:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -3538,6 +3539,16 @@ class AdamPolarProductLoRA(Optimizer):
         self.pair_names = [n for _, _, n in named]
         self.delta = delta
         self.precond_delta_relative = bool(precond_delta_relative)
+        # Curvature whitening (experimental): replace the geometric factor Grams
+        # (S_B=BᵀB whitens A-update, S_A=AAᵀ whitens B-update) with EMAs of the
+        # factor-gradient outer products (S_curv_A=EMA(g_A g_Aᵀ)=BᵀHB whitens the
+        # A-update; S_curv_B=EMA(g_Bᵀ g_B) whitens the B-update). Everything else
+        # (polar, κ/SSC, ρ, Picard) is unchanged — isolates metric vs geometry.
+        self.curvature_whitening = bool(curvature_whitening)
+        # β_c = 0.99 matches SOAP's tuned preconditioner (Kronecker-factor) EMA
+        # β_shampoo (Vyas et al. 2024; their L←β₂L+(1-β₂)GGᵀ is our S_curv).
+        # Distinct from this optimizer's Adam β2 (=0.999, elementwise v_A).
+        self.curvature_beta = float(curvature_beta)
         # `log_non_finite`: when True, run the top-of-step per-pair
         # (A, B, grad_A, grad_B) isfinite check AND the end-of-step
         # chain-of-intermediates check. Both add measurable overhead at
@@ -4421,20 +4432,28 @@ class AdamPolarProductLoRA(Optimizer):
                     device=gs['SB_half_inv'].device,
                 ).expand_as(gs['SB_half_inv']).contiguous()
             else:
-                SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
-                SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
+                if self.curvature_whitening and gs.get('Scurv_A') is not None:
+                    SA_grams = gs['Scurv_B']
+                    SB_grams = gs['Scurv_A']
+                    _lamA = _sigma_max_power_iter_batched(SA_grams, n_iters=8)[0]
+                    _lamB = _sigma_max_power_iter_batched(SB_grams, n_iters=8)[0]
+                else:
+                    SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
+                    SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
+                    _lamA = sigma_A_hoist.pow(2)
+                    _lamB = sigma_B_hoist.pow(2)
                 if self.precond_method == "higham":
                     from .utils import spd_inv_sqrt_higham_batched
                     SA_half_inv = spd_inv_sqrt_higham_batched(
                         SA_grams, n_iters=self.higham_iters, eps=self.delta,
                         eps_relative=self.precond_delta_relative,
-                        lam_max=sigma_A_hoist.pow(2),
+                        lam_max=_lamA,
                         compute_dtype=self._higham_compute_dtype,
                     )
                     SB_half_inv = spd_inv_sqrt_higham_batched(
                         SB_grams, n_iters=self.higham_iters, eps=self.delta,
                         eps_relative=self.precond_delta_relative,
-                        lam_max=sigma_B_hoist.pow(2),
+                        lam_max=_lamB,
                         compute_dtype=self._higham_compute_dtype,
                     )
                 else:
@@ -5443,6 +5462,20 @@ class AdamPolarProductLoRA(Optimizer):
                 gs['m_B'].mul_(self.beta1).add_(gs['gB_stack'], alpha=1.0 - self.beta1)
                 gs['v_A'].mul_(self.beta2).addcmul_(gs['gA_stack'], gs['gA_stack'], value=1.0 - self.beta2)
                 gs['v_B'].mul_(self.beta2).addcmul_(gs['gB_stack'], gs['gB_stack'], value=1.0 - self.beta2)
+                # Curvature-whitening EMA: matrix second moments of the factor
+                # gradients (r×r). Updated every step; the whitener reads these
+                # at its refresh cadence. S_curv_A whitens the A-update, S_curv_B
+                # the B-update (see __init__ note).
+                if self.curvature_whitening:
+                    _ScA = gs['gA_stack'] @ gs['gA_stack'].transpose(-2, -1)
+                    _ScB = gs['gB_stack'].transpose(-2, -1) @ gs['gB_stack']
+                    if gs.get('Scurv_A') is None:
+                        gs['Scurv_A'] = _ScA.clone()
+                        gs['Scurv_B'] = _ScB.clone()
+                    else:
+                        _cb = self.curvature_beta
+                        gs['Scurv_A'].mul_(_cb).add_(_ScA, alpha=1.0 - _cb)
+                        gs['Scurv_B'].mul_(_cb).add_(_ScB, alpha=1.0 - _cb)
                 bc1 = 1.0 - self.beta1 ** step_count
                 bc2 = 1.0 - self.beta2 ** step_count
                 u_A = (gs['m_A'] / bc1) / ((gs['v_A'] / bc2).sqrt() + self.eps)
@@ -5500,14 +5533,23 @@ class AdamPolarProductLoRA(Optimizer):
                         gs['SA_half_inv'].copy_(I_A.expand_as(gs['SA_half_inv']))
                         gs['SB_half_inv'].copy_(I_B.expand_as(gs['SB_half_inv']))
                     else:
-                        SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
-                        SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
+                        if self.curvature_whitening and gs.get('Scurv_A') is not None:
+                            SA_grams = gs['Scurv_B']   # EMA(g_Bᵀg_B) whitens B-update
+                            SB_grams = gs['Scurv_A']   # EMA(g_A g_Aᵀ) whitens A-update
+                        else:
+                            SA_grams = gs['A_stack'] @ gs['A_stack'].transpose(-2, -1)
+                            SB_grams = gs['B_stack'].transpose(-2, -1) @ gs['B_stack']
                         if self.precond_method == "higham":
                             from .utils import spd_inv_sqrt_higham_batched
-                            _lam_A = (sigma_A_hoist.pow(2)
-                                      if sigma_A_hoist is not None else None)
-                            _lam_B = (sigma_B_hoist.pow(2)
-                                      if sigma_B_hoist is not None else None)
+                            if self.curvature_whitening and gs.get('Scurv_A') is not None:
+                                # PSD curvature grams: λ_max = σ_max(S_curv) directly.
+                                _lam_A = _sigma_max_power_iter_batched(SA_grams, n_iters=8)[0]
+                                _lam_B = _sigma_max_power_iter_batched(SB_grams, n_iters=8)[0]
+                            else:
+                                _lam_A = (sigma_A_hoist.pow(2)
+                                          if sigma_A_hoist is not None else None)
+                                _lam_B = (sigma_B_hoist.pow(2)
+                                          if sigma_B_hoist is not None else None)
                             gs['SA_half_inv'].copy_(spd_inv_sqrt_higham_batched(
                                 SA_grams, n_iters=self.higham_iters, eps=self.delta,
                                 eps_relative=self.precond_delta_relative,
@@ -10407,6 +10449,8 @@ def build_optimizer(
     precond_gamma: float = 0.5,
     precond_ema_beta: float = 0.99,
     precond_delta: float = 1e-6,
+    curvature_whitening: bool = False,
+    curvature_beta: float = 0.99,
     log_non_finite: bool = False,
     log_non_finite_start_step: int = 1,
     debug_optimizer_state: bool = False,
@@ -10873,6 +10917,8 @@ def build_optimizer(
             precond_delta_relative=precond_delta_relative,
             ns_form=ns_form,
             higham_compute_dtype=higham_compute_dtype,
+            curvature_whitening=curvature_whitening,
+            curvature_beta=curvature_beta,
             log_non_finite=log_non_finite,
             log_non_finite_start_step=log_non_finite_start_step,
             debug_optimizer_state=debug_optimizer_state,

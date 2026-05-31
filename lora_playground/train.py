@@ -527,6 +527,12 @@ def make_parser():
                         help="EMA smoothing for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
     parser.add_argument("--precond_delta", type=float, default=1e-6,
                         help="Damping floor for PSI-LoRA/KFAC-LoRA K-FAC statistics.")
+    parser.add_argument("--curvature_whitening", action="store_true",
+                        help="Chord-tight: whiten by an EMA of the factor-gradient "
+                             "second moment (BᵀHB) instead of the geometric Gram (BᵀB).")
+    parser.add_argument("--curvature_beta", type=float, default=0.99,
+                        help="EMA decay for the curvature whitening metric "
+                             "(matches SOAP tuned β_shampoo=0.99).")
     parser.add_argument("--precond_delta_relative", action="store_true",
                         help="σ_max-relative damping: replace absolute δ in "
                              "(S+δI)^{-1/2} with δ·σ_max(S). Currently honored "
@@ -1195,6 +1201,8 @@ def main():
         precond_refresh_every=args.precond_refresh_every,
         precond_method=args.precond_method,
         precond_delta_relative=args.precond_delta_relative,
+        curvature_whitening=args.curvature_whitening,
+        curvature_beta=args.curvature_beta,
         higham_compute_dtype=args.higham_compute_dtype,
         log_non_finite=args.log_non_finite,
         log_non_finite_start_step=args.log_non_finite_start_step,
@@ -1370,6 +1378,8 @@ def main():
             "lora_init_b": args.lora_init_b,
             "precond_delta": args.precond_delta,
             "precond_delta_relative": args.precond_delta_relative,
+            "curvature_whitening": args.curvature_whitening,
+            "curvature_beta": args.curvature_beta,
             "optimizer_config": optimizer_config_dict(optimizer),
             # Short-circuit-resolved effective behavior, emitted by the
             # optimizer instance itself (the authority on what its math
