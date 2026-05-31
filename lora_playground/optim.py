@@ -1015,48 +1015,47 @@ class AdamLinLoRA(Optimizer):
 
 
 class CurvatureWhitenLoRA(Optimizer):
-    """SOAP for LoRA factors (Vyas et al. 2024, Algorithms 3 & 4).
+    """Harmonious two-sided curvature preconditioner for LoRA factors.
 
-    SOAP runs Adam in the eigenbasis of the Shampoo (gradient-Gram) preconditioner.
-    This is the paper's **one-sided** variant (§7.1, Fig 6): the eigenbasis is built
-    on the small (rank-r) index only and the large (d_in / d_out) index keeps the
-    identity rotation (Q=I), so that side is adapted diagonally by the elementwise
-    Adam — NOT rotated. A full eigenbasis on the large side (true two-sided SOAP)
-    is the d×d cost LoRA exists to avoid, which §7.1 is precisely about skipping.
-    One-sided SOAP is applied to BOTH LoRA factors A and B (eigenbases Q_A, Q_B on
-    their respective r indices) — that "both factors" sense is distinct from the
-    paper's one-/two-sided axis, which is about a single matrix's two indices.
+    The strongest curvature preconditioner one can AFFORD for a LoRA factor
+    (r×d, r≪d) is a Kronecker product: a FULL r×r matrix on the small side (r²
+    is affordable) and a DIAGONAL on the large side (d×d is not). Each index is
+    preconditioned exactly once — "most powerful affordable, non-redundant":
 
-    Update magnitude is Adam-scale (per-coordinate elementwise normalization, NOT
-    orthogonalized), so it takes Adam-scale learning rates (~1e-4), not the
-    Muon-scale lrs the chord-tight/polar family tolerates via spectral-norm
-    rescaling. ``use_polar`` orthogonalizes the rotated-back update (→ Muon-scale).
+        ΔA  =  S_rA^{-1/2} · m̂_A · D_in^{-1/2}      (A: r×d_in)
+        ΔB  =  D_out^{-1/2} · m̂_B · S_rB^{-1/2}      (B: d_out×r)
 
-    Per factor (A: r×d_in, small side = rows; B: d_out×r, small side = cols):
+    where m̂ is bias-corrected momentum and the curvature factors are EMAs
+    (decay ``curvature_beta``):
+        S_rA = EMA(g_A g_Aᵀ) ∈ ℝ^{r×r}     D_in  = EMA(diag(g_Aᵀ g_A)) ∈ ℝ^{d_in}
+        S_rB = EMA(g_Bᵀ g_B) ∈ ℝ^{r×r}     D_out = EMA(diag(g_B g_Bᵀ)) ∈ ℝ^{d_out}
 
-      1. Gram accumulator (EMA, decay ``curvature_beta``):
-             L_A = EMA(g_A g_Aᵀ) ∈ ℝ^{r×r}   ;   R_B = EMA(g_Bᵀ g_B) ∈ ℝ^{r×r}
-      2. Eigenbasis Q (r×r), refreshed every ``precond_refresh_every`` (= SOAP's
-         f) by ONE warm-started power-iteration + QR step (Alg 4: Q ← QR(L Q)).
-         The very first refresh uses a full eigh to initialize Q (warmup). All
-         grams are r×r, so this is batched across pairs in one call.
-      3. Each step (Alg 3): rotate gradient & momentum into the eigenbasis, run
-         elementwise Adam there (second moment V accumulated in-basis, updated
-         every step — cheap), rotate the result back:
-             G'    = Qᵀ g          (A side)   |   g Q      (B side)
-             V    ← β₂ V + (1-β₂) G'⊙G'
-             N'    = (Qᵀ m̂) / (√V̂ + ε)
-             ΔA    = -lr · Q N'    (A side)   |   -lr · N' Qᵀ (B side)
+    The small-side inverse-sqrt ``S_r^{-1/2} = Q Λ^{-1/2} Qᵀ`` is formed from the
+    eigenbasis Q of S_r, maintained CHEAPLY by SOAP's warm-started power-iteration
+    + QR (Vyas et al. 2024, Alg 4; first refresh = full eigh), refreshed every
+    ``precond_refresh_every`` steps, batched across pairs — with eigenvalues
+    λ_i = qᵢᵀ S_r qᵢ (Rayleigh quotient). So the SOAP QR machinery is reused purely
+    as the efficient route to S_r^{-1/2}.
 
-    There is NO matrix inverse-sqrt: the elementwise normalization in the
-    eigenbasis IS the preconditioner, and the only periodic cost is the
-    warm-started QR (≈8× cheaper than eigh; tracks the basis to <0.003 subspace
-    error even at f=32, measured). ``use_polar`` additionally Newton-Schulz
-    orthogonalizes the rotated-back update (the keep/drop-polar A/B); plain SOAP
-    is ``use_polar=False``. ``delta`` / ``precond_delta_relative`` are accepted
-    for factory compatibility but unused (no inverse-sqrt to damp).
+    Both inverse-sqrts use RELATIVE damping ``(λ/λ_max + δ)^{-1/2}`` with
+    δ=``delta`` (caps conditioning at ~1/δ, controlling weak-direction
+    amplification); a still-zero factor (early steps) falls back to identity.
+    S_r and D set only the SHAPE (anisotropy); the step scale follows the
+    chord-tight-clean convention so lr matches the curvature baselines exactly.
+    lr is a spectral trust-region budget: ρ = lr / (σ_max(A) + σ_max(B)), and
+    each per-factor update is rescaled to σ_max(ΔA) = ρ (σ_max via warm-started
+    power iteration, NOT eigh). This is the same lr meaning as the chord-tight
+    A/B arms, so the harmonious curve drops into the same lr grid.
+
+    This is NOT vanilla SOAP (elementwise Adam V on the rotated gradient): the
+    explicit diagonal D on the large side is a cleaner, less-redundant, better-
+    conditioned estimate than a per-entry V at LoRA's aspect ratio (cf. the
+    paper's §7.2 "factorized SOAP" ≈ full SOAP). ``use_polar`` Newton-Schulz-
+    orthogonalizes the shaped update before the rescale (a Muon-scale variant);
+    plain harmonious whitening is ``use_polar=False``. ``precond_delta_relative``
+    is accepted for factory compatibility (damping here is always relative).
     """
-    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-3, eps=1e-8,
                  curvature_beta=0.99, use_polar=False, ns_steps=5,
                  precond_delta_relative=False, adapter_name=None,
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
@@ -1069,6 +1068,7 @@ class CurvatureWhitenLoRA(Optimizer):
         super().__init__([{"params": params, "lr": lr}], {})
         self.pairs = pairs
         self.eps = eps
+        self.delta = float(delta)            # relative damping for the inverse-sqrts
         self.beta1, self.beta2 = betas
         self.curvature_beta = float(curvature_beta)
         self.use_polar = bool(use_polar)
@@ -1086,23 +1086,40 @@ class CurvatureWhitenLoRA(Optimizer):
         self._q_initialized = False
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
-            r = A.shape[0]
+            r, d_in = A.shape
+            d_out = B.shape[0]
             eye = torch.eye(r, dtype=torch.float32, device=A.device)
             self.pair_state[i] = {
-                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_A': torch.zeros_like(A, dtype=torch.float32),   # momentum
                 'm_B': torch.zeros_like(B, dtype=torch.float32),
-                'v_A': torch.zeros_like(A, dtype=torch.float32),  # rotated-space 2nd moment
-                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                # small (r) side: full r×r curvature, whitened via its eigenbasis.
                 'L_A': torch.zeros((r, r), dtype=torch.float32, device=A.device),
                 'R_B': torch.zeros((r, r), dtype=torch.float32, device=A.device),
+                # large side: diagonal curvature = EMA of per-column / per-row
+                # gradient energy.
+                'D_in': torch.zeros(d_in, dtype=torch.float32, device=A.device),
+                'D_out': torch.zeros(d_out, dtype=torch.float32, device=B.device),
                 'Q_A': eye.clone(),
                 'Q_B': eye.clone(),
+                # exact eigenvalues of L_A / R_B from the last eigh refresh
+                # (zero until the first refresh → _rdinv → identity → plain
+                # momentum on step 1).
+                'lam_A': torch.zeros(r, dtype=torch.float32, device=A.device),
+                'lam_B': torch.zeros(r, dtype=torch.float32, device=A.device),
                 'step': 0,
             }
 
     @staticmethod
     def _sym(M):
         return 0.5 * (M + M.transpose(-2, -1))
+
+    def _rdinv(self, x):
+        """Relative-damped inverse-sqrt of a nonneg tensor along its last dim:
+        (x/x_max + δ)^{-1/2}. Returns ones where x_max≈0 (uninitialized factor →
+        no whitening; the Frobenius rescale then yields a plain momentum step)."""
+        xmax = x.amax(dim=-1, keepdim=True)
+        out = (x / xmax.clamp_min(1e-30) + self.delta).rsqrt()
+        return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -1111,15 +1128,14 @@ class CurvatureWhitenLoRA(Optimizer):
                 closure()
         lr = self.param_groups[0]["lr"]
         cb = self.curvature_beta
-        b1, b2, eps = self.beta1, self.beta2, self.eps
+        b1, eps = self.beta1, self.eps
         pairs = self.pairs
         n = len(pairs)
 
-        # ── Per pair: SOAP update with the CURRENT eigenbasis (built from
-        # gradients strictly BEFORE this step — Alg 3 updates L/R/Q only AFTER
-        # the weight step, so the current gradient never projects itself; Q is
-        # identity on step 1 → plain Adam). Then fold the current gradient into
-        # the Gram EMAs. ─────────────────────────────────────────────────────
+        # ── Per pair: harmonious Kronecker update with the eigenbasis + curvature
+        # factors built from gradients STRICTLY BEFORE this step (EMAs + Q are
+        # updated/refreshed only AFTER the weight step, so the current gradient
+        # never preconditions itself). Q is identity until the first eigh refresh.
         for i, (A, B) in enumerate(pairs):
             if A.grad is None or B.grad is None:
                 raise ValueError("Gradients are required for CurvatureWhitenLoRA update.")
@@ -1130,41 +1146,59 @@ class CurvatureWhitenLoRA(Optimizer):
             st['m_A'].mul_(b1).add_(gA, alpha=1.0 - b1)
             st['m_B'].mul_(b1).add_(gB, alpha=1.0 - b1)
             bc1 = 1.0 - b1 ** st['step']
-            bc2 = 1.0 - b2 ** st['step']
-            QA = st['Q_A']
-            QB = st['Q_B']
+            mhatA = st['m_A'] / bc1
+            mhatB = st['m_B'] / bc1
+            QA, QB = st['Q_A'], st['Q_B']
+            LA, RB = st['L_A'], st['R_B']
 
-            # A side: eigenbasis on rows (r); d_in index → plain Adam (Q_R = I).
-            gpA = QA.transpose(-2, -1) @ gA                    # G' = Qᵀ g  (r×d_in)
-            st['v_A'].mul_(b2).addcmul_(gpA, gpA, value=1.0 - b2)
-            mpA = QA.transpose(-2, -1) @ st['m_A']             # rotate momentum
-            nA = (mpA / bc1) / ((st['v_A'] / bc2).sqrt() + eps)
-            NA = QA @ nA                                       # rotate back
-
-            # B side: eigenbasis on cols (r); d_out index → plain Adam (Q_L = I).
-            gpB = gB @ QB                                      # G' = g Q  (d_out×r)
-            st['v_B'].mul_(b2).addcmul_(gpB, gpB, value=1.0 - b2)
-            mpB = st['m_B'] @ QB
-            nB = (mpB / bc1) / ((st['v_B'] / bc2).sqrt() + eps)
-            NB = nB @ QB.transpose(-2, -1)
-
+            # Whitened DIRECTIONS (harmonious Kronecker): S_rA^{-1/2} m̂ D_in^{-1/2}
+            # and D_out^{-1/2} m̂ S_rB^{-1/2}. S_r^{-1/2}=QΛ^{-1/2}Qᵀ with
+            # λ_i = qᵢᵀ S_r qᵢ = diag(QᵀLQ) (Rayleigh; exact once warm-started QR Q
+            # tracks the eigenbasis, and avoids a per-step eigh — too slow, see
+            # feedback_no_eigh_in_production).
+            lamA_is = self._rdinv((QA * (LA @ QA)).sum(dim=0))        # (r,)
+            dinA_is = self._rdinv(st['D_in'])                         # (d_in,)
+            WA = QA @ ((QA.transpose(-2, -1) @ mhatA) * lamA_is.unsqueeze(-1))
+            WA = WA * dinA_is.unsqueeze(0)
+            lamB_is = self._rdinv((QB * (RB @ QB)).sum(dim=0))        # (r,)
+            doutB_is = self._rdinv(st['D_out'])                       # (d_out,)
+            WB = ((mhatB @ QB) * lamB_is.unsqueeze(0)) @ QB.transpose(-2, -1)
+            WB = doutB_is.unsqueeze(-1) * WB
             if self.use_polar:
-                NA = _newton_schulz(NA, nsteps=self.ns_steps, pre_norm="spec")
-                NB = _newton_schulz(NB, nsteps=self.ns_steps, pre_norm="spec")
+                WA = _newton_schulz(WA, nsteps=self.ns_steps, pre_norm="spec")
+                WB = _newton_schulz(WB, nsteps=self.ns_steps, pre_norm="spec")
 
-            A.add_((-lr * NA).to(dtype=A.dtype, device=A.device))
-            B.add_((-self.lora_plus_multiplier * lr * NB).to(dtype=B.dtype, device=B.device))
+            # MAGNITUDE: chord-tight-clean convention (matches the curvature
+            # baselines, so lr is directly comparable). lr is a spectral
+            # trust-region budget: ρ = lr / (σ_max(A) + σ_max(B)), and each
+            # per-factor update is rescaled to σ_max(ΔA) = ρ. σ_max via
+            # warm-started power iteration (NOT eigh).
+            sA, st['v_sigA'] = _sigma_max_power_iter(A.detach().float(), st.get('v_sigA'), n_iters=8)
+            sB, st['v_sigB'] = _sigma_max_power_iter(B.detach().float(), st.get('v_sigB'), n_iters=8)
+            rho = lr / (sA + sB + eps)
+            sWA, st['v_sigWA'] = _sigma_max_power_iter(WA, st.get('v_sigWA'), n_iters=8)
+            sWB, st['v_sigWB'] = _sigma_max_power_iter(WB, st.get('v_sigWB'), n_iters=8)
+            dA = -(rho / (sWA + eps)) * WA                            # σ_max(dA) = ρ
+            dB = -self.lora_plus_multiplier * (rho / (sWB + eps)) * WB
 
-            # Gram EMAs (Alg 3 lines 13-14), zero-initialized → first sample
-            # carries (1-cb) weight. Folded in AFTER the step.
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+
+            # Curvature EMAs, folded in AFTER the step (zero-init → first sample
+            # carries (1-cb) weight): full r×r grams + large-side diagonals.
             st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
             st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+            st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
+            st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
             A.grad.zero_()
             B.grad.zero_()
 
-        # ── Refresh the eigenbasis for the NEXT step (batched; all grams r×r).
-        # First refresh = full eigh to seed Q; thereafter one warm-started
-        # power-iteration + QR step (Alg 4), every f steps. ──────────────────
+        # ── Refresh the eigenbasis for the NEXT step. First refresh = ONE eigh
+        # to seed Q (Alg 4 init); thereafter ONE warm-started power-iteration +
+        # QR step (Alg 4: Q ← QR(L@Q)), every `precond_refresh_every`, batched
+        # across pairs. eigh is too slow to run per refresh in production (~8× the
+        # QR cost at r=256); the step's eigenvalues come from the cheap Rayleigh
+        # diagonal above, not a fresh eigh. ──────────────────────────────────
         step_count = self.pair_state[0]['step']
         if (not self._q_initialized) or (step_count % self.precond_refresh_every == 0):
             LA_stack = torch.stack([self.pair_state[i]['L_A'] for i in range(n)])

@@ -10,9 +10,13 @@
 #   1: lr
 #   2: optimizer (curvature-whiten-lora | curvature-whiten-polar-lora)
 #   3: seed
+#   4: precond_delta  (relative damping δ for the inverse-sqrts; the critical HP.
+#       δ=1e-6 amplifies weak curvature directions ~1000× → NaN; ~1e-3 caps it
+#       at ~31×. MUST be set — the CLI default 1e-6 diverges.)
 lr=${1:-3e-3}
 optimizer=${2:-curvature-whiten-lora}
 seed=${3:-0}
+precond_delta=${4:-1e-3}
 
 compile_args=()
 if [ "${COMPILE:-1}" = "1" ]; then
@@ -55,6 +59,7 @@ python train_lora.py \
     --lora_alpha 256 \
     --curvature_beta 0.99 \
     --precond_refresh_every 10 \
+    --precond_delta "$precond_delta" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}"
