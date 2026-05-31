@@ -49,6 +49,12 @@ def _duplicate_param_file_msgs() -> list[str]:
     by_param: dict[str, list[str]] = {}
     for sbatch in sorted(PENDING.glob("*.sbatch")):
         m = PARAM_FILE_PATTERN.findall(sbatch.read_text())
+        # Array-driven multi-group sbatches assign PARAM_FILE="${PARAMS[$i]}" in
+        # a loop; the literal token is an unresolved shell expansion, not a real
+        # path, so comparing it across sbatches is meaningless and false-collides
+        # any two such sbatches. Skip unresolvable values — dup detection still
+        # works for the single-`PARAM_FILE="params/x.json"` case it was built for.
+        m = [v for v in m if "${" not in v]
         if m:
             by_param.setdefault(m[-1], []).append(sbatch.name)
     return [
