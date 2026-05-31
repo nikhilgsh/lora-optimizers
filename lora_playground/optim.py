@@ -609,6 +609,8 @@ OPTIMIZER_CHOICES = {
     "adam-scaled-lora",
     "adam-lin-lora",
     "adam-lin-core-lora",
+    "curvature-whiten-lora",
+    "curvature-whiten-polar-lora",
     "adam-scaled-lora-post",
     "adam-lin-lora-post",
     "adam-scaled-lora-matrix",
@@ -1010,6 +1012,149 @@ class AdamLinLoRA(Optimizer):
             step_count = self.pair_state[0]['step']
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
+
+
+class CurvatureWhitenLoRA(Optimizer):
+    """Two-sided curvature-whitened momentum for LoRA factors (SOAP/Shampoo-style).
+
+    For each pair (A: r×d_in, B: d_out×r) maintain raw-gradient momentum and EMA
+    curvature accumulators — a full r×r matrix on each factor's small side and a
+    diagonal on the big side (the Kronecker-factored "harmonious" preconditioner;
+    see docs/notes/polar_product/soap_curvature_whitening.md):
+
+        S_A    = EMA(g_A g_Aᵀ)          ∈ ℝ^{r×r}    (A small/row side)
+        D_inA  = EMA(colwise ‖g_A‖²)    ∈ ℝ^{d_in}   (A big/col side, diagonal)
+        S_B    = EMA(g_Bᵀ g_B)          ∈ ℝ^{r×r}    (B small/col side)
+        D_outB = EMA(rowwise ‖g_B‖²)    ∈ ℝ^{d_out}  (B big/row side, diagonal)
+
+    Update on bias-corrected momentum m̂ (no Adam second moment — the curvature
+    metrics ARE the second-order information, sourced consistently on both sides,
+    which is why there is no m-vs-u fork):
+
+        W_A = S_A^{-1/2} m̂_A diag(D_inA)^{-1/2}
+        W_B = diag(D_outB)^{-1/2} m̂_B S_B^{-1/2}
+
+    If ``use_polar`` (the keep/drop-polar A/B), W is orthogonalized via
+    Newton-Schulz (→ polar/Muon family); otherwise it is the plain whitened step
+    (→ LoRA-subspace Shampoo/SOAP). Magnitude is Frobenius-preserving (rescale to
+    ‖m̂‖_F per factor), so lr alone sets the step scale and the polar toggle is the
+    only difference between the two arms.
+    """
+    def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-6, eps=1e-8,
+                 curvature_beta=0.99, use_polar=False, ns_steps=5,
+                 precond_delta_relative=False, adapter_name=None,
+                 lora_plus_multiplier=1.0, log_basic_diagnostics=False,
+                 log_heavy_diagnostics=False, diagnostics_every=20,
+                 precond_refresh_every=1):
+        pairs = collect_lora_pairs(model, adapter_name)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model.")
+        params = [p for A, B in pairs for p in (A, B)]
+        super().__init__([{"params": params, "lr": lr}], {})
+        self.pairs = pairs
+        self.delta = delta
+        self.eps = eps
+        self.beta1, self.beta2 = betas
+        self.curvature_beta = float(curvature_beta)
+        self.use_polar = bool(use_polar)
+        self.ns_steps = int(ns_steps)
+        self.precond_delta_relative = bool(precond_delta_relative)
+        self.lora_plus_multiplier = lora_plus_multiplier
+        self.log_basic_diagnostics = bool(log_basic_diagnostics)
+        self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
+        self.diagnostics_every = diagnostics_every
+        self.precond_refresh_every = precond_refresh_every
+
+        self.pair_state = {}
+        for i, (A, B) in enumerate(pairs):
+            self.pair_state[i] = {
+                'm_A': torch.zeros_like(A, dtype=torch.float32),
+                'm_B': torch.zeros_like(B, dtype=torch.float32),
+                'step': 0,
+            }
+
+    def _mat_inv_sqrt(self, S):
+        """S^{-1/2} for an r×r PSD matrix via eigh, with absolute or
+        σ_max-relative damping."""
+        Sd = 0.5 * (S + S.transpose(-2, -1))
+        evals, Q = torch.linalg.eigh(Sd)
+        lam = evals[..., -1].clamp_min(1e-30)
+        floor = self.delta * lam if self.precond_delta_relative else self.delta
+        inv = (evals.clamp_min(0) + floor).rsqrt()
+        return (Q * inv.unsqueeze(-2)) @ Q.transpose(-2, -1)
+
+    def _diag_inv_sqrt(self, d):
+        """diag(d)^{-1/2} (returned as a 1-D vector), same damping convention."""
+        lam = d.max().clamp_min(1e-30)
+        floor = self.delta * lam if self.precond_delta_relative else self.delta
+        return (d.clamp_min(0) + floor).rsqrt()
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is not None:
+            with torch.enable_grad():
+                closure()
+        lr = self.param_groups[0]["lr"]
+        cb = self.curvature_beta
+        for i, (A, B) in enumerate(self.pairs):
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for CurvatureWhitenLoRA update.")
+            st = self.pair_state[i]
+            st['step'] += 1
+            gA = A.grad.float()
+            gB = B.grad.float()
+
+            # Raw-gradient momentum + bias correction.
+            st['m_A'].mul_(self.beta1).add_(gA, alpha=1.0 - self.beta1)
+            st['m_B'].mul_(self.beta1).add_(gB, alpha=1.0 - self.beta1)
+            bc1 = 1.0 - self.beta1 ** st['step']
+            mA = st['m_A'] / bc1
+            mB = st['m_B'] / bc1
+
+            # Curvature EMAs: matrix on the small side, diagonal on the big side.
+            ScA = gA @ gA.transpose(-2, -1)     # r×r
+            ScB = gB.transpose(-2, -1) @ gB     # r×r
+            dcolA = (gA * gA).sum(dim=0)        # d_in
+            drowB = (gB * gB).sum(dim=1)        # d_out
+            if st.get('Scurv_A') is None:
+                st['Scurv_A'] = ScA.clone()
+                st['Scurv_B'] = ScB.clone()
+                st['Dcol_A'] = dcolA.clone()
+                st['Drow_B'] = drowB.clone()
+            else:
+                st['Scurv_A'].mul_(cb).add_(ScA, alpha=1.0 - cb)
+                st['Scurv_B'].mul_(cb).add_(ScB, alpha=1.0 - cb)
+                st['Dcol_A'].mul_(cb).add_(dcolA, alpha=1.0 - cb)
+                st['Drow_B'].mul_(cb).add_(drowB, alpha=1.0 - cb)
+
+            # Refresh the small-side inverse-sqrts at the configured cadence.
+            if (st['step'] - 1) % self.precond_refresh_every == 0:
+                st['SA_ih'] = self._mat_inv_sqrt(st['Scurv_A'])
+                st['SB_ih'] = self._mat_inv_sqrt(st['Scurv_B'])
+            SA_ih = st['SA_ih']
+            SB_ih = st['SB_ih']
+            dinA_ih = self._diag_inv_sqrt(st['Dcol_A'])    # d_in
+            doutB_ih = self._diag_inv_sqrt(st['Drow_B'])   # d_out
+
+            # Two-sided whitened momentum.
+            W_A = (SA_ih @ mA) * dinA_ih.unsqueeze(0)          # r×d_in
+            W_B = (doutB_ih.unsqueeze(1) * mB) @ SB_ih         # d_out×r
+
+            if self.use_polar:
+                W_A = _newton_schulz(W_A, nsteps=self.ns_steps, pre_norm="spec")
+                W_B = _newton_schulz(W_B, nsteps=self.ns_steps, pre_norm="spec")
+
+            # Frobenius-preserving magnitude: lr alone sets the step scale, so the
+            # only difference between the polar / no-polar arms is the orthogonalize.
+            W_A = W_A * (mA.norm() / (W_A.norm() + self.eps))
+            W_B = W_B * (mB.norm() / (W_B.norm() + self.eps))
+
+            dA = -lr * W_A
+            dB = -self.lora_plus_multiplier * lr * W_B
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            A.grad.zero_()
+            B.grad.zero_()
 
 
 class AdamLinCoreLoRA(Optimizer):
@@ -10585,6 +10730,26 @@ def build_optimizer(
             scaled_metric=scaled_metric,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+        )
+    if optimizer_type in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
+        # Two-sided curvature-whitened momentum (SOAP/Shampoo-style). The two
+        # names share one class and differ only in the polar toggle, so the
+        # keep/drop-polar comparison is a clean optimizer-name axis.
+        return CurvatureWhitenLoRA(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            curvature_beta=curvature_beta,
+            use_polar=(optimizer_type == "curvature-whiten-polar-lora"),
+            ns_steps=muon_ns_steps,
+            precond_delta_relative=precond_delta_relative,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics,
+            log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
         )

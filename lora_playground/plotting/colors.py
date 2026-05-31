@@ -86,6 +86,9 @@ OPTIM_COLORS = {
     "galore-adamw":                "#a55194",
     # orthogonal-core LoRA (UCV^T parameterization)
     "adam-ucv-core-lora":          "#2b8c4d",
+    # two-sided curvature-whitened momentum (SOAP/Shampoo-style); polar A/B
+    "curvature-whiten-lora":       "#2e7d5b",
+    "curvature-whiten-polar-lora": "#1f5f8c",
 }
 
 
@@ -110,6 +113,8 @@ OPTIM_FAMILIES = {
         "adam-soap-polar-product-lora",
         "adafactor-polar-product-lora",
         "sign-momentum-polar-product-lora",
+        "curvature-whiten-lora",
+        "curvature-whiten-polar-lora",
         "adam-clip-product-lora",
         "adam-clip-product-lora-coupled",
         "adam-clip-product-lora-coupled-endrms",
