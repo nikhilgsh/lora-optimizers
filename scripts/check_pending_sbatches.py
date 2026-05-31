@@ -28,12 +28,22 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 PENDING = Path("slurm_pending")
 NTASKS_PATTERN = re.compile(r"^\s*#SBATCH\s+--ntasks=(\d+)\s*$", re.MULTILINE)
 CELLS_PATTERN = re.compile(r"^\s*#\s*CELLS:\s*(\d+)\s*$", re.MULTILINE)
+# First line that LAUNCHES work (GPU / multi-task). The prep-body dry-run runs
+# everything BEFORE this and stops here — so it never allocates a GPU, loads a
+# module, or starts disBatch/srun, but DOES execute the inlined task-gen /
+# checkpoint / manifest heredocs where runtime bugs (unexported env vars, bad
+# paths, python exceptions) hide from bash -n and header checks.
+LAUNCHER_PATTERN = re.compile(
+    r"^\s*(module\s+load|disBatch|srun|torchrun|accelerate|mpirun|deepspeed|sbatch)\b"
+)
 # Body line `PARAM_FILE="params/<sweep>.json"` (the disBatch sweep spec). Two
 # pending sbatches sharing a PARAM_FILE are almost always the same sweep staged
 # twice under different group names — submitting both burns GPUs on identical
@@ -64,6 +74,57 @@ def _duplicate_param_file_msgs() -> list[str]:
     ]
 
 
+def _prep_body_dryrun_msgs() -> list[str]:
+    """Execute each pending sbatch's PREP BODY (the lines before the first
+    launcher) with a stubbed SLURM_JOB_ID, and REFUSE on any runtime error.
+
+    This is the forced equivalent of a dry run: bash -n only checks syntax and
+    the header checks only read `#SBATCH`/`# CELLS`, so a runtime bug in an
+    inlined heredoc — e.g. `os.environ["RUN_DIR"]` for a var that was never
+    exported (real failure 2026-05-31, job 6463166: KeyError 'RUN_DIR' killed
+    the job before disBatch started) — passes every static check and only dies
+    on the cluster. Running the prep prefix surfaces it here. The prefix stops
+    before `module load`/`disBatch`/`srun`, so it allocates nothing and starts
+    no training; its only side effect is creating the run_info dir + task file,
+    which the real submission recreates anyway."""
+    msgs: list[str] = []
+    for sbatch in sorted(PENDING.glob("*.sbatch")):
+        lines = sbatch.read_text().splitlines()
+        prefix: list[str] = []
+        for ln in lines:
+            if LAUNCHER_PATTERN.match(ln):
+                break
+            prefix.append(ln)
+        body = "\n".join(prefix) + "\n"
+        if "python" not in body and "<<" not in body:
+            continue  # nothing executable worth dry-running
+        env = dict(os.environ, SLURM_JOB_ID="dryrun", DRYRUN="1")
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".dryrun.sh", delete=False
+            ) as f:
+                f.write(body)
+                tmp = f.name
+            r = subprocess.run(
+                ["bash", tmp], capture_output=True, text=True,
+                env=env, timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            msgs.append(f"  {sbatch.name}: prep body timed out (>300s)")
+            continue
+        finally:
+            if tmp:
+                os.unlink(tmp)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "").strip().splitlines()
+            tail = "\n".join("        " + ln for ln in err[-8:])
+            msgs.append(
+                f"  {sbatch.name}: prep body FAILED (exit {r.returncode}):\n{tail}"
+            )
+    return msgs
+
+
 def main() -> int:
     if not PENDING.exists():
         return 0
@@ -73,6 +134,7 @@ def main() -> int:
     missing_header: list[str] = []
 
     dup_param_msgs = _duplicate_param_file_msgs()
+    dryrun_msgs = [] if os.environ.get("FORCE_DRYRUN_SKIP") == "1" else _prep_body_dryrun_msgs()
 
     for sbatch in sorted(PENDING.glob("*.sbatch")):
         text = sbatch.read_text()
@@ -139,6 +201,18 @@ def main() -> int:
             sys.stderr.write("FORCE_DUP_PARAMS=1 set; proceeding anyway.\n")
         else:
             return 1
+    if dryrun_msgs:
+        sys.stderr.write(
+            "check_pending_sbatches: REFUSE — pending sbatch prep body failed a "
+            "dry run (ran the script up to the launcher with SLURM_JOB_ID stubbed):\n"
+            + "\n".join(dryrun_msgs)
+            + "\n\nThis is a real runtime error that would kill the job on the "
+            "cluster (bash -n and the header checks cannot see it). Fix the prep "
+            "body — common cause: an inlined `python <<'EOF'` heredoc reads "
+            "os.environ[\"VAR\"] for a VAR that was never `export`ed earlier in "
+            "the script.\nOverride (NOT recommended): FORCE_DRYRUN_SKIP=1\n"
+        )
+        return 1
     if refuse_msgs:
         sys.stderr.write(
             "check_pending_sbatches: REFUSE — ntasks/cells mismatch in "
