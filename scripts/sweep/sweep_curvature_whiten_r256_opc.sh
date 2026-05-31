@@ -54,7 +54,7 @@ python train_lora.py \
     --lora_r 256 \
     --lora_alpha 256 \
     --curvature_beta 0.99 \
-    --precond_refresh_every 8 \
+    --precond_refresh_every 10 \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}"
