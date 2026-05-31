@@ -59,6 +59,9 @@ def _axes(cfg: dict) -> dict | None:
         "k": int(k),
         "damp_kind": damp_kind,
         "damp_val": damp_val,
+        # Whitening metric: default geometric factor-Gram (BᵀB) vs the
+        # --curvature_whitening EMA of factor-grad outer products (S_curv).
+        "curv": bool(cfg.get("curvature_whitening")),
     }
 
 
@@ -76,6 +79,16 @@ def canonical_label(cfg: dict) -> str | None:
     """
     if cfg.get("optimizer") == OPT_ADAMW:
         return "AdamW"
+    # One-sided SOAP (CurvatureWhitenLoRA) — a distinct optimizer, not the
+    # chord-tight pipeline, so it has its own axes (refresh freq f, curvature
+    # EMA β, optional polar add-on) rather than ns/polar_method/damping.
+    opt = cfg.get("optimizer")
+    if opt in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
+        polar = " +polar" if opt == "curvature-whiten-polar-lora" else ""
+        f = cfg.get("precond_refresh_every")
+        cb = cfg.get("curvature_beta")
+        bc = f", β_c={cb:g}" if cb is not None else ""
+        return f"SOAP-1side{polar} (f={f}{bc})"
     a = _axes(cfg)
     if a is None:
         return None
@@ -88,8 +101,9 @@ def canonical_label(cfg: dict) -> str | None:
     elif a["damp_kind"] == "sscc":
         damp = f"c={a['damp_val']:g}"
     else:
-        damp = "abs"
-    return f"{fam} {polar} k={a['k']} ({damp})"
+        damp = f"abs={_eps(a['damp_val'])}" if a["damp_val"] is not None else "abs"
+    curv = " +curv" if a["curv"] else ""
+    return f"{fam} {polar} k={a['k']} ({damp}){curv}"
 
 
 def canonical_key(cfg: dict) -> str | None:
@@ -111,7 +125,8 @@ def canonical_key(cfg: dict) -> str | None:
         damp = f"sscc{a['damp_val']}"
     else:
         damp = "abs"
-    return f"{a['family']}|{polar}|k{a['k']}|{damp}"
+    curv = "|curv" if a["curv"] else ""
+    return f"{a['family']}|{polar}|k{a['k']}|{damp}{curv}"
 
 
 def order_labels(labels) -> list:
