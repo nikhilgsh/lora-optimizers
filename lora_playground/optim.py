@@ -1015,14 +1015,16 @@ class AdamLinLoRA(Optimizer):
 
 
 class CurvatureWhitenLoRA(Optimizer):
-    """One-sided SOAP for LoRA factors (Vyas et al. 2024, Algorithms 3 & 4).
+    """SOAP for LoRA factors (Vyas et al. 2024, Algorithms 3 & 4).
 
     SOAP runs Adam in the eigenbasis of the Shampoo (gradient-Gram) preconditioner.
-    LoRA factors have one small side (rank r) and one large side (d_in / d_out);
-    a full eigenbasis on the large side is the cost LoRA avoids, so — exactly as
-    the paper prescribes for huge dimensions (Q fixed to identity there) — we run
-    SOAP one-sided: the eigenbasis lives on the small (r) index, the large index
-    gets plain elementwise Adam.
+    This is two-sided per factor: a full r×r eigenbasis on the small (rank-r) index
+    AND diagonal preconditioning on the large (d_in / d_out) index — the latter via
+    elementwise Adam, which is exactly SOAP's prescription for a huge dimension
+    (its eigenbasis fixed to identity, so the side is adapted diagonally, not
+    rotated). A full eigenbasis on the large side is the cost LoRA avoids. Both
+    LoRA factors A and B are preconditioned (eigenbases Q_A and Q_B on their r
+    indices).
 
     Per factor (A: r×d_in, small side = rows; B: d_out×r, small side = cols):
 
