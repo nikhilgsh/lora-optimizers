@@ -1,10 +1,11 @@
 #!/bin/bash
-# Phase L (long-horizon 1B) at r=256, chord-tight-clean SSC k=1, with the
-# curvature-whitening flag. Identical to sweep_phase_L_1b_r256_ssc_k1.sh
-# except it threads --curvature_whitening: the whitening metric becomes an
-# EMA of the factor-gradient outer products (S_curv = EMA(g_A g_Aᵀ) = BᵀHB)
-# instead of the geometric Gram (BᵀB). Everything else (polar+SSC κ, k=1,
-# ρ) is unchanged — isolates the whitening metric vs the ssc_k1 baseline.
+# Phase L (long-horizon 1B) at r=256, chord-tight-clean k=1, with the
+# --curvature_whitening flag. polar_method selects plain NS polar (default
+# for the curvature A/B) or SSC; at k=1 the Picard cross-coupling is off.
+# --curvature_whitening swaps the whitening metric from the geometric Gram
+# (BᵀB) to an EMA of the factor-gradient outer products (S_curv =
+# EMA(g_A g_Aᵀ) = BᵀHB). Run the false/true arms head-to-head, identical in
+# every other respect, to isolate the whitening metric.
 #
 # Positional args (must match params JSON key order):
 #   1: lr

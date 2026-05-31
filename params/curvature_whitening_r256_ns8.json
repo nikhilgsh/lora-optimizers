@@ -3,11 +3,11 @@
   "optimizer": ["adam-polar-product-lora-coupled-spectral-chord-tight-clean"],
   "lora_plus_multiplier": ["1.0"],
   "seed": ["0"],
-  "polar_method": ["ssc"],
+  "polar_method": ["ns"],
   "ssc_c": ["none"],
-  "ssc_kappa": ["0.75"],
-  "ssc_kappa_solver": ["stable_rank"],
+  "ssc_kappa": ["none"],
+  "ssc_kappa_solver": ["eigvalsh"],
   "ssc_nsteps": ["10"],
-  "muon_ns_steps": ["10"],
-  "curvature_whitening": ["true"]
+  "muon_ns_steps": ["8"],
+  "curvature_whitening": ["false", "true"]
 }
