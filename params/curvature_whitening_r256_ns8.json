@@ -9,5 +9,5 @@
   "ssc_kappa_solver": ["eigvalsh"],
   "ssc_nsteps": ["10"],
   "muon_ns_steps": ["8"],
-  "curvature_whitening": ["false", "true"]
+  "curvature_whitening": ["true"]
 }
