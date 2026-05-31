@@ -36,4 +36,19 @@ cd "$REPO_DIR"
 # Override: FORCE_NTASKS_MISMATCH=1 ./check_clean_tree.sh
 python scripts/check_pending_sbatches.py
 
+# Orchestration lint (ml_utils.sbatch_lint): the SAME static lint submit-pending
+# runs — catches sbatch-BODY failures that bash -n and component smokes miss
+# (assignment to a bash special var like GROUPS, a non-executable wrapper →
+# Permission denied/exit 126, CELLS-vs-ntasks mismatch, syntax errors). Running
+# it HERE means the build-time gate matches submit-pending's gate, so these are
+# caught when the sbatch is written, not at submit time. Skips gracefully if
+# ml_utils isn't importable; override with SKIP_SBATCH_LINT=1.
+if [[ "${SKIP_SBATCH_LINT:-0}" != "1" ]] && python -c "import ml_utils.sbatch_lint" 2>/dev/null; then
+    shopt -s nullglob
+    PENDING_SBATCHES=(slurm_pending/*.sbatch)
+    if [[ ${#PENDING_SBATCHES[@]} -gt 0 ]]; then
+        python -m ml_utils.sbatch_lint "${PENDING_SBATCHES[@]}"
+    fi
+fi
+
 exec python -m lora_playground.execution_scope check-clean
