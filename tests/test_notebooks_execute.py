@@ -22,12 +22,12 @@ ROOT = Path(__file__).resolve().parents[1]
 NB_DIR = ROOT / "notebooks"
 
 LEADERBOARD_NOTEBOOKS = [
-    "opc_1b_leaderboard",
-    "llama32_opc_1b_leaderboard",
-    "llama32_openmath_1b_leaderboard",
-    "openmath_1b_leaderboard",
-    "tulu3_1b_leaderboard",
-    "qwen25_opc_leaderboard",
+    "olmo2_1b_opc_leaderboard",
+    "llama32_1b_opc_leaderboard",
+    "llama32_1b_openmath_leaderboard",
+    "olmo2_1b_openmath_leaderboard",
+    "olmo2_1b_tulu3_leaderboard",
+    "qwen25_1p5b_opc_leaderboard",
     "damping_fullpolar_r256_leaderboard",
 ]
 
