@@ -34,6 +34,28 @@ from pathlib import Path
 PENDING = Path("slurm_pending")
 NTASKS_PATTERN = re.compile(r"^\s*#SBATCH\s+--ntasks=(\d+)\s*$", re.MULTILINE)
 CELLS_PATTERN = re.compile(r"^\s*#\s*CELLS:\s*(\d+)\s*$", re.MULTILINE)
+# Body line `PARAM_FILE="params/<sweep>.json"` (the disBatch sweep spec). Two
+# pending sbatches sharing a PARAM_FILE are almost always the same sweep staged
+# twice under different group names — submitting both burns GPUs on identical
+# cells and collides in the loader. (Real failure, 2026-05-31: a curvature
+# sweep got staged a second time without first checking slurm_pending/.)
+PARAM_FILE_PATTERN = re.compile(
+    r"""^\s*PARAM_FILE=["']?([^"'\s]+)["']?\s*$""", re.MULTILINE
+)
+
+
+def _duplicate_param_file_msgs() -> list[str]:
+    """REFUSE lines for any params file referenced by >1 pending sbatch."""
+    by_param: dict[str, list[str]] = {}
+    for sbatch in sorted(PENDING.glob("*.sbatch")):
+        m = PARAM_FILE_PATTERN.findall(sbatch.read_text())
+        if m:
+            by_param.setdefault(m[-1], []).append(sbatch.name)
+    return [
+        f"  {param_file}  <-  {', '.join(names)}"
+        for param_file, names in sorted(by_param.items())
+        if len(names) > 1
+    ]
 
 
 def main() -> int:
@@ -43,6 +65,8 @@ def main() -> int:
     refuse_msgs: list[str] = []
     warn_msgs: list[str] = []
     missing_header: list[str] = []
+
+    dup_param_msgs = _duplicate_param_file_msgs()
 
     for sbatch in sorted(PENDING.glob("*.sbatch")):
         text = sbatch.read_text()
@@ -93,6 +117,22 @@ def main() -> int:
             "header (required for ntasks-vs-cells check; add near `# ETA: H`):\n"
             + "\n".join(missing_header) + "\n\n"
         )
+    if dup_param_msgs:
+        sys.stderr.write(
+            "check_pending_sbatches: REFUSE — same PARAM_FILE referenced by "
+            "multiple pending sbatches (duplicate sweep staged twice):\n"
+            + "\n".join(dup_param_msgs)
+            + "\n\nSubmitting both runs identical cells on separate GPUs and "
+            "creates colliding log groups. Before staging a new sweep, check "
+            "slurm_pending/ (and the live queue) for an sbatch already using "
+            "this params file. Delete the duplicate sbatch, or — if the second "
+            "is intentional (e.g. a different GPU type) — set the override.\n"
+            "Override: FORCE_DUP_PARAMS=1\n"
+        )
+        if os.environ.get("FORCE_DUP_PARAMS") == "1":
+            sys.stderr.write("FORCE_DUP_PARAMS=1 set; proceeding anyway.\n")
+        else:
+            return 1
     if refuse_msgs:
         sys.stderr.write(
             "check_pending_sbatches: REFUSE — ntasks/cells mismatch in "
