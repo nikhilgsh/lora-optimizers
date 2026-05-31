@@ -1,8 +1,86 @@
 # SOAP, curvature whitening, and the chord-tight sandwich
 
-> **Status: design discussion, no new code.** Works out what the proposed
-> $S^{-1/2}\,\mathrm{SOAP}(m;S)$ update is, how it relates to the implemented
-> `--curvature_whitening` flag, and what would actually be new to build.
+> **Status (2026-05-31 handoff): implemented (`CurvatureWhitenLoRA`, commit
+> `eaa86f9`), Codex-audited, unit-tested, but the r256 opc run DIVERGES early and
+> the root cause is UNRESOLVED.** Read "Implementation status & handoff" below
+> before continuing. The lower sections are the original design discussion.
+
+## Implementation status & handoff (2026-05-31)
+
+### What is implemented — `CurvatureWhitenLoRA` (`lora_playground/optim.py`)
+Registered as `curvature-whiten-lora` (no polar) and `curvature-whiten-polar-lora`
+(`use_polar=True`). Per LoRA factor (A: r×d_in, B: d_out×r):
+- **Direction (harmonious Kronecker):** $\Delta A \propto S_{rA}^{-1/2}\,\hat m_A\,D_{\mathrm{in}}^{-1/2}$,
+  $\Delta B \propto D_{\mathrm{out}}^{-1/2}\,\hat m_B\,S_{rB}^{-1/2}$. Small side = full
+  $r\times r$ whitening $S_r^{-1/2}=Q\Lambda^{-1/2}Q^\top$ with $Q$ from **warm-started
+  QR power-iteration** (eigh only to seed the first refresh — per
+  [[feedback_no_eigh_in_production]], NO per-step eigh) and $\lambda$ = Rayleigh
+  diagonal $\mathrm{diag}(Q^\top L Q)$. Large side = explicit diagonal
+  $D=\mathrm{EMA}(\mathrm{diag}(g^\top g))$. Relative damping $\delta$ (default `1e-3`,
+  `--precond_delta`). Input is bias-corrected momentum $\hat m$.
+- **Magnitude (chord-tight-clean convention, matches the curvature baselines):**
+  $\rho = lr/(\sigma_{\max}(A)+\sigma_{\max}(B))$, each update rescaled to
+  $\sigma_{\max}(\Delta A)=\rho$ via warm-started power iteration. So `lr` is the
+  same spectral-budget meaning as the baselines.
+
+### Confirmed correct
+- **Codex-audited** (two passes): orientation, ordering (no self-preconditioning —
+  EMAs/Q updated AFTER the step), zero-init EMA, eigenbasis refresh, `use_polar`.
+- **9 unit tests pass** (`tests/test_curvature_whiten_lora.py`).
+- **Magnitude is NOT the bug.** Synthetic diagnostic (`/tmp/mag_diag.py`, r64 d512,
+  random grads, B nonzero): $\sigma_{\max}(\Delta A)\approx\rho$ and
+  $\sigma_{\max}(\Delta W)\approx 1.5\!\times\!10^{-3} \le lr=3\!\times\!10^{-3}$ —
+  the chord bound holds with margin. Do NOT re-chase a magnitude bug.
+
+### BROKEN — the open problem
+Real r256 × OLMo-2-1B × opc smokes (50–60 step, train_loss, `δ=1e-3`):
+- `curvature-whiten-lora` lr=1e-3: flat/noisy at base ~1.0 (no learning).
+- lr=3e-3: train_loss **spikes to ~9** by step 10, then recovers to ~2 by step 50.
+- lr=1e-2: spikes to ~20.
+- `curvature-whiten-polar-lora` (use_polar): WORSE — spikes to ~22 and stays.
+
+### Ruled out
+- **δ / weak-direction amplification.** δ=1e-2 spikes **identically** to δ=1e-3
+  (8.4/10.5/8.8/7.6) → δ-insensitive → the spike is NOT the whitening's tail
+  amplification.
+- **Magnitude / σ_max overshoot.** Verified bounded in synthetic (above).
+- **Polar (orthogonalization).** Makes it worse, not better.
+
+### Leading hypotheses (UNVERIFIED — for the next agent)
+1. **Wrong-direction (anti-descent) whitened step.** Magnitude is bounded
+   ($\sigma_{\max}(\Delta W)\le lr$) but the whitened DIRECTION points uphill in the
+   real regime → loss rises → gradient grows → runaway (consistent with loss
+   1→14 in 5 steps despite ≤3e-3 spectral steps). Prime suspect: the large-side
+   $D_{\mathrm{in}}^{-1/2}=\mathrm{EMA}(\mathrm{diag}(g^\top g))^{-1/2}$ UP-weights
+   low-gradient-energy columns (anti-signal), like a too-aggressive natural-grad.
+2. **B=0 LoRA-init dynamics** + real (structured) gradients — the synthetic used
+   B≠0 and random grads and did NOT spike, so the failure is specific to one/both.
+3. **Possible red herring:** the 50-step *train_loss* (per-batch, noisy) spike may
+   be a recoverable startup transient (no-polar lr=3e-3 already recovers 9→2 by
+   step 50; the chord-tight baselines use the same ρ and are healthy by step 200 —
+   their early steps were never inspected). Confirm with a longer **eval**-based
+   run before concluding it's broken.
+
+### Concrete next diagnostics
+1. Instrument the real first ~10 steps: log $\sigma_A,\sigma_B,\rho,\sigma_{\max}(\Delta W)$
+   and **`cos(applied ΔW, −∇W)`** — is each step descent or ascent? (Distinguishes
+   "wrong direction" from "noisy transient".)
+2. **Ablate $D$** (set the large side to identity) — does the spike vanish? Isolates
+   the column-energy whitening (hypothesis 1).
+3. Ablate $S_r$ (identity small side) — isolates the other factor.
+4. Run one lr=3e-3 to ~300 steps with eval (not train_loss) to settle hypothesis 3.
+5. Compare against `curvature_whitening_ns8_k1_r256_olmo_opc` (the chord-tight
+   curvature baseline) early-step behavior at the same lr.
+
+### Reproduce / infra
+- Smoke: `bash` activate `ffcv-pl`; `PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python -u train_lora.py --data_dir data/opc_sft_stage2_all_packed_seq2048 --data_pipeline_version packed_v1.1 --max_seq_length 2048 --bf16 --batch_size 4 --grad_accum_steps 4 --lr <lr> --optimizer curvature-whiten-lora --lora_r 256 --lora_alpha 256 --curvature_beta 0.99 --precond_refresh_every 10 --precond_delta <δ> --max_steps N --train_loss_every 5`.
+- Sweep wrapper `scripts/sweep/sweep_curvature_whiten_r256_opc.sh` (positional: lr,
+  optimizer, seed, precond_delta); pending sbatch (gpuxl h100) staged earlier but
+  NOT updated for lr×δ and NOT submitted.
+- **Local GPU (shared A6000) caveats** (see [[feedback_parallelize_and_gpu_planning]]):
+  use `~/ml_utils/bin/gpu-reap.sh` to clear orphaned 40 GB holders before/after each
+  smoke (reaper kills fine but has a cosmetic exit-1 bug to fix); NEVER `conda run`
+  (buffers — use activate + `python -u`); screen on train_loss not the 158s eval.
 
 ## Notation
 
