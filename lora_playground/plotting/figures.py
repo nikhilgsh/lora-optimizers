@@ -332,6 +332,8 @@ def compare_variants_figure(
     traj_ylim: tuple[float, float] | None = None,
     auto_ylim: bool = True,
     divergent_ratio: float = 1.5,
+    target_label: str | None = "AdamW",
+    allow_label_collision: bool = False,
 ):
     """Compare named optimizer variants at a fixed config; 2-panel + tables.
 
@@ -362,6 +364,15 @@ def compare_variants_figure(
     """
     import pandas as pd
     from lora_playground.loader import load_runs
+    from .labels import canonical_label, canonical_colors, order_labels
+    from .dedup import assert_label_discriminates
+
+    # Single source of truth: default to the canonical labeler so every cell
+    # gets identical, fully-discriminating names without hand-rolling one.
+    if variant_key is None:
+        variant_key = canonical_label
+    # Enforce AdamW-first + deterministic legend/plot order for ALL callers.
+    variants = {l: variants[l] for l in order_labels(variants) if l in variants}
 
     # per_variant[label] = {lr: (final_or_last_loss, cfg, history)}
     # per_variant_partial[label] = same shape, only runs that haven't yet reached max_steps
@@ -373,13 +384,19 @@ def compare_variants_figure(
         # Avoids the 8x-load_runs penalty when many small variants share
         # filesystem scans. variant_key returns None to skip a run, else
         # the variant label that run belongs to.
-        if variant_key is None:
-            raise ValueError("prefetched_runs requires variant_key callable")
         runs_by_variant: dict = {label: [] for label in variants}
         for c, h in prefetched_runs:
             label = variant_key(c)
             if label is not None and label in runs_by_variant:
                 runs_by_variant[label].append((c, h))
+        # GUARD: a (label, lora_r, lr) bucket holding >1 distinct series_id means
+        # the label silently merges distinct configs (the eps_rel ns5/ns8 bug).
+        # Raise instead of keeping min-loss; opt out only with allow_label_collision.
+        if not allow_label_collision:
+            guarded = [(c, h) for c, h in prefetched_runs
+                       if variant_key(c) in runs_by_variant]
+            assert_label_discriminates(guarded, variant_key,
+                                       bucket_keys=("lora_r", "lr"))
     else:
         runs_by_variant = None
 
@@ -444,8 +461,9 @@ def compare_variants_figure(
     summary_df = pd.DataFrame(summary_rows)
 
     if colors is None:
-        cmap = plt.get_cmap("tab10")
-        colors = {label: cmap(i % 10) for i, label in enumerate(variants)}
+        # Canonical: AdamW → reserved black, others distinct. Replaces the old
+        # tab10-by-dict-order default (which never reserved black for AdamW).
+        colors = canonical_colors(list(variants))
     if markers is None:
         marker_cycle = ["o", "s", "^", "D", "v", "P", "X"]
         markers = {label: marker_cycle[i % len(marker_cycle)] for i, label in enumerate(variants)}
@@ -492,6 +510,21 @@ def compare_variants_figure(
                          marker=markers[label], ms=3, lw=1.2, color=colors[label],
                          linestyle="--",
                          label=f"{label}  (lr={best_lr:g}, partial @{last_step}: {last_loss:.4f})")
+    # Dashed black line at the speed target: where each curve crosses it is the
+    # fraction-of-steps-to-target metric. The target is the AdamW baseline by
+    # default (the leaderboard metric is "steps to reach the opt-AdamW loss"),
+    # NOT `ref_label` — `ref_label` is only the Δ/σ comparison reference and is
+    # sometimes set to a non-AdamW arm (e.g. the ε_rel probe compares vs the
+    # chord-tight baseline, which would otherwise pin the line to the floor).
+    # Falls back to `ref_label` when the target arm isn't in the panel.
+    target_src = target_label if (target_label in per_variant
+                                  and per_variant[target_label]) else ref_label
+    target_d = per_variant.get(target_src) or {}
+    target_best = (min(target_d.values(), key=lambda v: v[0])[0]
+                   if target_d else None)
+    if target_best is not None:
+        ax_traj.axhline(target_best, color="black", ls="--", lw=1.2, alpha=0.8,
+                        zorder=0, label=f"{target_src} target ({target_best:.4f})")
     ax_traj.set_xlabel("step")
     ax_traj.set_ylabel("eval_loss")
     ax_traj.set_title("best-lr trajectory")

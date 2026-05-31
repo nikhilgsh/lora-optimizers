@@ -77,6 +77,14 @@ from .dedup import (
     series_id,
 )
 
+# Canonical variant labels / colors / order — single source of truth
+from .labels import (
+    canonical_colors,
+    canonical_key,
+    canonical_label,
+    order_labels,
+)
+
 # Merge + divergence
 from .merge import (
     RUNTIME_FIELDS,
