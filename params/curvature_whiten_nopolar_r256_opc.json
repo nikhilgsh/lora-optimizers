@@ -1,0 +1,5 @@
+{
+  "lr": ["1e-3", "3e-3", "1e-2", "3e-2"],
+  "optimizer": ["curvature-whiten-lora"],
+  "seed": ["0"]
+}
