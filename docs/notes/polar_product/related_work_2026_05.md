@@ -168,10 +168,16 @@ $$
 Reading it: $(B^\top L^{1/2}B)^{-1}$ is a **curvature-weighted** opposite-Gram inverse (set
 $L=R=I$ and it becomes ScaledGD's $(B^\top B)^{-1}$); $R^{-1/2}$ whitens the big side by column
 curvature; $(I-\tfrac12 Q)$ is the gauge balance. **No polar** — a linear solve, spectrum kept.
-Net: **AdaPreLoRA ≈ ScaledGD + curvature-weighting + gauge balance.** Memory
-$O((d_{\text{in}}{+}d_{\text{out}})r)$ — but per-step *compute* is $O(d_{\text{in}}d_{\text{out}})$:
-forming the Adafactor energies $L,R$ requires the full product gradient $G$ (you cannot recover its
-row/col energies from $g_A,g_B$), which the factor-only LoRA path never materializes.
+Net: **AdaPreLoRA ≈ ScaledGD + curvature-weighting + gauge balance.** Its **memory** is LoRA-level,
+$O((d_{\text{in}}{+}d_{\text{out}})r)$ — measured at AdamW-level peak in their Tbl 5 (vs LoRA-Pro's
+$2\times$ for *storing* the full-weight gradient + moments). But its **per-step compute** is
+$O(d_{\text{in}}d_{\text{out}}+(d_{\text{in}}{+}d_{\text{out}})r^2+r^3)$ (their App. D): the
+$O(d_{\text{in}}d_{\text{out}})$ term is the row/col-energy sum over the squared gradient, so it
+transiently *reads* all $d_{\text{in}}d_{\text{out}}$ entries each step even though it never *stores*
+them. (Their Tbl 1 quotes $O((d_{\text{in}}{+}d_{\text{out}})r^2)$, dropping the
+$d_{\text{in}}d_{\text{out}}$ term — inconsistent with App. D.) The energies $L,R$ are **diagonal**;
+$G_t$ comes from a backward hook on $W$ or the rank-$2r$ tangent surrogate $\tilde G = g_B A + B g_A$
+(Alg 1 note).
 
 ### 3.6 Ours — chord-tight
 
@@ -545,7 +551,7 @@ not clip.) $k{=}1$ coupling off, $k{\ge}2$ on.
 $(-\eta g)A^\top$ for any common $g$), so the $k{\ge}2$ fixed point is the KKT of an *incoherent*
 objective, not literally (P). The "(P)" claims hold for the coherent-gradient program.
 
-**Tests at r=256** (where $k{=}2$ currently hurts), one change at a time:
+**Tests at r=256** (where $k{=}2$ is *suspected* to hurt — unverified, see the saturation note in §10.6), one change at a time:
 
 1. Compare anchored $k{=}2$ against anchored $k{=}1$, with plain Gram whitening. (Does the
    cross-coupling correction help at all?)
@@ -615,22 +621,77 @@ The two named methods sit at opposite corners:
 | chord-tight | Frobenius | on (polar) | $u_A$ |
 | AdaPreLoRA | curvature | off | $g_A$ |
 
-**Cost.** Curvature is the expensive corner: forming $L,R$ needs the full product gradient $G$, so
-$O(d_{\text{in}}d_{\text{out}})$ per step — versus $O((d_{\text{in}}{+}d_{\text{out}})r)$ for the
-Frobenius (factor-only) path.
+**Two cost axes — the gradient read and the preconditioner — and coherence is neither.** Adaptive
+(true-gradient) curvature carries a price that coherence does not:
 
-**Pick two: cheap, coherent, adaptive.** No single input/metric gets all three. Here *coherent*
-means the update is the projection of one weight-space target (§10.5); *adaptive* means it tracks
-per-coordinate gradient scale.
+- **Geometric Gram** (chord-tight, $S_B{=}B^\top B$): built from $B$, not the gradient → **no**
+  $d_{\text{in}}d_{\text{out}}$ read; $O((d_{\text{in}}{+}d_{\text{out}})r)$. Not adaptive.
+- **Diagonal-Kron curvature** (AdaPreLoRA): diagonal preconditioner → LoRA-level *memory*
+  $O((d_{\text{in}}{+}d_{\text{out}})r)$, but it *reads* the full gradient for the row/col energies →
+  compute $O(d_{\text{in}}d_{\text{out}}+(d_{\text{in}}{+}d_{\text{out}})r^2+r^3)$ (App. D).
+- **Full-Kron curvature** (Shampoo/SOAP on $W$): dense $d{\times}d$ preconditioners →
+  $O(d_{\text{out}}^2{+}d_{\text{in}}^2)$ memory, $O(d_{\text{out}}^3{+}d_{\text{in}}^3)$ inverse. The heavy corner.
+- **Factor-contraction curvature** (`curvature-whiten-lora`, the SOAP route): curvature from
+  $g_A g_A^\top$ etc. → factor-only, *no* $d_{\text{in}}d_{\text{out}}$ read; adaptive but incoherent
+  (filtered through the factors, `soap_curvature_whitening.md`).
 
-| input / metric | cheap | coherent | adaptive |
-|---|---|---|---|
-| raw $g_A$, $\mathcal F{=}I$ | yes | yes | no |
-| per-factor Adam $u_A$ | yes | no | yes |
-| curvature $L,R$ | no | yes | yes |
+| metric | reads full grad? | precond. memory | coherent? | adaptive? |
+|---|---|---|---|---|
+| geometric Gram (chord-tight) | no | $O((d_{\text{in}}{+}d_{\text{out}})r)$ | yes ($\mathcal F{=}I$) | no |
+| factor-contraction (SOAP route) | no | $O((d_{\text{in}}{+}d_{\text{out}})r)$ | **no** | yes |
+| diagonal-Kron curvature (AdaPreLoRA) | **yes** ($O(d_{\text{in}}d_{\text{out}})$) | $O((d_{\text{in}}{+}d_{\text{out}})r)$ | yes | yes |
+| full-Kron curvature (Shampoo on $W$) | yes | $O(d_{\text{out}}^2{+}d_{\text{in}}^2)$ | yes | yes |
 
-Chord-tight takes the cheap-and-adaptive corner; in our runs the lost coherence is interpretive
-tidiness, not a measured cost.
+Among adaptive options at LoRA memory, you can **avoid the $O(d_{\text{in}}d_{\text{out}})$ read OR be
+coherent, not both**: AdaPreLoRA reads the true gradient to get coherent energies; the
+factor-contraction route stays factor-only but its curvature is then filtered/incoherent. Coherence
+is orthogonal to preconditioner richness (diagonal vs dense). Chord-tight itself is geometric-Gram +
+polar + $u_A$ — the per-factor Adam input is its only adaptive piece, and it is incoherent; in our
+runs the lost coherence is interpretive tidiness, not a measured cost.
+
+**The coupled solve: generalized Picard.** The §10.6 update above is the *per-block* ($k{=}1$)
+solution. The joint program couples the factors through the reachable tangent
+$J=B\,\mathrm dA+\mathrm dB\,A$:
+$$
+\min_{\mathrm dA,\mathrm dB}\ \tfrac12\|J-T\|_{\mathcal F}^2
+\quad\text{s.t.}\quad \|Y_A\|_2\le\tau,\ \|Y_B\|_2\le\tau .
+$$
+Block-coordinate descent: fix $\mathrm dB$, so the $A$-block's residual target is $T-\mathrm dB\,A$;
+whitening $\mathrm dA=(B^\top P B)^{-1/2}Y_A Q^{-1/2}$ reduces the $A$-subproblem to
+$\min_{Y_A}\tfrac12\|Y_A\|_F^2-\langle Y_A,H_A\rangle$ s.t. $\|Y_A\|_2\le\tau$, with
+$$
+H_A^0=(B^\top P B)^{-1/2}g_A\,Q^{-1/2},\qquad
+C_A(\mathrm dB)=(B^\top P B)^{-1/2}\,B^\top P\,(\mathrm dB\,A)\,Q^{1/2},\qquad
+H_A=H_A^0-C_A(\mathrm dB).
+$$
+Solution $Y_A=\Pi_\tau(H_A)$, $\Pi_\tau=\operatorname{clip}_\tau$ (exact) or the polar (anchored).
+$B$-side mirrors:
+$$
+H_B^0=P^{-1/2}g_B(AQA^\top)^{-1/2},\qquad
+C_B(\mathrm dA)=P^{1/2}(B\,\mathrm dA)\,Q A^\top(AQA^\top)^{-1/2}.
+$$
+Iterate from $\mathrm dA^0=\mathrm dB^0=0$ (Gauss–Seidel). $H_A^0$ is the standalone whitened gradient;
+$C_A$ is the cross-coupling — $\mathrm dB$'s product contribution pushed back through $B$ and the
+metric, subtracted from $A$'s target.
+
+- **Reductions.** $k{=}1$ ($\mathrm dB^0{=}0\Rightarrow C_A{=}0$): $Y_A=\Pi_\tau(H_A^0)$, the per-block
+  update — and with $\mathcal F{=}I$ plus the polar this is exactly iMuon. $\mathcal F{=}I$ in general:
+  $H_A^0=S_B^{-1/2}g_A$, $C_A=S_B^{-1/2}B^\top(\mathrm dB\,A)$ — the Frobenius coupling of §10.5(i).
+  Cap off ($\Pi_\tau=$ identity) makes the projection linear and closed-form (AdaPreLoRA) — the cap is
+  the only reason the joint solve needs iteration.
+- **Saturation — and why it bites only at $k{\ge}2$.** $\operatorname{clip}_\tau$ is the *exact*
+  per-block projection onto the spectral ball; production substitutes the polar, which equals the clip
+  only under saturation (all $\sigma_i\ge\tau$). At r256 the step is non-saturated (measured: median
+  $\sigma\approx0.1$ against $\tau{=}1$, $\cos(\text{polar},\text{clip})\approx0.9$). This does **not**
+  undermine $k{=}1$: there the polar is the *exact spectral LMO* ($\max\langle B\,\mathrm dA,\cdot\rangle$
+  s.t. the cap — the iMuon derivation), which needs no saturation. The coupling is what commits you to
+  the *projection* (there is no coupled LMO), whose per-block solve is the clip-prox; using the polar
+  for it is the *anchored* approximation, exact only under saturation. So the principled $k{\ge}2$ runs
+  the BCD with $\operatorname{clip}_\tau$ (exact, saturation-free); the polar-BCD is fragile precisely
+  where saturation fails, i.e. r256. **Still unverified empirically**: no completed, config-matched
+  olmo-r256 $k{=}1$-vs-$k{=}2$ at the 9000-step horizon exists (the $k{=}2$ phase-L sweeps were
+  truncated at 1–3k steps). Discriminating test: $\operatorname{clip}$-$k2$ vs polar-$k2$ at r256 —
+  clip recovers ⟹ the anchored-polar is the culprit; both fail ⟹ the coupling itself is.
 
 ## Sources
 
