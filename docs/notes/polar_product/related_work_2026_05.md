@@ -100,19 +100,19 @@ $(B,A)\sim(BN^{-1},NA)$; iMuon demands the product update be identical across ga
 
 *Derivation.* The recipe is: whiten the step by $S_B^{-1/2}$, run the §2 Euclidean LMO, un-whiten.
 Concretely, the intrinsic-norm LMO measures the $A$-step's size *after* the metric,
-$\|S_B^{1/2}\mathrm dA\|\le\tau$. Substituting $Z_A = S_B^{1/2}\mathrm dA$ (so
-$\mathrm dA = S_B^{-1/2}Z_A$) turns the problem into a plain Euclidean LMO:
+$\|S_B^{1/2}\mathrm dA\|\le\tau$. Substituting $Y_A = S_B^{1/2}\mathrm dA$ (so
+$\mathrm dA = S_B^{-1/2}Y_A$) turns the problem into a plain Euclidean LMO:
 $$
-\max_{\|Z_A\|\le\tau}\ \langle Z_A, H_A\rangle,
+\max_{\|Y_A\|\le\tau}\ \langle Y_A, H_A\rangle,
 \qquad H_A := S_B^{-1/2}g_A\ \text{(the scaled gradient)} .
 $$
-Solve for $Z_A^\star$, then map back with $\mathrm dA = S_B^{-1/2}Z_A^\star$. The two norm choices
+Solve for $Y_A^\star$, then map back with $\mathrm dA = S_B^{-1/2}Y_A^\star$. The two norm choices
 of §2 then diverge for one reason — the Frobenius solution is *linear* in $H_A$, the spectral one
 is *nonlinear*:
 
-- **Frobenius:** $Z_A^\star = \tau H_A/\|H_A\|_F$ is linear, so the two half-powers merge into a
+- **Frobenius:** $Y_A^\star = \tau H_A/\|H_A\|_F$ is linear, so the two half-powers merge into a
   full inverse: $\mathrm dA = \tau\,S_B^{-1}g_A/\|H_A\|_F$ — spectrum kept (this is ScaledGD).
-- **Spectral:** $Z_A^\star = \tau\,\phi(H_A)$ is nonlinear, so the inner half-power stays trapped
+- **Spectral:** $Y_A^\star = \tau\,\phi(H_A)$ is nonlinear, so the inner half-power stays trapped
   inside the polar — the **sandwich**, spectrum flattened:
   $$
   \boxed{\ \mathrm dA = -\eta\,S_B^{-1/2}\,\phi\!\bigl(S_B^{-1/2}\,g_A\bigr)\ } \qquad\text{(iMuon)}
@@ -249,8 +249,9 @@ Derivations (each one line):
   $\|B\,\mathrm dA\|_2=\eta$.
 - *ScaledGD:* $B\,\mathrm dA=-\eta P_B G$ (projection onto $B$'s column space), so
   $\|B\,\mathrm dA\|_2\le\eta\|G\|_2$.
-- *ours:* $\sigma_{\max}(\mathrm dA)=\rho$ by construction (we divide by $\sigma_{\max}$), and Lemma 1
-  gives $\|J\|_2\le(\sigma_{\max}(A)+\sigma_{\max}(B))\rho=\eta$.
+- *ours:* $\sigma_{\max}(\mathrm dA)=\rho$ by construction (we divide by $\sigma_{\max}$), so the
+  triangle inequality gives
+  $\|J\|_2\le\|B\,\mathrm dA\|_2+\|\mathrm dB\,A\|_2\le(\sigma_{\max}(A)+\sigma_{\max}(B))\rho=\eta$.
 
 (Riemannion has no factor steps — $\mathrm dA,\mathrm dB$ are read off the retraction's SVD.)
 
@@ -404,294 +405,248 @@ Readings:
    idealized-rate arguments, which give $\eta^\star\propto r^{-1/2}$ for both Adam and spectral and
    thus predict a wash the data does not show.)
 
-## 10. Our step is a clipped projection — and how AdaPreLoRA plugs in
+## 10. The generalized program: a trust region and its coupling
 
-In words, chord-tight does this each step: **find the closest reachable product-change to the
-gradient step, then clip its spectrum.** "Reachable" means $\mathcal R=\{B\,\mathrm dA+\mathrm dB\,A\}$,
-the product-changes one LoRA step can make. The two halves — projection (closest reachable) and clip
-(spectral cap) — are separable to explain but coupled to solve, and that coupling is the Picard loop.
-Math below verified numerically to machine precision. ($g_A=B^\top(-\eta g)$, $g_B=(-\eta g)A^\top$;
-$A$-side shown, $B$-side mirrors.) All §10 formulas use the gradient $g_A$;
-chord-tight substitutes the per-factor Adam direction $u_A$ (§3.6) — the incoherent-Adam choice (§10.5).
+Chord-tight, iMuon, ScaledGD, and AdaPreLoRA are one construction with three knobs. Each step takes a
+gradient, optionally preconditions it by a curvature metric, and fits it to the changes a single LoRA
+step can reach — as a **trust-region LMO** (the polar; $k{=}1$) or, once the two factors are coupled,
+as a **projection** solved by block-coordinate descent ($k{\ge}2$). The knobs:
 
-### 10.1 The projection half
+1. **Metric $\mathcal F$** — plain Frobenius (geometric Gram) or loss curvature.
+2. **Cap** — spectral (a trust region the polar enforces, flattening the spectrum) or none (a
+   least-squares fit, keeping it).
+3. **Input** — the raw factor gradient $g_A$ or the per-factor Adam direction $u_A$.
 
-Without the clip, the program is the Frobenius projection of the gradient step $-\eta g$ onto
-$\mathcal R$:
+Convention (from §1): $G=\partial L/\partial(\Delta W)$, $g_A=B^\top G$, $g_B=GA^\top$; the $A$-side is
+shown and the $B$-side mirrors. Step *magnitude* is set by the $\rho/\sigma_{\max}$ scaling of §3.6, so
+§10 tracks *directions* and writes $G$ for the gradient.
+
+### 10.1 Setup: metric, reachable tangent, two whitening lemmas
+
+**Reachable tangent.** One LoRA step moves the product by some $J$ in
 $$
-\min_{\mathrm dA,\mathrm dB}\ \bigl\|\,B\,\mathrm dA+\mathrm dB\,A-(-\eta g)\,\bigr\|_F^2,
-\qquad P_{\mathcal R}(-\eta g)=P_B(-\eta g)+(-\eta g)P_A-P_B(-\eta g)P_A,
+\mathcal R=\{\,B\,\mathrm dA+\mathrm dB\,A\,\},
 $$
-with $P_B=B S_B^{-1}B^\top$, $P_A=A^\top S_A^{-1}A$. One factor split realizing it (the split is
-gauge-free — many $(\mathrm dA,\mathrm dB)$ give the same product change; we pin it implicitly by
-equal-$\sigma_{\max}$ steps, AdaPreLoRA by factor-balance):
+the rank-$\le2r$ tangent at the current factors.
+
+**Metric.** Equip $\mathbb R^{d_{\text{out}}\times d_{\text{in}}}$ with an SPD metric of Kronecker form
 $$
-\boxed{\ \mathrm dA=S_B^{-1}g_A,\qquad \mathrm dB=g_B S_A^{-1}-B S_B^{-1}(g_A A^\top)S_A^{-1}\ }
+\langle X,Y\rangle_{\mathcal F}=\operatorname{tr}(X^\top P\,Y\,Q),\qquad P\succ0\ (d_{\text{out}}{\times}d_{\text{out}}),\quad Q\succ0\ (d_{\text{in}}{\times}d_{\text{in}}),
 $$
-*Check.* $B\,\mathrm dA=P_B(-\eta g)$ and $\mathrm dB\,A=(I-P_B)(-\eta g)P_A$, so their sum is
-$P_{\mathcal R}(-\eta g)$, the projection we wanted.
+with $\|X\|_{\mathcal F,2}:=\|P^{1/2}XQ^{1/2}\|_2$ its spectral norm (the map $X\mapsto P^{1/2}XQ^{1/2}$
+is an isometry onto plain Frobenius; this is its spectral counterpart). Two instances span the design:
 
-*Cost.* The two $r\times r$ inverses $S_A^{-1},S_B^{-1}$ (the square of the Higham $S^{-1/2}$ we
-already hold), plus $(d_{\text{in}}{+}d_{\text{out}})\times r$ matmuls — no eigh, no Sylvester, no
-iteration.
+- **Frobenius:** $P=Q=I$ (plain Gram $S_B=B^\top B$ whitening).
+- **Curvature:** $P=L^{1/2},\ Q=R^{1/2}$, with $L\in\mathbb R^{d_{\text{out}}},\ R\in\mathbb R^{d_{\text{in}}}$
+  the Adafactor row/column energies of $G$ (§3.5).
 
-*Relation to other methods.* $\mathrm dA=S_B^{-1}g_A$ is the ScaledGD update (§3.2); the $\mathrm dB$
-formula adds one cross term. This is exactly **AdaPreLoRA's program with $\mathcal F=I$** (its
-LoRA-Pro / Frobenius case), and our LinLoRA optimizer already solves a system like it in closed form.
-
-### 10.2 The inner loop: block-coordinate descent, under saturation
-
-The normal equations of the uncapped projection are
+**Whitened factor steps.**
 $$
-S_B\,\mathrm dA+B^\top\mathrm dB\,A=g_A,\qquad \mathrm dB\,S_A+B\,\mathrm dA\,A^\top=g_B .
+Y_A:=(B^\top P B)^{1/2}\,\mathrm dA\,Q^{1/2},\qquad Y_B:=P^{1/2}\,\mathrm dB\,(AQA^\top)^{1/2},
 $$
-The optimizer does **block-coordinate descent (BCD)** on these — fix one block, update the other
-(the loop we call "Picard"). The off-diagonal term $B^\top\mathrm dB\,A$ is the cross-coupling — it
-enters the $A$-block as $\tilde u_A=u_A+(1/\eta)B^\top\mathrm dB\,A$. The iteration depth
-$k$ controls whether it is included: $k{=}1$ ignores it ($\mathrm dB^0=0$), $k{\ge}2$ picks it up —
-this is the "second-order correction."
+so $\mathrm dA=(B^\top P B)^{-1/2}Y_A\,Q^{-1/2}$ and $\mathrm dB=P^{-1/2}Y_B(AQA^\top)^{-1/2}$. Two lemmas
+make the whitened variable the natural one — both the cap and the cost become clean in it.
 
-Chord-tight makes this BCD cheap **under a saturation assumption**, via two simplifications that are
-exact only when the clip is active (saturating):
+**Lemma 10.1 (whitened cap).** $\|B\,\mathrm dA\|_{\mathcal F,2}=\|Y_A\|_2$.
 
-- **Polar instead of clip.** Each block is solved with the polar map (Muon), which equals the exact
-  clip-prox block-solve only when the clip binds.
-- **Self-term dropped** (the *anchored* linearization), exact when the per-block contribution norm
-  depends on state only.
+*Proof.* $P^{1/2}B(B^\top P B)^{-1/2}$ has orthonormal columns — a partial isometry — so
+left-multiplication by it preserves singular values:
+$\|P^{1/2}(B\,\mathrm dA)Q^{1/2}\|_2=\|(B^\top P B)^{1/2}\mathrm dA\,Q^{1/2}\|_2=\|Y_A\|_2$. At
+$\mathcal F{=}I$ this is iMuon's $BS_B^{-1/2}=U_BV_B^\top$. $\blacksquare$
 
-So chord-tight is "BCD + saturation" (also called "anchored Frank–Wolfe"). §10.5 gives the
-exact-vs-approximate variants.
+**Lemma 10.2 (cost collapse).** $\langle B\,\mathrm dA,\,-G\rangle=\langle Y_A,\,-H_A\rangle$ with the
+whitened gradient $H_A:=(B^\top P B)^{-1/2}\,g_A\,Q^{-1/2}$.
 
-### 10.3 The clip is the op-norm cap, and it does not separate from the projection
+*Proof.* $\langle B\,\mathrm dA,-G\rangle=\langle\mathrm dA,-g_A\rangle$ with $g_A=B^\top G$; substituting
+$\mathrm dA=(B^\top P B)^{-1/2}Y_A Q^{-1/2}$ and using cyclicity of the trace gives
+$\langle Y_A,-(B^\top P B)^{-1/2}g_A Q^{-1/2}\rangle=\langle Y_A,-H_A\rangle$. The metric never enters
+the objective; it only reshapes the cap (Lemma 10.1). $\blacksquare$
 
-This half is what makes us not-AdaPreLoRA. The full program keeps the per-block cap
-$\|B\,\mathrm dA\|_2\le\tau$. Whiten $\mathrm dA=S_B^{-1/2}Y_A$; since $B S_B^{-1/2}=U_BV_B^\top$ is a
-partial isometry, the cap becomes the clean $\|Y_A\|_2\le\tau$, and the per-block solution is the
-**projection onto the spectral-norm ball**, $Y_A=\mathrm{clip}_\tau(-\eta\,c_A)$. The three spectral
-treatments differ only in how hard they squash the singular values:
+### 10.2 The single-block update ($k{=}1$): a trust-region LMO
 
-- $\operatorname{clip}_\tau$ keeps singular values $\le\tau$ and caps the rest;
-- the full polar (chord-tight) flattens all of them to $\tau$;
-- SSC's $\kappa$ sits between the two.
-
-The cap couples back into the projection: $c_A$ carries the cross term $(1/\eta)B^\top\mathrm dB\,A$,
-and $\mathrm dB$ was itself clipped. Clip and coupling feed each other — that is *why* there is an
-iteration at all. Drop the cap and you get AdaPreLoRA/LoRA-Pro (closed form, no spectral control);
-add it and the projection loses its one-shot solution.
-
-### 10.4 Damping, variationally: a ridge in the projection metric
-
-Damping is not a separate mechanism bolted onto the step — it is a Tikhonov ridge added to the
-projection objective, and it folds entirely into the metric.
-
-The $A$-block of the projection (§10.1, §10.3) carries the quadratic
-$\tfrac12\|B\,\mathrm dA\|_F^2=\tfrac12\operatorname{tr}(\mathrm dA^\top S_B\,\mathrm dA)$, so the
-natural metric on the factor step is the opposite-factor Gram $S_B$. A ridge
-$\tfrac{\delta}{2}\|\mathrm dA\|_F^2$ on the size of the step adds $\delta I$ to that metric:
+Fix the off-block ($\mathrm dB{=}0$); the two factor steps decouple. The $A$-step is the **trust-region
+linear-maximization oracle** — maximize alignment with the gradient inside an $\mathcal F$-spectral
+ball:
 $$
-\tfrac12\|B\,\mathrm dA\|_F^2+\tfrac{\delta}{2}\|\mathrm dA\|_F^2
-=\tfrac12\operatorname{tr}\!\big(\mathrm dA^\top M\,\mathrm dA\big),
-\qquad M:=S_B+\delta I .
+\textbf{(L)}\qquad \max_{\mathrm dA}\ \langle B\,\mathrm dA,\,-G\rangle\quad\text{s.t.}\quad \|B\,\mathrm dA\|_{\mathcal F,2}\le\tau .
 $$
-That is the whole story: the whitener $S_B^{-1/2}$ becomes $(S_B+\delta I)^{-1/2}$, and nothing else
-in the step changes.
+By Lemmas 10.1–10.2 this *is* the Euclidean LMO $\max_{\|Y_A\|_2\le\tau}\langle Y_A,-H_A\rangle$, and the
+norm on $Y_A$ decides how the budget spreads across singular values (§2).
 
-**What the shift does.** $(S_B+\delta I)^{-1/2}$ acts on each singular direction of $B$ as
+**Theorem 10.1 (spectral-cap LMO — the polar).** The solution of (L) is
 $$
-\frac{1}{\sqrt{\sigma_i^2+\delta}},\qquad\text{so}\qquad
-\frac{\sigma_i}{\sqrt{\sigma_i^2+\delta}}\approx
-\begin{cases}1, & \sigma_i^2\gg\delta\\[2pt]\sigma_i/\sqrt\delta, & \sigma_i^2\ll\delta .\end{cases}
+\boxed{\ \mathrm dA=-\tau\,(B^\top P B)^{-1/2}\,\phi(H_A)\,Q^{-1/2}\ }
 $$
-The reweighting is $\approx1$ on $B$'s strong directions and only shrinks its tail — precisely the
-directions where the undamped inverse Gram would blow up. So the ridge steers the step *direction*
-off $B$'s ill-conditioned modes while leaving its well-conditioned modes untouched. The $\sigma_{\max}$
-normalization of §3.6 still pins the magnitude $\sigma_{\max}(\mathrm dA)=\rho$ on top, so damping
-changes only where the step points, not how large it is.
+($\tau$ routed through the $-\rho/\sigma_{\max}$ scaling of §3.6), where $\phi$ is the polar map. It
+flattens the whitened spectrum to $\tau$.
 
-**Setting $\delta$.** Pin it relative to $B$'s spectrum rather than as an absolute constant, so it
-scales with the problem:
-$$
-\delta=\varepsilon\,\sigma_{\max}(B)^2\quad\Rightarrow\quad\operatorname{cond}(M)\le1+\tfrac1\varepsilon .
-$$
-The one dimensionless knob is $\varepsilon$; $\delta$ follows from the current spectrum. Chord-tight
-already builds the damped whitener $(S_B+\delta I)^{-1/2}$, so enabling damping is a choice of
-$\varepsilon$, not new machinery.
+*Proof.* By §2 (von Neumann's trace inequality) the spectral-ball LMO
+$\max_{\|Y_A\|_2\le\tau}\langle Y_A,-H_A\rangle$ is maximized at $Y_A=\tau\,\phi(-H_A)=-\tau\,\phi(H_A)$;
+un-whiten with $\mathrm dA=(B^\top P B)^{-1/2}Y_A Q^{-1/2}$. $\blacksquare$
 
-### 10.5 The capped program (P), and two ways to attack it
-
-Full program — the §10.1 projection *with* the §10.3 caps:
+**Theorem 10.2 (Frobenius-cap LMO — keep spectrum).** Replacing the spectral ball by the Frobenius ball
+$\|Y_A\|_F\le\tau$ gives a solution *linear* in $H_A$,
 $$
-\textbf{(P)}\qquad \min_{\mathrm dA,\mathrm dB}\ \|B\,\mathrm dA+\mathrm dB\,A+\eta g\|_F^2
-\quad\text{s.t.}\quad \|B\,\mathrm dA\|_2\le\tau,\ \ \|\mathrm dB\,A\|_2\le\tau .
+Y_A=\tau\,H_A/\|H_A\|_F\qquad\Longrightarrow\qquad \mathrm dA\ \propto\ (B^\top P B)^{-1}\,g_A\,Q^{-1},
 $$
-(P) has **no** closed form — the caps couple the two blocks. Two ways to attack it, all whitening
-$\mathrm dA=S_B^{-1/2}Y_A$, $\mathrm dB=Y_B S_A^{-1/2}$ (caps become $\|Y_A\|_2,\|Y_B\|_2\le\tau$):
+the same direction as the unconstrained block least-squares fit. It keeps the whitened spectrum.
 
-**(i) Exact clip-prox BCD** (a construct on paper, not the chord-tight implementation).
-Block-coordinate descent solving each block *exactly* by clip-prox. Init
-$\mathrm dA^{0}=\mathrm dB^{0}=0$; for $n=0,\dots,k-1$:
-$$
-Y_A^{\,n+1}=\operatorname{clip}_\tau\!\Big(-\eta\,S_B^{-1/2}\big(g_A+\tfrac1\eta\,B^\top \mathrm dB^{\,n} A\big)\Big),
-\qquad \mathrm dA^{\,n+1}=S_B^{-1/2}\,Y_A^{\,n+1}
-$$
-(mirror for $\mathrm dB$). The self-term is not in the linear cost — it *is* the prox:
-$\operatorname{clip}_\tau$ is the Frobenius projection onto the spectral ball, i.e.
-$\min_{Y_A}\langle c_A,Y_A\rangle+\tfrac{1}{2\eta}\|Y_A\|_F^2$ s.t. $\|Y_A\|_2\le\tau$, and that
-$\|Y_A\|_F^2$ is the self-term. Run to convergence this *is* (P)'s capped minimum.
+*Proof.* By §2 (Cauchy–Schwarz) the Frobenius-ball LMO maximizes at $Y_A=\tau H_A/\|H_A\|_F$. Un-whitening,
+the two half-powers $(B^\top P B)^{-1/2}(B^\top P B)^{-1/2}$ merge to a full inverse and
+$Q^{-1/2}Q^{-1/2}=Q^{-1}$. $\blacksquare$
 
-**(ii) Chord-tight = BCD + saturation** ("anchored FW", "Picard"). Two changes from (i), harmless
-only under saturation: **polar** instead of clip (equal when the clip is active); self-term dropped
-(*anchored*), exact when the per-block norm is state-only. So it matches (i) under saturation, else
-it is approximate. (A "full" linearization adds the self-term back to the polar input — still polar,
-not clip.) $k{=}1$ coupling off, $k{\ge}2$ on.
+Theorems 10.1–10.2 are the **flatten-vs-keep** fork of §2, now metric-aware. The instance table is then
+immediate.
 
-**Solves (P)?** (i) solves it exactly; (ii) solves it under saturation, else approximately.
+**Corollary 10.1 (instances at $k{=}1$).** Substituting $(P,Q)$ (direction only; $-\rho/\sigma_{\max}$
+omitted):
 
-**Incoherent Adam.** (P) uses one $g$; chord-tight feeds per-factor Adam $u_A,u_B$ (not $B^\top(-\eta g)$,
-$(-\eta g)A^\top$ for any common $g$), so the $k{\ge}2$ fixed point is the KKT of an *incoherent*
-objective, not literally (P). The "(P)" claims hold for the coherent-gradient program.
-
-**Tests at r=256** (where $k{=}2$ is *suspected* to hurt — unverified, see the saturation note in §10.6), one change at a time:
-
-1. Compare anchored $k{=}2$ against anchored $k{=}1$, with plain Gram whitening. (Does the
-   cross-coupling correction help at all?)
-2. Add damping $\delta$ to whichever won step 1. (Does §10.4's ridge help?)
-3. Swap plain Gram whitening for curvature whitening. (Does loss-curvature help on top?)
-
-### 10.6 Generalized program: formal derivation
-
-**Metric.** Take an SPD metric $\mathcal F$ on $\mathbb R^{d_{\text{out}}\times d_{\text{in}}}$ of Kronecker form
-$$
-\langle X,Y\rangle_{\mathcal F}=\operatorname{tr}(X^\top P\,Y\,Q),\qquad P\succ0\ (d_{\text{out}}{\times}d_{\text{out}}),\quad Q\succ0\ (d_{\text{in}}{\times}d_{\text{in}}).
-$$
-Frobenius: $P=Q=I$. Curvature: $P=L^{1/2},\ Q=R^{1/2}$, with $L\in\mathbb R^{d_{\text{out}}}$,
-$R\in\mathbb R^{d_{\text{in}}}$ the Adafactor row/column energies of $G$ (§3.5). (Damping is a ridge on the
-block Gram, handled in §10.4, not a $P,Q$ choice.)
-
-**Program.** Project the $\mathcal F$-preconditioned gradient step $T=\mathcal F^{-1}G=P^{-1}G\,Q^{-1}$ onto
-the tangent $J=B\,\mathrm dA+\mathrm dB\,A$, in the $\mathcal F$-norm, under a per-block spectral cap:
-$$
-\min_{\mathrm dA,\mathrm dB}\ \tfrac12\|J-T\|_{\mathcal F}^2\quad\text{s.t.}\quad \|Y_A\|_2\le\tau,\ \|Y_B\|_2\le\tau .
-$$
-
-**Whitening (defines both $Y_A$ and $Y_B$).** Each per-block $\mathcal F$-norm is a plain Frobenius norm of
-a whitened variable:
-$$
-\|B\,\mathrm dA\|_{\mathcal F}^2=\|Y_A\|_F^2,\quad Y_A:=(B^\top P B)^{1/2}\mathrm dA\,Q^{1/2};\qquad
-\|\mathrm dB\,A\|_{\mathcal F}^2=\|Y_B\|_F^2,\quad Y_B:=P^{1/2}\mathrm dB\,(AQA^\top)^{1/2}.
-$$
-Hence $\mathrm dA=(B^\top P B)^{-1/2}Y_A\,Q^{-1/2}$, $\mathrm dB=P^{-1/2}Y_B(AQA^\top)^{-1/2}$, and the caps
-read $\|Y_A\|_2,\|Y_B\|_2\le\tau$.
-
-**Linear cost collapses to the raw gradient.** Because $T=\mathcal F^{-1}G$, the metric cancels:
-$$
-\langle B\,\mathrm dA,\ \mathcal F(-T)\rangle=\langle B\,\mathrm dA,\ -G\rangle=\langle\mathrm dA,\ -g_A\rangle,\qquad g_A=B^\top G,
-$$
-with whitened form $H_A:=(B^\top P B)^{-1/2}\,g_A\,Q^{-1/2}$. The input is therefore the *raw* factor
-gradient $g_A$ — coherent. (Chord-tight substitutes the per-factor Adam $u_A$ for $g_A$: the
-incoherent-Adam caveat, §10.5.)
-
-**Update.** Spectral LMO $Y_A=\tau\,\phi(H_A)$, then unwhiten:
-$$
-\boxed{\ \mathrm dA=\tau\,(B^\top P B)^{-1/2}\,\phi\!\big((B^\top P B)^{-1/2}\,g_A\,Q^{-1/2}\big)\,Q^{-1/2}\ }
-$$
-($\tau$ routed through the $-\rho/\sigma_{\max}$ scaling of §3.6). Cap off ($\phi\to$ identity, $Y_A=H_A$):
-the two half-powers merge, $\mathrm dA=(B^\top P B)^{-1}g_A\,Q^{-1}$.
-
-**Instances.**
-
-| $\mathcal F$ | $(P,Q)$ | $\mathrm dA$, cap on (omit $-\rho/\sigma_{\max}$) | $\mathrm dA$, cap off |
+| metric $\mathcal F$ | $(P,Q)$ | spectral cap (Thm 10.1, polar) | Frobenius cap (Thm 10.2, keep $\sigma$) |
 |---|---|---|---|
-| Frobenius | $(I,I)$ | $S_B^{-1/2}\phi(S_B^{-1/2}g_A)$ | $S_B^{-1}g_A$ (ScaledGD) |
+| Frobenius | $(I,I)$ | $S_B^{-1/2}\phi(S_B^{-1/2}g_A)$ (iMuon) | $S_B^{-1}g_A$ (ScaledGD) |
 | curvature | $(L^{1/2},R^{1/2})$ | $(B^\top L^{1/2}B)^{-1/2}\phi\big((B^\top L^{1/2}B)^{-1/2}g_A R^{-1/4}\big)R^{-1/4}$ | $(B^\top L^{1/2}B)^{-1}g_A R^{-1/2}$ (AdaPreLoRA, +gauge) |
 
-The $R^{-1/4}$ (cap on) vs $R^{-1/2}$ (cap off) is exactly $Q^{-1/2}$ vs $Q^{-1}$ for $Q=R^{1/2}$; the
-cap-off curvature row reproducing AdaPreLoRA's §3.5 form is the consistency check.
+The $R^{-1/4}$ (spectral) vs $R^{-1/2}$ (Frobenius) is $Q^{-1/2}$ vs $Q^{-1}$ for $Q=R^{1/2}$; the
+Frobenius curvature entry reproducing AdaPreLoRA's §3.5 form is the consistency check.
 
-**The design space.** Three independent choices generate this family:
+**Where the methods sit.** The three knobs place every method; chord-tight and AdaPreLoRA are opposite
+corners — chord-tight is (Frobenius, spectral cap, $u_A$), AdaPreLoRA is (curvature, Frobenius cap,
+$g_A$).
 
-- **Metric $\mathcal F$** — Frobenius (plain Gram $S_B$) or curvature (Adafactor $L,R$).
-- **Cap** — on (the polar, which flattens the spectrum) or off (which keeps it).
-- **Input** — the raw factor gradient $g_A$ or the per-factor Adam direction $u_A$.
+### 10.3 The coupling ($k{\ge}2$): projection and block-coordinate descent
 
-The two named methods sit at opposite corners:
+At $k{=}1$ the blocks are independent. Letting them interact is the **second-order correction**, and it
+has *no LMO form*: the joint object is a projection of the preconditioned step $T=\mathcal F^{-1}G$ onto
+the shared tangent,
+$$
+\textbf{(P)}\qquad \min_{\mathrm dA,\mathrm dB}\ \tfrac12\|J-T\|_{\mathcal F}^2\quad\text{s.t.}\quad \|Y_A\|_2\le\tau,\ \|Y_B\|_2\le\tau,\qquad J=B\,\mathrm dA+\mathrm dB\,A .
+$$
 
-| method | metric $\mathcal F$ | cap | input |
-|---|---|---|---|
-| chord-tight | Frobenius | on (polar) | $u_A$ |
-| AdaPreLoRA | curvature | off | $g_A$ |
+*Remark (cap off is closed-form — AdaPreLoRA).* With the caps removed (P) is a plain quadratic; its
+joint minimizer is the $\mathcal F$-projection of $T$ onto $\mathcal R$. At $\mathcal F{=}I$, $T{=}G$ and
+$P_{\mathcal R}(G)=P_B G+G P_A-P_B G P_A$ ($P_B=BS_B^{-1}B^\top$, $P_A=A^\top S_A^{-1}A$), realized by
+$\mathrm dA=S_B^{-1}g_A$, $\mathrm dB=g_B S_A^{-1}-BS_B^{-1}(g_A A^\top)S_A^{-1}$ — **AdaPreLoRA /
+LoRA-Pro**, two $r\times r$ inverses, no iteration (our LinLoRA solves the like system in closed form).
+The cap is the only thing that costs this closed form.
 
-**Two cost axes — the gradient read and the preconditioner — and coherence is neither.** Adaptive
-(true-gradient) curvature carries a price that coherence does not:
+With the cap on, the caps couple the blocks and (P) has no closed form. Solve it by **block-coordinate
+descent** (Gauss–Seidel): with one block fixed, the other's whitened subproblem is
+$$
+\min_{Y_A}\ \tfrac12\|Y_A\|_F^2-\langle Y_A,\,H_A\rangle\quad\text{s.t.}\quad\|Y_A\|_2\le\tau,
+$$
+whose target carries the cross-coupling — the off-block's product contribution, pushed back through the
+on-block and the metric:
+$$
+H_A=H_A^0-C_A(\mathrm dB),\quad C_A(\mathrm dB)=(B^\top P B)^{-1/2}B^\top P\,(\mathrm dB\,A)\,Q^{1/2};\qquad
+C_B(\mathrm dA)=P^{1/2}(B\,\mathrm dA)\,QA^\top(AQA^\top)^{-1/2},
+$$
+with $H_A^0=(B^\top P B)^{-1/2}g_A Q^{-1/2}$ the standalone whitened gradient of Lemma 10.2 (mirror
+$H_B^0=P^{-1/2}g_B(AQA^\top)^{-1/2}$). The block step is $Y_A=\Pi_\tau(H_A)$ for a spectral projector
+$\Pi_\tau$:
 
-- **Geometric Gram** (chord-tight, $S_B{=}B^\top B$): built from $B$, not the gradient → **no**
-  $d_{\text{in}}d_{\text{out}}$ read; $O((d_{\text{in}}{+}d_{\text{out}})r)$. Not adaptive.
-- **Diagonal-Kron curvature** (AdaPreLoRA): diagonal preconditioner → LoRA-level *memory*
-  $O((d_{\text{in}}{+}d_{\text{out}})r)$, but it *reads* the full gradient for the row/col energies →
-  compute $O(d_{\text{in}}d_{\text{out}}+(d_{\text{in}}{+}d_{\text{out}})r^2+r^3)$ (App. D).
-- **Full-Kron curvature** (Shampoo/SOAP on $W$): dense $d{\times}d$ preconditioners →
-  $O(d_{\text{out}}^2{+}d_{\text{in}}^2)$ memory, $O(d_{\text{out}}^3{+}d_{\text{in}}^3)$ inverse. The heavy corner.
-- **Factor-contraction curvature** (`curvature-whiten-lora`, the SOAP route): curvature from
-  $g_A g_A^\top$ etc. → factor-only, *no* $d_{\text{in}}d_{\text{out}}$ read; adaptive but incoherent
-  (filtered through the factors, `soap_curvature_whitening.md`).
+$$
+\begin{aligned}
+&\textbf{Algorithm 10.1 (generalized Picard BCD for (P))}\\[2pt]
+&\textbf{input: } A,\,B,\,G;\ \text{metric }(P,Q);\ \text{cap }\tau;\ \text{depth }k;\ \Pi_\tau\in\{\operatorname{clip}_\tau,\ \phi\}\\
+&\mathrm dA\leftarrow0,\quad \mathrm dB\leftarrow0\\
+&H_A^0\leftarrow(B^\top P B)^{-1/2}g_A Q^{-1/2},\quad H_B^0\leftarrow P^{-1/2}g_B(AQA^\top)^{-1/2}\\
+&\textbf{for } n=1,\dots,k:\\
+&\qquad Y_A\leftarrow\Pi_\tau\!\big(H_A^0-C_A(\mathrm dB)\big),\quad \mathrm dA\leftarrow(B^\top P B)^{-1/2}Y_A\,Q^{-1/2}\\
+&\qquad Y_B\leftarrow\Pi_\tau\!\big(H_B^0-C_B(\mathrm dA)\big),\quad \mathrm dB\leftarrow P^{-1/2}Y_B(AQA^\top)^{-1/2}\\
+&\textbf{return } \mathrm dA,\ \mathrm dB
+\end{aligned}
+$$
 
-| metric | reads full grad? | precond. memory | coherent? | adaptive? |
+Reductions: at $k{=}1$ the loop runs once with $C_A{=}0$, recovering the single-block update
+($\Pi_\tau{=}\phi$ gives Theorem 10.1, exactly iMuon at $\mathcal F{=}I$); with the cap off $\Pi_\tau$
+is the identity and the loop collapses to the closed form above. **Chord-tight is Algorithm 10.1 with
+$\Pi_\tau=\phi$.**
+
+*Remark (incoherent Adam).* (P) uses one gradient $G$; chord-tight feeds the per-factor Adam $u_A,u_B$
+in place of $g_A,g_B$ (not $B^\top G,GA^\top$ for any common $G$), so the $k{\ge}2$ fixed point is the
+KKT of an *incoherent* objective, not literally (P). The (P) statements hold for the coherent-gradient
+program.
+
+### 10.4 Polar vs clip: the saturation gap
+
+Algorithm 10.1 offers two spectral projectors. They differ, and the difference is exactly what makes the
+$k{\ge}2$ polar an approximation.
+
+**Proposition 10.1 (clip is (P)'s block step; polar is its saturated limit).** The block subproblem
+$\min_{Y_A}\tfrac12\|Y_A\|_F^2-\langle Y_A,H_A\rangle$ s.t. $\|Y_A\|_2\le\tau$ is solved by
+$Y_A=\operatorname{clip}_\tau(H_A)$ — keep each singular value $\le\tau$, cap the rest. The polar
+$\tau\,\phi(H_A)$ equals it iff the step *saturates*: every singular value of $H_A$ is $\ge\tau$.
+
+*Proof.* The objective is $\tfrac12\|Y_A-H_A\|_F^2$ up to a constant, so its constrained minimizer is
+the Euclidean projection of $H_A$ onto the spectral ball, which clips each singular value to
+$\min(\sigma_i,\tau)$. The polar sets every singular value to $\tau$; the two agree iff $\sigma_i\ge\tau$
+for all $i$. $\blacksquare$
+
+Two consequences settle when the polar is principled:
+
+- **$k{=}1$ is immune.** Chord-tight's $k{=}1$ is the trust-region LMO (Theorem 10.1), whose *exact*
+  solution is the polar. There is no prox to approximate, so saturation is irrelevant — iMuon's
+  situation.
+- **$k{\ge}2$ is not.** Coupling has no LMO form (§10.3), so the principled solve is (P)'s BCD with
+  $\Pi_\tau=\operatorname{clip}_\tau$ (Proposition 10.1). Chord-tight's polar-BCD is the *anchored*
+  approximation, exact only under saturation — fragile precisely where the step is far from the cap.
+  (SSC's $\kappa$ interpolates between clip and polar.)
+
+**When saturation fails.** In the high-rank regime the whitened step sits well below the cap: at
+$r{=}256$, median $\sigma\approx0.1$ against $\tau{=}1$ with $\cos(\text{polar},\text{clip})\approx0.9$
+— so there the polar is a genuine approximation of the clip, not an equality.
+
+*Status — unverified.* No completed, config-matched OLMo $r{=}256$ $k{=}1$-vs-$k{=}2$ run at the
+canonical horizon exists (the $k{=}2$ phase-L sweeps were truncated early). The experimental program,
+one change at a time:
+
+1. **Coupling.** Anchored $k{=}2$ vs $k{=}1$, plain Gram whitening — does the cross-coupling correction
+   help at all?
+2. **Damping.** Add the §10.5 ridge $\delta$ to whichever won (1).
+3. **Curvature.** Swap plain Gram for curvature whitening (Corollary 10.1, bottom row).
+
+The discriminating test for (1) is $\operatorname{clip}$-$k2$ vs polar-$k2$ at $r{=}256$: if clip
+recovers, the anchored polar is the culprit; if both fail, the coupling itself is.
+
+### 10.5 Damping as a ridge in the metric
+
+Damping is not bolted on — it is a Tikhonov ridge on the block Gram that folds into the whitener. The
+$A$-block carries the quadratic $\tfrac12\|B\,\mathrm dA\|_F^2=\tfrac12\operatorname{tr}(\mathrm dA^\top S_B\,\mathrm dA)$
+(at $\mathcal F{=}I$; in general the block Gram is $B^\top P B$), so a ridge $\tfrac\delta2\|\mathrm dA\|_F^2$
+adds $\delta I$:
+$$
+\tfrac12\|B\,\mathrm dA\|_F^2+\tfrac\delta2\|\mathrm dA\|_F^2=\tfrac12\operatorname{tr}(\mathrm dA^\top M\,\mathrm dA),\qquad M:=S_B+\delta I,
+$$
+and the whitener $S_B^{-1/2}$ becomes $(S_B+\delta I)^{-1/2}$ — nothing else changes. On $B$'s singular
+directions it acts as
+$$
+\frac{\sigma_i}{\sqrt{\sigma_i^2+\delta}}\approx\begin{cases}1,&\sigma_i^2\gg\delta\\[2pt]\sigma_i/\sqrt\delta,&\sigma_i^2\ll\delta,\end{cases}
+$$
+i.e. $\approx1$ on strong directions, shrinking only the ill-conditioned tail where the undamped inverse
+Gram would blow up. The $\sigma_{\max}$ normalization (§3.6) still pins the magnitude, so the ridge
+changes only *where* the step points. Pin $\delta$ to the spectrum,
+$\delta=\varepsilon\,\sigma_{\max}(B)^2\Rightarrow\operatorname{cond}(M)\le1+\tfrac1\varepsilon$; the one
+knob is $\varepsilon$. Chord-tight already builds $(S_B+\delta I)^{-1/2}$, so damping is a choice of
+$\varepsilon$, not new machinery.
+
+### 10.6 Cost of the metric
+
+The metric is not free: an *adaptive* (true-gradient) curvature pays a price the geometric Gram and mere
+coherence do not.
+
+| metric | reads full grad? | preconditioner memory | coherent? | adaptive? |
 |---|---|---|---|---|
 | geometric Gram (chord-tight) | no | $O((d_{\text{in}}{+}d_{\text{out}})r)$ | yes ($\mathcal F{=}I$) | no |
 | factor-contraction (SOAP route) | no | $O((d_{\text{in}}{+}d_{\text{out}})r)$ | **no** | yes |
 | diagonal-Kron curvature (AdaPreLoRA) | **yes** ($O(d_{\text{in}}d_{\text{out}})$) | $O((d_{\text{in}}{+}d_{\text{out}})r)$ | yes | yes |
 | full-Kron curvature (Shampoo on $W$) | yes | $O(d_{\text{out}}^2{+}d_{\text{in}}^2)$ | yes | yes |
 
-Among adaptive options at LoRA memory, you can **avoid the $O(d_{\text{in}}d_{\text{out}})$ read OR be
-coherent, not both**: AdaPreLoRA reads the true gradient to get coherent energies; the
-factor-contraction route stays factor-only but its curvature is then filtered/incoherent. Coherence
-is orthogonal to preconditioner richness (diagonal vs dense). Chord-tight itself is geometric-Gram +
-polar + $u_A$ — the per-factor Adam input is its only adaptive piece, and it is incoherent; in our
-runs the lost coherence is interpretive tidiness, not a measured cost.
-
-**The coupled solve: generalized Picard.** The §10.6 update above is the *per-block* ($k{=}1$)
-solution. The joint program couples the factors through the reachable tangent
-$J=B\,\mathrm dA+\mathrm dB\,A$:
-$$
-\min_{\mathrm dA,\mathrm dB}\ \tfrac12\|J-T\|_{\mathcal F}^2
-\quad\text{s.t.}\quad \|Y_A\|_2\le\tau,\ \|Y_B\|_2\le\tau .
-$$
-Block-coordinate descent: fix $\mathrm dB$, so the $A$-block's residual target is $T-\mathrm dB\,A$;
-whitening $\mathrm dA=(B^\top P B)^{-1/2}Y_A Q^{-1/2}$ reduces the $A$-subproblem to
-$\min_{Y_A}\tfrac12\|Y_A\|_F^2-\langle Y_A,H_A\rangle$ s.t. $\|Y_A\|_2\le\tau$, with
-$$
-H_A^0=(B^\top P B)^{-1/2}g_A\,Q^{-1/2},\qquad
-C_A(\mathrm dB)=(B^\top P B)^{-1/2}\,B^\top P\,(\mathrm dB\,A)\,Q^{1/2},\qquad
-H_A=H_A^0-C_A(\mathrm dB).
-$$
-Solution $Y_A=\Pi_\tau(H_A)$, $\Pi_\tau=\operatorname{clip}_\tau$ (exact) or the polar (anchored).
-$B$-side mirrors:
-$$
-H_B^0=P^{-1/2}g_B(AQA^\top)^{-1/2},\qquad
-C_B(\mathrm dA)=P^{1/2}(B\,\mathrm dA)\,Q A^\top(AQA^\top)^{-1/2}.
-$$
-Iterate from $\mathrm dA^0=\mathrm dB^0=0$ (Gauss–Seidel). $H_A^0$ is the standalone whitened gradient;
-$C_A$ is the cross-coupling — $\mathrm dB$'s product contribution pushed back through $B$ and the
-metric, subtracted from $A$'s target.
-
-- **Reductions.** $k{=}1$ ($\mathrm dB^0{=}0\Rightarrow C_A{=}0$): $Y_A=\Pi_\tau(H_A^0)$, the per-block
-  update — and with $\mathcal F{=}I$ plus the polar this is exactly iMuon. $\mathcal F{=}I$ in general:
-  $H_A^0=S_B^{-1/2}g_A$, $C_A=S_B^{-1/2}B^\top(\mathrm dB\,A)$ — the Frobenius coupling of §10.5(i).
-  Cap off ($\Pi_\tau=$ identity) makes the projection linear and closed-form (AdaPreLoRA) — the cap is
-  the only reason the joint solve needs iteration.
-- **Saturation — and why it bites only at $k{\ge}2$.** $\operatorname{clip}_\tau$ is the *exact*
-  per-block projection onto the spectral ball; production substitutes the polar, which equals the clip
-  only under saturation (all $\sigma_i\ge\tau$). At r256 the step is non-saturated (measured: median
-  $\sigma\approx0.1$ against $\tau{=}1$, $\cos(\text{polar},\text{clip})\approx0.9$). This does **not**
-  undermine $k{=}1$: there the polar is the *exact spectral LMO* ($\max\langle B\,\mathrm dA,\cdot\rangle$
-  s.t. the cap — the iMuon derivation), which needs no saturation. The coupling is what commits you to
-  the *projection* (there is no coupled LMO), whose per-block solve is the clip-prox; using the polar
-  for it is the *anchored* approximation, exact only under saturation. So the principled $k{\ge}2$ runs
-  the BCD with $\operatorname{clip}_\tau$ (exact, saturation-free); the polar-BCD is fragile precisely
-  where saturation fails, i.e. r256. **Still unverified empirically**: no completed, config-matched
-  olmo-r256 $k{=}1$-vs-$k{=}2$ at the 9000-step horizon exists (the $k{=}2$ phase-L sweeps were
-  truncated at 1–3k steps). Discriminating test: $\operatorname{clip}$-$k2$ vs polar-$k2$ at r256 —
-  clip recovers ⟹ the anchored-polar is the culprit; both fail ⟹ the coupling itself is.
+At LoRA-level memory the adaptive options force a choice: **avoid the $O(d_{\text{in}}d_{\text{out}})$
+gradient read, or be coherent, not both** — AdaPreLoRA reads the true gradient for coherent row/col
+energies; the factor-contraction route (`soap_curvature_whitening.md`) stays factor-only but its
+curvature is then filtered/incoherent. Coherence is orthogonal to preconditioner richness. Chord-tight
+is geometric-Gram + polar + $u_A$ input: its only adaptive piece is $u_A$, which is incoherent, and in
+our runs that lost coherence is interpretive tidiness, not a measured cost.
 
 ## Sources
 
