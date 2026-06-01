@@ -73,6 +73,10 @@ GRAM_PRECOND_OPTIMIZERS = [
     "adam-lin-lora",
     "adam-polar-product-lora",
     "adamuon-polar-product-lora",
+    # Curvature-whitening family also takes precond_refresh_every; sweeping K
+    # lets the bench isolate the periodic Gram-refresh cost (production uses 10).
+    "curvature-whiten-lora",
+    "curvature-whiten-polar-lora",
 ]
 # Coupled-core solver variants (no precond_refresh; per-step QR + small SVDs).
 # Included in default bench list at K=1 only.
