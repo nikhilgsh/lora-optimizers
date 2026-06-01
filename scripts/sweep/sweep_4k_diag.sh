@@ -32,7 +32,28 @@ if [ "${COMPILE:-1}" = "1" ]; then
     compile_args=(--compile)
 fi
 
+# Checkpoint flags: enabled by the submit path setting CHECKPOINT_DIR per task.
+# When the env var is set, --checkpoint_dir AND --resume_from point at the same
+# directory. load_checkpoint is idempotent — first submission finds an empty dir
+# (no-op), resubmissions auto-pick the latest ckpt_step{N} child and resume in
+# place, so a wall-timeout is recoverable instead of a total loss.
+ckpt_args=()
+if [ -n "${CHECKPOINT_DIR:-}" ]; then
+    ckpt_args=(
+        --checkpoint_dir "$CHECKPOINT_DIR"
+        --resume_from "$CHECKPOINT_DIR"
+        --checkpoint_keep_last "${CHECKPOINT_KEEP_LAST:-2}"
+    )
+    if [ -n "${CHECKPOINT_EVERY:-}" ]; then
+        ckpt_args+=(--checkpoint_every "$CHECKPOINT_EVERY")
+    fi
+    if [ "${KEEP_CHECKPOINTS:-0}" = "1" ]; then
+        ckpt_args+=(--keep_checkpoints)
+    fi
+fi
+
 python train_lora.py \
+    "${ckpt_args[@]}" \
     --data_dir data/magicoder_seq512_70k \
     --device cuda \
     --bf16 \

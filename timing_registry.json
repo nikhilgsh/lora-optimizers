@@ -1,0 +1,38 @@
+[
+  {
+    "key": "blackwell/OLMo-2-0425-1B/r64/polar-product/ns8/k1",
+    "s_per_step": 4.484,
+    "measured_at_step": 8750,
+    "source_log": "logs/epsrel_fullpolar_r64_olmo_ctk1_blackwell/run_info/logs/log_0.out",
+    "hardware": "blackwell",
+    "model": "OLMo-2-0425-1B",
+    "lora_r": 64,
+    "optimizer_family": "polar-product",
+    "ns_steps": 8,
+    "picard": 1,
+    "batch_size": 4,
+    "grad_accum_steps": 4,
+    "max_seq_length": 2048,
+    "compile": true,
+    "dtype": "bf16",
+    "git_commit": "807427f"
+  },
+  {
+    "key": "blackwell/OLMo-2-0425-1B/r64/polar-product/ns8/k2",
+    "s_per_step": 4.474,
+    "measured_at_step": 8750,
+    "source_log": "logs/epsrel_fullpolar_r64_olmo_cleank2_blackwell/run_info/logs/log_0.out",
+    "hardware": "blackwell",
+    "model": "OLMo-2-0425-1B",
+    "lora_r": 64,
+    "optimizer_family": "polar-product",
+    "ns_steps": 8,
+    "picard": 2,
+    "batch_size": 4,
+    "grad_accum_steps": 4,
+    "max_seq_length": 2048,
+    "compile": true,
+    "dtype": "bf16",
+    "git_commit": "807427f"
+  }
+]

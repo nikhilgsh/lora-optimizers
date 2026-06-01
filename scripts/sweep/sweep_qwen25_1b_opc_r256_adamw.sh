@@ -28,7 +28,28 @@ if [ "${LOG_DIAGNOSTICS:-1}" = "0" ]; then
     diag_args=(--no-log_basic_diagnostics)
 fi
 
+# Checkpoint flags: enabled by the submit path setting CHECKPOINT_DIR per task.
+# When the env var is set, --checkpoint_dir AND --resume_from point at the same
+# directory. load_checkpoint is idempotent — first submission finds an empty dir
+# (no-op), resubmissions auto-pick the latest ckpt_step{N} child and resume in
+# place, so a wall-timeout is recoverable instead of a total loss.
+ckpt_args=()
+if [ -n "${CHECKPOINT_DIR:-}" ]; then
+    ckpt_args=(
+        --checkpoint_dir "$CHECKPOINT_DIR"
+        --resume_from "$CHECKPOINT_DIR"
+        --checkpoint_keep_last "${CHECKPOINT_KEEP_LAST:-2}"
+    )
+    if [ -n "${CHECKPOINT_EVERY:-}" ]; then
+        ckpt_args+=(--checkpoint_every "$CHECKPOINT_EVERY")
+    fi
+    if [ "${KEEP_CHECKPOINTS:-0}" = "1" ]; then
+        ckpt_args+=(--keep_checkpoints)
+    fi
+fi
+
 python train_lora.py \
+    "${ckpt_args[@]}" \
     --model_name Qwen/Qwen2.5-1.5B \
     --data_dir data/opc_sft_stage2_all_packed_seq2048_qwen25 \
     --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \
