@@ -240,6 +240,27 @@ one-sided* estimate. The principled one treats curvature estimation as
 that minimizes the KL divergence to the gradient second moment $M=\mathbb E[gg^\top]$,
 $g=\mathrm{vec}(G)$ (Lin et al., `kl_shampoo_2509.03378.pdf`).
 
+**Dictionary (paper → this note).** Lin et al. precondition *one weight matrix*
+$\Theta$; we apply the identical construction to each LoRA factor *treated as its
+own weight*. The A-side mapping (B-side symmetric):
+
+| paper (weight $\Theta$) | LoRA A-side |
+|---|---|
+| weight $\Theta\in\mathbb R^{d_a\times d_b}$ | factor $A\in\mathbb R^{r\times d_{\mathrm{in}}}$ ($d_a{=}r$, $d_b{=}d_{\mathrm{in}}$) |
+| gradient $G=\nabla_\Theta\mathcal L$ | factor gradient $g_A=B^\top G$ ($G=\nabla_{\Delta W}\mathcal L$ upstream) |
+| $g=\mathrm{vec}(G)$ | $\mathrm{vec}(g_A)$ |
+| $S_a=\mathbb E[GG^\top]$ | $S_{\mathrm{curv},A}$ (dense $r\times r$) |
+| $S_b=\mathbb E[G^\top G]$ | $D_{\mathrm{in}}$ (constrained diagonal) |
+
+So "$G$" is generic in Prop 4 and the LoRA form below is the substitution $G=g_A$
+(with $\mathbb E[\cdot]$ the EMAs); the B-side sets $\Theta=B$, $G\mapsto g_B=GA^\top$,
+$S_a=D_{\mathrm{out}}$, $S_b=S_{\mathrm{curv},B}$.
+
+**Caveat.** The paper's $G$ is a *free* weight's gradient, whereas $g_A=B^\top G$
+already carries the other factor $B$. So KL-Shampoo-LoRA fits the covariance of the
+*factor* gradient (filtered through $B$) — the factor-contraction/incoherent
+curvature of §10.6 — not of a free $r\times d_{\mathrm{in}}$ weight.
+
 **Objective — KL, not Frobenius.**
 $$
 \mathrm{KL}(M\,\|\,S)=\tfrac12\bigl(\log\det S+\mathrm{Tr}(M\,S^{-1})\bigr)+\text{const.}
@@ -272,6 +293,16 @@ The coupling is the Euler–Lagrange condition, not a recipe: the cross-term tie
 the factors, so the optimal $S_a$ whitens $G$ by the *other* factor's inverse
 before forming its Gram. The EMA $S_a\leftarrow(1-\beta)S_a+(\beta/d_b)\,G S_b^{-1}G^\top$
 is a stochastic step toward this fixed point.
+
+**Note — a fixed-point iteration, not a one-shot solve.** The coupled condition is
+the maximum-likelihood estimate of a zero-mean *matrix-normal* (Kronecker-factored)
+Gaussian (Dutilleul, 1999; the matrix-Gaussian MLE reading in `kl_shampoo`). It has
+no closed form: the classical solver *alternates*
+$S_a\!\leftarrow\!f(S_b)$, $S_b\!\leftarrow\!g(S_a)$ to convergence (the "flip-flop"
+algorithm). So an explicit solve is itself an iteration — the EMA above is its
+streaming form, one alternation per optimizer step. "Solve more exactly" just means
+more inner alternations per refresh (`precond_refresh_every`), spending precision on
+a target that drifts every step anyway ($g_A=B^\top G$ moves as $B$ updates).
 
 **Shampoo is the one-sided corner.** $S_a=\mathbb E[GG^\top]$ is stationary only
 if $S_b=I$ — Shampoo (and our $\mathrm{EMA}(g_A g_A^\top)$) solve the *one-sided*
