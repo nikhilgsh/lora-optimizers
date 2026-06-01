@@ -1,256 +1,262 @@
-# SOAP, Curvature Whitening, and the Chord-Tight Sandwich
+# SOAP-curvature whitening and the chord-tight polar
 
-## Current status
-
-`CurvatureWhitenLoRA` implements the requested SOAP-curvature/chord-tight
-variant. It is registered as `curvature-whiten-lora` and
-`curvature-whiten-polar-lora`.
-
-Per PEFT LoRA pair $A\in\mathbb{R}^{r\times d_{\mathrm{in}}}$,
-$B\in\mathbb{R}^{d_{\mathrm{out}}\times r}$, it keeps an affordable Kronecker
-curvature estimate:
-
-$$
-S_A=\mathrm{EMA}(g_A g_A^\top),\qquad
-D_A=\mathrm{EMA}(\mathrm{diag}(g_A^\top g_A)),
-$$
-
-and symmetrically $S_B=\mathrm{EMA}(g_B^\top g_B)$,
-$D_B=\mathrm{EMA}(\mathrm{diag}(g_B g_B^\top))$.
-
-The SOAP step is Adam on momentum in the eigenbasis of
-$S\otimes D$. Since $D$ is diagonal, the large-side eigenbasis is the coordinate
-basis:
-
-$$
-z_A
-= Q_A\left[
-\frac{Q_A^\top \hat m_A}{\sqrt{\hat v_A}+\epsilon}
-\right],
-\qquad
-\hat v_A=\mathrm{EMA}\big((Q_A^\top g_A)^{\odot 2}\big),
-$$
-
-and
-
-$$
-z_B
-= \left[
-\frac{\hat m_B Q_B}{\sqrt{\hat v_B}+\epsilon}
-\right]Q_B^\top,
-\qquad
-\hat v_B=\mathrm{EMA}\big((g_B Q_B)^{\odot 2}\big).
-$$
-
-The applied direction then uses the chord-tight outer curvature sandwich and
-spectral budget:
-
-$$
-Y_A=S_A^{-1/2}z_A D_A^{-1/2},\qquad
-Y_B=D_B^{-1/2}z_B S_B^{-1/2},
-$$
-
-$$
-\rho=\eta/(\sigma_{\max}(A)+\sigma_{\max}(B)),\qquad
-\Delta A=-\rho\,Y_A/\sigma_{\max}(Y_A),
-$$
-
-with the analogous $B$ update. `curvature-whiten-polar-lora` is the ablation
-that replaces $z$ by $\phi(z)$ before the outer sandwich.
-
-Verification:
-
-- `tests/test_curvature_whiten_lora.py` pins the update against the equation
-  above, including nontrivial $Q_A,Q_B$ rotations, the optional polar arm, and
-  the chord-tight spectral rescale.
-- `tests/test_optimizer_config_dict.py` covers optimizer config serialization.
-- The current block-$\sigma_{\max}$ implementation has a 250-step r256
-  packed-data smoke at $\eta=3\times10^{-4}$ on the deterministic 128-example
-  eval subset:
-  $1.008563\to0.987070\to0.968609\to0.955514\to0.946585$ at steps 50, 100,
-  150, 200, 250. It had zero
-  non-finite gradients and no runtime errors. Raw log:
-  `logs/soap_curv_verify/curv_block_lr3e-4_steps250_eval128.log`; parsed
-  summary:
-  `logs/soap_curv_verify/curv_block_lr3e-4_steps250_eval128.summary.json`.
-- The production wrapper path was smoked with compile enabled for
-  `curvature-whiten-polar-lora` at r=256, packed seq2048, batch 4,
-  grad-accum 4, diagnostics off. Eval loss was $1.026423\to1.019203$ at
-  steps 10 and 20, peak memory was about 29.0 GB, and
-  `n_non_finite_grads=0`. Raw log:
-  `logs/soap_curv_verify/curv_block_polar_wrapper_lr3e-4_steps20.log`.
+`CurvatureWhitenLoRA` runs **SOAP-on-momentum in an affordable Kronecker
+curvature basis, then the chord-tight spectral sandwich**. Registered as
+`curvature-whiten-lora` and `curvature-whiten-polar-lora` (the arm that adds the
+polar). This note: states the update, derives what it *is* in the two-sided
+curvature-whitening language, separates the one load-bearing identity from the
+heuristics, and lists the experiments that decide what to keep.
 
 ## Notation
 
-For one LoRA pair $A \in \mathbb{R}^{r \times d_{\mathrm{in}}}$,
-$B \in \mathbb{R}^{d_{\mathrm{out}} \times r}$, $\Delta W = BA$. Per-factor
-gradient $g_A$; first moment $m_A$; Adam direction
-$u_A = m_A / (\sqrt{v_A} + \epsilon)$ with $v_A$ the elementwise second moment.
-$\phi$ is the (soft) polar map, $\phi(U\Sigma V^\top) = UV^\top$. The A-side
-curvature metric is the $r \times r$ EMA of factor-gradient outer products,
+One PEFT LoRA pair $A\in\mathbb{R}^{r\times d_{\mathrm{in}}}$,
+$B\in\mathbb{R}^{d_{\mathrm{out}}\times r}$, $\Delta W=BA$, $r\ll d$. Per-factor
+gradient $g_A=B^\top G$; first moment $m_A$; bias-corrected $\hat m_A$. $\varphi$
+is the (soft) polar map, $\varphi(U\Sigma V^\top)=UV^\top$. Curvature factors
+(EMAs, decay $\beta_{\mathrm{curv}}=0.99$):
 $$
-S_{\mathrm{curv},A} = \mathrm{EMA}\big(g_A g_A^\top\big) = \mathrm{EMA}\big(B^\top H B\big),
-\qquad \beta_{\mathrm{curv}} = 0.99,
+S_{\mathrm{curv},A}=\mathrm{EMA}(g_A g_A^\top)\in\mathbb{R}^{r\times r},\qquad
+D_{\mathrm{in}}=\mathrm{diag}\,\mathrm{EMA}(g_A^\top g_A)\in\mathbb{R}^{d_{\mathrm{in}}}.
 $$
-and symmetrically $S_{\mathrm{curv},B} = \mathrm{EMA}(g_B^\top g_B)$. Below $S$
-and $m$ are A-side; B-side is symmetric.
-
-## Historical curvature flag
-
-`--curvature_whitening` (commit `67cfea4`) swaps the geometric factor Gram
-$B^\top B$ for $S_{\mathrm{curv},A}$ inside the *existing* chord-tight whiten
-pipeline (`optim.py:5469-5554`):
-$$
-\Delta A \;\propto\; S_{\mathrm{curv},A}^{-1/2}\,\phi\!\Big(S_{\mathrm{curv},A}^{-1/2}\, u_A\Big),
-$$
-magnitude set by the chord-tight $\rho$ and a $\sigma_{\max}$ renormalization.
-The input is the Adam direction $u_A$ (`optim.py:5481`); the inverse-sqrt uses a
-matrix Higham solve with $\lambda_{\max} = \sigma_{\max}(S_{\mathrm{curv}})$
-(`optim.py:5546`). When off, the path is bit-identical to geometric-Gram
-whitening. This older path is $S = S_\mathrm{curv}$, input $u$, polar
-sandwiched between two matrix $S^{-1/2}$; it is not the implemented
-SOAP-on-$m$ variant above.
+Below everything is A-side; the B-side is symmetric ($S_{\mathrm{curv},B}=\mathrm{EMA}(g_B^\top g_B)$, $D_{\mathrm{out}}=\mathrm{diag}\,\mathrm{EMA}(g_B g_B^\top)$).
 
 ## The implemented update
 
+SOAP step — Adam on momentum in the eigenbasis of $S_{\mathrm{curv},A}$ (the
+large/$d_{\mathrm{in}}$ side stays in the coordinate basis, since its factor
+$D_{\mathrm{in}}$ is diagonal):
 $$
-\Delta A \;\propto\; S^{-1/2}\,\mathrm{SOAP}(m;S\otimes D)\,D^{-1/2},
+z_A=Q_A\!\left[\frac{Q_A^\top \hat m_A}{\sqrt{\hat v_A}+\epsilon}\right],\quad
+Q_A=\mathrm{eigvecs}(S_{\mathrm{curv},A}),\quad
+\hat v_A=\mathrm{EMA}\big((Q_A^\top g_A)^{\odot 2}\big)\in\mathbb{R}^{r\times d_{\mathrm{in}}}.
 $$
-with $S = S_{\mathrm{curv},A}$, $D=D_A$, raw momentum $m=m_A$, and
-$\mathrm{SOAP}(m;S\otimes D)$ the Adam-normalized update in the eigenbasis of
-the Kronecker curvature estimate. The $B$ side is symmetric.
-
-## What is and isn't true
-
-**The exact fact (Anchor).** Whitening by the *instantaneous* Gram is exactly the
-polar map: for $g_A = U\Sigma V^\top$,
+Outer curvature sandwich and spectral budget:
 $$
-(g_A g_A^\top)^{-1/2}\,g_A = U\Sigma^{-1}U^\top \, U\Sigma V^\top = U V^\top = \phi(g_A).
+Y_A=S_{\mathrm{curv},A}^{-1/2}\,z_A\,D_{\mathrm{in}}^{-1/2},\qquad
+\rho=\frac{\eta}{\sigma_{\max}(A)+\sigma_{\max}(B)},\qquad
+\Delta A=-\rho\,\frac{Y_A}{\sigma_{\max}(Y_A)}.
 $$
-So curvature whitening is a momentum/EMA generalization of "polar the gradient,"
-and the chord-tight sandwich is built on a real identity. This is the load-bearing
-truth; everything below qualifies how far it extends.
+`curvature-whiten-polar-lora` replaces $z_A$ by $\varphi(z_A)$ before the
+sandwich. $S^{-1/2}$ uses warm-started QR + Rayleigh eigenvalues (eigh only to
+seed); relative damping $(\lambda/\lambda_{\max}+\delta)^{-1/2}$. Verified:
+`tests/test_curvature_whiten_lora.py` pins the update (incl. the polar arm and
+the rescale); the r256 packed smoke runs clean (~29 GB, no non-finite grads).
 
-**SOAP is not matrix whitening.** Reading Vyas et al. (`soap_2409.11321.pdf`,
-Algs 1–3, Claim 1):
+## What the update *is*: a two-sided sandwich with a forced $Q'$, plus a residual
 
-- *Idealized Adafactor in the eigenbasis (Alg 2) = idealized Shampoo (Alg 1)*
-  (Claim 1) — the only regime where SOAP equals matrix whitening. It is
-  **two-sided**: both eigenbases $Q_L$ of $\mathbb{E}[GG^\top]$ and $Q_R$ of
-  $\mathbb{E}[G^\top G]$, with a rank-structured second moment
-  $\widehat V_{ij}=A_iC_j/\sum_iA_i$ (row energy $A_i=\lambda_i$, column energy
-  $C_j=\mu_j$), giving $L^{-1/2}GR^{-1/2}/\mathrm{Trace}(L)^{1/2}$.
-- *Real SOAP (Alg 3) uses Adam*: a full elementwise EMA second moment of the
-  rotated gradient ($V\leftarrow\beta_2V+(1-\beta_2)(G'\odot G')$), **not** the
-  rank-1 reconstruction. This is strictly more expressive than the Kronecker
-  structure and is the paper's improvement over Shampoo.
+This is the canonical statement of the update and the one to reason from.
 
-So real single-sided SOAP is $\mathrm{SOAP}(m;S)=Q\big[(Q^\top m)\oslash\sqrt{V}\big]$
-with $Q=\mathrm{eigvecs}(S)$ and $V$ the elementwise rotated second moment — **Adam
-in the curvature eigenbasis**, neither $S^{-1/2}m$ nor a polar.
-
-**Consequences for the heuristic.**
-
-| object | what it is | is it $S^{-1/2}m$? |
-|---|---|---|
-| repo `--curvature_whitening` | $S^{-1/2}\phi(S^{-1/2}u)$ (matrix whiten $+$ polar) | — (has the polar) |
-| real 1-sided SOAP on $m$ | $Q[(Q^\top m)\oslash\sqrt V]$ | no (Adam-in-eigenbasis) |
-| idealized 1-sided SOAP | $S^{-1/2}m$ | yes, but only two-sided + drop $C_j$ |
-
-The polar in $\mathrm{SOAP}(m;S)\approx\phi(S^{-1/2}m)$ does not come from SOAP. It
-comes from the Anchor identity and holds only when $S^{-1/2}m$ is already
-near-orthogonal — the preconditioning-saturation regime
-(`preconditioning_saturation_2026_05_03.md`), which holds at r=16/r=64 but **fails
-at r256** (B at ${\sim}14\%$ rank, $S^{-1/2}$ spread ${\sim}340$, dA rotated
-${\sim}60°$; `chord_tight_whiten_lag_r256.md`). The reading
-"$S^{-1/2}\mathrm{SOAP}(m;S)=S^{-1}m$" (a full inverse-curvature Newton step on
-momentum) is valid only in the idealized-Shampoo limit; for real Adam SOAP the
-second whitening does not cleanly compound. r256 is therefore the cell where these
-variants separate.
-
-## $m$ vs $u$, and why the question is a symptom
-
-Feeding raw $m$ is the SOAP-native input (SOAP normalizes in its own eigenbasis;
-$u$ double-normalizes the $r$-index). But $S_\mathrm{curv}$ is $r\times r$ and
-conditions only the row index — it is blind to the $d_{\mathrm{in}}$ column index
-that Adam's $v$ also scales, so $m$ alone drops information $u$ carries. Since
-$\phi$ is scale-invariant, $m$ vs $u$ is a pure *direction* ablation.
-
-The fork exists only because the preconditioner is inhomogeneous: a full-matrix
-whitener on the left index next to Adam's diagonal $v$ on both. The principled fix
-is to normalize both sides from curvature, Kronecker-factored, big side diagonal.
-
-## Harmonious two-sided normalization
-
+**The SOAP second moment carries both curvature factors.** $\hat v_A$ is a
+*full* $r\times d_{\mathrm{in}}$ array — one variance per (eigendirection,
+input-column) pair. Its two marginals are exactly the small- and large-side
+factors (using $Q_A$ orthogonal, so column norms are preserved):
 $$
-\Delta A \;\propto\; S_{\mathrm{curv},A}^{-1/2}\;
-\mathrm{SOAP}(m_A;S_{\mathrm{curv},A}\otimes D_{\mathrm{in},A})\;
-D_{\mathrm{in},A}^{-1/2},
+\textstyle\sum_j (\hat v_A)_{ij}=\lambda_i(S_{\mathrm{curv},A}),\qquad
+\sum_i (\hat v_A)_{ij}=(D_{\mathrm{in}})_j.
+$$
+
+**Separable case $\Rightarrow$ the symmetric sandwich.** If $\hat v_A$ is rank-1,
+$(\hat v_A)_{ij}=a_i b_j$, the marginals force $a_i\propto\lambda_i$,
+$b_j\propto(D_{\mathrm{in}})_j$, so the entrywise division splits left/right and
+the rotation collapses:
+$$
+\boxed{\,z_A\approx S_{\mathrm{curv},A}^{-1/2}\,\hat m_A\,D_{\mathrm{in}}^{-1/2}\,}\qquad(\text{rank-1 }\hat v_A),
+$$
+since $Q_A\,\mathrm{diag}(\lambda)^{-1/2}Q_A^\top=S_{\mathrm{curv},A}^{-1/2}$ and
+$\varphi$ is scale-invariant. Sandwiching gives
+$$
+\Delta A\propto S_{\mathrm{curv},A}^{-1/2}\,
+\varphi\!\big(S_{\mathrm{curv},A}^{-1/2}\,\hat m_A\,D_{\mathrm{in}}^{-1/2}\big)\,
+D_{\mathrm{in}}^{-1/2},
+$$
+which is exactly the generalized two-sided program
+$$
+\Delta A\propto (B^\top P B)^{-1/2}\,
+\varphi\!\big((B^\top P B)^{-1/2}\,m\,Q'^{-1/2}\big)\,Q'^{-1/2}
+$$
+with small side $B^\top P B=S_{\mathrm{curv},A}$ and large side $Q'=D_{\mathrm{in}}$.
+
+- **$Q'$ is forced, not chosen.** It is the column-marginal of the same
+  $\hat v_A$ SOAP already maintains — the gradient's per-input-feature energy. So
+  "SOAP plus the outer $D_{\mathrm{in}}^{-1/2}$" is *one* symmetric sandwich, not
+  two stacked conditioners; the input axis is conditioned inside $\varphi$ (via
+  $\hat v_A$'s columns) **and** outside (the explicit $D_{\mathrm{in}}^{-1/2}$).
+
+**What SOAP adds over the sandwich: the non-separable residual.** When
+$\hat v_A$ is *not* rank-1, SOAP divides by the full $\sqrt{(\hat v_A)_{ij}}$
+rather than $\sqrt{\lambda_i (D_{\mathrm{in}})_j}$ — curvature where an input
+feature's variance depends on the latent eigendirection, structure no Kronecker
+$P\otimes Q'$ can represent. Size is a cheap a-priori diagnostic:
+$$
+\rho_{\mathrm{nonsep}}=\frac{\lVert \hat v_A-\hat a\,\hat b^\top\rVert_F}{\lVert \hat v_A\rVert_F},\qquad \hat a,\hat b=\text{row / column marginals.}
+$$
+$\rho_{\mathrm{nonsep}}\!\approx\!0$: SOAP collapses to the $Q'=D_{\mathrm{in}}$
+sandwich, and any explicit-$Q'$ choice can at best match it. $\rho_{\mathrm{nonsep}}$
+large: SOAP's extra expressiveness is real and no Kronecker $Q'$ recovers it.
+
+## The identity it rests on, and where it breaks
+
+**Anchor (exact).** Whitening by the *instantaneous* Gram is the polar: for
+$g_A=U\Sigma V^\top$,
+$$
+(g_A g_A^\top)^{-1/2}\,g_A=U\Sigma^{-1}U^\top\,U\Sigma V^\top=UV^\top=\varphi(g_A).
+$$
+So curvature whitening is an EMA generalization of "polar the gradient." In the
+$\beta_{\mathrm{curv}}\!\to\!0$ limit the EMA curvature *is* the current sample's
+Gram, so SOAP-whitening and the polar **coincide** and $\varphi(\mathrm{SOAP})=\varphi$
+is redundant. They separate only as the EMA averages over samples.
+
+**Saturation, and r256.** The "$\varphi(S^{-1/2}m)\approx S^{-1}m$" reading (a
+full inverse-curvature Newton step) holds only when $S^{-1/2}m$ is already
+near-orthogonal — the preconditioning-saturation regime. That holds at
+$r{=}16/64$ but **fails at r256** ($B$ at ${\sim}14\%$ rank,
+$S^{-1/2}$ spread ${\sim}340$, $\mathrm dA$ rotated ${\sim}60°$). So **all
+discriminating comparisons run at r256**; $r{=}16/64$ collapse the variants.
+
+## The polar is a separate ingredient — the open question
+
+The polar is *not* part of the curvature whitening; it flattens the
+SOAP-whitened direction's singular values to 1. Two readings of what it buys, and
+they make opposite predictions — this is the question to settle:
+
+- **Polar removes the per-sample spread (additive on top of curvature).** Even
+  after perfect *statistical* whitening, a single minibatch gradient has a
+  random spread of singular values (some directions large by sampling luck, not
+  curvature). The EMA curvature cannot remove this; $\varphi$ does, *deterministically*,
+  for the current step. Under this reading $\varphi$'s value floors at the
+  sampling-noise level — nonzero even with ideal curvature, and growing with $r$
+  (more directions → more spread). External support: SOAP+Muon (the polar
+  cleans the residual a stale/one-sided curvature leaves, which is why they
+  refresh SOAP only every ~40 steps) and Newton–Muon (the polar/`msgn` is an
+  *implicit output-side curvature preconditioner*, $\approx H^{-1}$).
+- **Polar is a crutch for bad curvature (redundant once curvature is right).**
+  KL-Shampoo: solve the two-sided statistical whitening properly and you need
+  neither the polar nor Adam-grafting. Under this reading $\varphi$'s value
+  $\to 0$ as the curvature estimate becomes fresh and well-conditioned.
+
+The Anchor says these agree at $\beta_{\mathrm{curv}}\!\to\!0$; they diverge with
+EMA staleness. So **$\varphi$'s marginal value is governed by the EMA gap** —
+how far the smoothed curvature is from the current gradient — and the question is
+whether that gap floors above zero (sampling noise) or vanishes with good
+curvature.
+
+*Preliminary signal (to confirm from logs):* at r256, `curvature-whiten-polar`
+appears to beat `curvature-whiten` (polar-on > polar-off) — i.e. the polar looks
+additive here. Not yet a clean logged comparison.
+
+## KL-coupled curvature estimation (the principled $Q'$)
+
+Our factor $S_{\mathrm{curv},A}=\mathrm{EMA}(g_A g_A^\top)$ is an *ad-hoc
+one-sided* estimate. The principled one treats curvature estimation as
+**covariance estimation**: pick the Kronecker preconditioner $S=S_a\otimes S_b$
+that minimizes the KL divergence to the gradient second moment $M=\mathbb E[gg^\top]$,
+$g=\mathrm{vec}(G)$ (Lin et al., `kl_shampoo_2509.03378.pdf`).
+
+**Objective — KL, not Frobenius.**
+$$
+\mathrm{KL}(M\,\|\,S)=\tfrac12\bigl(\log\det S+\mathrm{Tr}(M\,S^{-1})\bigr)+\text{const.}
+$$
+KL is a divergence *on the SPD cone* — it keeps $S$ SPD and weights errors
+multiplicatively (the geometry a preconditioner lives in); the Frobenius fit
+Shampoo/SOAP implicitly use ignores the SPD constraint and so needs Adam
+step-size grafting to fix the scale. (KL is also the log-det / von-Neumann
+divergence classical quasi-Newton minimizes.)
+
+**Stationarity gives the coupling.** With $S=S_a\otimes S_b$ (sizes
+$d_a,d_b$), $\log\det(S_a\otimes S_b)=d_b\log\det S_a+d_a\log\det S_b$ and
+$\mathrm{Tr}(MS^{-1})=\mathbb E\,\mathrm{Tr}(G^\top S_a^{-1}G\,S_b^{-1})$, so
+$$
+J=d_b\log\det S_a+d_a\log\det S_b+\mathbb E\,\mathrm{Tr}\!\bigl(G^\top S_a^{-1}G\,S_b^{-1}\bigr).
+$$
+The trace term is $\mathrm{Tr}(S_a^{-1}\cdot G S_b^{-1}G^\top)$, so
+$$
+\frac{\partial J}{\partial S_a}=d_b S_a^{-1}-S_a^{-1}\,\mathbb E[G S_b^{-1}G^\top]\,S_a^{-1}=0
+\;\Longrightarrow\;
+\boxed{\,S_a=\tfrac1{d_b}\mathbb E[G S_b^{-1}G^\top],\quad S_b=\tfrac1{d_a}\mathbb E[G^\top S_a^{-1}G]\,}.
+$$
+The coupling is the Euler–Lagrange condition, not a recipe: the cross-term ties
+the factors, so the optimal $S_a$ whitens $G$ by the *other* factor's inverse
+before forming its Gram. The EMA $S_a\leftarrow(1-\beta)S_a+(\beta/d_b)\,G S_b^{-1}G^\top$
+is a stochastic step toward this fixed point.
+
+**Shampoo is the one-sided corner.** $S_a=\mathbb E[GG^\top]$ is stationary only
+if $S_b=I$ — Shampoo (and our $\mathrm{EMA}(g_A g_A^\top)$) solve the *one-sided*
+KL fit, double-counting directions the other factor already handles.
+
+**LoRA form.** Fitting the covariance of $g_A\in\mathbb R^{r\times d_{\mathrm{in}}}$
+($S_a=S_{\mathrm{curv},A}$ latent $r\times r$; $S_b=D_{\mathrm{in}}$ constrained
+diagonal $\Rightarrow$ take $\mathrm{diag}$):
+$$
+S_{\mathrm{curv},A}=\tfrac1{d_{\mathrm{in}}}\mathbb E[g_A D_{\mathrm{in}}^{-1}g_A^\top],
 \qquad
-D_{\mathrm{in},A}=\mathrm{EMA}\!\big(\mathrm{diag}(g_A^\top g_A)\big)\in\mathbb{R}^{d_{\mathrm{in}}}.
+D_{\mathrm{in}}=\tfrac1{r}\,\mathrm{diag}\,\mathbb E[g_A^\top S_{\mathrm{curv},A}^{-1}g_A].
 $$
+Both inverses are cheap ($r\times r$, diagonal). This **derives** the consistent
+$(S_{\mathrm{curv},A},D_{\mathrm{in}})$ jointly, so $Q'=D_{\mathrm{in}}$ is not a
+swept knob but pinned by the joint fit — the coherent two-sided $(P,Q)$.
 
-- **Left ($r$):** full $r\times r$ curvature matrix — cheap since $r\ll d$ (the
-  object the flag already builds).
-- **Right ($d_{\mathrm{in}}$):** diagonal curvature, $O(d_{\mathrm{in}})$ memory. A
-  full right Gram would be $d_{\mathrm{in}}\times d_{\mathrm{in}}$ — the cost LoRA
-  avoids. The diagonal is SOAP's own recipe for the huge side and AdaFactor's
-  column factor.
+**Bearing on the polar fork.** In full-weight pretraining KL-Shampoo (this
+coupled estimate, *no polar, no Adam*) beats SOAP/Shampoo, and beats KL-SOAP
+(adding the elementwise $\hat v$ *hurts*). So **KL-Shampoo-LoRA** (dense $r\times r$
+latent, coupled with $D_{\mathrm{in}}$, KL eigenvalue EMA, no $\hat v$) is the
+clean "solve the curvature properly" baseline: if it matches/beats polar-on
+SOAP, the polar and $\hat v$ were crutches; if polar-on still wins, the polar is
+genuinely additive. *Caveat: their evidence is full-weight, not LoRA, and the
+polar is absent from their setting.*
 
-Both indices use the same curvature signal: $S$ supplies the rank-side
-eigenbasis for SOAP and the outer inverse square root, while $D$ supplies the
-large-side coordinate basis and the outer diagonal inverse square root. Adam's
-$v$ lives in that $S\otimes D$ basis; it is not an inverse eigenvalue.
+## $m$ vs $u$ as input
 
-**Keep or drop the polar.** The SOAP update above retains the SOAP-normalized
-direction's singular values. The polar $\phi$ is a
-*separate* ingredient that orthogonalizes — flattens those singular values to 1,
-keeping only rotation. Keeping $\phi$ before the outer sandwich leaves
-the update in the polar/Muon family with chord-rule magnitude; dropping it gives a
-plain SOAP-curvature/chord-tight step. Whether $\phi$ helps on top of SOAP is a
-separate ablation, so test both.
+Raw $m$ is SOAP-native (SOAP normalizes in its own eigenbasis; the Adam direction
+$u=m/(\sqrt v+\epsilon)$ would double-normalize the columns that $\hat v_A$
+already scales). Since $\varphi$ is scale-invariant, $m$ vs $u$ is a pure
+*direction* ablation, not a magnitude one.
 
-## Existing curvature-whitening A/B (already inconclusive)
+## Historical `--curvature_whitening` flag
 
-OLMo r256, full polar k=1, packed_v1.1, step 9000, single seed, $\sigma=0.0007$.
-Groups: `curvature_whitening_ns8_k1_r256_olmo_opc` (ON),
-`chord_tight_polar_express_phase_L_lrsweep_r256_blackwell` (OFF $\equiv$ full
-polar), `adamw_phase_L_lrsweep_r256_blackwell`.
+`--curvature_whitening` (commit `67cfea4`) is a *different, older* path: it swaps
+the geometric Gram $B^\top B$ for $S_{\mathrm{curv},A}$ inside the existing
+chord-tight pipeline, on the **Adam direction** $u_A$, with the matrix $S^{-1/2}$
+sandwich and polar — $\Delta A\propto S_{\mathrm{curv},A}^{-1/2}\varphi(S_{\mathrm{curv},A}^{-1/2}u_A)$.
+It is one-sided (no $D_{\mathrm{in}}$) and not the SOAP-on-$m$ variant above.
 
-| arm | best lr | final | $\Delta$ AdamW |
-|---|---|---|---|
-| curvature ON | 3e-3 | 0.7394 | $-18.6\sigma$ |
-| curvature OFF | 1e-2 | 0.7414 | $-15.8\sigma$ |
-| AdamW | 1e-4 | 0.7524 | — |
+## Empirical status (r256, preliminary)
 
-ON edges OFF by ${\sim}2.9\sigma$ at its best lr, but the win is confounded:
-curvature whitening shifts the optimal lr down (3e-3 vs 1e-2) and worsens high-lr
-robustness (lr=1e-2: ON 0.7521 vs OFF 0.7414, ${+}15\sigma$; far worse at 3e-2,
-1e-1). At matched low lr it wins, at matched high lr it loses. A narrow-basin
-${\sim}3\sigma$ edge, single seed, off the canonical 4k horizon — not a clean win,
-and the geometric-Gram-vs-curvature axis is not settled by it.
+Older curvature A/B (OLMo r256, full polar $k{=}1$, step 9000, single seed,
+$\sigma=0.0007$): curvature-ON best $0.7394$ (lr 3e-3), curvature-OFF best
+$0.7414$ (lr 1e-2), AdamW $0.7524$ (lr 1e-4). ON edges OFF by ${\sim}2.9\sigma$ at
+its best lr, **but confounded**: curvature shifts the optimal lr down and worsens
+high-lr robustness (lr 1e-2: ON $0.7521$ vs OFF $0.7414$). A narrow-basin edge,
+single seed, off the 4k horizon — the geometric-vs-curvature axis is not settled.
 
-## Built / remaining
+## What to do next (all at r256, one change at a time)
 
-1. `curvature-whiten-lora`: SOAP on $m$ in the $S\otimes D$ basis, followed by
-   the outer curvature sandwich and chord-tight spectral rescale.
-2. `curvature-whiten-polar-lora`: same, but replaces $z$ by $\phi(z)$ before the
-   outer sandwich.
-3. Long-horizon optimizer comparison remains open; early stability must be
-   checked at r256 because r=16/64 collapse the variants together.
-
-All discriminating comparisons run at **r256** (where saturation fails); r=16/64
-collapse the variants together.
+1. **`ρ_nonsep` diagnostic** (cheapest, a-priori). Log
+   $\lVert \hat v_A-\hat a\hat b^\top\rVert_F/\lVert\hat v_A\rVert_F$ on a run. If
+   small, SOAP's non-Kronecker richness has nothing to capture and the clean
+   Kronecker sandwich should match it; if large, SOAP is doing real work no $Q'$
+   can.
+2. **Polar on/off** = `curvature-whiten-polar` vs `curvature-whiten`. Confirm the
+   preliminary signal and quantify the polar's additive value.
+3. **Staleness sweep** (`precond_refresh_every`, $\beta_{\mathrm{curv}}$). If
+   $\varphi$'s benefit (run 2) *grows* with staleness and floors above zero with
+   fresh curvature → polar removes sampling spread (keep it); if it $\to 0$ with
+   fresh curvature → polar was a crutch (solve the curvature instead).
+4. **Explicit $Q'$ sweep** $Q'\in\{I, D_{\mathrm{in}}, \tilde G^\top\tilde G\}$
+   ($\tilde G=g_B A+B g_A$) in the clean Kronecker sandwich (input $m$, no
+   $\hat v_A$). $I$→$D_{\mathrm{in}}$: does the input axis matter? best-of vs
+   current SOAP: does the non-separable $\hat v_A$ beat any Kronecker $Q'$?
+5. **KL-Shampoo-LoRA** — the principled version of (4): instead of choosing
+   $Q'$, estimate $(S_{\mathrm{curv},A}, D_{\mathrm{in}})$ by the coupled KL fit
+   (derived above), no $\hat v_A$, polar on/off. Tests whether properly-solved
+   curvature makes the polar (and $\hat v_A$) redundant.
 
 ## Grounding
 
-- SOAP-curvature implementation: `CurvatureWhitenLoRA` in
-  `lora_playground/optim.py`.
-- Equation-level tests: `tests/test_curvature_whiten_lora.py`.
-- Historical curvature pipeline: `lora_playground/optim.py` chord-tight
-  `curvature_whitening` path.
-- SOAP algorithm: `docs/papers/soap_2409.11321.pdf`, Algs 1–3, Claim 1.
-- Saturation: `preconditioning_saturation_2026_05_03.md` (commit `3ce7844`).
-- r256 whiten lag: `chord_tight_whiten_lag_r256.md`.
-- Factor-conditioning: `factor_conditioning_hypothesis.md`.
-- KFAC-LoRA plan: `docs/plans/optimizer_ideas.md`.
+- Implementation: `CurvatureWhitenLoRA` in `lora_playground/optim.py`; tests `tests/test_curvature_whiten_lora.py`.
+- Older one-sided path: `optim.py` chord-tight `curvature_whitening` flag.
+- SOAP algorithm (real vs idealized): `docs/papers/soap_2409.11321.pdf`, Algs 1–3, Claim 1.
+- Generalized two-sided program (the $(B^\top P B)^{-1/2}\varphi(\cdots)Q'^{-1/2}$ sandwich): `related_work_2026_05.md` §10.6.
+- SOAP+Muon as iterative whitening (polar cleans the stale/one-sided residual): `docs/papers/soap_muon_vyas.pdf`.
+- Polar/`msgn` as an implicit output-side curvature preconditioner ($\approx H^{-1}$): `docs/papers/newton_muon_2604.01472.pdf`.
+- KL view of Shampoo/SOAP curvature, two-sided equilibrium (no polar needed if solved right): `docs/papers/kl_shampoo_2509.03378.pdf`.
+- Saturation: `preconditioning_saturation_2026_05_03.md`. r256 whiten lag: `chord_tight_whiten_lag_r256.md`. Factor-conditioning: `factor_conditioning_hypothesis.md`. KFAC-LoRA plan: `docs/plans/optimizer_ideas.md`.
