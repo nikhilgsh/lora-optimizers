@@ -325,9 +325,10 @@ not settled.
 
 1. **`ρ_nonsep` diagnostic** (cheapest, a-priori). Log
    $\lVert \hat v_A-\hat a\hat b^\top\rVert_F/\lVert\hat v_A\rVert_F$ on a run. If
-   small, SOAP's non-Kronecker richness has nothing to capture and the clean
-   Kronecker sandwich should match it; if large, SOAP is doing real work no $Q'$
-   can.
+   small, SOAP's non-Kronecker richness has nothing to capture: $\hat v_A$ buys
+   nothing beyond its marginals, so the SOAP core reduces to the one-sided
+   power-$1/2$ Shampoo core of Prop 2 and Shampoo suffices in its place. If large,
+   SOAP is doing real work no Kronecker $Q'$ (hence no Shampoo) can recover.
 2. **Polar on/off** = `curvature-whiten-polar` vs `curvature-whiten`. Confirm the
    preliminary signal and quantify the polar's additive value.
 3. **Staleness sweep** (`precond_refresh_every`, $\beta_{\mathrm{curv}}$). If
