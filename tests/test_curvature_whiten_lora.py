@@ -1,14 +1,13 @@
-"""Tests for CurvatureWhitenLoRA (two-sided curvature-whitened momentum).
+"""Tests for CurvatureWhitenLoRA (SOAP in an S⊗D curvature basis).
 
 Covers: step runs and changes params (both polar arms), zero-grad finiteness,
-determinism, the polar toggle's orthogonalization behavior, and factory dispatch
-under both registered names.
+determinism, the SOAP-basis/chord-tight update equation, and factory dispatch.
 """
 import torch
 import torch.nn as nn
 import pytest
 
-from lora_playground.optim import CurvatureWhitenLoRA, build_optimizer
+from lora_playground.optim import CurvatureWhitenLoRA, build_optimizer, _newton_schulz
 
 
 class _FakeLoRALinear(nn.Module):
@@ -82,50 +81,136 @@ def test_determinism(use_polar):
         assert torch.allclose(pa, pb, atol=0.0)
 
 
-def test_polar_arm_orthogonalizes_update():
-    """use_polar=True must flatten the per-factor update spectrum (σ ratio ≈ 1);
-    use_polar=False (plain whiten) leaves it spread. Read the applied ΔA directly
-    by capturing pre/post on a wide factor where the polar has work to do.
+def _top_power_iter_vector(M):
+    U, _, Vh = torch.linalg.svd(M.float(), full_matrices=False)
+    return (U[:, 0] if M.shape[0] <= M.shape[1] else Vh[0]).contiguous()
+
+
+def _rdinv_like(x, delta):
+    xmax = x.amax(dim=-1, keepdim=True)
+    out = (x / xmax.clamp_min(1e-30) + delta).rsqrt()
+    return torch.where(xmax < 1e-30, torch.ones_like(out), out)
+
+
+def test_block_sigma_estimator_recovers_from_bad_warm_start():
+    """A stale warm vector can be in the current Gram nullspace.
+
+    The curvature optimizer uses block power iteration for chord rescaling so
+    the deterministic M·1 start can still find the top singular direction.
     """
-    def applied_dA(use_polar):
-        torch.manual_seed(1)
-        # r=4 ≤ d_in=16 so ΔA is wide; polar → orthonormal rows (flat σ).
-        sub = _FakeLoRALinear(16, 6, 4)
+    M = torch.ones(8, 8)
+    v_bad = torch.tensor([1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0])
+    sigma, V = CurvatureWhitenLoRA._sigma_max_block_guarded(
+        M, v_bad, n_iters=1, block_size=2,
+    )
+    torch.testing.assert_close(sigma, torch.tensor(8.0), rtol=1e-6, atol=1e-6)
+    assert V.shape == (8, 2)
 
-        class _M(nn.Module):
-            def __init__(s): super().__init__(); s.l0 = sub
-            def forward(s, x): return s.l0(x)
-        m = _M()
-        # ns_steps=10 so Newton-Schulz fully converges (5 iters under-flattens a
-        # wide matrix). Drive with full-rank random gradients over several steps:
-        # step 1 uses an identity eigenbasis (plain Adam) by construction, and a
-        # backprop-through-this-toy gradient is rank-deficient — both make a
-        # single-step update degenerate. refresh_every=1 → Q non-identity from
-        # step 2; we read the last step's ΔA, which is full row-rank.
-        opt = CurvatureWhitenLoRA(m, lr=1e-2, use_polar=use_polar, ns_steps=10,
-                                  precond_refresh_every=1)
-        wA = sub.lora_A["default"].weight
-        wB = sub.lora_B["default"].weight
-        g = torch.Generator().manual_seed(7)
-        before = None
-        for _ in range(4):
-            wA.grad = torch.randn(wA.shape, generator=g)
-            wB.grad = torch.randn(wB.shape, generator=g)
-            before = wA.detach().clone()
-            opt.step()
-        return (wA.detach() - before).float()
+    sigma2, V2 = CurvatureWhitenLoRA._sigma_max_block_guarded(
+        M, V, n_iters=1, block_size=2,
+    )
+    torch.testing.assert_close(sigma2, torch.tensor(8.0), rtol=1e-6, atol=1e-6)
+    assert V2.shape == (8, 2)
 
-    s_polar = torch.linalg.svdvals(applied_dA(True))
-    s_plain = torch.linalg.svdvals(applied_dA(False))
-    ratio_polar = float(s_polar[0] / s_polar[-1])
-    ratio_plain = float(s_plain[0] / s_plain[-1])
-    # Polar arm flattens the update spectrum (σ ratio → 1). Plain SOAP (Adam in
-    # the eigenbasis) is fairly isotropic but retains real spectral spread, so
-    # the polar still does visible work — it is strictly flatter than plain.
-    assert ratio_polar < 1.3, f"polar arm should flatten spectrum, got σ ratio {ratio_polar:.3f}"
-    assert ratio_plain > 1.4 and ratio_plain > ratio_polar, (
-        f"no-polar arm should be more spread than the orthogonalized polar arm "
-        f"(got plain {ratio_plain:.2f} vs polar {ratio_polar:.2f})")
+
+@pytest.mark.parametrize("use_polar", [False, True])
+def test_curvature_whiten_matches_soap_sxd_chord_tight_formula(use_polar):
+    """Pin the requested update equation.
+
+    No-polar:
+        z_A = Q_A [(Q_Aᵀ m_A) / sqrt(v_A)]
+        W_A = S_A^{-1/2} z_A D_in^{-1/2}
+    Polar:
+        W_A = S_A^{-1/2} polar(z_A) D_in^{-1/2}
+
+    B uses the transposed orientation. The final applied update is the
+    chord-tight spectral rescale, σ_max(Δfactor)=ρ.
+    """
+    torch.manual_seed(0)
+    sub = _FakeLoRALinear(3, 4, 2)
+
+    class _M(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.l0 = sub
+        def forward(self, x):
+            return self.l0(x)
+
+    m = _M()
+    A = sub.lora_A["default"].weight
+    B = sub.lora_B["default"].weight
+    A.data.copy_(torch.tensor([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]]))
+    B.data.copy_(torch.tensor([[1.0, 0.0], [0.0, 0.5], [0.0, 0.0], [0.0, 0.0]]))
+    gA = torch.tensor([[0.5, -1.0, 0.25], [1.5, 0.75, -0.5]])
+    gB = torch.tensor([[0.25, -1.0], [0.5, 0.75], [-1.25, 0.5], [1.0, -0.5]])
+
+    lr = 1e-2
+    delta = 1e-3
+    opt = CurvatureWhitenLoRA(
+        m, lr=lr, betas=(0.0, 0.0), delta=delta, use_polar=use_polar,
+        ns_steps=12, precond_refresh_every=100,
+    )
+    st = opt.pair_state[0]
+    theta_A = torch.tensor(0.37)
+    theta_B = torch.tensor(-0.51)
+    QA = torch.tensor([
+        [torch.cos(theta_A), -torch.sin(theta_A)],
+        [torch.sin(theta_A), torch.cos(theta_A)],
+    ])
+    QB = torch.tensor([
+        [torch.cos(theta_B), -torch.sin(theta_B)],
+        [torch.sin(theta_B), torch.cos(theta_B)],
+    ])
+    lam_A = torch.tensor([4.0, 1.0])
+    lam_B = torch.tensor([1.0, 16.0])
+    st["Q_A"].copy_(QA)
+    st["Q_B"].copy_(QB)
+    st["L_A"].copy_(QA @ torch.diag(lam_A) @ QA.T)
+    st["R_B"].copy_(QB @ torch.diag(lam_B) @ QB.T)
+    st["D_in"].copy_(torch.tensor([9.0, 1.0, 4.0]))
+    st["D_out"].copy_(torch.tensor([1.0, 4.0, 9.0, 16.0]))
+    opt._q_initialized = True
+
+    lamA_is = _rdinv_like(lam_A, delta)
+    lamB_is = _rdinv_like(lam_B, delta)
+    din_is = _rdinv_like(torch.tensor([9.0, 1.0, 4.0]), delta)
+    dout_is = _rdinv_like(torch.tensor([1.0, 4.0, 9.0, 16.0]), delta)
+
+    zA_basis = QA.T @ gA
+    zB_basis = gB @ QB
+    zA = QA @ (zA_basis / (zA_basis.abs() + opt.eps))
+    zB = (zB_basis / (zB_basis.abs() + opt.eps)) @ QB.T
+    if use_polar:
+        zA = _newton_schulz(zA, nsteps=12, pre_norm="spec")
+        zB = _newton_schulz(zB, nsteps=12, pre_norm="spec")
+    WA = QA @ ((QA.T @ zA) * lamA_is.unsqueeze(-1))
+    WA = WA * din_is.unsqueeze(0)
+    WB = ((zB @ QB) * lamB_is.unsqueeze(0)) @ QB.T
+    WB = dout_is.unsqueeze(-1) * WB
+
+    # Warm-start power iteration at the exact top singular vectors so the
+    # optimizer's spectral rescale is deterministic and comparable here.
+    st["v_sigA"] = _top_power_iter_vector(A)
+    st["v_sigB"] = _top_power_iter_vector(B)
+    st["v_sigWA"] = _top_power_iter_vector(WA)
+    st["v_sigWB"] = _top_power_iter_vector(WB)
+
+    rho = lr / (
+        torch.linalg.matrix_norm(A.float(), ord=2)
+        + torch.linalg.matrix_norm(B.float(), ord=2)
+        + opt.eps
+    )
+    expected_dA = -(rho / torch.linalg.matrix_norm(WA, ord=2)) * WA
+    expected_dB = -(rho / torch.linalg.matrix_norm(WB, ord=2)) * WB
+    A_before = A.detach().clone()
+    B_before = B.detach().clone()
+
+    A.grad = gA.clone()
+    B.grad = gB.clone()
+    opt.step()
+
+    assert torch.allclose(A.detach() - A_before, expected_dA, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(B.detach() - B_before, expected_dB, atol=1e-6, rtol=1e-5)
 
 
 @pytest.mark.parametrize("name,expect_polar", [

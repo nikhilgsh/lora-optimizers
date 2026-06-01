@@ -107,6 +107,16 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
 - New optimizers: add class to `optim.py`, add entry to `OPTIMIZER_CHOICES`, add branch in `build_optimizer()`, register in `OPTIM_COLORS` and at least one `OPTIM_FAMILIES` set in `lora_playground/plot_utils.py` (the orphan-warning fires at notebook startup if you forget the family).
 - Optimizer math operates in float32 (cast inputs, cast updates back to param dtype/device before applying)
 - Tests: shapes, dtype/device behavior, numerical residuals, determinism on tiny tensors; CPU-only for unit tests; GPU required for functional smokes
+- **Spectral-norm rescaling is load-bearing.** Any optimizer that divides by an
+  estimated `sigma_max` must defend against underestimated denominators.
+  Single-vector power iteration can miss the top singular direction when the
+  start vector is cold, stale, zero, or nearly in the current Gram nullspace;
+  that silently overscales updates and can explode parameters while all tensor
+  shapes look correct. Prefer a guarded batched/block estimator with
+  deterministic starts and lower-bound floors. When changing a `sigma_max`
+  estimator or call site, add a known-positive regression for a bad start vector
+  and run a high-rank GPU smoke that checks eval loss, `param_l2`, and nonfinite
+  gradient counts.
 - **Notebook analysis cells: check `lora_playground/plotting/` first.** Before writing a custom aggregation+plot function for a new comparison cell, grep the plotting package for a primitive that already does it: `compare_variants_figure` (label→extra_where dict, final-vs-lr + best-lr trajectory + summary table with Δσ), `standard_sweep_figure`, `sweep_figure_with_auto_ylim`, `distinct_palette`, `filter_baseline`, `filter_variants`. New comparisons are usually one call into the library plus a small variants dict — not a 100+-line cell that duplicates loader/aggregation/plotting bookkeeping. Add to the library before forking that pattern across multiple cells.
 
 ## Experiment Rules

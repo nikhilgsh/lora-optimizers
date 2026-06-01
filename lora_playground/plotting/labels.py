@@ -79,18 +79,13 @@ def canonical_label(cfg: dict) -> str | None:
     """
     if cfg.get("optimizer") == OPT_ADAMW:
         return "AdamW"
-    # SOAP (CurvatureWhitenLoRA) — a distinct optimizer, not the chord-tight
-    # pipeline, so it has its own axes (refresh freq f, curvature EMA β, optional
-    # polar add-on) rather than ns/polar_method/damping. Paper's ONE-SIDED variant
-    # (§7.1): eigenbasis on the small r index, identity on the large index
-    # (diagonal Adam there). Applied to both LoRA factors.
     opt = cfg.get("optimizer")
     if opt in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
         polar = " +polar" if opt == "curvature-whiten-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
-        return f"SOAP{polar} (f={f}{bc})"
+        return f"SOAP-curv{polar} (f={f}{bc})"
     a = _axes(cfg)
     if a is None:
         return None

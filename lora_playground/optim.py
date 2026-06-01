@@ -1013,17 +1013,18 @@ class AdamLinLoRA(Optimizer):
             if step_count % self.diagnostics_every == 0:
                 _emit_optim_diagnostics(step_count, diag_records)
 
-
 class CurvatureWhitenLoRA(Optimizer):
-    """Harmonious two-sided curvature preconditioner for LoRA factors.
+    """SOAP-on-momentum in the affordable S⊗D curvature basis.
 
     The strongest curvature preconditioner one can AFFORD for a LoRA factor
     (r×d, r≪d) is a Kronecker product: a FULL r×r matrix on the small side (r²
     is affordable) and a DIAGONAL on the large side (d×d is not). Each index is
     preconditioned exactly once — "most powerful affordable, non-redundant":
 
-        ΔA  =  S_rA^{-1/2} · m̂_A · D_in^{-1/2}      (A: r×d_in)
-        ΔB  =  D_out^{-1/2} · m̂_B · S_rB^{-1/2}      (B: d_out×r)
+        z_A  =  SOAP(m_A; S_rA ⊗ D_in)               (A: r×d_in)
+        z_B  =  SOAP(m_B; D_out ⊗ S_rB)              (B: d_out×r)
+        ΔA   ∝  S_rA^{-1/2} · z_A · D_in^{-1/2}
+        ΔB   ∝  D_out^{-1/2} · z_B · S_rB^{-1/2}
 
     where m̂ is bias-corrected momentum and the curvature factors are EMAs
     (decay ``curvature_beta``):
@@ -1047,13 +1048,13 @@ class CurvatureWhitenLoRA(Optimizer):
     power iteration, NOT eigh). This is the same lr meaning as the chord-tight
     A/B arms, so the harmonious curve drops into the same lr grid.
 
-    This is NOT vanilla SOAP (elementwise Adam V on the rotated gradient): the
-    explicit diagonal D on the large side is a cleaner, less-redundant, better-
-    conditioned estimate than a per-entry V at LoRA's aspect ratio (cf. the
-    paper's §7.2 "factorized SOAP" ≈ full SOAP). ``use_polar`` Newton-Schulz-
-    orthogonalizes the shaped update before the rescale (a Muon-scale variant);
-    plain harmonious whitening is ``use_polar=False``. ``precond_delta_relative``
-    is accepted for factory compatibility (damping here is always relative).
+    The SOAP part is Adam in the eigenbasis of the Kronecker curvature estimate:
+    Q_r on the small side and the coordinate basis on the large diagonal side.
+    ``v_A`` / ``v_B`` are elementwise EMAs of the rotated gradients, not inverse
+    eigenvalues. ``use_polar`` optionally replaces z by polar(z) before the
+    outer curvature whitening, giving a direct "SOAP inner, chord-tight outer"
+    ablation. ``precond_delta_relative`` is accepted for factory compatibility
+    (damping here is always relative).
     """
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-3, eps=1e-8,
                  curvature_beta=0.99, use_polar=False, ns_steps=5,
@@ -1073,6 +1074,7 @@ class CurvatureWhitenLoRA(Optimizer):
         self.curvature_beta = float(curvature_beta)
         self.use_polar = bool(use_polar)
         self.ns_steps = int(ns_steps)
+        self.precond_delta_relative = bool(precond_delta_relative)
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_basic_diagnostics = bool(log_basic_diagnostics)
         self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
@@ -1092,6 +1094,10 @@ class CurvatureWhitenLoRA(Optimizer):
             self.pair_state[i] = {
                 'm_A': torch.zeros_like(A, dtype=torch.float32),   # momentum
                 'm_B': torch.zeros_like(B, dtype=torch.float32),
+                # SOAP second moments in the S⊗D eigenbasis. The D side is
+                # diagonal, so its eigenbasis is the coordinate basis.
+                'v_A': torch.zeros_like(A, dtype=torch.float32),
+                'v_B': torch.zeros_like(B, dtype=torch.float32),
                 # small (r) side: full r×r curvature, whitened via its eigenbasis.
                 'L_A': torch.zeros((r, r), dtype=torch.float32, device=A.device),
                 'R_B': torch.zeros((r, r), dtype=torch.float32, device=A.device),
@@ -1121,6 +1127,75 @@ class CurvatureWhitenLoRA(Optimizer):
         out = (x / xmax.clamp_min(1e-30) + self.delta).rsqrt()
         return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
+    @staticmethod
+    def _sigma_max_block_guarded(M, V_init=None, n_iters=6, block_size=4, eps=1e-30):
+        """Block power-iter σmax with deterministic starts and a floor guard.
+
+        Single-vector power iteration can miss the top singular direction when
+        the cached vector is stale or nearly orthogonal to the current matrix.
+        The block starts include the cached vector, an M·1 deterministic start,
+        and high-energy coordinate starts, then run subspace iteration on the
+        smaller-side Gram. The returned block is cached for the next step.
+
+        The row/column and Frobenius floors are deterministic lower bounds on
+        σmax(M), so a bad subspace estimate cannot overscale the chord update.
+        """
+        if M.numel() == 0:
+            return torch.zeros((), device=M.device, dtype=torch.float32), None
+        Mf = M.float() if M.dtype != torch.float32 else M
+        m, n = Mf.shape
+        smaller_m = m <= n
+        k = m if smaller_m else n
+        b = max(1, min(int(block_size), k))
+        cols = []
+
+        if V_init is not None and V_init.device == Mf.device and V_init.dtype == torch.float32:
+            if V_init.shape == (k,):
+                cols.append(V_init)
+            elif V_init.ndim == 2 and V_init.shape[0] == k:
+                for j in range(min(V_init.shape[1], b)):
+                    cols.append(V_init[:, j])
+
+        if smaller_m:
+            ones = torch.ones(n, device=Mf.device, dtype=torch.float32)
+            v_ones = Mf @ ones
+            scores = Mf.square().sum(dim=1)
+        else:
+            ones = torch.ones(m, device=Mf.device, dtype=torch.float32)
+            v_ones = Mf.transpose(-2, -1) @ ones
+            scores = Mf.square().sum(dim=0)
+        if torch.isfinite(v_ones).all() and v_ones.norm() > eps:
+            cols.append(v_ones)
+
+        top = torch.topk(scores, k=b, largest=True).indices
+        for idx in top:
+            e = torch.zeros(k, device=Mf.device, dtype=torch.float32)
+            e[idx] = 1.0
+            cols.append(e)
+
+        V = torch.stack(cols[:b], dim=1)
+        if V.shape[1] < b:
+            pad = torch.eye(k, b - V.shape[1], device=Mf.device, dtype=torch.float32)
+            V = torch.cat([V, pad], dim=1)
+
+        Q, _ = torch.linalg.qr(V, mode="reduced")
+        if smaller_m:
+            for _ in range(n_iters):
+                Q, _ = torch.linalg.qr(Mf @ (Mf.transpose(-2, -1) @ Q), mode="reduced")
+            Y = Mf.transpose(-2, -1) @ Q
+        else:
+            for _ in range(n_iters):
+                Q, _ = torch.linalg.qr(Mf.transpose(-2, -1) @ (Mf @ Q), mode="reduced")
+            Y = Mf @ Q
+        gram = Y.transpose(-2, -1) @ Y
+        evals = torch.linalg.eigvalsh(0.5 * (gram + gram.transpose(-2, -1)))
+        sigma = evals[-1].clamp_min(0.0).sqrt()
+        coord_floor = scores.max().clamp_min(0.0).sqrt()
+        k = max(1, min(M.shape[-2], M.shape[-1]))
+        frob_floor = Mf.norm() / (float(k) ** 0.5)
+        floor = torch.maximum(coord_floor, frob_floor)
+        return torch.maximum(sigma, floor), Q
+
     @torch.no_grad()
     def step(self, closure=None):
         if closure is not None:
@@ -1146,38 +1221,62 @@ class CurvatureWhitenLoRA(Optimizer):
             st['m_A'].mul_(b1).add_(gA, alpha=1.0 - b1)
             st['m_B'].mul_(b1).add_(gB, alpha=1.0 - b1)
             bc1 = 1.0 - b1 ** st['step']
-            mhatA = st['m_A'] / bc1
-            mhatB = st['m_B'] / bc1
+            bc2 = 1.0 - self.beta2 ** st['step']
             QA, QB = st['Q_A'], st['Q_B']
             LA, RB = st['L_A'], st['R_B']
 
-            # Whitened DIRECTIONS (harmonious Kronecker): S_rA^{-1/2} m̂ D_in^{-1/2}
-            # and D_out^{-1/2} m̂ S_rB^{-1/2}. S_r^{-1/2}=QΛ^{-1/2}Qᵀ with
+            # SOAP in the S⊗D eigenbasis. For A the basis transform is
+            # Q_A^T @ X; for B it is X @ Q_B. The large-side D factors are
+            # diagonal, so the large-side eigenbasis is the coordinate basis.
+            gA_basis = QA.transpose(-2, -1) @ gA
+            gB_basis = gB @ QB
+            st['v_A'].mul_(self.beta2).addcmul_(
+                gA_basis, gA_basis, value=1.0 - self.beta2)
+            st['v_B'].mul_(self.beta2).addcmul_(
+                gB_basis, gB_basis, value=1.0 - self.beta2)
+            mA_basis = QA.transpose(-2, -1) @ (st['m_A'] / bc1)
+            mB_basis = (st['m_B'] / bc1) @ QB
+            zA = QA @ (mA_basis / ((st['v_A'] / bc2).sqrt() + self.eps))
+            zB = (mB_basis / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QB.transpose(-2, -1)
+
+            # Outer chord-tight curvature whitening. S_r^{-1/2}=QΛ^{-1/2}Qᵀ with
             # λ_i = qᵢᵀ S_r qᵢ = diag(QᵀLQ) (Rayleigh; exact once warm-started QR Q
             # tracks the eigenbasis, and avoids a per-step eigh — too slow, see
-            # feedback_no_eigh_in_production).
+            # feedback_no_eigh_in_production). With use_polar=True, polar(z) is
+            # used as the inner direction before the same outer whitening.
             lamA_is = self._rdinv((QA * (LA @ QA)).sum(dim=0))        # (r,)
             dinA_is = self._rdinv(st['D_in'])                         # (d_in,)
-            WA = QA @ ((QA.transpose(-2, -1) @ mhatA) * lamA_is.unsqueeze(-1))
-            WA = WA * dinA_is.unsqueeze(0)
             lamB_is = self._rdinv((QB * (RB @ QB)).sum(dim=0))        # (r,)
             doutB_is = self._rdinv(st['D_out'])                       # (d_out,)
-            WB = ((mhatB @ QB) * lamB_is.unsqueeze(0)) @ QB.transpose(-2, -1)
-            WB = doutB_is.unsqueeze(-1) * WB
+
+            def whiten_A(X):
+                Y = QA @ ((QA.transpose(-2, -1) @ X) * lamA_is.unsqueeze(-1))
+                return Y * dinA_is.unsqueeze(0)
+
+            def whiten_B(X):
+                Y = ((X @ QB) * lamB_is.unsqueeze(0)) @ QB.transpose(-2, -1)
+                return doutB_is.unsqueeze(-1) * Y
+
             if self.use_polar:
-                WA = _newton_schulz(WA, nsteps=self.ns_steps, pre_norm="spec")
-                WB = _newton_schulz(WB, nsteps=self.ns_steps, pre_norm="spec")
+                zA = _newton_schulz(zA, nsteps=self.ns_steps, pre_norm="spec")
+                zB = _newton_schulz(zB, nsteps=self.ns_steps, pre_norm="spec")
+            WA = whiten_A(zA)
+            WB = whiten_B(zB)
 
             # MAGNITUDE: chord-tight-clean convention (matches the curvature
             # baselines, so lr is directly comparable). lr is a spectral
             # trust-region budget: ρ = lr / (σ_max(A) + σ_max(B)), and each
             # per-factor update is rescaled to σ_max(ΔA) = ρ. σ_max via
             # warm-started power iteration (NOT eigh).
-            sA, st['v_sigA'] = _sigma_max_power_iter(A.detach().float(), st.get('v_sigA'), n_iters=8)
-            sB, st['v_sigB'] = _sigma_max_power_iter(B.detach().float(), st.get('v_sigB'), n_iters=8)
+            sA, st['v_sigA'] = self._sigma_max_block_guarded(
+                A.detach().float(), st.get('v_sigA'), n_iters=8)
+            sB, st['v_sigB'] = self._sigma_max_block_guarded(
+                B.detach().float(), st.get('v_sigB'), n_iters=8)
             rho = lr / (sA + sB + eps)
-            sWA, st['v_sigWA'] = _sigma_max_power_iter(WA, st.get('v_sigWA'), n_iters=8)
-            sWB, st['v_sigWB'] = _sigma_max_power_iter(WB, st.get('v_sigWB'), n_iters=8)
+            sWA, st['v_sigWA'] = self._sigma_max_block_guarded(
+                WA, st.get('v_sigWA'), n_iters=8)
+            sWB, st['v_sigWB'] = self._sigma_max_block_guarded(
+                WB, st.get('v_sigWB'), n_iters=8)
             dA = -(rho / (sWA + eps)) * WA                            # σ_max(dA) = ρ
             dB = -self.lora_plus_multiplier * (rho / (sWB + eps)) * WB
 
@@ -10794,9 +10893,10 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
         )
     if optimizer_type in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
-        # Two-sided curvature-whitened momentum (SOAP/Shampoo-style). The two
-        # names share one class and differ only in the polar toggle, so the
-        # keep/drop-polar comparison is a clean optimizer-name axis.
+        # SOAP on momentum in the S⊗D curvature eigenbasis, followed by the
+        # chord-tight outer curvature sandwich. The two names share one class
+        # and differ only in the polar toggle, so keep/drop-polar is a clean
+        # optimizer-name axis.
         return CurvatureWhitenLoRA(
             model,
             lr=lr,

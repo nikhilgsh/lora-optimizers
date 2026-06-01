@@ -86,7 +86,7 @@ OPTIM_COLORS = {
     "galore-adamw":                "#a55194",
     # orthogonal-core LoRA (UCV^T parameterization)
     "adam-ucv-core-lora":          "#2b8c4d",
-    # two-sided curvature-whitened momentum (SOAP/Shampoo-style); polar A/B
+    # SOAP on momentum in an S⊗D curvature basis; polar A/B
     "curvature-whiten-lora":       "#2e7d5b",
     "curvature-whiten-polar-lora": "#1f5f8c",
 }
