@@ -2281,8 +2281,13 @@ def _newton_schulz(X, nsteps=5, eps=1e-7, pre_norm="frob"):
         norm = X.norm() + eps
         X = X / norm
     elif pre_norm == "spec":
-        smax = torch.linalg.matrix_norm(X, ord=2) + eps
-        X = X / smax
+        # σ_max via the library power-iter util (matvec-based, no SVD); the
+        # full-SVD `matrix_norm(ord=2)` here was ~80% of the curvature-whiten-
+        # polar step at r256 (224 SVDs/step). NS only needs σ < √3 and the
+        # caller renormalizes the update magnitude downstream, so a power-iter
+        # estimate is safe. Uses the house n_iters=8 (≈5% p95 cold rel-error).
+        smax, _ = _sigma_max_power_iter(X, n_iters=8)
+        X = X / (smax + eps)
     elif pre_norm != "none":
         raise ValueError(f"pre_norm must be one of {{'frob','spec','none'}}, got {pre_norm!r}")
     for _ in range(nsteps):
