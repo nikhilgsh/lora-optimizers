@@ -10,10 +10,10 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=24:00:00
-#SBATCH --output=/mnt/home/nghosh/lora/slurm_logs/slurm_%j.out
-#SBATCH --error=/mnt/home/nghosh/lora/slurm_logs/slurm_%j.err
+#SBATCH --output=slurm_logs/slurm_%j.out
+#SBATCH --error=slurm_logs/slurm_%j.err
 
-cd /mnt/home/nghosh/lora
+cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p slurm_logs disbatch_logs
 
 source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl
