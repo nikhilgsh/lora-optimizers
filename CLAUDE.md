@@ -130,7 +130,17 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
   smoke MUST run to at least the longest plausible onset — **≥1000 steps at the
   production rank, not 5–30** — before a sweep; a short smoke proves nothing about
   spectral-rescale stability. The no-`sigma_max`-divide arm of the same optimizer
-  passing is not evidence the divide arm is safe.
+  passing is not evidence the divide arm is safe. **Fix the under-estimate at the
+  SHARED estimator, never per-call-site.** The bias is a property of the estimator,
+  so it bites EVERY site that divides by `sigma_max` — the polar/NS pre-norm AND
+  the final `ρ/σ_max(ΔW)` rescale AND the `ρ = lr/(σ_max(A)+σ_max(B))` denominator.
+  Patching only the site you first suspect leaves the others to NaN a few hundred
+  steps later (this exact two-fix sequence burned a sweep here: guarding the NS
+  site alone still NaN'd via the rescale site). Put the guard inside the estimator
+  (`_smax_warm`): floor at `max(row L2 norm, col L2 norm)` — a valid, deterministic,
+  batched↔per-pair-safe lower bound on `sigma_max` — AND run enough iterations (a
+  warm 3-iteration start chronically under-estimated ~10–25% at every site; bump to
+  ~8). A lower-bound floor alone does not fix the chronic-bias drift; you need both.
 - **Never use a full SVD / `eigh` to get a scalar `sigma_max` (or `lambda_max`).**
   `torch.linalg.matrix_norm(X, ord=2)` is a *full SVD* — it was ~80% of the
   curvature-whiten-polar step (224 SVDs/step, ~30 ms each; killing it gave 4.4×).

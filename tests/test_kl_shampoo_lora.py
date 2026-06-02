@@ -240,6 +240,29 @@ def test_polar_ns_guard_survives_sigma_max_underestimate():
         "guarded polar did not orthogonalize"
 
 
+def test_smax_warm_floored_and_accurate():
+    """Regression for the shared-estimator fix: _smax_warm must never return below
+    the max(row,col) L2 lower bound (the floor that guards a stale warm vector at
+    EVERY call site), and must be accurate (not the chronic ~15% under-estimate the
+    warm 3-iter start gave that overscaled the rescale into a NaN)."""
+    m, _, _ = _make()
+    opt = _kl_opt(m, use_polar=True)
+    torch.manual_seed(0)
+    U, _, Vh = torch.linalg.svd(torch.randn(16, 64), full_matrices=False)
+    M = ((U * torch.linspace(1.0, 0.02, 16)) @ Vh).unsqueeze(0) * 5.0   # σ_max = 5
+    true = float(torch.linalg.matrix_norm(M[0], ord=2))
+    rn = float(M.pow(2).sum(-1).amax(-1).sqrt()[0])
+    cn = float(M.pow(2).sum(-2).amax(-1).sqrt()[0])
+    floor = max(rn, cn)
+    # Even seeded with a near-zero (worst-case stale) warm vector, the estimate
+    # must stay >= the deterministic floor and within 5% above the true σ_max.
+    st = {"v_sigma_test": torch.zeros(64)}
+    s = float(opt._smax_warm(M, [st], "v_sigma_test")[0])
+    assert s >= floor - 1e-5, f"below row/col floor: {s} < {floor}"
+    assert s <= true * 1.05, f"over-estimates: {s} > {true}"
+    assert s >= true * 0.9, f"under-estimates (chronic-bias regression): {s} < {true}"
+
+
 @pytest.mark.parametrize("name,polar", [
     ("kl-shampoo-lora", False),
     ("kl-shampoo-polar-lora", True),

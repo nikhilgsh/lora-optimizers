@@ -1211,9 +1211,37 @@ class CurvatureWhitenLoRA(Optimizer):
         from .spectral import sigma_max_power_iter_batched as _smax_b
         cached = [st.get(key) for st in states]
         vi = torch.stack(cached) if all(c is not None for c in cached) else None
-        s, v = _smax_b(M, v_init=vi, n_iters=(n_warm if vi is not None else 8))
+        # Always run the full iteration count (the warm v_init only accelerates
+        # convergence). The prior warm n_iters=3 chronically UNDER-estimated σ_max
+        # by ~10-25% across every call site (zA/zB/WA/WB/A/B; SMAXDBG diagnostic),
+        # which overscales the rescale (dA = ρ/σ̂·WA) and compounds into a NaN —
+        # worst on the polar arm, whose orthogonalized WA has a flat spectrum that
+        # single-vector power iteration tracks poorly.
+        s, v = _smax_b(M, v_init=vi, n_iters=8)
         for j, st in enumerate(states):
             st[key] = v[j].detach()
+        # Lower-bound floor: σ_max ≥ max(row L2, col L2) for ANY matrix, so this
+        # never exceeds the true σ_max — it only lifts a stale/cold estimate that
+        # missed the top direction. Deterministic in M, so batched and per-pair
+        # agree (the NS scale-invariance + this shared floor preserve the oracle).
+        with torch.no_grad():
+            Mf = M.detach().float()
+            rn = Mf.pow(2).sum(dim=-1).amax(dim=-1).sqrt()
+            cn = Mf.pow(2).sum(dim=-2).amax(dim=-1).sqrt()
+            s = torch.maximum(s, torch.maximum(rn, cn).reshape(s.shape).to(s.dtype))
+        if os.environ.get("LORA_SMAX_DEBUG") == "1":
+            # Diagnostic only: compare the warm estimate against the true σ_max
+            # (full SVD) and flag gross under-estimates per call site, to locate
+            # which _smax_warm site overscales before a NaN. Inert without the env.
+            with torch.no_grad():
+                true = torch.linalg.matrix_norm(M.detach().float(), ord=2).flatten()
+                sf = s.detach().flatten()
+                ratio = sf / (true + 1e-30)
+                i = int(ratio.argmin()); mn = float(ratio[i])
+                if mn < 0.9:
+                    step = states[0].get("step", -1) if states else -1
+                    print(f"SMAXDBG step={step} key={key} min_ratio={mn:.4f} "
+                          f"warm={float(sf[i]):.5g} true={float(true[i]):.5g}", flush=True)
         return s
 
     def _polar_ns_guarded(self, Z, states, key):
