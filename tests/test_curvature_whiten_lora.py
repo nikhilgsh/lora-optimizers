@@ -92,25 +92,12 @@ def _rdinv_like(x, delta):
     return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
 
-def test_block_sigma_estimator_recovers_from_bad_warm_start():
-    """A stale warm vector can be in the current Gram nullspace.
-
-    The curvature optimizer uses block power iteration for chord rescaling so
-    the deterministic M·1 start can still find the top singular direction.
-    """
-    M = torch.ones(8, 8)
-    v_bad = torch.tensor([1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0])
-    sigma, V = CurvatureWhitenLoRA._sigma_max_block_guarded(
-        M, v_bad, n_iters=1, block_size=2,
-    )
-    torch.testing.assert_close(sigma, torch.tensor(8.0), rtol=1e-6, atol=1e-6)
-    assert V.shape == (8, 2)
-
-    sigma2, V2 = CurvatureWhitenLoRA._sigma_max_block_guarded(
-        M, V, n_iters=1, block_size=2,
-    )
-    torch.testing.assert_close(sigma2, torch.tensor(8.0), rtol=1e-6, atol=1e-6)
-    assert V2.shape == (8, 2)
+# Bad-warm-start σ_max recovery is now covered by the blessed library's own
+# regressions (tests/test_sigma_max_power_iter.py::
+# test_batched_warm_start_recovers_when_vector_enters_nullspace and
+# ::test_batched_estimate_has_row_norm_floor_for_bad_warm_start). The bespoke
+# CurvatureWhitenLoRA._sigma_max_block_guarded it used to exercise was removed
+# in favour of the single blessed spectral.sigma_max_power_iter[_batched] path.
 
 
 @pytest.mark.parametrize("use_polar", [False, True])

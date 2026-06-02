@@ -1127,75 +1127,6 @@ class CurvatureWhitenLoRA(Optimizer):
         out = (x / xmax.clamp_min(1e-30) + self.delta).rsqrt()
         return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
-    @staticmethod
-    def _sigma_max_block_guarded(M, V_init=None, n_iters=6, block_size=4, eps=1e-30):
-        """Block power-iter σmax with deterministic starts and a floor guard.
-
-        Single-vector power iteration can miss the top singular direction when
-        the cached vector is stale or nearly orthogonal to the current matrix.
-        The block starts include the cached vector, an M·1 deterministic start,
-        and high-energy coordinate starts, then run subspace iteration on the
-        smaller-side Gram. The returned block is cached for the next step.
-
-        The row/column and Frobenius floors are deterministic lower bounds on
-        σmax(M), so a bad subspace estimate cannot overscale the chord update.
-        """
-        if M.numel() == 0:
-            return torch.zeros((), device=M.device, dtype=torch.float32), None
-        Mf = M.float() if M.dtype != torch.float32 else M
-        m, n = Mf.shape
-        smaller_m = m <= n
-        k = m if smaller_m else n
-        b = max(1, min(int(block_size), k))
-        cols = []
-
-        if V_init is not None and V_init.device == Mf.device and V_init.dtype == torch.float32:
-            if V_init.shape == (k,):
-                cols.append(V_init)
-            elif V_init.ndim == 2 and V_init.shape[0] == k:
-                for j in range(min(V_init.shape[1], b)):
-                    cols.append(V_init[:, j])
-
-        if smaller_m:
-            ones = torch.ones(n, device=Mf.device, dtype=torch.float32)
-            v_ones = Mf @ ones
-            scores = Mf.square().sum(dim=1)
-        else:
-            ones = torch.ones(m, device=Mf.device, dtype=torch.float32)
-            v_ones = Mf.transpose(-2, -1) @ ones
-            scores = Mf.square().sum(dim=0)
-        if torch.isfinite(v_ones).all() and v_ones.norm() > eps:
-            cols.append(v_ones)
-
-        top = torch.topk(scores, k=b, largest=True).indices
-        for idx in top:
-            e = torch.zeros(k, device=Mf.device, dtype=torch.float32)
-            e[idx] = 1.0
-            cols.append(e)
-
-        V = torch.stack(cols[:b], dim=1)
-        if V.shape[1] < b:
-            pad = torch.eye(k, b - V.shape[1], device=Mf.device, dtype=torch.float32)
-            V = torch.cat([V, pad], dim=1)
-
-        Q, _ = torch.linalg.qr(V, mode="reduced")
-        if smaller_m:
-            for _ in range(n_iters):
-                Q, _ = torch.linalg.qr(Mf @ (Mf.transpose(-2, -1) @ Q), mode="reduced")
-            Y = Mf.transpose(-2, -1) @ Q
-        else:
-            for _ in range(n_iters):
-                Q, _ = torch.linalg.qr(Mf.transpose(-2, -1) @ (Mf @ Q), mode="reduced")
-            Y = Mf @ Q
-        gram = Y.transpose(-2, -1) @ Y
-        evals = torch.linalg.eigvalsh(0.5 * (gram + gram.transpose(-2, -1)))
-        sigma = evals[-1].clamp_min(0.0).sqrt()
-        coord_floor = scores.max().clamp_min(0.0).sqrt()
-        k = max(1, min(M.shape[-2], M.shape[-1]))
-        frob_floor = Mf.norm() / (float(k) ** 0.5)
-        floor = torch.maximum(coord_floor, frob_floor)
-        return torch.maximum(sigma, floor), Q
-
     @torch.no_grad()
     def step(self, closure=None):
         if closure is not None:
@@ -1207,90 +1138,26 @@ class CurvatureWhitenLoRA(Optimizer):
         pairs = self.pairs
         n = len(pairs)
 
-        # ── Per pair: harmonious Kronecker update with the eigenbasis + curvature
-        # factors built from gradients STRICTLY BEFORE this step (EMAs + Q are
-        # updated/refreshed only AFTER the weight step, so the current gradient
-        # never preconditions itself). Q is identity until the first eigh refresh.
-        for i, (A, B) in enumerate(pairs):
+        # Require grads, then bump the (uniform) step counter for every pair.
+        for A, B in pairs:
             if A.grad is None or B.grad is None:
                 raise ValueError("Gradients are required for CurvatureWhitenLoRA update.")
-            st = self.pair_state[i]
-            st['step'] += 1
-            gA = A.grad.float()
-            gB = B.grad.float()
-            st['m_A'].mul_(b1).add_(gA, alpha=1.0 - b1)
-            st['m_B'].mul_(b1).add_(gB, alpha=1.0 - b1)
-            bc1 = 1.0 - b1 ** st['step']
-            bc2 = 1.0 - self.beta2 ** st['step']
-            QA, QB = st['Q_A'], st['Q_B']
-            LA, RB = st['L_A'], st['R_B']
+        for i in range(n):
+            self.pair_state[i]['step'] += 1
 
-            # SOAP in the S⊗D eigenbasis. For A the basis transform is
-            # Q_A^T @ X; for B it is X @ Q_B. The large-side D factors are
-            # diagonal, so the large-side eigenbasis is the coordinate basis.
-            gA_basis = QA.transpose(-2, -1) @ gA
-            gB_basis = gB @ QB
-            st['v_A'].mul_(self.beta2).addcmul_(
-                gA_basis, gA_basis, value=1.0 - self.beta2)
-            st['v_B'].mul_(self.beta2).addcmul_(
-                gB_basis, gB_basis, value=1.0 - self.beta2)
-            mA_basis = QA.transpose(-2, -1) @ (st['m_A'] / bc1)
-            mB_basis = (st['m_B'] / bc1) @ QB
-            zA = QA @ (mA_basis / ((st['v_A'] / bc2).sqrt() + self.eps))
-            zB = (mB_basis / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QB.transpose(-2, -1)
-
-            # Outer chord-tight curvature whitening. S_r^{-1/2}=QΛ^{-1/2}Qᵀ with
-            # λ_i = qᵢᵀ S_r qᵢ = diag(QᵀLQ) (Rayleigh; exact once warm-started QR Q
-            # tracks the eigenbasis, and avoids a per-step eigh — too slow, see
-            # feedback_no_eigh_in_production). With use_polar=True, polar(z) is
-            # used as the inner direction before the same outer whitening.
-            lamA_is = self._rdinv((QA * (LA @ QA)).sum(dim=0))        # (r,)
-            dinA_is = self._rdinv(st['D_in'])                         # (d_in,)
-            lamB_is = self._rdinv((QB * (RB @ QB)).sum(dim=0))        # (r,)
-            doutB_is = self._rdinv(st['D_out'])                       # (d_out,)
-
-            def whiten_A(X):
-                Y = QA @ ((QA.transpose(-2, -1) @ X) * lamA_is.unsqueeze(-1))
-                return Y * dinA_is.unsqueeze(0)
-
-            def whiten_B(X):
-                Y = ((X @ QB) * lamB_is.unsqueeze(0)) @ QB.transpose(-2, -1)
-                return doutB_is.unsqueeze(-1) * Y
-
-            if self.use_polar:
-                zA = _newton_schulz(zA, nsteps=self.ns_steps, pre_norm="spec")
-                zB = _newton_schulz(zB, nsteps=self.ns_steps, pre_norm="spec")
-            WA = whiten_A(zA)
-            WB = whiten_B(zB)
-
-            # MAGNITUDE: chord-tight-clean convention (matches the curvature
-            # baselines, so lr is directly comparable). lr is a spectral
-            # trust-region budget: ρ = lr / (σ_max(A) + σ_max(B)), and each
-            # per-factor update is rescaled to σ_max(ΔA) = ρ. σ_max via
-            # warm-started power iteration (NOT eigh).
-            sA, st['v_sigA'] = self._sigma_max_block_guarded(
-                A.detach().float(), st.get('v_sigA'), n_iters=8)
-            sB, st['v_sigB'] = self._sigma_max_block_guarded(
-                B.detach().float(), st.get('v_sigB'), n_iters=8)
-            rho = lr / (sA + sB + eps)
-            sWA, st['v_sigWA'] = self._sigma_max_block_guarded(
-                WA, st.get('v_sigWA'), n_iters=8)
-            sWB, st['v_sigWB'] = self._sigma_max_block_guarded(
-                WB, st.get('v_sigWB'), n_iters=8)
-            dA = -(rho / (sWA + eps)) * WA                            # σ_max(dA) = ρ
-            dB = -self.lora_plus_multiplier * (rho / (sWB + eps)) * WB
-
-            A.add_(dA.to(dtype=A.dtype, device=A.device))
-            B.add_(dB.to(dtype=B.dtype, device=B.device))
-
-            # Curvature EMAs, folded in AFTER the step (zero-init → first sample
-            # carries (1-cb) weight): full r×r grams + large-side diagonals.
-            st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-            st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
-            st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
-            st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
-            A.grad.zero_()
-            B.grad.zero_()
+        # The per-pair Kronecker/eigenbasis update, run either as a grouped
+        # batched pass (default — one set of bmm/batched-NS/batched-σ_max per
+        # shape group) or a reference per-pair loop. Both use the SAME blessed
+        # primitives (spectral.sigma_max_power_iter_batched + _newton_schulz_batched),
+        # so they agree to batched-vs-looped float reduction order
+        # (tests/test_curvature_whiten_batched.py); the grouped pass is the fast one.
+        _timer = getattr(self, "_step_timer", None)
+        if _timer: _timer.start("cw_pairstep")
+        if getattr(self, "_batched_step", True):
+            self._cw_apply_grouped(lr, cb, b1, eps)
+        else:
+            self._cw_apply_per_pair(lr, cb, b1, eps)
+        if _timer: _timer.stop()
 
         # ── Refresh the eigenbasis for the NEXT step. First refresh = ONE eigh
         # to seed Q (Alg 4 init); thereafter ONE warm-started power-iteration +
@@ -1300,6 +1167,7 @@ class CurvatureWhitenLoRA(Optimizer):
         # diagonal above, not a fresh eigh. ──────────────────────────────────
         step_count = self.pair_state[0]['step']
         if (not self._q_initialized) or (step_count % self.precond_refresh_every == 0):
+            if _timer: _timer.start("cw_refresh")
             LA_stack = torch.stack([self.pair_state[i]['L_A'] for i in range(n)])
             RB_stack = torch.stack([self.pair_state[i]['R_B'] for i in range(n)])
             if not self._q_initialized:
@@ -1314,6 +1182,175 @@ class CurvatureWhitenLoRA(Optimizer):
             for i in range(n):
                 self.pair_state[i]['Q_A'] = QA[i]
                 self.pair_state[i]['Q_B'] = QB[i]
+            if _timer: _timer.stop()
+
+    def _smax_warm(self, M, states, key, n_warm=3):
+        """Warm-started batched σ_max with per-pair v_init caching.
+
+        M: (N, p, q); `states`: list of N pair-state dicts. Caches the converged
+        top singular vector under `key` and reuses it as v_init next step. The
+        top direction is near-stationary across a step (weights move slowly; the
+        update direction is correlated step-to-step), so warm n_iters=3 ≈ cold
+        n_iters=8 (tests/test_sigma_max_power_iter.py::
+        test_warm_start_beats_cold_start_at_same_n_iters). First call per key
+        cold-starts (8 iters). The library's row-norm floor guards against any
+        warm-start under-estimation overscaling the chord rescale."""
+        from .spectral import sigma_max_power_iter_batched as _smax_b
+        cached = [st.get(key) for st in states]
+        vi = torch.stack(cached) if all(c is not None for c in cached) else None
+        s, v = _smax_b(M, v_init=vi, n_iters=(n_warm if vi is not None else 8))
+        for j, st in enumerate(states):
+            st[key] = v[j].detach()
+        return s
+
+    def _cw_apply_per_pair(self, lr, cb, b1, eps):
+        """Reference per-pair update. Independent code from the grouped path but
+        the SAME blessed primitives (sigma_max_power_iter_batched on a 1-batch +
+        _newton_schulz_batched), so it is the equivalence oracle for
+        _cw_apply_grouped and the n==1 fallback. Step counters already bumped."""
+        from .spectral import sigma_max_power_iter_batched as _smax_b
+        beta2 = self.beta2
+        for i, (A, B) in enumerate(self.pairs):
+            st = self.pair_state[i]
+            gA = A.grad.float(); gB = B.grad.float()
+            st['m_A'].mul_(b1).add_(gA, alpha=1.0 - b1)
+            st['m_B'].mul_(b1).add_(gB, alpha=1.0 - b1)
+            bc1 = 1.0 - b1 ** st['step']
+            bc2 = 1.0 - beta2 ** st['step']
+            QA, QB, LA, RB = st['Q_A'], st['Q_B'], st['L_A'], st['R_B']
+            QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            gA_basis = QAt @ gA
+            gB_basis = gB @ QB
+            st['v_A'].mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
+            st['v_B'].mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
+            zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
+            zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
+            lamA = self._rdinv((QA * (LA @ QA)).sum(dim=0))
+            dinA = self._rdinv(st['D_in'])
+            lamB = self._rdinv((QB * (RB @ QB)).sum(dim=0))
+            doutB = self._rdinv(st['D_out'])
+            if self.use_polar:
+                # Gram-form NS on the σ_max-normalized factor (see _cw_apply_grouped
+                # for the spec-vs-frob rationale). Mirror of the grouped path so the
+                # batched/per-pair equivalence test stays valid.
+                sza = self._smax_warm(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
+                szb = self._smax_warm(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
+                zA = _newton_schulz_gram_batched((zA / (sza + self.eps)).unsqueeze(0),
+                                                 nsteps=self.ns_steps, dtype=torch.float32,
+                                                 pre_norm="none", safety_factor=1.0)[0]
+                zB = _newton_schulz_gram_batched((zB / (szb + self.eps)).unsqueeze(0),
+                                                 nsteps=self.ns_steps, dtype=torch.float32,
+                                                 pre_norm="none", safety_factor=1.0)[0]
+            WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+            WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+            sA = self._smax_warm(A.detach().float().unsqueeze(0), [st], 'v_sigma_A')[0]
+            sB = self._smax_warm(B.detach().float().unsqueeze(0), [st], 'v_sigma_B')[0]
+            rho = lr / (sA + sB + self.eps)
+            sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
+            sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
+            dA = -(rho / (sWA + self.eps)) * WA
+            dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
+            A.add_(dA.to(dtype=A.dtype, device=A.device))
+            B.add_(dB.to(dtype=B.dtype, device=B.device))
+            st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+            st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+            st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
+            st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
+            A.grad.zero_(); B.grad.zero_()
+
+    def _cw_apply_grouped(self, lr, cb, b1, eps):
+        """Grouped batched update: one set of bmm / batched-NS / batched-σ_max
+        per (d_in, d_out) shape group. Same math as _cw_apply_per_pair (Q/L/R are
+        r×r for every pair, so the eigenbasis refresh in step() stays global)."""
+        from collections import defaultdict
+        from .spectral import sigma_max_power_iter_batched as _smax_b
+        beta2 = self.beta2
+        S, pairs = self.pair_state, self.pairs
+        timer = getattr(self, "_step_timer", None)
+        groups = defaultdict(list)
+        for i, (A, B) in enumerate(pairs):
+            groups[(A.shape[1], B.shape[0])].append(i)
+        for idxs in groups.values():
+            t = S[idxs[0]]['step']
+            bc1 = 1.0 - b1 ** t
+            bc2 = 1.0 - beta2 ** t
+            gA = torch.stack([pairs[i][0].grad.float() for i in idxs])
+            gB = torch.stack([pairs[i][1].grad.float() for i in idxs])
+            Aw = torch.stack([pairs[i][0].detach().float() for i in idxs])
+            Bw = torch.stack([pairs[i][1].detach().float() for i in idxs])
+            mA = torch.stack([S[i]['m_A'] for i in idxs]).mul_(b1).add_(gA, alpha=1.0 - b1)
+            mB = torch.stack([S[i]['m_B'] for i in idxs]).mul_(b1).add_(gB, alpha=1.0 - b1)
+            QA = torch.stack([S[i]['Q_A'] for i in idxs])
+            QB = torch.stack([S[i]['Q_B'] for i in idxs])
+            LA = torch.stack([S[i]['L_A'] for i in idxs])
+            RB = torch.stack([S[i]['R_B'] for i in idxs])
+            vA = torch.stack([S[i]['v_A'] for i in idxs])
+            vB = torch.stack([S[i]['v_B'] for i in idxs])
+            Din = torch.stack([S[i]['D_in'] for i in idxs])
+            Dout = torch.stack([S[i]['D_out'] for i in idxs])
+            QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            if timer: timer.start("cw_basis_proj")
+            gA_basis = QAt @ gA
+            gB_basis = gB @ QB
+            vA.mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
+            vB.mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
+            zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
+            zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
+            lamA = self._rdinv((QA * (LA @ QA)).sum(dim=1))
+            dinA = self._rdinv(Din)
+            lamB = self._rdinv((QB * (RB @ QB)).sum(dim=1))
+            doutB = self._rdinv(Dout)
+            if timer: timer.stop()
+            if self.use_polar:
+                if timer: timer.start("cw_polar_ns")
+                # Gram-form NS (Dao 2026; math-equiv to rect cubic Muon, ~7× fewer
+                # FLOPs for r≪d on the r×d_in factor). Keep the spec pre-norm
+                # (divide by σ_max so NS starts at the σ=1 fixed point): frob
+                # pre-norm starts at σ_max=1/√(stable_rank) and UNDER-converges at
+                # ns=5 for wide spectra (gram-NS docstring + a +0.004 eval-loss
+                # gate regression). σ_max via the power-iter (NOT the gram fn's
+                # "spec", which is a full SVD). pre_norm="none"+safety_factor=1.0
+                # on zA/σ_max ⇒ gram-fp32 is exactly the rect-fp32 task09 polar
+                # (tests/test_ns_gram.py).
+                grp_states_p = [S[i] for i in idxs]
+                sza = self._smax_warm(zA, grp_states_p, 'v_sigma_zA')
+                szb = self._smax_warm(zB, grp_states_p, 'v_sigma_zB')
+                zA = _newton_schulz_gram_batched(zA / (sza.view(-1, 1, 1) + self.eps),
+                                                 nsteps=self.ns_steps, dtype=torch.float32,
+                                                 pre_norm="none", safety_factor=1.0)
+                zB = _newton_schulz_gram_batched(zB / (szb.view(-1, 1, 1) + self.eps),
+                                                 nsteps=self.ns_steps, dtype=torch.float32,
+                                                 pre_norm="none", safety_factor=1.0)
+                if timer: timer.stop()
+            if timer: timer.start("cw_unwhiten")
+            WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
+            WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+            if timer: timer.stop()
+            if timer: timer.start("cw_rescale_sigma")
+            grp_states = [S[i] for i in idxs]
+            sA = self._smax_warm(Aw, grp_states, 'v_sigma_A')
+            sB = self._smax_warm(Bw, grp_states, 'v_sigma_B')
+            rho = lr / (sA + sB + self.eps)
+            sWA = self._smax_warm(WA, grp_states, 'v_sigma_WA')
+            sWB = self._smax_warm(WB, grp_states, 'v_sigma_WB')
+            dA = -(rho / (sWA + self.eps)).view(-1, 1, 1) * WA
+            dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)).view(-1, 1, 1) * WB
+            if timer: timer.stop()
+            if timer: timer.start("cw_curv_grams")
+            LA.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+            RB.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+            Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
+            Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
+            if timer: timer.stop()
+            for j, i in enumerate(idxs):
+                A_, B_ = pairs[i]
+                A_.add_(dA[j].to(dtype=A_.dtype, device=A_.device))
+                B_.add_(dB[j].to(dtype=B_.dtype, device=B_.device))
+                S[i]['m_A'].copy_(mA[j]); S[i]['m_B'].copy_(mB[j])
+                S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])
+                S[i]['L_A'].copy_(LA[j]); S[i]['R_B'].copy_(RB[j])
+                S[i]['D_in'].copy_(Din[j]); S[i]['D_out'].copy_(Dout[j])
+                A_.grad.zero_(); B_.grad.zero_()
 
 
 class AdamLinCoreLoRA(Optimizer):
@@ -10781,7 +10818,7 @@ def build_optimizer(
     log_heavy_diagnostics: bool = False,
     optim_diagnostics_every: int = 20,
     precond_refresh_every: int = 1,
-    precond_method: str = "eigh",
+    precond_method: str = "higham",
     higham_iters: int = 10,
     picard_alpha: float = 1.0,
     htmuon_p: float | None = None,

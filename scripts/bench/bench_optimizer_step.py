@@ -232,6 +232,9 @@ def parse_args():
                         choices=["rect", "gram", "gram-norestart"],
                         help="Newton-Schulz kernel form for the clean polar pipeline. "
                              "Only consulted by the chord-tight-clean variant.")
+    parser.add_argument("--muon_ns_steps", type=int, default=5,
+                        help="Newton-Schulz steps for the polar/Muon family "
+                             "(production chord-tight-clean uses 8).")
     parser.add_argument("--picard_iters_override", type=int, default=None,
                         help="Override picard_iters. Used for the chord-tight-clean "
                              "variant to compare k=2 vs k=3 at fixed ns_form.")
@@ -433,6 +436,7 @@ def main():
                         higham_iters=args.higham_iters,
                         higham_compute_dtype=args.higham_compute_dtype,
                         ns_form=args.ns_form,
+                        muon_ns_steps=args.muon_ns_steps,
                         picard_iters_override=args.picard_iters_override,
                     )
                     n_reps = args.n_cycles * K

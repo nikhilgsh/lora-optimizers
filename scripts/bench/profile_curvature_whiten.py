@@ -28,6 +28,10 @@ def main():
     ap.add_argument("--refresh_every", type=int, default=10)
     ap.add_argument("--warmup", type=int, default=15)
     ap.add_argument("--steps", type=int, default=12)
+    ap.add_argument("--precond_method", default="higham",
+                    help="Match production (sweeps pass --precond_method higham). "
+                         "build_optimizer's default is 'eigh' (a slow per-pair fallback), "
+                         "so profile with higham to reflect the real chord-tight path.")
     args = ap.parse_args()
 
     dev = torch.device("cuda")
@@ -44,7 +48,9 @@ def main():
     opt = build_optimizer(
         bare, optimizer_type=args.optimizer, lr=1e-3,
         precond_refresh_every=args.refresh_every, precond_delta=1e-3, curvature_beta=0.99,
+        precond_method=args.precond_method,
     )
+    print(f"# precond_method={args.precond_method}", flush=True)
     ids = torch.randint(0, bare.config.vocab_size, (1, 128), device=dev)
 
     def make_grads():
@@ -62,11 +68,18 @@ def main():
         t0 = time.perf_counter(); opt.step(); torch.cuda.synchronize()
         times.append((time.perf_counter() - t0) * 1000)
     print(f"# opt.step() ms over {len(times)} steps: mean={st.mean(times):.1f}  "
-          f"min={min(times):.1f} (steady)  max={max(times):.1f} (refresh)", flush=True)
+          f"min={min(times):.1f} (steady)  max={max(times):.1f}", flush=True)
+    # Per-step times reveal cadence: a recurring spike (period = refresh_every)
+    # is a real refresh; a single spike on the FIRST timed step is a one-time
+    # lazy-compile / autotune artifact, not a per-step cost.
+    print("# per-step ms:", [round(x, 1) for x in times], flush=True)
 
-    make_grads()
+    # Profile a multi-step window so a periodic heavy op (eigh/svd/etc.) dominates
+    # the aggregate and is identifiable; fwd/bwd are included but small vs a spike.
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-        opt.step(); torch.cuda.synchronize()
+        for _ in range(args.steps):
+            make_grads(); opt.step()
+        torch.cuda.synchronize()
     ka = prof.key_averages()
     def cuda_t(k):
         return getattr(k, "self_device_time_total", None) or getattr(k, "self_cuda_time_total", 0)
