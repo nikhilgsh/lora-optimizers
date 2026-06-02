@@ -604,3 +604,42 @@ def compare_variants_figure(
     if suptitle:
         fig.suptitle(suptitle)
     return fig, table_df, summary_df
+
+
+def leaderboard_panel(model, dataset, rank, suptitle, *,
+                      label_filter=None, sigma_ref=None, logs_root=None,
+                      **kwargs):
+    """Render one leaderboard cell straight from the shared workload registry.
+
+    Replaces the per-notebook `GROUPS = [...]` + hand-rolled dedup + render
+    boilerplate: cells become a single call, and run membership comes from
+    `lora_playground.workloads` (the same source the doc generator uses), so
+    notebooks and the doc can never drift.
+
+    `label_filter(canonical_label, cfg) -> bool` selects a sub-view (e.g. a
+    picard or ns family, or the curvature/SOAP arms); default keeps every
+    variant. `sigma_ref` defaults to the workload's. The horizon passed to
+    `compare_variants_figure` is the cell's achieved max step (so Tulu-3's
+    ~8970-step one-epoch runs are treated as completed, not partial). Returns
+    `(fig, table_df, summary_df)` from `compare_variants_figure`.
+    """
+    from lora_playground.workloads import find_workload, workload_runs
+    from .labels import canonical_label
+    from .dedup import dedup_by_canonical
+
+    wl = find_workload(model, dataset, rank)
+    runs = dedup_by_canonical(workload_runs(wl, logs_root=logs_root))
+    labeled = [(c, h) for c, h in runs
+               if canonical_label(c) is not None
+               and (label_filter is None or label_filter(canonical_label(c), c))]
+    if not labeled:
+        raise ValueError(f"leaderboard_panel: no runs for {wl.label} after filtering")
+    labels = {canonical_label(c) for c, _ in labeled}
+    achieved = [h[-1]["step"] for _, h in labeled if h]
+    max_steps = max(achieved) if achieved else wl.horizon
+    return compare_variants_figure(
+        variants={l: {} for l in labels}, common_where={},
+        ref_label="AdamW", target_label="AdamW",
+        sigma_ref=wl.sigma_ref if sigma_ref is None else sigma_ref,
+        max_steps=max_steps, allow_partial=True, suptitle=suptitle,
+        prefetched_runs=labeled, variant_key=canonical_label, **kwargs)

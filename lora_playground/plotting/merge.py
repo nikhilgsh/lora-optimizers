@@ -45,6 +45,13 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     "profile_steps", "profile_dir",
     "_optim_steps",
     "train_file", "eval_file",
+    # Per-task checkpoint plumbing injected by submit.sh / the disbatch template
+    # (one dir per task). Two runs of the SAME config on different hardware (or a
+    # resubmit) differ only in these paths; they are the same series, so dedup
+    # must not split on them. Otherwise a cross-hardware re-run (e.g. the same
+    # lr-sweep on both `_blackwell` and `_gpuxl_h200`) trips the label-collision
+    # guard despite being one algorithm.
+    "checkpoint_dir", "resume_from",
     # CLI override flags whose canonical resolved value is promoted by
     # `_enrich_cfg` to a top-level scalar (e.g. `effective_picard_iters`).
     "picard_iters_override",

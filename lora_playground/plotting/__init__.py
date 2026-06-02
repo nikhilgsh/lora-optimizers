@@ -71,6 +71,7 @@ from .loading import (
 from .dedup import (
     LabelCollisionError,
     assert_label_discriminates,
+    dedup_by_canonical,
     detect_group_collisions,
     filter_baseline,
     filter_variants,
@@ -110,6 +111,7 @@ from .panels import (
 # High-level figure entry points
 from .figures import (
     compare_variants_figure,
+    leaderboard_panel,
     standard_sweep_figure,
     sweep_figure_with_auto_ylim,
     two_panel_sweep_figure,

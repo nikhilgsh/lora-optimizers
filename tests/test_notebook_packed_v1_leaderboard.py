@@ -1,5 +1,5 @@
 """Logic tests for the loader / filter / backfill machinery used by
-`notebooks/packed_v1_leaderboard.ipynb`.
+`notebooks/leaderboard_old/packed_v1_leaderboard.ipynb`.
 
 Scope: rules that should always hold regardless of which sweeps happen
 to be on disk — label-collision contracts, EXCLUDED_COMMITS application,

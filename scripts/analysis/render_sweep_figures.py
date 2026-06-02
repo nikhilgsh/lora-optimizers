@@ -1,4 +1,4 @@
-"""Render every sweep figure from notebooks/sweep_analysis.ipynb to PNG.
+"""Render every sweep figure from notebooks/leaderboard_old/sweep_analysis.ipynb to PNG.
 
 Drives the same plot_utils library code path the notebook uses, but headless
 and reproducible — used to iterate on figure styling without re-executing the
