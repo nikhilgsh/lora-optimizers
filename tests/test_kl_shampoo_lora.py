@@ -211,6 +211,35 @@ def test_coupled_kl_gram_update_nontrivial():
     assert torch.allclose(st["D_out"], exp_Dout, atol=1e-6, rtol=1e-5)
 
 
+def test_polar_ns_guard_survives_sigma_max_underestimate():
+    """Regression for the r256 polar NaN: a σ_max UNDER-estimate sends zA/σ̂ into
+    the Newton-Schulz above its convergence basin → NaN. First show the unguarded
+    normalization NaNs on a wide-spectrum matrix when σ_max is grossly low, then
+    show _polar_ns_guarded stays finite and orthogonalizes (σ_max(out) ≈ 1)."""
+    from lora_playground.optim import _newton_schulz_gram_batched
+    torch.manual_seed(0)
+    U, _, Vh = torch.linalg.svd(torch.randn(32, 128), full_matrices=False)
+    S = torch.linspace(1.0, 0.02, U.shape[1])
+    Z = (U * S) @ Vh
+    Z = Z / torch.linalg.matrix_norm(Z, ord=2) * 5.0          # σ_max(Z) = 5
+    Zb = Z.unsqueeze(0)
+
+    # Unguarded with a 10x under-estimate (σ̂=0.5): NS input σ_max=10 → blows up.
+    bad = _newton_schulz_gram_batched(Zb / 0.5, nsteps=5, dtype=torch.float32,
+                                      pre_norm="none", safety_factor=1.0)
+    assert not torch.isfinite(bad).all(), "expected unguarded NS to diverge (premise)"
+
+    # Guarded path, with a stale warm vector seeded into the bottom subspace so the
+    # warm power-iter under-estimates σ_max — the guard must still return finite.
+    m, _, _ = _make()
+    opt = _kl_opt(m, use_polar=True)
+    st = {"v_sigma_test": Vh[-1].clone()}                     # near-nullspace start
+    out = opt._polar_ns_guarded(Zb, [st], "v_sigma_test")
+    assert torch.isfinite(out).all(), "guarded polar produced non-finite output"
+    assert abs(float(torch.linalg.matrix_norm(out[0], ord=2)) - 1.0) < 0.15, \
+        "guarded polar did not orthogonalize"
+
+
 @pytest.mark.parametrize("name,polar", [
     ("kl-shampoo-lora", False),
     ("kl-shampoo-polar-lora", True),

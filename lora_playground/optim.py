@@ -1216,6 +1216,44 @@ class CurvatureWhitenLoRA(Optimizer):
             st[key] = v[j].detach()
         return s
 
+    def _polar_ns_guarded(self, Z, states, key):
+        """Scale-invariant polar of a batch ``Z`` (N,p,q) via gram-NS, guarded
+        against a σ_max UNDER-estimate.
+
+        The spectral-norm-law failure (CLAUDE.md): a stale/cold warm start vector
+        can miss ``Z``'s top singular direction, so the warm σ_max under-estimates;
+        ``Z / σ̂`` then enters the Newton–Schulz far above its convergence basin
+        and diverges to NaN (the KL-coupled curvature shifts the spectrum enough
+        to trigger this; CPU repro in tests/test_kl_shampoo_lora.py). Two layers:
+
+          1. Floor the warm σ_max at the largest row / column L2 norm — both are
+             valid LOWER bounds on σ_max, so a stale estimate can't be grossly
+             small. In the healthy case the warm estimate already dominates the
+             floor, so the denominator equals the old ``_smax_warm`` value exactly
+             (preserving the batched↔per-pair equivalence the NS scale-invariance
+             gives); the floor only binds when the warm estimate is pathological.
+          2. Frobenius finiteness fallback: any non-finite NS output is recomputed
+             from the Frobenius-normalized input. σ_max ≤ ‖·‖_F, so that input is
+             guaranteed in-basin. φ is scale-invariant, so the fallback changes
+             only NS convergence speed, never the polar target.
+        """
+        eps = self.eps
+        s = self._smax_warm(Z, states, key)                          # (N,) warm σ_max
+        rn = Z.pow(2).sum(dim=-1).amax(dim=-1).clamp_min(0).sqrt()    # max row L2  ≤ σ_max
+        cn = Z.pow(2).sum(dim=-2).amax(dim=-1).clamp_min(0).sqrt()    # max col L2  ≤ σ_max
+        s = torch.maximum(s, torch.maximum(rn, cn))
+        Xn = Z / (s.view(-1, 1, 1) + eps)
+        out = _newton_schulz_gram_batched(Xn, nsteps=self.ns_steps, dtype=torch.float32,
+                                          pre_norm="none", safety_factor=1.0)
+        bad = ~torch.isfinite(out.flatten(1)).all(dim=1)             # (N,) per-matrix
+        if bool(bad.any()):
+            fro = Z[bad].flatten(1).norm(dim=1).view(-1, 1, 1)
+            Xf = Z[bad] / (fro + eps)                                # σ_max ≤ 1 guaranteed
+            out = out.clone()
+            out[bad] = _newton_schulz_gram_batched(Xf, nsteps=self.ns_steps, dtype=torch.float32,
+                                                   pre_norm="none", safety_factor=1.0)
+        return out
+
     def _cw_apply_per_pair(self, lr, cb, b1, eps):
         """Reference per-pair update. Independent code from the grouped path but
         the SAME blessed primitives (sigma_max_power_iter_batched on a 1-batch +
@@ -1250,17 +1288,11 @@ class CurvatureWhitenLoRA(Optimizer):
                 zA = (QA @ ((QAt @ mhatA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
                 zB = (((mhatB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
             if self.use_polar:
-                # Gram-form NS on the σ_max-normalized factor (see _cw_apply_grouped
-                # for the spec-vs-frob rationale). Mirror of the grouped path so the
+                # Guarded gram-NS polar (σ_max-underestimate → NaN protection;
+                # see _polar_ns_guarded). Mirror of the grouped path so the
                 # batched/per-pair equivalence test stays valid.
-                sza = self._smax_warm(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
-                szb = self._smax_warm(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
-                zA = _newton_schulz_gram_batched((zA / (sza + self.eps)).unsqueeze(0),
-                                                 nsteps=self.ns_steps, dtype=torch.float32,
-                                                 pre_norm="none", safety_factor=1.0)[0]
-                zB = _newton_schulz_gram_batched((zB / (szb + self.eps)).unsqueeze(0),
-                                                 nsteps=self.ns_steps, dtype=torch.float32,
-                                                 pre_norm="none", safety_factor=1.0)[0]
+                zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
+                zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
             WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
             WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
             sA = self._smax_warm(A.detach().float().unsqueeze(0), [st], 'v_sigma_A')[0]
@@ -1359,14 +1391,8 @@ class CurvatureWhitenLoRA(Optimizer):
                 # on zA/σ_max ⇒ gram-fp32 is exactly the rect-fp32 task09 polar
                 # (tests/test_ns_gram.py).
                 grp_states_p = [S[i] for i in idxs]
-                sza = self._smax_warm(zA, grp_states_p, 'v_sigma_zA')
-                szb = self._smax_warm(zB, grp_states_p, 'v_sigma_zB')
-                zA = _newton_schulz_gram_batched(zA / (sza.view(-1, 1, 1) + self.eps),
-                                                 nsteps=self.ns_steps, dtype=torch.float32,
-                                                 pre_norm="none", safety_factor=1.0)
-                zB = _newton_schulz_gram_batched(zB / (szb.view(-1, 1, 1) + self.eps),
-                                                 nsteps=self.ns_steps, dtype=torch.float32,
-                                                 pre_norm="none", safety_factor=1.0)
+                zA = self._polar_ns_guarded(zA, grp_states_p, 'v_sigma_zA')
+                zB = self._polar_ns_guarded(zB, grp_states_p, 'v_sigma_zB')
                 if timer: timer.stop()
             if timer: timer.start("cw_unwhiten")
             WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)

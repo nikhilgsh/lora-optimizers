@@ -122,7 +122,15 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
   deterministic starts and lower-bound floors. When changing a `sigma_max`
   estimator or call site, add a known-positive regression for a bad start vector
   and run a high-rank GPU smoke that checks eval loss, `param_l2`, and nonfinite
-  gradient counts.
+  gradient counts. **These blowups are SLOW-ONSET**: the run looks healthy for
+  hundreds of steps (param_l2 drifting up linearly, grads finite) and then goes
+  all-param NaN in a single step when the stale warm vector finally misses the
+  top direction (observed at r256: `kl-shampoo-polar` NaN'd at steps 750–3500
+  across lrs while a 30-step sanity passed clean). So the high-rank stability
+  smoke MUST run to at least the longest plausible onset — **≥1000 steps at the
+  production rank, not 5–30** — before a sweep; a short smoke proves nothing about
+  spectral-rescale stability. The no-`sigma_max`-divide arm of the same optimizer
+  passing is not evidence the divide arm is safe.
 - **Never use a full SVD / `eigh` to get a scalar `sigma_max` (or `lambda_max`).**
   `torch.linalg.matrix_norm(X, ord=2)` is a *full SVD* — it was ~80% of the
   curvature-whiten-polar step (224 SVDs/step, ~30 ms each; killing it gave 4.4×).
