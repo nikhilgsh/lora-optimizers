@@ -77,6 +77,11 @@ GRAM_PRECOND_OPTIMIZERS = [
     # lets the bench isolate the periodic Gram-refresh cost (production uses 10).
     "curvature-whiten-lora",
     "curvature-whiten-polar-lora",
+    # KL-Shampoo (coupled KL fixed-point curvature, no v̂) — same class, so
+    # same precond_refresh_every gate; benched against curvature-whiten to
+    # confirm step-time parity (drops the v̂ EMA, adds the coupled-Gram matmuls).
+    "kl-shampoo-lora",
+    "kl-shampoo-polar-lora",
 ]
 # Coupled-core solver variants (no precond_refresh; per-step QR + small SVDs).
 # Included in default bench list at K=1 only.

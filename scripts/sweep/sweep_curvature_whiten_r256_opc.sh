@@ -1,14 +1,19 @@
 #!/bin/bash
-# Two-sided curvature-whitened momentum (curvature-whiten-lora = no polar;
-# curvature-whiten-polar-lora = + Newton-Schulz orthogonalize) at r=256 on
-# OLMo-2-1B opc, long-horizon (9000 steps). Matches the phase-L curvature A/B
-# data config EXACTLY (pre-packed seq2048 cache, bs4×ga4, eval_every 250) so
-# eval_loss is directly comparable to the chord-tight curvature baselines in
-# notebooks/olmo2_1b_opc_leaderboard.ipynb — only the optimizer differs.
+# Two-sided curvature-whitened momentum at r=256 on OLMo-2-1B opc, long-horizon
+# (9000 steps). Serves the whole CurvatureWhitenLoRA family — the optimizer is a
+# positional arg, so this same wrapper drives both:
+#   curvature-whiten-lora / curvature-whiten-polar-lora  (SOAP-curvature: one-sided
+#       EMA(gg^T) curvature + SOAP v̂; ±Newton-Schulz polar)
+#   kl-shampoo-lora       / kl-shampoo-polar-lora         (KL-Shampoo: coupled KL
+#       fixed-point curvature, no v̂; ±polar) — params/kl_shampoo_r256_opc.json
+# Matches the phase-L curvature A/B data config EXACTLY (pre-packed seq2048 cache,
+# bs4×ga4, eval_every 250) so eval_loss is directly comparable to the chord-tight
+# curvature baselines in notebooks/olmo2_1b_opc_leaderboard.ipynb — only the
+# optimizer differs.
 #
 # Positional args (must match params JSON key order):
 #   1: lr
-#   2: optimizer (curvature-whiten-lora | curvature-whiten-polar-lora)
+#   2: optimizer (curvature-whiten[-polar]-lora | kl-shampoo[-polar]-lora)
 #   3: seed
 #   4: precond_delta  (relative damping δ for the inverse-sqrts; the critical HP.
 #       δ=1e-6 amplifies weak curvature directions ~1000× → NaN; ~1e-3 caps it

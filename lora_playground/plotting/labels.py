@@ -86,6 +86,12 @@ def canonical_label(cfg: dict) -> str | None:
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
         return f"SOAP-curv{polar} (f={f}{bc})"
+    if opt in ("kl-shampoo-lora", "kl-shampoo-polar-lora"):
+        polar = " +polar" if opt == "kl-shampoo-polar-lora" else ""
+        f = cfg.get("precond_refresh_every")
+        cb = cfg.get("curvature_beta")
+        bc = f", β_c={cb:g}" if cb is not None else ""
+        return f"KL-Shampoo{polar} (f={f}{bc})"
     a = _axes(cfg)
     if a is None:
         return None

@@ -89,6 +89,9 @@ OPTIM_COLORS = {
     # SOAP on momentum in an S⊗D curvature basis; polar A/B
     "curvature-whiten-lora":       "#2e7d5b",
     "curvature-whiten-polar-lora": "#1f5f8c",
+    # KL-Shampoo-LoRA: coupled KL fixed-point curvature, no v̂; polar A/B
+    "kl-shampoo-lora":             "#d4801f",
+    "kl-shampoo-polar-lora":       "#9c27b0",
 }
 
 
@@ -115,6 +118,8 @@ OPTIM_FAMILIES = {
         "sign-momentum-polar-product-lora",
         "curvature-whiten-lora",
         "curvature-whiten-polar-lora",
+        "kl-shampoo-lora",
+        "kl-shampoo-polar-lora",
         "adam-clip-product-lora",
         "adam-clip-product-lora-coupled",
         "adam-clip-product-lora-coupled-endrms",

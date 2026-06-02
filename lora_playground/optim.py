@@ -611,6 +611,8 @@ OPTIMIZER_CHOICES = {
     "adam-lin-core-lora",
     "curvature-whiten-lora",
     "curvature-whiten-polar-lora",
+    "kl-shampoo-lora",
+    "kl-shampoo-polar-lora",
     "adam-scaled-lora-post",
     "adam-lin-lora-post",
     "adam-scaled-lora-matrix",
@@ -1061,7 +1063,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  precond_delta_relative=False, adapter_name=None,
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
-                 precond_refresh_every=10):
+                 precond_refresh_every=10, kl_coupled=False, soap_v=True):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1080,6 +1082,17 @@ class CurvatureWhitenLoRA(Optimizer):
         self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
         self.precond_refresh_every = int(precond_refresh_every)
+        # KL-Shampoo-LoRA mode (soap_curvature_whitening.md exp 5). When
+        # kl_coupled, the curvature factors are accumulated by the coupled KL
+        # fixed point (Prop 4) — each Gram whitens g by the OTHER factor's
+        # inverse before forming, with 1/d normalizers — instead of the
+        # one-sided EMA(gg^T)/diag(g^T g). When not soap_v, the SOAP elementwise
+        # v̂ is dropped and the inner core is the closed-form Shampoo whitening
+        # S^{-1/2} m̂ D^{-1/2} (same operator as the outer sandwich, polar in
+        # between). The two together are KL-Shampoo-LoRA; defaults reproduce the
+        # SOAP-curvature class unchanged.
+        self.kl_coupled = bool(kl_coupled)
+        self.soap_v = bool(soap_v)
 
         # Q starts as identity → step 1 is plain Adam (no rotation), since the
         # eigenbasis must be built from gradients STRICTLY BEFORE the step it is
@@ -1219,16 +1232,23 @@ class CurvatureWhitenLoRA(Optimizer):
             bc2 = 1.0 - beta2 ** st['step']
             QA, QB, LA, RB = st['Q_A'], st['Q_B'], st['L_A'], st['R_B']
             QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
-            gA_basis = QAt @ gA
-            gB_basis = gB @ QB
-            st['v_A'].mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
-            st['v_B'].mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
-            zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
-            zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
-            lamA = self._rdinv((QA * (LA @ QA)).sum(dim=0))
-            dinA = self._rdinv(st['D_in'])
-            lamB = self._rdinv((QB * (RB @ QB)).sum(dim=0))
-            doutB = self._rdinv(st['D_out'])
+            evA = (QA * (LA @ QA)).sum(dim=0)
+            evB = (QB * (RB @ QB)).sum(dim=0)
+            lamA = self._rdinv(evA); lamB = self._rdinv(evB)
+            dinA = self._rdinv(st['D_in']); doutB = self._rdinv(st['D_out'])
+            if self.soap_v:
+                gA_basis = QAt @ gA
+                gB_basis = gB @ QB
+                st['v_A'].mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
+                st['v_B'].mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
+                zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
+                zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
+            else:
+                # KL-Shampoo inner core (mirror of the grouped path): closed-form
+                # Shampoo whitening S^{-1/2} m̂ D^{-1/2}.
+                mhatA = st['m_A'] / bc1; mhatB = st['m_B'] / bc1
+                zA = (QA @ ((QAt @ mhatA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                zB = (((mhatB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
             if self.use_polar:
                 # Gram-form NS on the σ_max-normalized factor (see _cw_apply_grouped
                 # for the spec-vs-frob rationale). Mirror of the grouped path so the
@@ -1252,10 +1272,24 @@ class CurvatureWhitenLoRA(Optimizer):
             dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
-            st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-            st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
-            st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
-            st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
+            if self.kl_coupled:
+                # Coupled KL fixed point (Prop 4); mirror of _cw_apply_grouped.
+                r = gA.shape[0]; d_in = gA.shape[1]; d_out = gB.shape[0]
+                Din_inv = dinA * dinA
+                Dout_inv = doutB * doutB
+                SAinv = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
+                RBinv = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
+                st['L_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
+                                        alpha=(1.0 - cb) / d_in)
+                st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
+                                        alpha=(1.0 - cb) / d_out)
+                st['D_in'].mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
+                st['D_out'].mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
+            else:
+                st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+                st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+                st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
+                st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
             A.grad.zero_(); B.grad.zero_()
 
     def _cw_apply_grouped(self, lr, cb, b1, eps):
@@ -1290,16 +1324,28 @@ class CurvatureWhitenLoRA(Optimizer):
             Dout = torch.stack([S[i]['D_out'] for i in idxs])
             QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
             if timer: timer.start("cw_basis_proj")
-            gA_basis = QAt @ gA
-            gB_basis = gB @ QB
-            vA.mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
-            vB.mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
-            zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
-            zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
-            lamA = self._rdinv((QA * (LA @ QA)).sum(dim=1))
-            dinA = self._rdinv(Din)
-            lamB = self._rdinv((QB * (RB @ QB)).sum(dim=1))
-            doutB = self._rdinv(Dout)
+            # Relative-damped inverse-sqrt factors (-1/2 power) for the small (λ)
+            # and large (D) sides; needed by both the outer sandwich and the
+            # KL-Shampoo inner core. evA/evB are the Rayleigh eigenvalues of the
+            # curvature in the current eigenbasis.
+            evA = (QA * (LA @ QA)).sum(dim=1)
+            evB = (QB * (RB @ QB)).sum(dim=1)
+            lamA = self._rdinv(evA); lamB = self._rdinv(evB)
+            dinA = self._rdinv(Din); doutB = self._rdinv(Dout)
+            if self.soap_v:
+                gA_basis = QAt @ gA
+                gB_basis = gB @ QB
+                vA.mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
+                vB.mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
+                zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
+                zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
+            else:
+                # KL-Shampoo inner: closed-form Shampoo whitening S^{-1/2} m̂ D^{-1/2}
+                # — the SAME operator as the outer sandwich below (polar, when on,
+                # sits between the two), so ΔA ∝ S^{-1/2} φ(S^{-1/2} m̂ D^{-1/2}) D^{-1/2}.
+                mhatA = mA / bc1; mhatB = mB / bc1
+                zA = (QA @ ((QAt @ mhatA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
+                zB = (((mhatB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
             if timer: timer.stop()
             if self.use_polar:
                 if timer: timer.start("cw_polar_ns")
@@ -1337,10 +1383,29 @@ class CurvatureWhitenLoRA(Optimizer):
             dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if timer: timer.start("cw_curv_grams")
-            LA.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-            RB.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
-            Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
-            Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
+            if self.kl_coupled:
+                # Coupled KL fixed point (Prop 4): each Gram whitens g by the
+                # OTHER factor's relative-damped inverse before forming, with 1/d
+                # normalizers — the streaming flip-flop toward the matrix-normal
+                # MLE. dinA²/lamA² are the power-(-1) factors; SAinv = Q diag(λ⁻¹) Qᵀ.
+                # At warmup the factors are zero ⇒ _rdinv returns ones ⇒ identity
+                # whitening ⇒ first alternation is one-sided Shampoo.
+                r = gA.shape[1]; d_in = gA.shape[2]; d_out = gB.shape[1]
+                Din_inv = dinA * dinA
+                Dout_inv = doutB * doutB
+                SAinv = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
+                RBinv = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
+                LA.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
+                                 alpha=(1.0 - cb) / d_in)
+                RB.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
+                                 alpha=(1.0 - cb) / d_out)
+                Din.mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
+                Dout.mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
+            else:
+                LA.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+                RB.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+                Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
+                Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
             if timer: timer.stop()
             for j, i in enumerate(idxs):
                 A_, B_ = pairs[i]
@@ -10954,6 +11019,31 @@ def build_optimizer(
             log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
+        )
+    if optimizer_type in ("kl-shampoo-lora", "kl-shampoo-polar-lora"):
+        # KL-Shampoo-LoRA (soap_curvature_whitening.md exp 5): same class as
+        # curvature-whiten, but the curvature factors are the coupled KL
+        # fixed-point estimate (kl_coupled) and the SOAP v̂ is dropped (soap_v
+        # =False), leaving the closed-form Shampoo core S^{-1/2} m̂ D^{-1/2}.
+        # Polar on/off is the same optimizer-name axis as the curvature-whiten
+        # pair — tests whether properly-solved curvature makes the polar redundant.
+        return CurvatureWhitenLoRA(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            curvature_beta=curvature_beta,
+            use_polar=(optimizer_type == "kl-shampoo-polar-lora"),
+            ns_steps=muon_ns_steps,
+            precond_delta_relative=precond_delta_relative,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics,
+            log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            kl_coupled=True,
+            soap_v=False,
         )
     if optimizer_type == "adam-lin-core-lora":
         # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA
