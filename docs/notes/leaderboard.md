@@ -17,7 +17,7 @@ AlgoPerf-style performance profile across the 11 (model, dataset, rank) workload
 | `chord-tight ns=8 k=1 (abs=1e-6)` | 7/11 | 0.993 | 1.017 |
 | `chord-tight ns=5 k=1 (abs=1e-6)` | 7/11 | 0.991 | 1.021 |
 
-_Coverage-starved (<5/11, not ranked — see the per-section tables): `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/11); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/11); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/11); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/11); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (2/11); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/11); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/11); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/11); `chord-tight PE=10 k=1 (abs=1e-6)` (2/11); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/11); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/11); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/11); `SOAP-curv +polar (f=10, β_c=0.99)` (1/11); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/11); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/11); `SOAP-curv (f=10, β_c=0.99)` (1/11)._
+_Coverage-starved (<5/11, not ranked — see the per-section tables): `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/11); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/11); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/11); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/11); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (2/11); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/11); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/11); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/11); `chord-tight PE=10 k=1 (abs=1e-6)` (2/11); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/11); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/11); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/11); `SOAP-curv +polar (f=10, β_c=0.99)` (1/11); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/11); `KL-Shampoo (f=10, β_c=0.99)` (1/11); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/11); `SOAP-curv (f=10, β_c=0.99)` (1/11)._
 
 ### OLMo-2-1B × opc-sft-stage2 (Magicoder) × r=64
 
@@ -52,6 +52,7 @@ AdamW speed target (best-lr final loss): **0.7524**  ·  horizon 9000 steps
 | chord-tight ns=8 k=1 (ε_rel=1e-2) | 1e-02 | 0.7399 | 0.722 | 0.861 |
 | chord-tight-clean ns=10 k=1 (c=0.2) | 1e-02 | 0.7391 | 0.722 | 0.833 |
 | chord-tight-clean ns=10 k=1 (κ_sr=0.75) | 1e-02 | 0.7387 | 0.722 | 0.852 |
+| KL-Shampoo (f=10, β_c=0.99) | 1e-02 | 0.7474 | 0.750 | 0.917 |
 | chord-tight ns=5 k=1 (ε_rel=1e-2) | 3e-02 | 0.7415 | 0.750 | 0.852 |
 | chord-tight PE=10 k=1 (abs=1e-6) | 1e-02 | 0.7414 | 0.750 | 0.843 |
 | SOAP-curv (f=10, β_c=0.99) | 1e-02 | 0.7423 | 0.778 | 0.880 |

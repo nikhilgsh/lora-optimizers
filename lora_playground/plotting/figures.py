@@ -607,8 +607,8 @@ def compare_variants_figure(
 
 
 def leaderboard_panel(model, dataset, rank, suptitle, *,
-                      label_filter=None, sigma_ref=None, logs_root=None,
-                      **kwargs):
+                      label_filter=None, baselines=(), sigma_ref=None,
+                      logs_root=None, **kwargs):
     """Render one leaderboard cell straight from the shared workload registry.
 
     Replaces the per-notebook `GROUPS = [...]` + hand-rolled dedup + render
@@ -618,10 +618,13 @@ def leaderboard_panel(model, dataset, rank, suptitle, *,
 
     `label_filter(canonical_label, cfg) -> bool` selects a sub-view (e.g. a
     picard or ns family, or the curvature/SOAP arms); default keeps every
-    variant. `sigma_ref` defaults to the workload's. The horizon passed to
-    `compare_variants_figure` is the cell's achieved max step (so Tulu-3's
-    ~8970-step one-epoch runs are treated as completed, not partial). Returns
-    `(fig, table_df, summary_df)` from `compare_variants_figure`.
+    variant. `baselines` is an iterable of canonical labels to ALWAYS include as
+    reference curves regardless of `label_filter` — the simple way to overlay an
+    extra baseline (e.g. a non-curvature spectral arm) on a filtered sub-view
+    without hand-editing the lambda. `sigma_ref` defaults to the workload's. The
+    horizon passed to `compare_variants_figure` is the cell's achieved max step
+    (so Tulu-3's ~8970-step one-epoch runs are treated as completed, not
+    partial). Returns `(fig, table_df, summary_df)` from `compare_variants_figure`.
     """
     from lora_playground.workloads import find_workload, workload_runs
     from .labels import canonical_label
@@ -629,9 +632,17 @@ def leaderboard_panel(model, dataset, rank, suptitle, *,
 
     wl = find_workload(model, dataset, rank)
     runs = dedup_by_canonical(workload_runs(wl, logs_root=logs_root))
+    keep = set(baselines)
     labeled = [(c, h) for c, h in runs
                if canonical_label(c) is not None
-               and (label_filter is None or label_filter(canonical_label(c), c))]
+               and (canonical_label(c) in keep
+                    or label_filter is None
+                    or label_filter(canonical_label(c), c))]
+    missing = keep - {canonical_label(c) for c, _ in labeled}
+    if missing:
+        import warnings
+        warnings.warn(f"leaderboard_panel baselines not found for {wl.label}: "
+                      f"{sorted(missing)} (label typo or run absent at this rank)")
     if not labeled:
         raise ValueError(f"leaderboard_panel: no runs for {wl.label} after filtering")
     labels = {canonical_label(c) for c, _ in labeled}
