@@ -221,3 +221,66 @@ def test_diverged_isolated_to_correct_group():
         f"B's line should not rise above 0.530 (no diverged); B y-data: {b_ys}"
     )
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Same diverged=hollow convention must hold in compare_variants_figure — a
+# NaN-aborted lr renders as a HOLLOW marker connected to the rest of the lr
+# curve (clamped to y_cap, finite), and must NOT win the best-lr argmin.
+# Regression for the curvature/SOAP-curv A/B cell where the SOAP-polar
+# lr=1e-1 run vanished instead of showing hollow.
+# ---------------------------------------------------------------------------
+def test_compare_variants_nan_lr_is_hollow_not_dropped():
+    from lora_playground.plotting.figures import compare_variants_figure
+
+    def _aborted_run(opt, lr, last_finite, lora_r=256, max_steps=9000):
+        cfg = {
+            "optimizer": opt, "lr": float(lr), "lora_r": int(lora_r),
+            "max_steps": max_steps, "seed": 0, "lora_plus_multiplier": 1.0,
+            "_aborted": {"event": "abort_on_nan_eval", "step": 2500},
+        }
+        # Descends, then NaN-aborts: last eval is NaN, prior evals finite.
+        evs = [{"step": 250, "eval_loss": last_finite + 0.05},
+               {"step": 2250, "eval_loss": last_finite},
+               {"step": 2500, "eval_loss": float("nan")}]
+        return (cfg, evs)
+
+    runs = [
+        _mk_run("adamw", 1e-4, 0.752, lora_r=256, max_steps=9000),
+        _mk_run("adamw", 1e-3, 0.760, lora_r=256, max_steps=9000),
+        _mk_run("polar", 1e-2, 0.738, lora_r=256, max_steps=9000),
+        _aborted_run("polar", 1e-1, 0.896),   # diverged → must show hollow
+    ]
+
+    def _vk(cfg):
+        return "AdamW" if cfg["optimizer"] == "adamw" else "polar"
+
+    out = compare_variants_figure(
+        variants={"AdamW": {}, "polar": {}}, common_where={},
+        ref_label="AdamW", target_label="AdamW", max_steps=9000,
+        allow_partial=True, prefetched_runs=runs, variant_key=_vk,
+        allow_label_collision=True, allow_custom_labels=True,
+    )
+    fig, _table, summary = out
+    ax_lr = fig.axes[0]
+
+    # A hollow marker (markerfacecolor "none") must sit at x=0.1 with a FINITE
+    # (clamped) y — the diverged point is rendered, not dropped to a gap.
+    hollow_x = []
+    for line in ax_lr.get_lines():
+        mfc = line.get_markerfacecolor()
+        if mfc == "none" and line.get_marker() not in ("", "None", None):
+            for x, y in zip(line.get_xdata(), line.get_ydata()):
+                assert math.isfinite(float(y)), "hollow marker has non-finite y"
+                hollow_x.append(float(x))
+    assert any(abs(x - 0.1) < 1e-9 for x in hollow_x), (
+        f"diverged lr=0.1 must render as a hollow marker; hollow x: {hollow_x}"
+    )
+
+    # The NaN-aborted lr must NOT win the best-lr argmin for polar.
+    polar_row = summary[summary["variant"] == "polar"].iloc[0]
+    assert polar_row["best_lr"] == 1e-2, (
+        f"polar best_lr should be 1e-2, not the NaN-aborted 1e-1; "
+        f"got {polar_row['best_lr']}"
+    )
+    plt.close(fig)

@@ -7,6 +7,7 @@ and renders the 2-panel η-vs-final + best-η-training-curves figure.
 """
 from __future__ import annotations
 
+import math
 from typing import Callable, Iterable
 
 import matplotlib.pyplot as plt
@@ -22,7 +23,8 @@ from .panels import (
     plot_eta_vs_final,
 )
 from .style import (
-    CANONICAL_HORIZON, DEFAULT_FIGSIZE, DIVERGE_THRESHOLD, SUPTITLE_FONTSIZE,
+    CANONICAL_HORIZON, DEFAULT_FIGSIZE, DIVERGE_THRESHOLD, LEGEND_BELOW_KW,
+    SUPTITLE_FONTSIZE,
 )
 
 
@@ -334,6 +336,7 @@ def compare_variants_figure(
     divergent_ratio: float = 1.5,
     target_label: str | None = "AdamW",
     allow_label_collision: bool = False,
+    allow_custom_labels: bool = False,
 ):
     """Compare named optimizer variants at a fixed config; 2-panel + tables.
 
@@ -410,6 +413,24 @@ def compare_variants_figure(
                 warn_cross_commit=False,
                 quiet=True,
             )
+            # ENFORCE standard plot names: a hand-typed variant label must BE the
+            # canonical_label of the runs it selects (single source of truth, so
+            # method names are identical across every notebook). Catches ad-hoc
+            # names like "geometric Gram (full polar)" that diverge from the
+            # leaderboard vocabulary. Opt out only for a deliberate cross-config
+            # grouping with allow_custom_labels=True.
+            if not allow_custom_labels:
+                canon = {canonical_label(c) for c, h in runs if h}
+                canon.discard(None)
+                if canon and label not in canon:
+                    raise ValueError(
+                        f"Non-standard variant label {label!r}: it is not the "
+                        f"canonical_label of its runs (expected one of "
+                        f"{sorted(canon)}). Plot names must come from "
+                        f"canonical_label so they match every other notebook. "
+                        f"Use the canonical label as the dict key (or pass "
+                        f"allow_custom_labels=True for an intentional grouping)."
+                    )
         d, d_partial = {}, {}
         for c, h in runs:
             if not h:
@@ -441,16 +462,24 @@ def compare_variants_figure(
         index=pd.Index(all_lr, name="lr"),
     )
 
-    # Best per variant + Δ vs ref.
+    # Best per variant + Δ vs ref. NaN-safe: a NaN-aborted (diverged) lr must
+    # never win the argmin, else the table/Δ and the right-panel trajectory
+    # would be driven by a blown-up run. Fall back to any lr only if EVERY
+    # final is non-finite.
+    def _best_lr(d):
+        finite = [lr for lr in d if math.isfinite(d[lr][0])]
+        pool = finite or list(d)
+        return min(pool, key=lambda lr: d[lr][0])
+
     if ref_label not in per_variant or not per_variant[ref_label]:
         ref_best = None
     else:
-        ref_best = min(per_variant[ref_label].values(), key=lambda v: v[0])[0]
+        ref_best = per_variant[ref_label][_best_lr(per_variant[ref_label])][0]
     summary_rows = []
     for label, d in per_variant.items():
         if not d:
             continue
-        best_lr = min(d, key=lambda lr: d[lr][0])
+        best_lr = _best_lr(d)
         final = d[best_lr][0]
         delta = (final - ref_best) if ref_best is not None and label != ref_label else None
         summary_rows.append({
@@ -468,28 +497,40 @@ def compare_variants_figure(
         marker_cycle = ["o", "s", "^", "D", "v", "P", "X"]
         markers = {label: marker_cycle[i % len(marker_cycle)] for i, label in enumerate(variants)}
 
-    fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize)
-    for label, d in per_variant.items():
-        if not d:
-            continue
-        lrs = sorted(d)
-        finals = [d[lr][0] for lr in lrs]
-        ax_lr.plot(lrs, finals, marker=markers[label], ms=6, lw=1.4,
-                   color=colors[label], label=label)
-    ax_lr.set_xscale("log")
-    ax_lr.set_xlabel("lr")
-    ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
-    ax_lr.set_title("final loss vs lr")
-    ax_lr.grid(True, alpha=0.3)
-    ax_lr.legend(fontsize=9)
-    # Robust auto-clip: drop diverged runs (final > divergent_ratio × best)
-    # out of the upper bound. Explicit final_ylim always wins.
+    from .panels import clamp_for_hollow, draw_lr_series
+
+    fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize,
+                                         constrained_layout=True)
+    # Compute the y-bound BEFORE plotting so diverged / NaN-aborted lr points
+    # can be clamped just inside the top and drawn as HOLLOW markers connected
+    # to the rest of the lr curve (the canonical convention — see
+    # panels.draw_lr_series), instead of vanishing as a gap. Robust auto-clip:
+    # drop diverged runs (final > divergent_ratio × best) out of the upper
+    # bound. Explicit final_ylim always wins.
     if final_ylim is None and auto_ylim:
         final_runs = [(cfg, h) for d in per_variant.values()
                       for (_loss, cfg, h) in d.values()]
         if final_runs:
             final_ylim = auto_ylim_for_final_panel(
                 final_runs, divergent_ratio=divergent_ratio)
+    # y_cap: clamp height for OOR/diverged points, just inside the visible top.
+    y_cap = (final_ylim[1] - 0.006) if final_ylim is not None else None
+    for label, d in per_variant.items():
+        if not d:
+            continue
+        lrs = sorted(d)
+        finals = [d[lr][0] for lr in lrs]
+        ys_clamped, is_oor = clamp_for_hollow(finals, y_cap)
+        draw_lr_series(ax_lr, lrs, ys_clamped, is_oor, color=colors[label],
+                       marker=markers[label], label=label, lw=1.4, ms=6,
+                       zorder=4)
+    ax_lr.set_xscale("log")
+    ax_lr.set_xlabel("lr")
+    ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
+    ax_lr.set_title("final loss vs lr")
+    ax_lr.grid(True, alpha=0.3)
+    # No per-panel legend; one shared figure-level legend is added below after
+    # the trajectory panel (both panels share the same variant→color mapping).
     if final_ylim is not None:
         ax_lr.set_ylim(*final_ylim)
 
@@ -497,14 +538,14 @@ def compare_variants_figure(
         d = per_variant.get(label, {})
         d_partial = per_variant_partial.get(label, {}) if allow_partial else {}
         if d:
-            best_lr = min(d, key=lambda lr: d[lr][0])
+            best_lr = _best_lr(d)
             final, _, h = d[best_lr]
             ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
                          marker=markers[label], ms=3, lw=1.4, color=colors[label],
                          label=f"{label}  (lr={best_lr:g}, final={final:.4f})")
         elif d_partial:
             # No completed runs — fall back to partial: pick best by latest eval.
-            best_lr = min(d_partial, key=lambda lr: d_partial[lr][0])
+            best_lr = _best_lr({lr: d_partial[lr] for lr in d_partial})
             last_loss, _, h, last_step = d_partial[best_lr]
             ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
                          marker=markers[label], ms=3, lw=1.2, color=colors[label],
@@ -523,13 +564,18 @@ def compare_variants_figure(
     target_best = (min(target_d.values(), key=lambda v: v[0])[0]
                    if target_d else None)
     if target_best is not None:
+        # Dashed reference line only — no legend entry (the target value is in
+        # the summary table; a legend row for it is superfluous).
         ax_traj.axhline(target_best, color="black", ls="--", lw=1.2, alpha=0.8,
-                        zorder=0, label=f"{target_src} target ({target_best:.4f})")
+                        zorder=0)
     ax_traj.set_xlabel("step")
     ax_traj.set_ylabel("eval_loss")
     ax_traj.set_title("best-lr trajectory")
     ax_traj.grid(True, alpha=0.3)
-    ax_traj.legend(fontsize=9)
+    # Single figure-level legend below both panels (full width → long entries
+    # fit across columns without colliding; never covers the data).
+    fig.legend(*ax_traj.get_legend_handles_labels(),
+               loc="outside lower center", **LEGEND_BELOW_KW)
     # Only best-lr-per-variant curves are plotted here, so the diverged high-lr
     # runs are already absent; auto_ylim_for_trajectory_panel drops any
     # fully-diverged variant (final > divergent_ratio × best). warmup_frac=0
@@ -557,5 +603,4 @@ def compare_variants_figure(
 
     if suptitle:
         fig.suptitle(suptitle)
-    plt.tight_layout()
     return fig, table_df, summary_df

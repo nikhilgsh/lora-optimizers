@@ -138,6 +138,61 @@ def auto_ylim_for_trajectory_panel(
     return (best - lower_pad, max(post_warmup) + upper_pad)
 
 
+def clamp_for_hollow(values, y_cap: float | None):
+    """Split a list of final-loss values into (ys_clamped, is_oor).
+
+    A value is "out of range" (diverged) when it is non-finite (NaN-aborted
+    run) or above `y_cap`. OOR values are clamped to `y_cap` so a connecting
+    line through them stays continuous; `is_oor[i]` flags which points must be
+    drawn hollow. With `y_cap is None` (no axis bound) only non-finite values
+    are flagged and clamping is a no-op. Single source of truth for the
+    "diverged → clamp to top" rule shared across panels.
+    """
+    is_oor = [(not math.isfinite(v)) or (y_cap is not None and v > y_cap)
+              for v in values]
+    if y_cap is None:
+        ys = [v for v in values]
+    else:
+        ys = [y_cap if o else v for v, o in zip(values, is_oor)]
+    return ys, is_oor
+
+
+def draw_lr_series(ax, xs, ys_clamped, is_oor, *, color, marker, label=None,
+                   lw=LINE_WIDTH, ls="-", ms=MARKER_SIZE, zorder=5, yerr=None,
+                   hollow_ms_bump=4, hollow_edgewidth=2.2):
+    """Render ONE lr-sweep series with the canonical diverged=hollow convention.
+
+    Draws (1) a connecting line through `ys_clamped` (one continuous curve),
+    (2) filled markers — with optional ±σ error bars — for in-range points,
+    and (3) hollow markers (`markerfacecolor="none"`) for the OOR/diverged
+    points clamped to the cap, so a NaN-aborted or off-axis lr never vanishes
+    as a gap but stays connected to the rest of the curve. Used by both
+    `plot_eta_vs_final` and `compare_variants_figure` so the two entry points
+    can never diverge in how they show divergence.
+    """
+    ax.plot(xs, ys_clamped, color=color, lw=lw, ls=ls, zorder=zorder,
+            label=label)
+    in_idx = [i for i, o in enumerate(is_oor) if not o]
+    if in_idx:
+        if yerr is not None:
+            ax.errorbar(
+                [xs[i] for i in in_idx], [ys_clamped[i] for i in in_idx],
+                yerr=[yerr[i] for i in in_idx], color=color, marker=marker,
+                markersize=ms, ls="", zorder=zorder + 1,
+                capsize=4, capthick=lw * 0.6, elinewidth=lw * 0.6,
+            )
+        else:
+            ax.plot([xs[i] for i in in_idx], [ys_clamped[i] for i in in_idx],
+                    color=color, marker=marker, markersize=ms, ls="",
+                    zorder=zorder + 1)
+    oor_idx = [i for i, o in enumerate(is_oor) if o]
+    if oor_idx:
+        ax.plot([xs[i] for i in oor_idx], [ys_clamped[i] for i in oor_idx],
+                color=color, marker=marker, markersize=ms + hollow_ms_bump,
+                markerfacecolor="none", markeredgewidth=hollow_edgewidth,
+                ls="", zorder=zorder + 2)
+
+
 def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
                       color_map: dict, *, hlines: list[tuple] | None = None,
                       ref_eta_sweeps: list[tuple] | None = None,
@@ -299,27 +354,13 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
         color, marker, ls, lw, zorder, is_adamw = (
             style["color"], style["marker"], style["ls"],
             style["lw"], style["zorder"], style["is_adamw"])
-        # Connecting line through clamped means.
-        ax.plot(xs, ys_clamped, color=color, lw=lw, ls=ls, zorder=zorder,
-                label=f"{g} (baseline)" if is_adamw else g)
-        # In-range markers + ±σ error bars.
-        in_idx = [i for i, o in enumerate(is_oor) if not o]
-        if in_idx:
-            ax.errorbar(
-                [xs[i] for i in in_idx],
-                [means[i] for i in in_idx],
-                yerr=[stds[i] for i in in_idx],
-                color=color, marker=marker, markersize=MARKER_SIZE,
-                ls="", zorder=zorder + 1,
-                capsize=4, capthick=lw * 0.6, elinewidth=lw * 0.6,
-            )
-        # Hollow markers for OOR / diverged means.
-        oor_x = [xs[i] for i, o in enumerate(is_oor) if o]
-        oor_y = [ys_clamped[i] for i, o in enumerate(is_oor) if o]
-        if oor_x:
-            ax.plot(oor_x, oor_y, color=color, marker=marker,
-                    markersize=MARKER_SIZE + 4, markerfacecolor="none",
-                    markeredgewidth=2.2, ls="", zorder=zorder + 2)
+        # Line + in-range (±σ error bars) + hollow OOR markers, via the
+        # shared diverged=hollow renderer.
+        draw_lr_series(
+            ax, xs, ys_clamped, is_oor, color=color, marker=marker,
+            label=f"{g} (baseline)" if is_adamw else g,
+            lw=lw, ls=ls, ms=MARKER_SIZE, zorder=zorder, yerr=stds,
+        )
 
     ax.set_xscale("log")
     ax.set_xlabel(r"$\eta / \eta^\star$ (log)" if normalize_x_to_optimum else "η (log)",
