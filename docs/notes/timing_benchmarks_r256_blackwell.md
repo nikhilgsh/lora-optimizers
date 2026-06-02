@@ -77,6 +77,33 @@ Higham whitener (11.5); it is *not* the gap. The SOAP tax is intrinsic to what c
 
 ---
 
+## 3a. Clean production ×AdamW (uncontended, ns=8 matched, full step)
+
+Back-to-back `bench_optimizer_step.py` (one invocation = shared node state), production
+shape seq=2048 bs4 ga4 bf16 compiled packed_v1, **ns=8 for both** (matched; `--muon_ns_steps 8`
+routes to cw's `ns_steps` too — `optim.py:10950`). All cells at **251.9 TFLOPS (uncontended)**,
+fwd+bwd identical (0.83/1.24 s) — so cross-optimizer comparison is clean. Source
+`logs/bench/clean_decomp_ns8_r256.jsonl`. fwd+bwd are optimizer-independent.
+
+| optimizer | K | opt ms | total ms | **×AdamW** | MFU |
+|---|---|---|---|---|---|
+| adamw | — | 10.4 | 2074 | **1.00** | 42.1% |
+| curvature-whiten-polar (prod) | 10 | 95.3 | 2165 | **1.04** | 40.3% |
+| chord-tight-clean (prod) | 1 | 100.0 | 2171 | **1.05** | 40.2% |
+| curvature-whiten-polar (matched-K) | 1 | 208.1 | 2276 | 1.10 | 38.4% |
+
+**Production per-step overhead vs AdamW: cw-polar +4%, chord-tight-clean +5% — tied.**
+fwd+bwd dominate (~95% of the step), so the optimizer choice barely moves the full-step wall.
+
+**cw is NOT cheaper than chord-tight algorithmically.** At **matched K=1**, cw opt = 208 ms vs
+chord-tight 100 ms — **cw is 2× more expensive** (it does strictly more: the per-step eigenbasis
+QR refresh). cw only edges chord-tight at *production* cadence because cw amortizes its expensive
+QR refresh 1-in-10 steps (K=10) while chord-tight refreshes its cheaper Higham whitener every step
+(K=1). It's the refresh cadence, not the algebra. (cw production is ns=5, marginally cheaper than
+this ns=8-matched number.)
+
+---
+
 ## 4. No-degradation gate
 
 gram-NS + warm-start cw-polar at task 09's exact config (lr=1e-2, seed=0, δ=1e-3, ns5,
