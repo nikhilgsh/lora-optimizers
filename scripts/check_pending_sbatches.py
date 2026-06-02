@@ -91,10 +91,21 @@ def _prep_body_dryrun_msgs() -> list[str]:
     for sbatch in sorted(PENDING.glob("*.sbatch")):
         lines = sbatch.read_text().splitlines()
         prefix: list[str] = []
+        found_launcher = False
         for ln in lines:
             if LAUNCHER_PATTERN.match(ln):
+                found_launcher = True
                 break
             prefix.append(ln)
+        # A launcher-less sbatch (no module load / disBatch / srun / torchrun / ...)
+        # has no prep-prefix to validate: its BODY is the work (e.g. a
+        # `python ...bench.py` microbench, where the python line is the job, not
+        # setup). Dry-running it would execute the real job (model load + compile +
+        # steps), blow past the 300s cap, and FALSE-refuse. There's nothing to
+        # "stop before", so skip the dry-run — bash -n, the orchestration lint, and
+        # sbatch --test-only still gate it. The prep-dryrun is a sweep-only check.
+        if not found_launcher:
+            continue
         body = "\n".join(prefix) + "\n"
         if "python" not in body and "<<" not in body:
             continue  # nothing executable worth dry-running
