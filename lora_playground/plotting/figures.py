@@ -327,6 +327,7 @@ def compare_variants_figure(
     markers: dict | None = None,
     figsize: tuple[float, float] = (13, 5),
     max_steps: int = 4000,
+    completion_slack: int = 300,
     allow_partial: bool = False,
     prefetched_runs: list | None = None,
     variant_key=None,
@@ -443,7 +444,12 @@ def compare_variants_figure(
             # so it surfaces in the leaderboard table at its diverged value
             # instead of vanishing as a partial run.
             is_aborted = c.get("_aborted") is not None
-            if last_step == max_steps or is_aborted:
+            # "Final" = reached the horizon within completion_slack (so ~8970-step
+            # one-epoch runs count) OR aborted. In-flight runs (last_step far below
+            # the horizon) fall through to the partial branch — they must NOT be
+            # treated as completed-at-step-N (that put step-250 evals on the
+            # final-vs-lr panel and mislabelled high-lr partials as "diverged").
+            if last_step >= max_steps - completion_slack or is_aborted:
                 if lr not in d or last_loss < d[lr][0]:
                     d[lr] = (last_loss, c, h)
             elif allow_partial:
@@ -571,6 +577,10 @@ def compare_variants_figure(
     ax_traj.set_xlabel("step")
     ax_traj.set_ylabel("eval_loss")
     ax_traj.set_title("best-lr trajectory")
+    # Pin the x-axis to the full horizon so in-flight (partial) curves render in
+    # context instead of auto-scaling to a degenerate window (e.g. 240–260 when
+    # only the first eval has landed). Completed runs already span this range.
+    ax_traj.set_xlim(0, max_steps)
     ax_traj.grid(True, alpha=0.3)
     # Single figure-level legend below both panels (full width → long entries
     # fit across columns without colliding; never covers the data).
@@ -661,11 +671,14 @@ def leaderboard_panel(model, dataset, rank, suptitle, *,
             fig.suptitle(suptitle)
         return fig, pd.DataFrame(), pd.DataFrame()
     labels = {canonical_label(c) for c, _ in labeled}
-    achieved = [h[-1]["step"] for _, h in labeled if h]
-    max_steps = max(achieved) if achieved else wl.horizon
+    # Pass the workload HORIZON, not the achieved max step. In-flight runs must be
+    # treated as partial (trajectory only); the achieved-max heuristic made a
+    # step-250 in-flight run look "completed at 250" (wrong final-vs-lr points,
+    # collapsed x-axis, spurious divergence). compare_variants_figure's
+    # completion_slack still lets ~8970-step one-epoch (Tulu) runs count as final.
     return compare_variants_figure(
         variants={l: {} for l in labels}, common_where={},
         ref_label="AdamW", target_label="AdamW",
         sigma_ref=wl.sigma_ref if sigma_ref is None else sigma_ref,
-        max_steps=max_steps, allow_partial=True, suptitle=suptitle,
+        max_steps=wl.horizon, allow_partial=True, suptitle=suptitle,
         prefetched_runs=labeled, variant_key=canonical_label, **kwargs)
