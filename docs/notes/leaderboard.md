@@ -47,7 +47,7 @@ AdamW speed target (best-lr final loss): **0.7524**  ·  horizon 9000 steps
 | AdamW | 1e-04 | 0.7524 | 1.000 | 1.000 |
 | SOAP-curv +polar (f=10, β_c=0.99) | 1e-02 | 0.7387 | 0.694 | 0.824 |
 | chord-tight ns=8 k=1 (ε_rel=1e-3) | 1e-02 | 0.7386 | 0.694 | 0.843 |
-| chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.7388 | 0.694 | — |
+| chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.7388 | 0.694 | 0.769 |
 | chord-tight-clean ns=8 k=1 (abs=1e-6) +curv | 3e-03 | 0.7394 | 0.694 | 0.898 |
 | chord-tight ns=8 k=1 (ε_rel=1e-2) | 1e-02 | 0.7399 | 0.722 | 0.861 |
 | chord-tight-clean ns=10 k=1 (c=0.2) | 1e-02 | 0.7391 | 0.722 | 0.833 |

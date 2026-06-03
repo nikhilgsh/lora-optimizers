@@ -13,7 +13,7 @@ import pytest
 
 from lora_playground.workloads import (
     Workload, WORKLOADS, iter_workloads, find_workload, workload_runs,
-    resolve_dataset, _denied, _EXCLUDE_RE,
+    resolve_dataset, _denied, _EXCLUDE_RE, ALLOW_GROUPS,
 )
 from lora_playground.plotting import canonical_label, assert_label_discriminates
 
@@ -46,8 +46,13 @@ def test_resolve_dataset_ignores_stale_dataset_name():
 
 def test_deny_pattern():
     assert _denied("chord_tight_r256_k1_snapshot_blackwell")
-    assert _denied("chord_tight_slack_phase_L_1b_r256_lr2_blackwell")
+    # The `_slack_` pattern still denies slack-probe groups in general...
+    assert _denied("chord_tight_slack_phase_L_1b_r256_lr3_blackwell")
     assert _denied("some_smoke_run")
+    # ...except the one explicitly allow-listed (its only ≥8000-step opc-r256 runs
+    # are legit abs=1e-6 ns=5 k=1 low-lr points; see ALLOW_GROUPS).
+    assert "chord_tight_slack_phase_L_1b_r256_lr2_blackwell" in ALLOW_GROUPS
+    assert not _denied("chord_tight_slack_phase_L_1b_r256_lr2_blackwell")
     assert not _denied("chord_tight_phase_L_lrsweep_r256_blackwell")
     assert not _denied("epsrel_fullpolar_r256_olmo_ctk1_eps1e-3_lrext_blackwell")
     # legit ε_rel=1e-2 arm — must NOT be denied (the "_probe_" trap)
@@ -107,7 +112,7 @@ def test_cell_resolves_adamw_and_variant(wl):
 def test_no_dataset_or_deny_leakage(wl):
     for c, _ in workload_runs(wl):
         assert resolve_dataset(c) == wl.dataset, f"{wl.label}: foreign dataset {c.get('log_group')}"
-        assert not _EXCLUDE_RE.search(c.get("log_group") or ""), f"{wl.label}: denied group leaked"
+        assert not _denied(c.get("log_group")), f"{wl.label}: denied group leaked"
 
 
 @requires_logs

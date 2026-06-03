@@ -74,8 +74,22 @@ EXCLUDE_GROUP_PATTERNS: tuple[str, ...] = (
 )
 _EXCLUDE_RE = re.compile("|".join(EXCLUDE_GROUP_PATTERNS))
 
+# Allow-list overrides the deny patterns. `chord_tight_slack_phase_L_1b_r256_lr2_blackwell`
+# matches `_slack_` but its only ≥8000-step opc-r256 runs are the legit
+# `chord-tight ns=5 k=1 (abs=1e-6)` low-lr points (lr 3e-3/1e-2) absent from the
+# phase_L sweep — without them that arm's lr curve looks pinned at its lowest swept
+# lr (3e-2) when the optimum is interior. Scoping (opc, ≥8000 steps) already drops
+# this group's cross-dataset/4k collisions, so it adds exactly those 2 cells with
+# no label-discrimination trip (verified). The `_slack_` pattern still denies every
+# OTHER slack-probe group.
+ALLOW_GROUPS: frozenset[str] = frozenset({
+    "chord_tight_slack_phase_L_1b_r256_lr2_blackwell",
+})
+
 
 def _denied(group: str | None) -> bool:
+    if group in ALLOW_GROUPS:
+        return False
     return bool(group) and bool(_EXCLUDE_RE.search(group))
 
 
