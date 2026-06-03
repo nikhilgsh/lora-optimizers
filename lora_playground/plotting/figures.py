@@ -643,8 +643,23 @@ def leaderboard_panel(model, dataset, rank, suptitle, *,
         import warnings
         warnings.warn(f"leaderboard_panel baselines not found for {wl.label}: "
                       f"{sorted(missing)} (label typo or run absent at this rank)")
-    if not labeled:
-        raise ValueError(f"leaderboard_panel: no runs for {wl.label} after filtering")
+    # Graceful degrade for in-flight cells: if no runs match, or runs are
+    # launched but none has logged an eval yet, show a placeholder instead of
+    # raising — so a notebook cell run before the first eval (step ~eval_every)
+    # renders cleanly rather than crashing.
+    if not labeled or not any(h for _, h in labeled):
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        n = len(labeled)
+        msg = (f"no evals yet for {wl.label} — "
+               + (f"{n} run(s) launched, awaiting first eval" if n
+                  else "no runs found at this cell"))
+        fig, ax = plt.subplots(figsize=kwargs.get("figsize", (13, 5)))
+        ax.text(0.5, 0.5, msg, ha="center", va="center", fontsize=12)
+        ax.set_axis_off()
+        if suptitle:
+            fig.suptitle(suptitle)
+        return fig, pd.DataFrame(), pd.DataFrame()
     labels = {canonical_label(c) for c, _ in labeled}
     achieved = [h[-1]["step"] for _, h in labeled if h]
     max_steps = max(achieved) if achieved else wl.horizon
