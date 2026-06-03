@@ -5639,8 +5639,12 @@ class AdamPolarProductLoRA(Optimizer):
                     # X_A^eff = S_B^{-1/2} (u_A + (1/η) Bᵀ dB A).
                     dA_prev_picard = dA
                     dB_prev_picard = dB
-                    BT_dB_A = B_f.transpose(-2, -1) @ dB @ A_f       # (N, r, d_in)
-                    B_dA_AT = B_f @ dA @ A_f.transpose(-2, -1)       # (N, d_out, r)
+                    # Associate to keep the intermediate at (N, r, r), never the
+                    # (N, d_out, d_in) outer-product shape. Matmul is associative
+                    # so this is bit-for-bit the same map up to fp rounding, but
+                    # avoids a ~d_out·d_in materialization that OOMs at 8B/r256.
+                    BT_dB_A = (B_f.transpose(-2, -1) @ dB) @ A_f     # (N, r, d_in) via (N, r, r)
+                    B_dA_AT = B_f @ (dA @ A_f.transpose(-2, -1))     # (N, d_out, r) via (N, r, r)
                     u_A_eff = u_A + (1.0 / lr) * BT_dB_A
                     u_B_eff = u_B + (1.0 / lr) * B_dA_AT
                     # Full-FW (§6) self-terms: keep block's own previous
@@ -7183,8 +7187,26 @@ class AdamPolarProductLoRA(Optimizer):
         # nrank_τ = #{σᵢ > τ·σ_max}; stable rank = sum(σ²)/σ_max².
         # eigvalsh(SA) returns σ²(A) directly (S_A = A Aᵀ has eigs σᵢ²).
         try:
-            eigA = torch.linalg.eigvalsh(A_f @ A_f.T).clamp_min(0.0)
-            eigB = torch.linalg.eigvalsh(B_f.T @ B_f).clamp_min(0.0)
+            G_A = A_f @ A_f.T          # (r, r) = A Aᵀ  (eigs = σ²(A))
+            G_B = B_f.T @ B_f          # (r, r) = Bᵀ B  (eigs = σ²(B))
+
+            # Balance drift (BaLoRA — Castin et al. 2026, arXiv:2605.31484).
+            # The GL(r) gauge (A, B) → (R⁻¹A, BR) leaves the adapter BA fixed
+            # but moves the factor conditioning; the balanced representative
+            # satisfies A Aᵀ = Bᵀ B (the paper's paper_Aᵀpaper_A = paper_B
+            # paper_Bᵀ under the paper_A↔our-B / paper_B↔our-A factor swap).
+            # Residual = relative Frobenius gap, symmetric and scale-free:
+            # 0 ⇒ on the balanced manifold; growth ⇒ the gauge is drifting to
+            # an ill-conditioned representative (a candidate driver of σ_max
+            # under-estimates). Reuses the two Grams already formed — one r×r
+            # subtract + two norms, negligible. Read the _max aggregate.
+            gA_fro = float(G_A.norm())
+            gB_fro = float(G_B.norm())
+            rec["balance_resid"] = float(
+                (G_A - G_B).norm() / max(gA_fro, gB_fro, 1e-30))
+
+            eigA = torch.linalg.eigvalsh(G_A).clamp_min(0.0)
+            eigB = torch.linalg.eigvalsh(G_B).clamp_min(0.0)
             smax_A = float(eigA.max())
             smax_B = float(eigB.max())
             rec["nrank_A_1e3"] = int((eigA > 1e-3 * smax_A).sum())
@@ -7265,6 +7287,7 @@ class AdamPolarProductLoRA(Optimizer):
             for k in ("nrank_A_1e3", "nrank_A_1e2", "nrank_B_1e3",
                       "nrank_B_1e2", "stable_rank_A", "stable_rank_B"):
                 rec[k] = float("nan")
+            rec.setdefault("balance_resid", float("nan"))
 
         # AWC — Adam-direction compatibility diagnostic. Raw LoRA gradients
         # from one dense gradient G obey (g_A A^T) = (B^T g_B). The matrices
