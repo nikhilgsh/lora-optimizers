@@ -52,6 +52,13 @@ if [ -n "${CHECKPOINT_DIR:-}" ]; then
     fi
 fi
 
+# Damping mode: abs by default (--precond_delta as an absolute floor); set
+# PRECOND_DELTA_RELATIVE=1 to make it relative (ε_rel), e.g. PRECOND_DELTA=1e-3.
+rel_args=()
+if [ "${PRECOND_DELTA_RELATIVE:-0}" = "1" ]; then
+    rel_args=(--precond_delta_relative)
+fi
+
 python train_lora.py \
     --model_name meta-llama/Meta-Llama-3-8B \
     --data_dir data/opc_sft_stage2_all_packed_seq2048_llama32 \
@@ -76,6 +83,7 @@ python train_lora.py \
     --precond_method higham \
     --picard_iters_override "${PICARD:-2}" \
     --precond_delta "${PRECOND_DELTA:-1e-6}" \
+    "${rel_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}" \
