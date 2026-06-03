@@ -126,11 +126,15 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
   hundreds of steps (param_l2 drifting up linearly, grads finite) and then goes
   all-param NaN in a single step when the stale warm vector finally misses the
   top direction (observed at r256: `kl-shampoo-polar` NaN'd at steps 750–3500
-  across lrs while a 30-step sanity passed clean). So the high-rank stability
-  smoke MUST run to at least the longest plausible onset — **≥1000 steps at the
-  production rank, not 5–30** — before a sweep; a short smoke proves nothing about
-  spectral-rescale stability. The no-`sigma_max`-divide arm of the same optimizer
-  passing is not evidence the divide arm is safe. **Fix the under-estimate at the
+  across lrs while a 30-step sanity passed clean). Rather than gate every sweep on
+  a long pre-smoke, rely on the production run's live guards — `--abort_on_nan_eval`,
+  the per-step nonfinite-grad diagnostics, and checkpoint-resume that retains the
+  latest checkpoint on a NaN-abort — to catch and recover a slow-onset blowup in
+  flight. Reserve a ≥1000-step high-rank stability smoke for when the `sigma_max` /
+  estimator code itself changed (the case that actually reintroduces the bias); a
+  fit/timing smoke at the production rank need not run to onset. The
+  no-`sigma_max`-divide arm of the same optimizer passing is not evidence the divide
+  arm is safe. **Fix the under-estimate at the
   SHARED estimator, never per-call-site.** The bias is a property of the estimator,
   so it bites EVERY site that divides by `sigma_max` — the polar/NS pre-norm AND
   the final `ρ/σ_max(ΔW)` rescale AND the `ρ = lr/(σ_max(A)+σ_max(B))` denominator.
