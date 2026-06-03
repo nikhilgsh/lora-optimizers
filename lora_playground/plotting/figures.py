@@ -12,6 +12,7 @@ from typing import Callable, Iterable
 
 import matplotlib.pyplot as plt
 
+from lora_playground.leaderboard import is_final
 from .dedup import assert_label_discriminates
 from .merge import report_diverged, split_diverged
 from .overlays import baseline_overlay
@@ -449,7 +450,8 @@ def compare_variants_figure(
             # the horizon) fall through to the partial branch — they must NOT be
             # treated as completed-at-step-N (that put step-250 evals on the
             # final-vs-lr panel and mislabelled high-lr partials as "diverged").
-            if last_step >= max_steps - completion_slack or is_aborted:
+            # Shared rule with the loader (lora_playground.leaderboard.is_final).
+            if is_final(last_step, max_steps, completion_slack) or is_aborted:
                 if lr not in d or last_loss < d[lr][0]:
                     d[lr] = (last_loss, c, h)
             elif allow_partial:

@@ -35,6 +35,22 @@ from typing import Callable
 DEFAULT_COMPLETION_SLACK = 300
 
 
+def is_final(last_step, horizon: int,
+             completion_slack: int = DEFAULT_COMPLETION_SLACK) -> bool:
+    """Whether a run's last eval step counts as having reached the horizon.
+
+    Single source of truth for the completed-vs-in-flight decision, shared by the
+    loader (`labeled_completed_runs`) and the plotter
+    (`plotting.figures.compare_variants_figure`). A run is "final" if its last
+    eval is within ``completion_slack`` of the horizon — so ~8970-step one-epoch
+    runs (Tulu) count, but in-flight runs (e.g. step 250 of 9000) do NOT and must
+    be rendered as partial. Keep these two callers in agreement via this helper;
+    duplicating the inequality is exactly how partial runs leaked onto the
+    final-vs-lr panel.
+    """
+    return last_step is not None and last_step >= horizon - completion_slack
+
+
 def reach_fraction(history: list[dict], target: float, horizon: int) -> float:
     """Fraction of ``horizon`` at which ``eval_loss`` first drops to ``target``.
 
@@ -72,7 +88,7 @@ def labeled_completed_runs(
             continue
         last = max(hist, key=lambda e: e.get("step", 0))
         last_step = last.get("step", 0)
-        if last_step < horizon - completion_slack:
+        if not is_final(last_step, horizon, completion_slack):
             continue
         try:
             lr = float(cfg["lr"])
