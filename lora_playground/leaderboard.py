@@ -65,6 +65,20 @@ def reach_fraction(history: list[dict], target: float, horizon: int) -> float:
     return math.nan
 
 
+def speedup_from_frac(frac: float) -> float:
+    """Speedup-vs-AdamW = ``1 / reach_fraction`` (higher is better).
+
+    A fraction of 0.5 (reached AdamW's final loss in half the steps) becomes a
+    2.0× speedup; AdamW's own ≈1.0 fraction becomes ≈1.0×. NaN (target never
+    reached) passes through as NaN. This is the display-layer inverse of the
+    internal fraction metric — the fraction stays canonical for
+    ``performance_profile`` (which is direction-sensitive); presentation layers
+    (the leaderboard doc, notebooks) call this to show speedup instead."""
+    if frac is None or math.isnan(frac):
+        return math.nan
+    return 1.0 / frac
+
+
 def labeled_completed_runs(
     runs: list[tuple[dict, list[dict]]],
     variant_key: Callable[[dict], str | None],
