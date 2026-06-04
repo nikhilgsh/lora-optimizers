@@ -35,6 +35,7 @@ DEFAULT_LOGS_ROOT = str(_REPO_ROOT / "logs")
 _DATA_DIR_RE = re.compile(r"--data_dir\s+(\S+)")
 _DATASET_SUBSTRINGS: tuple[tuple[str, str], ...] = (  # ordered; first match wins
     ("opc_sft_stage2", "opc"),
+    ("aya_bengali", "bengali"),
     ("openmath", "openmath"),
     ("tulu3", "tulu3"),
     ("magicoder_seq512", "magicoder"),  # legacy; never a leaderboard cell
@@ -120,6 +121,7 @@ class Workload:
 _OPC_DISPLAY = "opc-sft-stage2 (Magicoder)"
 _OPENMATH_DISPLAY = "OpenMathInstruct-2"
 _TULU3_DISPLAY = "Tulu-3 SFT mixture"
+_BENGALI_DISPLAY = "Aya-Bengali"
 
 # σ is a proxy everywhere: the only measured AdamW multiseed σ (OLMo-opc, ~0.0007
 # at r64) is at the 2k horizon, not the 9k leaderboard horizon. 0.0017 mirrors the
@@ -141,6 +143,7 @@ WORKLOADS: list[Workload] = [
     Workload("meta-llama/Llama-3.2-1B", "openmath", 256, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     # ── Qwen2.5-1.5B ─────────────────────────────────────────────────────────
     Workload("Qwen/Qwen2.5-1.5B", "opc", 256, "Qwen2.5-1.5B", _OPC_DISPLAY, 9000, _SIGMA, True),
+    Workload("Qwen/Qwen2.5-1.5B", "bengali", 256, "Qwen2.5-1.5B", _BENGALI_DISPLAY, 9000, _SIGMA, True),
     # ── Meta-Llama-3-8B (scale-up; model_display gives label "Meta/..." so it
     #    does not collide with Llama-3.2-1B's "Llama/..." cross-setting key) ────
     Workload("meta-llama/Meta-Llama-3-8B", "opc", 256, "Meta-Llama-3-8B", _OPC_DISPLAY, 9000, _SIGMA, True),
