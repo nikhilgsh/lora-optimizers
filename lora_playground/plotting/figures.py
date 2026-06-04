@@ -521,14 +521,17 @@ def compare_variants_figure(
         if final_runs:
             final_ylim = auto_ylim_for_final_panel(
                 final_runs, divergent_ratio=divergent_ratio)
-    # y_cap: clamp height for OOR/diverged points, just inside the visible top.
-    y_cap = (final_ylim[1] - 0.006) if final_ylim is not None else None
+    # `top`: NaN-aborted (diverged) lrs are pinned to the box's top edge and
+    # drawn hollow (a sentinel, not a value just under the rim). Finite finals
+    # above this deliberately-tight top are left at their true height and exit
+    # the top of the box — they are NOT clamped/hollowed (see clamp_for_hollow).
+    top = final_ylim[1] if final_ylim is not None else None
     for label, d in per_variant.items():
         if not d:
             continue
         lrs = sorted(d)
         finals = [d[lr][0] for lr in lrs]
-        ys_clamped, is_oor = clamp_for_hollow(finals, y_cap)
+        ys_clamped, is_oor = clamp_for_hollow(finals, top)
         draw_lr_series(ax_lr, lrs, ys_clamped, is_oor, color=colors[label],
                        marker=markers[label], label=label, lw=1.4, ms=6,
                        zorder=4)
@@ -582,7 +585,9 @@ def compare_variants_figure(
     # Pin the x-axis to the full horizon so in-flight (partial) curves render in
     # context instead of auto-scaling to a degenerate window (e.g. 240–260 when
     # only the first eval has landed). Completed runs already span this range.
-    ax_traj.set_xlim(0, max_steps)
+    # Small right margin so a final marker at exactly `max_steps` isn't clipped
+    # in half by the right spine (completed runs end on the horizon).
+    ax_traj.set_xlim(0, max_steps * 1.015)
     ax_traj.grid(True, alpha=0.3)
     # Single figure-level legend below both panels (full width → long entries
     # fit across columns without colliding; never covers the data).

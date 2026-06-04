@@ -181,6 +181,41 @@ def detect_group_collisions(runs, group_key_fn, *,
                                    axis_fields=axis_fields)
 
 
+def _last_step(evals) -> float:
+    """Longest-trajectory comparator: max ``step`` among eval events, or -1
+    for an empty trajectory (so any non-empty run wins over an empty one)."""
+    if not evals:
+        return -1.0
+    return max(float(e.get("step", -1)) for e in evals)
+
+
+def dedup_by_canonical(runs, *, keep_longest: bool = True):
+    """Deduplicate ``(cfg, evals)`` runs by the canonical labeler so the dedup
+    key can never drift from the displayed label.
+
+    Dedup key is ``(canonical_label(cfg), float(cfg['lr']))``. When
+    ``canonical_label(cfg)`` is ``None`` (a run outside the labeled family),
+    the key falls back to ``cfg.get('optimizer')`` so unlabeled runs are NOT
+    all collapsed into one bucket.
+
+    With ``keep_longest`` (default), the run with the longest trajectory wins
+    per key (max last ``step``; empty evals count as step -1). Input order of
+    the kept runs is preserved (first-seen position of each key).
+    """
+    from .labels import canonical_label
+    order: list = []
+    best: dict = {}
+    for cfg, evals in runs:
+        label = canonical_label(cfg)
+        key = (label, float(cfg["lr"])) if label is not None else cfg.get("optimizer")
+        if key not in best:
+            order.append(key)
+            best[key] = (cfg, evals)
+        elif keep_longest and _last_step(evals) > _last_step(best[key][1]):
+            best[key] = (cfg, evals)
+    return [best[k] for k in order]
+
+
 def _baseline_values(runs, *, allowed_to_vary: set) -> dict:
     """Build {field: baseline_value} where baseline_value is the train.py
     argparse default. Only include fields that (a) vary across ``runs``

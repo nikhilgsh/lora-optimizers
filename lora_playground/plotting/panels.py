@@ -74,8 +74,13 @@ def auto_ylim_for_final_panel(
     because a fixed multiple of best is too loose when the loss range is
     compressed — at best ≈ 0.74, `1.5 × best ≈ 1.1` still admits clearly-worse
     0.9 runs; the IQR fence adapts to the cluster's own spread and clips them.
-    Dropped runs still render but go off-axis at the top (the right visual
-    signal for divergence).
+
+    The bound deliberately stays TIGHT around the converged cluster: a finite
+    final above this top is not stretched into view — it simply exits the top
+    of the box (matplotlib clips its marker; the connecting line runs off the
+    top edge). Only genuinely NaN-aborted runs get a sentinel marker, pinned to
+    the top edge by `clamp_for_hollow` so they read as "diverged," not as a
+    real loss value.
 
     `lora_r=None` aggregates across all ranks. `fallback` is returned when
     no finite finals are present.
@@ -138,22 +143,25 @@ def auto_ylim_for_trajectory_panel(
     return (best - lower_pad, max(post_warmup) + upper_pad)
 
 
-def clamp_for_hollow(values, y_cap: float | None):
-    """Split a list of final-loss values into (ys_clamped, is_oor).
+def clamp_for_hollow(values, top: float | None):
+    """Split a list of final-loss values into (ys, is_oor).
 
-    A value is "out of range" (diverged) when it is non-finite (NaN-aborted
-    run) or above `y_cap`. OOR values are clamped to `y_cap` so a connecting
-    line through them stays continuous; `is_oor[i]` flags which points must be
-    drawn hollow. With `y_cap is None` (no axis bound) only non-finite values
-    are flagged and clamping is a no-op. Single source of truth for the
-    "diverged → clamp to top" rule shared across panels.
+    Only a NON-FINITE final (NaN/inf — a NaN-aborted run) is a divergence
+    sentinel: it has no real loss, so it is pinned to `top` (the box's top
+    edge) and flagged hollow, so it reads as "diverged to NaN" rather than as a
+    real loss value sitting just under the rim. A FINITE final is returned
+    UNCHANGED (and `is_oor=False`, i.e. drawn solid) at its true height — if
+    that height is above the deliberately-tight axis top it simply exits the top
+    of the box (matplotlib clips the marker; the connecting line runs off the
+    top edge), which is the intended "this lr is off-scale-worse" signal rather
+    than a hollow marker pinned inside. With `top is None` (no axis bound)
+    non-finite values are flagged but clamping is a no-op.
     """
-    is_oor = [(not math.isfinite(v)) or (y_cap is not None and v > y_cap)
-              for v in values]
-    if y_cap is None:
+    is_oor = [not math.isfinite(v) for v in values]
+    if top is None:
         ys = [v for v in values]
     else:
-        ys = [y_cap if o else v for v, o in zip(values, is_oor)]
+        ys = [top if o else v for v, o in zip(values, is_oor)]
     return ys, is_oor
 
 

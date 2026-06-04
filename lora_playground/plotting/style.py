@@ -22,6 +22,17 @@ LEGEND_KW = dict(
     labelspacing=0.55,
 )
 
+# Legend style for side-by-side 2-panel figures (compare_variants_figure): a
+# SINGLE figure-level legend placed BELOW the whole figure (loc="outside lower
+# center" + constrained_layout reserves the space) so a long multi-variant
+# legend never covers the panels. Spans the full figure width (not one panel),
+# so long entries fit across columns without colliding.
+LEGEND_BELOW_KW = dict(
+    ncol=3, fontsize=9, frameon=False,
+    handlelength=2.0, handletextpad=0.6,
+    columnspacing=1.4, labelspacing=0.5,
+)
+
 # Title / axis-label sizes — bumped throughout for readability.
 SUPTITLE_FONTSIZE = 18
 PANEL_TITLE_FONTSIZE = 15

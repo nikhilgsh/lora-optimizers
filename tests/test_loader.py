@@ -749,7 +749,9 @@ def test_load_runs_summary_includes_group_examples(tmp_path: Path, monkeypatch, 
     _write_group(logs, "phase_L_test", {"scope": ["all_optimizers"]},
                  [(cfg, _evs((2000, 0.76)))])
 
-    runs = load_runs(where={"optimizer": "adamw"}, logs_root=str(logs))
+    # quiet=False: the exclusion summary is only printed when not quiet (the
+    # loader defaults to quiet=True for notebook use).
+    runs = load_runs(where={"optimizer": "adamw"}, logs_root=str(logs), quiet=False)
     out = capsys.readouterr().out
     assert "phase_L_test" in out, (
         f"summary print missing group name; got: {out!r}"

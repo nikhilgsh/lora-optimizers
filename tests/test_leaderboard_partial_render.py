@@ -43,8 +43,11 @@ def test_trajectory_xaxis_spans_horizon_for_partial():
     runs = [_run("AdamW", 1e-4, [(250, 0.61)])]
     fig, _tdf, _sdf = _panel(runs)
     x0, x1 = fig.axes[-1].get_xlim()
-    assert round(x0) == 0 and round(x1) == HORIZON, (
-        f"trajectory x-axis collapsed to ({x0:.0f}, {x1:.0f}) instead of (0, {HORIZON})")
+    # x-axis spans the full horizon (not a degenerate partial window). A small
+    # right margin (so a final marker at exactly max_steps isn't clipped by the
+    # spine) is fine — assert the upper bound reaches the horizon, within ~5%.
+    assert round(x0) == 0 and HORIZON <= x1 <= HORIZON * 1.05, (
+        f"trajectory x-axis collapsed to ({x0:.0f}, {x1:.0f}) instead of spanning (0, {HORIZON})")
 
 
 def test_completed_run_does_appear_as_final():

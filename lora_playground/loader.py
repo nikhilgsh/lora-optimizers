@@ -646,7 +646,7 @@ def load_runs(
     warn_cross_commit: bool = True,
     unique_on: tuple[str, ...] | None = None,
     allow_axes: tuple[str, ...] = (),
-    quiet: bool = False,
+    quiet: bool = True,
 ) -> list[tuple[dict, list[dict]]]:
     """Load all runs whose cfg matches every predicate in ``where``.
 
@@ -832,6 +832,20 @@ def load_runs(
     # tells us "does this key exist anywhere in the candidate pool?").
     _seen_cfg_keys: set[str] = set()
     def _wrapped_filter(cfg: dict) -> bool:
+        # Key-existence pool for the where-key typo warning below. Collect from
+        # EVERY candidate cfg, independent of either filter, so a where-key that
+        # legitimately narrows the pool to nothing still validates as a real
+        # field. (`_evaluate_new_layer` is a pure read, so order vs. it is free.)
+        _seen_cfg_keys.update(cfg.keys())
+        # Cheap user predicate FIRST. `_evaluate_new_layer` can shell out to git
+        # for dirty-tree content-hash resolution (~10s over a full multi-hundred
+        # group pool, dominated by in-flight runs); paying that for runs the
+        # caller's `where` rejects anyway was the bulk of cold-load latency.
+        # Result set is unchanged — (not excluded) AND (user match) is the same
+        # set either order; only the exclusion diagnostic now counts just the
+        # where-matching runs, which is the relevant population for the query.
+        if _user_filter is not None and not _user_filter(cfg):
+            return False
         excluded, reason = _evaluate_new_layer(cfg)
         if excluded:
             _excluded_counts[reason] = _excluded_counts.get(reason, 0) + 1
@@ -840,9 +854,6 @@ def load_runs(
                 ex.append((cfg.get("log_group") or "?",
                            cfg.get("_log_filename") or "?"))
             return False
-        _seen_cfg_keys.update(cfg.keys())
-        if _user_filter is not None:
-            return _user_filter(cfg)
         return True
     filter_fn = _wrapped_filter
 

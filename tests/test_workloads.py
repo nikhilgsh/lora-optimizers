@@ -61,11 +61,12 @@ def test_deny_pattern():
 
 
 def test_registry_shape():
-    assert len(WORKLOADS) == 11
-    # exactly one Qwen cell, the 10 OLMo/Llama cells, all unique
+    assert len(WORKLOADS) == 12
+    # the 10 OLMo/Llama-3.2 cells + one Qwen cell + one Meta-Llama-3-8B cell, all unique
     keys = {(w.model_name, w.dataset, w.rank) for w in WORKLOADS}
     assert len(keys) == len(WORKLOADS)
     assert ("Qwen/Qwen2.5-1.5B", "opc", 256) in keys
+    assert ("meta-llama/Meta-Llama-3-8B", "opc", 256) in keys
     for w in WORKLOADS:
         assert isinstance(w, Workload)
         assert w.horizon >= w.min_completed_steps

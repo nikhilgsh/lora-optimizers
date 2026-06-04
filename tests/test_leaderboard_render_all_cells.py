@@ -35,8 +35,10 @@ def test_cell_renders_with_invariants(wl):
         # the full horizon — never a degenerate window from partial autoscale.
         if len(fig.axes) >= 2:
             x0, x1 = fig.axes[-1].get_xlim()
-            assert round(x0) == 0 and round(x1) == wl.horizon, (
-                f"{wl.label}: trajectory x-axis ({x0:.0f},{x1:.0f}) != (0,{wl.horizon})")
+            # Full-horizon span; a small right margin (final marker at max_steps
+            # not clipped by the spine) is fine — accept the horizon within ~5%.
+            assert round(x0) == 0 and wl.horizon <= x1 <= wl.horizon * 1.05, (
+                f"{wl.label}: trajectory x-axis ({x0:.0f},{x1:.0f}) doesn't span (0,{wl.horizon})")
             # Every summary row is a FINAL run; if the cell has only in-flight
             # runs the summary must be empty (no partial-as-final leak).
             # (sdf rows correspond to variants that reached the horizon.)
