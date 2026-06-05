@@ -1,0 +1,6 @@
+{
+  "lr": ["1e-1", "3e-1"],
+  "optimizer": ["kl-shampoo-polar-lora"],
+  "seed": ["0"],
+  "precond_delta": ["1e-4", "3e-5"]
+}
