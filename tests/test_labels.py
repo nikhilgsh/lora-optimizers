@@ -43,6 +43,13 @@ def test_distinct_configs_get_distinct_labels():
     e1 = canonical_label(_cfg(OPT_CT, muon_ns_steps=8, precond_delta_relative=True, precond_delta=0.001))
     e2 = canonical_label(_cfg(OPT_CT, muon_ns_steps=8, precond_delta_relative=True, precond_delta=0.1))
     assert e1 != e2
+    # curvature-family (kl-shampoo / SOAP-curv) damping δ must appear, else a
+    # precond_delta sweep collapses to one curve in the leaderboard panel.
+    k1 = canonical_label(_cfg("kl-shampoo-polar-lora", precond_refresh_every=10,
+                              curvature_beta=0.99, precond_delta=1e-4))
+    k2 = canonical_label(_cfg("kl-shampoo-polar-lora", precond_refresh_every=10,
+                              curvature_beta=0.99, precond_delta=1e-2))
+    assert k1 != k2 and "δ=1e-4" in k1 and "δ=1e-2" in k2
 
 
 def test_derived_picard_overrides_raw():
