@@ -1,5 +1,23 @@
 [
   {
+    "key": "blackwell/OLMo-2-0425-1B/r256/curvature-whiten/ns5/k1",
+    "s_per_step": 6.027,
+    "measured_at_step": 9000,
+    "source_log": "logs/curvature_whiten_soap_block_r256_olmo_opc/run_info/logs/log_00.out",
+    "hardware": "blackwell",
+    "model": "OLMo-2-0425-1B",
+    "lora_r": 256,
+    "optimizer_family": "curvature-whiten",
+    "ns_steps": 5,
+    "picard": 1,
+    "batch_size": 4,
+    "grad_accum_steps": 4,
+    "max_seq_length": 2048,
+    "compile": true,
+    "dtype": "bf16",
+    "git_commit": "f76f28d"
+  },
+  {
     "key": "blackwell/OLMo-2-0425-1B/r64/polar-product/ns8/k1",
     "s_per_step": 4.484,
     "measured_at_step": 8750,

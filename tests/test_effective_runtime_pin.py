@@ -76,6 +76,7 @@ def polar_probe(monkeypatch):
     orig_newton_schulz_batched = opt_mod._newton_schulz_batched
     orig_hybrid = opt_mod._newton_schulz_hybrid_deepseek
     orig_express = opt_mod._polar_express
+    orig_express_batched = opt_mod._polar_express_gram_batched
     orig_sigma_power = AdamPolarProductLoRA._sigma_power_polar
 
     def patched_newton_schulz(X, *args, **kwargs):
@@ -98,6 +99,15 @@ def polar_probe(monkeypatch):
         calls.append(("polar_express", {}))
         return orig_express(X, *args, **kwargs)
 
+    def patched_express_batched(X, *args, **kwargs):
+        # polar_express is batched-eligible (de42c77), so the production
+        # default config dispatches to the batched Gram form, not the
+        # rectangular `_polar_express`. Same method, different tensor
+        # layout — record it as "polar_express" just like batched-NS is
+        # recorded as "ns" above.
+        calls.append(("polar_express", {"batched": True}))
+        return orig_express_batched(X, *args, **kwargs)
+
     # _sigma_power_polar is a @staticmethod — wrapper must NOT take `self`.
     @staticmethod
     def patched_sigma_power(X, p, *args, **kwargs):
@@ -108,6 +118,7 @@ def polar_probe(monkeypatch):
     monkeypatch.setattr(opt_mod, "_newton_schulz_batched", patched_newton_schulz_batched)
     monkeypatch.setattr(opt_mod, "_newton_schulz_hybrid_deepseek", patched_hybrid)
     monkeypatch.setattr(opt_mod, "_polar_express", patched_express)
+    monkeypatch.setattr(opt_mod, "_polar_express_gram_batched", patched_express_batched)
     monkeypatch.setattr(
         AdamPolarProductLoRA, "_sigma_power_polar", patched_sigma_power,
     )
