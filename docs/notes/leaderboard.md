@@ -13,7 +13,7 @@ AlgoPerf-style performance profile across the 13 (model, dataset, rank) workload
 
 | canonical variant | coverage | robustness_score | mean ratio-to-best |
 |---|---|---|---|
-| `AdamW` | 12/13 | 0.879 | 1.352 |
+| `AdamW` | 13/13 | 0.888 | 1.324 |
 | `chord-tight ns=5 k=1 (abs=1e-6)` | 7/13 | 0.989 | 1.027 |
 | `chord-tight ns=8 k=1 (abs=1e-6)` | 7/13 | 0.984 | 1.040 |
 
@@ -164,7 +164,11 @@ AdamW speed target (best-lr final loss): **0.6023**  ·  horizon 9000 steps
 
 ### Qwen2.5-1.5B × Aya-Bengali × r=256
 
-_No completed runs found._
+AdamW speed target (best-lr final loss): **0.5006**  ·  horizon 9000 steps
+
+| method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
+|---|---|---|---|---|
+| AdamW | 1e-04 | 0.5006 | 1.03× | 1.01× |
 
 ### Meta-Llama-3-8B × opc-sft-stage2 (Magicoder) × r=256
 
