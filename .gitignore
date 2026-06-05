@@ -71,3 +71,6 @@ slurm_cancel_submitted/
 
 # mu-monitor local tool state
 .mu_monitor/
+
+# collaborator-shared result artifacts (not project-tracked)
+tanya_results/
