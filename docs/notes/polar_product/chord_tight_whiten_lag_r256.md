@@ -36,15 +36,15 @@ Most striking: **whiten's dA is rotated 60° from plain Adam direction; no-white
 
 **Why this is whiten-specific:** no-whiten skips `SB^{-1/2}` entirely. `dA = -ρ · polar(u_A)` has no rotation away from Adam direction.
 
-## Math correction (prior version overstated the magnitude effect)
+## dA magnitude is renormalized, not amplified
 
-An earlier version of this note claimed `‖dA‖_F² ≈ ρ²·trace(SB^{-1})` and derived an order-of-magnitude "wasted dA" gap. That formula is wrong. The actual chord-tight update is
+The chord-tight update is
 
 ```
 dA = -(ρ / σ_max(geo_A)) · geo_A
 ```
 
-— renormalized so `σ_max(dA) = ρ`. So `‖dA‖_F = ρ·√(stable_rank(geo_A)) ≤ ρ·√r`, independent of `trace(SB^{-1})`. The renormalization step cancels any "blow-up" of `dA` magnitude from `SB^{-1/2}` amplification.
+renormalized so `σ_max(dA) = ρ`. Hence `‖dA‖_F = ρ·√(stable_rank(geo_A)) ≤ ρ·√r`, independent of `trace(SB^{-1})`: the renormalization cancels any magnitude blow-up of `dA` from `SB^{-1/2}` amplification. The whiten-specific effect is on the step *direction* (rotation away from the Adam direction), not its magnitude.
 
 What `SB^{-1/2}` actually does is reshape dA's **direction** (the spectrum/anisotropy of `geo_A` after renormalization), not its overall magnitude. The load-bearing effect is the angular rotation described above, not a magnitude inflation.
 
