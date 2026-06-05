@@ -545,23 +545,51 @@ def compare_variants_figure(
     if final_ylim is not None:
         ax_lr.set_ylim(*final_ylim)
 
+    def _pick_traj(d, d_partial):
+        """Best trajectory for a variant, preferring a FINITE curve.
+
+        Order: finite completed > finite partial > diverged completed >
+        diverged partial. The finite-first rule is the fix for the
+        partial/aborted interaction: a variant whose ONLY completed run is a
+        NaN-aborted high-lr makes `d` non-empty but all-diverged, so a plain
+        `if d: ... elif d_partial:` would plot that blown-up curve and hide the
+        variant's healthy still-in-flight lrs (which live in `d_partial`).
+        Returns (cfg, history, best_lr, disp_loss, is_partial, last_step) or
+        None when the variant has nothing to plot.
+        """
+        fin_d = {lr: v for lr, v in d.items() if math.isfinite(v[0])}
+        fin_p = {lr: v for lr, v in d_partial.items() if math.isfinite(v[0])}
+        if fin_d:
+            lr = min(fin_d, key=lambda k: fin_d[k][0]); loss, cfg, h = fin_d[lr]
+            return cfg, h, lr, loss, False, None
+        if fin_p:
+            lr = min(fin_p, key=lambda k: fin_p[k][0]); loss, cfg, h, st = fin_p[lr]
+            return cfg, h, lr, loss, True, st
+        if d:  # only diverged completed runs — still show divergence
+            lr = _best_lr(d); loss, cfg, h = d[lr]
+            return cfg, h, lr, loss, False, None
+        if d_partial:  # only diverged partials
+            lr = _best_lr({k: d_partial[k] for k in d_partial})
+            loss, cfg, h, st = d_partial[lr]
+            return cfg, h, lr, loss, True, st
+        return None
+
     for label in variants:
         d = per_variant.get(label, {})
         d_partial = per_variant_partial.get(label, {}) if allow_partial else {}
-        if d:
-            best_lr = _best_lr(d)
-            final, _, h = d[best_lr]
-            ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
-                         marker=markers[label], ms=3, lw=1.4, color=colors[label],
-                         label=f"{label}  (lr={best_lr:g}, final={final:.4f})")
-        elif d_partial:
-            # No completed runs — fall back to partial: pick best by latest eval.
-            best_lr = _best_lr({lr: d_partial[lr] for lr in d_partial})
-            last_loss, _, h, last_step = d_partial[best_lr]
+        pick = _pick_traj(d, d_partial)
+        if pick is None:
+            continue
+        _cfg, h, best_lr, disp_loss, is_partial, last_step = pick
+        if is_partial:
             ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
                          marker=markers[label], ms=3, lw=1.2, color=colors[label],
                          linestyle="--",
-                         label=f"{label}  (lr={best_lr:g}, partial @{last_step}: {last_loss:.4f})")
+                         label=f"{label}  (lr={best_lr:g}, partial @{last_step}: {disp_loss:.4f})")
+        else:
+            ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
+                         marker=markers[label], ms=3, lw=1.4, color=colors[label],
+                         label=f"{label}  (lr={best_lr:g}, final={disp_loss:.4f})")
     # Dashed black line at the speed target: where each curve crosses it is the
     # fraction-of-steps-to-target metric. The target is the AdamW baseline by
     # default (the leaderboard metric is "steps to reach the opt-AdamW loss"),
@@ -604,14 +632,9 @@ def compare_variants_figure(
         for label in variants:
             d = per_variant.get(label, {})
             d_partial = per_variant_partial.get(label, {}) if allow_partial else {}
-            if d:
-                best_lr = min(d, key=lambda lr: d[lr][0])
-                _, cfg, h = d[best_lr]
-                traj_runs.append((cfg, h))
-            elif d_partial:
-                best_lr = min(d_partial, key=lambda lr: d_partial[lr][0])
-                _, cfg, h, _ = d_partial[best_lr]
-                traj_runs.append((cfg, h))
+            pick = _pick_traj(d, d_partial)
+            if pick is not None:
+                traj_runs.append((pick[0], pick[1]))
         if traj_runs:
             traj_ylim = auto_ylim_for_trajectory_panel(
                 traj_runs, divergent_ratio=divergent_ratio, warmup_frac=0.0)

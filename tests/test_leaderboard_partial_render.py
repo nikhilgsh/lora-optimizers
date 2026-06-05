@@ -63,3 +63,28 @@ def test_one_epoch_run_within_slack_counts_as_final():
     near = _run("AdamW", 1e-4, [(s, 0.6) for s in range(250, 8971, 250)])
     _fig, _tdf, sdf = _panel([near])
     assert len(sdf) >= 1, "an ~8970-step one-epoch run was wrongly treated as partial"
+
+
+def test_aborted_highlr_does_not_hide_healthy_partial_trajectory():
+    # Regression: when a variant's ONLY completed run is a NaN-aborted high-lr,
+    # the "final" bucket is non-empty-but-all-diverged. The trajectory panel must
+    # still draw the variant's best HEALTHY in-flight curve (finite partial),
+    # not the blown-up aborted one. (Observed live: Bengali AdamW η=1e-3 aborted
+    # at step 6500 while η=1e-4 was healthy at step 8000 — the panel plotted the
+    # NaN arm and hid the good partial.)
+    import math
+    healthy = _run("AdamW", 1e-4, [(s, 0.6) for s in range(250, 8001, 250)])
+    ab_cfg, ab_hist = _run(
+        "AdamW", 1e-3,
+        [(s, 2.5) for s in range(250, 6500, 250)] + [(6500, float("nan"))])
+    ab_cfg["_aborted"] = {"reason": "nan_eval"}  # marks it completed-but-diverged
+    fig, _tdf, _sdf = _panel([healthy, (ab_cfg, ab_hist)])
+    curves = [ln for ln in fig.axes[-1].get_lines()
+              if not ln.get_label().startswith("_")]
+    assert len(curves) == 1, "expected exactly one best-lr trajectory for AdamW"
+    lab = curves[0].get_label()
+    assert "lr=0.0001" in lab, (
+        f"trajectory used the aborted high-lr instead of the healthy partial: {lab}")
+    ys = list(curves[0].get_ydata())
+    assert ys and all(math.isfinite(y) for y in ys), "healthy trajectory contains NaN"
+    assert max(ys) < 1.0, "trajectory plotted the diverged ~2.5 curve, not the healthy one"
