@@ -20,6 +20,7 @@ from .utils import (
     truncated_svd,
 )
 from ._step_timer import maybe_time
+from .optim_diagnostics import factor_diagnostics
 
 
 # Init parameters that are construction inputs, not algorithmic state — the
@@ -1172,6 +1173,18 @@ class CurvatureWhitenLoRA(Optimizer):
             self._cw_apply_per_pair(lr, cb, b1, eps)
         if _timer: _timer.stop()
 
+        # BaLoRA balanced projection (causal intervention, env-gated). Projects
+        # each (A, B) onto the balanced manifold AAᵀ=BᵀB after the step while
+        # preserving the product BA (Castin et al. 2026; utils.balanced_projection).
+        # Tests whether forcing balance flattens kl's lr-sensitivity vs leaving
+        # the gauge to drift. Off by default; set LORA_BALANCE_PROJECT=1.
+        if os.environ.get("LORA_BALANCE_PROJECT") == "1":
+            from .utils import balanced_projection
+            for A, B in pairs:
+                A_new, B_new = balanced_projection(A, B)
+                A.data.copy_(A_new.to(dtype=A.dtype, device=A.device))
+                B.data.copy_(B_new.to(dtype=B.dtype, device=B.device))
+
         # ── Refresh the eigenbasis for the NEXT step. First refresh = ONE eigh
         # to seed Q (Alg 4 init); thereafter ONE warm-started power-iteration +
         # QR step (Alg 4: Q ← QR(L@Q)), every `precond_refresh_every`, batched
@@ -1196,6 +1209,16 @@ class CurvatureWhitenLoRA(Optimizer):
                 self.pair_state[i]['Q_A'] = QA[i]
                 self.pair_state[i]['Q_B'] = QB[i]
             if _timer: _timer.stop()
+
+        # Tier-1 factor diagnostics (shared library): balance_resid /
+        # stable_rank / σ_max, emitted as one `optim_step` event at the
+        # diagnostics cadence. kl-shampoo (this class) previously logged no
+        # optimizer-internal diagnostics, so the balance ↔ σ_max-fragility link
+        # was un-instrumented on exactly the optimizer that NaNs via σ_max
+        # under-estimation. Pure (A, B) function — see lora_playground.optim_diagnostics.
+        if self.log_basic_diagnostics and step_count % self.diagnostics_every == 0:
+            _emit_optim_diagnostics(
+                step_count, [factor_diagnostics(A, B) for (A, B) in self.pairs])
 
     def _smax_warm(self, M, states, key, n_warm=3):
         """Warm-started batched σ_max with per-pair v_init caching.
@@ -7183,39 +7206,12 @@ class AdamPolarProductLoRA(Optimizer):
         rec["gamma_A"] = float(cross_A.norm() / (u_A.norm() + 1e-30))
         rec["gamma_B"] = float(cross_B.norm() / (u_B.norm() + 1e-30))
 
-        # H4 — numerical and stable rank of S_A, S_B (r×r, cheap).
-        # nrank_τ = #{σᵢ > τ·σ_max}; stable rank = sum(σ²)/σ_max².
-        # eigvalsh(SA) returns σ²(A) directly (S_A = A Aᵀ has eigs σᵢ²).
+        # Factor diagnostics (balance / stable-rank / nrank / σ_max) — shared
+        # across all LoRA optimizers; pure function of (A, B). See
+        # lora_playground.optim_diagnostics.factor_diagnostics.
+        rec.update(factor_diagnostics(A_f, B_f))
+
         try:
-            G_A = A_f @ A_f.T          # (r, r) = A Aᵀ  (eigs = σ²(A))
-            G_B = B_f.T @ B_f          # (r, r) = Bᵀ B  (eigs = σ²(B))
-
-            # Balance drift (BaLoRA — Castin et al. 2026, arXiv:2605.31484).
-            # The GL(r) gauge (A, B) → (R⁻¹A, BR) leaves the adapter BA fixed
-            # but moves the factor conditioning; the balanced representative
-            # satisfies A Aᵀ = Bᵀ B (the paper's paper_Aᵀpaper_A = paper_B
-            # paper_Bᵀ under the paper_A↔our-B / paper_B↔our-A factor swap).
-            # Residual = relative Frobenius gap, symmetric and scale-free:
-            # 0 ⇒ on the balanced manifold; growth ⇒ the gauge is drifting to
-            # an ill-conditioned representative (a candidate driver of σ_max
-            # under-estimates). Reuses the two Grams already formed — one r×r
-            # subtract + two norms, negligible. Read the _max aggregate.
-            gA_fro = float(G_A.norm())
-            gB_fro = float(G_B.norm())
-            rec["balance_resid"] = float(
-                (G_A - G_B).norm() / max(gA_fro, gB_fro, 1e-30))
-
-            eigA = torch.linalg.eigvalsh(G_A).clamp_min(0.0)
-            eigB = torch.linalg.eigvalsh(G_B).clamp_min(0.0)
-            smax_A = float(eigA.max())
-            smax_B = float(eigB.max())
-            rec["nrank_A_1e3"] = int((eigA > 1e-3 * smax_A).sum())
-            rec["nrank_A_1e2"] = int((eigA > 1e-2 * smax_A).sum())
-            rec["nrank_B_1e3"] = int((eigB > 1e-3 * smax_B).sum())
-            rec["nrank_B_1e2"] = int((eigB > 1e-2 * smax_B).sum())
-            rec["stable_rank_A"] = float(eigA.sum() / (smax_A + 1e-30))
-            rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
-
             # X_unc spectrum probe (Step 3 prep — clip τ-rule
             # design). The spectrum of the whitened Adam direction
             # X_unc = S_B^{-1/2} u_A is the input to the per-block
