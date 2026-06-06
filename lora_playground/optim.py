@@ -1008,6 +1008,21 @@ class AdamLinLoRA(Optimizer):
             # Apply the update, cast back to parameter dtype/device
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
+            if self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0:
+                self._last_cw_diag_records.append(self._cw_diag_record(
+                    A_post=A,
+                    B_post=B,
+                    A_pre=A.detach().float() - dA.detach().float(),
+                    B_pre=B.detach().float() - dB.detach().float(),
+                    dA=dA,
+                    dB=dB,
+                    lr=lr,
+                    rho=rho,
+                    sigma_A=sA,
+                    sigma_B=sB,
+                    sigma_WA=sWA,
+                    sigma_WB=sWB,
+                ))
             A.grad.zero_()
             B.grad.zero_()
 
@@ -1141,6 +1156,33 @@ class CurvatureWhitenLoRA(Optimizer):
         out = (x / xmax.clamp_min(1e-30) + self.delta).rsqrt()
         return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
+    def _cw_diag_record(self, *, A_post, B_post, A_pre, B_pre, dA, dB,
+                        lr, rho, sigma_A, sigma_B, sigma_WA, sigma_WB):
+        """Diagnostics for one curvature-whiten step.
+
+        Factor diagnostics are computed after applying the update, matching the
+        historical KL logging location. Product-step diagnostics use the
+        pre-step factors because they describe the actual just-applied update
+        map: B dA + dB A + dB dA.
+        """
+        rec = factor_diagnostics(A_post, B_post)
+        rec.update(_finite_step_product_diagnostics(A_pre, B_pre, dA, dB))
+        lr_f = float(lr)
+        tangent = rec.get("tangent_step_norm", float("nan"))
+        finite = rec.get("finite_step_norm", float("nan"))
+        rec.update({
+            "norm_dA": float(dA.detach().to(torch.float32).norm()),
+            "norm_dB": float(dB.detach().to(torch.float32).norm()),
+            "cw_rho": float(rho),
+            "cw_sigma_A": float(sigma_A),
+            "cw_sigma_B": float(sigma_B),
+            "cw_sigma_WA": float(sigma_WA),
+            "cw_sigma_WB": float(sigma_WB),
+            "product_tangent_over_lr": float(tangent / max(lr_f, 1e-30)),
+            "product_finite_over_lr": float(finite / max(lr_f, 1e-30)),
+        })
+        return rec
+
     @torch.no_grad()
     def step(self, closure=None):
         if closure is not None:
@@ -1165,6 +1207,7 @@ class CurvatureWhitenLoRA(Optimizer):
         # primitives (spectral.sigma_max_power_iter_batched + _newton_schulz_batched),
         # so they agree to batched-vs-looped float reduction order
         # (tests/test_curvature_whiten_batched.py); the grouped pass is the fast one.
+        self._last_cw_diag_records = []
         _timer = getattr(self, "_step_timer", None)
         if _timer: _timer.start("cw_pairstep")
         if getattr(self, "_batched_step", True):
@@ -1217,8 +1260,10 @@ class CurvatureWhitenLoRA(Optimizer):
         # was un-instrumented on exactly the optimizer that NaNs via σ_max
         # under-estimation. Pure (A, B) function — see lora_playground.optim_diagnostics.
         if self.log_basic_diagnostics and step_count % self.diagnostics_every == 0:
-            _emit_optim_diagnostics(
-                step_count, [factor_diagnostics(A, B) for (A, B) in self.pairs])
+            records = self._last_cw_diag_records
+            if not records:
+                records = [factor_diagnostics(A, B) for (A, B) in self.pairs]
+            _emit_optim_diagnostics(step_count, records)
 
     def _smax_warm(self, M, states, key, n_warm=3):
         """Warm-started batched σ_max with per-pair v_init caching.
@@ -1353,8 +1398,27 @@ class CurvatureWhitenLoRA(Optimizer):
             sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
             dA = -(rho / (sWA + self.eps)) * WA
             dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
+            emit_diag = self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0
+            if emit_diag:
+                A_pre = A.detach().float()
+                B_pre = B.detach().float()
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
+            if emit_diag:
+                self._last_cw_diag_records.append(self._cw_diag_record(
+                    A_post=A,
+                    B_post=B,
+                    A_pre=A_pre,
+                    B_pre=B_pre,
+                    dA=dA,
+                    dB=dB,
+                    lr=lr,
+                    rho=rho,
+                    sigma_A=sA,
+                    sigma_B=sB,
+                    sigma_WA=sWA,
+                    sigma_WB=sWB,
+                ))
             if self.kl_coupled:
                 # Coupled KL fixed point (Prop 4); mirror of _cw_apply_grouped.
                 r = gA.shape[0]; d_in = gA.shape[1]; d_out = gB.shape[0]
@@ -1488,6 +1552,21 @@ class CurvatureWhitenLoRA(Optimizer):
                 A_, B_ = pairs[i]
                 A_.add_(dA[j].to(dtype=A_.dtype, device=A_.device))
                 B_.add_(dB[j].to(dtype=B_.dtype, device=B_.device))
+                if self.log_basic_diagnostics and t % self.diagnostics_every == 0:
+                    self._last_cw_diag_records.append(self._cw_diag_record(
+                        A_post=A_,
+                        B_post=B_,
+                        A_pre=Aw[j],
+                        B_pre=Bw[j],
+                        dA=dA[j],
+                        dB=dB[j],
+                        lr=lr,
+                        rho=rho[j],
+                        sigma_A=sA[j],
+                        sigma_B=sB[j],
+                        sigma_WA=sWA[j],
+                        sigma_WB=sWB[j],
+                    ))
                 S[i]['m_A'].copy_(mA[j]); S[i]['m_B'].copy_(mB[j])
                 S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])
                 S[i]['L_A'].copy_(LA[j]); S[i]['R_B'].copy_(RB[j])
