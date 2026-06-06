@@ -125,48 +125,6 @@ def solve_sylvester(SB, SA, RHS):
     return QB @ X @ QA.T                              # (r, r)
 
 
-def balanced_projection(A, B, eps=1e-10):
-    """BaLoRA balanced projection (Castin et al. 2026, arXiv:2605.31484, Alg 1).
-
-    PEFT convention: A ∈ (r, d_in), B ∈ (d_out, r), adapter ΔW = B A. Returns
-    (A', B') that (i) preserve the product B'A' = BA and (ii) lie on the balanced
-    manifold A'A'ᵀ = B'ᵀB'. All heavy ops are r×r (one eigh per Gram + one r×r
-    SVD), so cost is O((d_in+d_out)·r²) — negligible at the diagnostic/step scale.
-
-    Paper convention is product = paper_A·paper_B with paper_A:(a,r), paper_B:(r,b);
-    under paper_A ↔ our B and paper_B ↔ our A this product equals BA, and the
-    paper's balanced condition paper_Aᵀpaper_A = paper_B paper_Bᵀ becomes BᵀB = AAᵀ.
-
-    Returns (A, B) unchanged if B is ~0 (PEFT zero-B init makes the projection
-    degenerate — the balanced image of a product-0 pair would zero the adapter).
-    """
-    Af = A.detach().float()
-    Bf = B.detach().float()
-    if float(Bf.abs().max()) < 1e-8:           # zero-B init: projection undefined
-        return A, B
-
-    MA = Af @ Af.transpose(-2, -1)             # A Aᵀ  = S_B²   (r, r)
-    MB = Bf.transpose(-2, -1) @ Bf             # Bᵀ B  = S_A²   (r, r)
-
-    def _sqrt_invsqrt(M):
-        w, Q = torch.linalg.eigh(0.5 * (M + M.transpose(-2, -1)))
-        w = w.clamp_min(eps)
-        s = (Q * w.sqrt().unsqueeze(-2)) @ Q.transpose(-2, -1)
-        si = (Q * w.rsqrt().unsqueeze(-2)) @ Q.transpose(-2, -1)
-        return s, si
-
-    S_B, S_B_inv = _sqrt_invsqrt(MA)           # S_B = (A Aᵀ)^{1/2}
-    S_A, S_A_inv = _sqrt_invsqrt(MB)           # S_A = (Bᵀ B)^{1/2}
-    U, sig, Vt = torch.linalg.svd(S_A @ S_B)   # S = S_A S_B = U Σ Vᵀ
-    rsig = sig.clamp_min(0.0).sqrt()
-    # A' = Σ^{1/2} Vᵀ S_B^{-1} A ;  B' = B S_A^{-1} U Σ^{1/2}
-    left = (rsig.unsqueeze(-1) * Vt) @ S_B_inv      # (r, r)
-    right = S_A_inv @ (U * rsig.unsqueeze(-2))      # (r, r)
-    A_new = left @ Af
-    B_new = Bf @ right
-    return A_new.to(dtype=A.dtype), B_new.to(dtype=B.dtype)
-
-
 def stable_rank(M):
     """‖M‖_F² / σ_max²(M), via a single SVD. Float scalar.
 

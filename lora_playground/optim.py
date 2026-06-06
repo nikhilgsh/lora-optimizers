@@ -1216,18 +1216,6 @@ class CurvatureWhitenLoRA(Optimizer):
             self._cw_apply_per_pair(lr, cb, b1, eps)
         if _timer: _timer.stop()
 
-        # BaLoRA balanced projection (causal intervention, env-gated). Projects
-        # each (A, B) onto the balanced manifold AAᵀ=BᵀB after the step while
-        # preserving the product BA (Castin et al. 2026; utils.balanced_projection).
-        # Tests whether forcing balance flattens kl's lr-sensitivity vs leaving
-        # the gauge to drift. Off by default; set LORA_BALANCE_PROJECT=1.
-        if os.environ.get("LORA_BALANCE_PROJECT") == "1":
-            from .utils import balanced_projection
-            for A, B in pairs:
-                A_new, B_new = balanced_projection(A, B)
-                A.data.copy_(A_new.to(dtype=A.dtype, device=A.device))
-                B.data.copy_(B_new.to(dtype=B.dtype, device=B.device))
-
         # ── Refresh the eigenbasis for the NEXT step. First refresh = ONE eigh
         # to seed Q (Alg 4 init); thereafter ONE warm-started power-iteration +
         # QR step (Alg 4: Q ← QR(L@Q)), every `precond_refresh_every`, batched
