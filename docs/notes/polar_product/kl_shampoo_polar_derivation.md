@@ -61,7 +61,8 @@ cross-coupling inner loop).
 
 1. **Momentum.**
 $$
-\hat m_A=\frac{m_A}{1-\beta_1^{\,t}},\qquad m_A\leftarrow\beta_1 m_A+(1-\beta_1)g_A.
+m_A\leftarrow\beta_1 m_A+(1-\beta_1)g_A,\qquad
+\hat m_A=\frac{m_A}{1-\beta_1^{\,t}}.
 $$
 
 2. **Two-sided curvature whiten** (the inner Shampoo core):
@@ -109,7 +110,7 @@ large ($d_{\mathrm{out}}$) axis is the *rows*. The dense $r\times r$ curvature
 $S_{\mathrm{curv},B}$ therefore multiplies on the **right** and the diagonal
 $D_{\mathrm{out}}^{-1/2}$ on the **left** — the transpose of the A-side placement.
 
-1. **Momentum.** $\hat m_B=m_B/(1-\beta_1^{\,t})$, with $m_B\leftarrow\beta_1 m_B+(1-\beta_1)g_B$ and $g_B=GA^\top\in\mathbb R^{d_{\mathrm{out}}\times r}$.
+1. **Momentum.** $m_B\leftarrow\beta_1 m_B+(1-\beta_1)g_B$, then $\hat m_B=m_B/(1-\beta_1^{\,t})$, with $g_B=GA^\top\in\mathbb R^{d_{\mathrm{out}}\times r}$.
 2. **Whiten.**
 $$
 z_B=D_{\mathrm{out}}^{-1/2}\,\hat m_B\,S_{\mathrm{curv},B}^{-1/2}\in\mathbb{R}^{d_{\mathrm{out}}\times r}.
@@ -118,7 +119,7 @@ $$
 4. **Unwhiten.** $W_B=D_{\mathrm{out}}^{-1/2}\,\varphi(z_B)\,S_{\mathrm{curv},B}^{-1/2}$.
 5. **Rescale,** sharing the *same* $\rho$ as the A-side (it is computed once from $\sigma_{\max}(A)+\sigma_{\max}(B)$):
 $$
-\mathrm dB=-\rho\,\frac{W_B}{\sigma_{\max}(W_B)}.
+\mathrm dB=-c\,\rho\,\frac{W_B}{\sigma_{\max}(W_B)}.
 $$
 
 Composing 2–4, the boxed B-direction is the mirror of the A-side:
@@ -360,12 +361,12 @@ $\tfrac1{2\eta}$ weight is what produces the $\tfrac1\eta$ prefactor in Proposit
 Its block-coordinate solver (Algorithm 10.1) fixes the off-block and solves the
 on-block LMO against a target reduced by the off-block's contribution.
 
-**Proposition 3 (cross-coupling correction).** *In factor coordinates, the on-block
-input of Algorithm 10.1 gains the correction (B-side symmetric):*
+**Proposition 3 (cross-coupling correction).** *In factor coordinates, fixing the
+off-block update gives the on-block input correction (B-side symmetric):*
 $$
-\tilde g_A^{(n)} = g_A + \tfrac1\eta\,B^\top P\,\mathrm dB^{(n)}\,A\,Q,
+\tilde g_A(\mathrm dB_{\mathrm{off}}) = g_A + \tfrac1\eta\,B^\top P\,\mathrm dB_{\mathrm{off}}\,A\,Q,
 \qquad
-\tilde g_B^{(n)} = g_B + \tfrac1\eta\,P\,B\,\mathrm dA^{(n)}\,Q\,A^\top .
+\tilde g_B(\mathrm dA_{\mathrm{off}}) = g_B + \tfrac1\eta\,P\,B\,\mathrm dA_{\mathrm{off}}\,Q\,A^\top .
 $$
 
 *Proof.* The only $\mathrm dA$–$\mathrm dB$ coupling in the quadratic is the cross
@@ -378,48 +379,32 @@ proximal weight. $\blacksquare$
 Chord is the $(P,Q)=(I,I)$ instance, $\tilde g_A=g_A+\tfrac1\eta B^\top \mathrm dB\,A$;
 AdaPreLoRA is the cap-off curvature instance $(P,Q)=(L^{1/2},R^{1/2})$.
 
-**kl's instantiation is mixed-metric, by necessity.** kl is *not* a single-$(P,Q)$
-instance of Proposition 3, for two compounding reasons:
+**Picard's clean instantiation: commit to one diagonal metric.** The cross term is
+a full merged-weight object: $\mathrm dB\,A$ spans $d_{\mathrm{out}}$ and
+$B\,\mathrm dA$ spans $d_{\mathrm{in}}$. Therefore a coherent Picard correction needs
+full-space metrics $P\in\mathbb R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ and
+$Q\in\mathbb R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$.
 
-- **Self $\ne$ cross metric.** A true instance uses one $(P,Q)$ for both the on-block
-  self-whitening $(B^\top P B,\,Q)$ *and* the cross term. kl's self-whitening is the
-  independent KL fit $(S_{\mathrm{curv},A},D_{\mathrm{in}})$, and
-  $S_{\mathrm{curv},A}\ne B^\top D_{\mathrm{out}}B$ (§"The whitened-polar step"). No
-  single $(P,Q)$ gives both.
-- **Only the diagonals reach the cross.** The cross term acts on $\mathrm dB\,A$,
-  which spans all of $d_{\mathrm{out}}$; the dense $S_{\mathrm{curv}}$ are latent
-  ($r\times r$, on $\operatorname{range}B/\operatorname{range}A$) and cannot weight
-  it. kl's only full-space curvatures are $D_{\mathrm{out}},D_{\mathrm{in}}$.
-
-So kl keeps its $k{=}1$ self-solve and fills the cross term's unavailable full-space
-metric with the diagonals, $P\rightsquigarrow D_{\mathrm{out}}$, $Q\rightsquigarrow D_{\mathrm{in}}$:
+The only full-space curvature estimates available in the KL-LoRA state are the
+large-side diagonals. For the Picard refinement we therefore use the single metric
 $$
-\boxed{\;\tilde g_A^{(n)} = \hat m_A + \tfrac1\eta\,B^\top D_{\mathrm{out}}\,\mathrm dB^{(n)}\,A\,D_{\mathrm{in}},
-\qquad
-\tilde g_B^{(n)} = \hat m_B + \tfrac1\eta\,D_{\mathrm{out}}\,B\,\mathrm dA^{(n)}\,D_{\mathrm{in}}\,A^\top\;}
+P=\bar D_{\mathrm{out}},\qquad Q=\bar D_{\mathrm{in}},
 $$
-(momentum $\hat m$ for the raw $g$, as in the $k{=}1$ step). This is a **mixed-metric**
-step — the self-solve uses $S_{\mathrm{curv}}$, the cross uses the diagonals — not a
-coherent single-program BCD. It is the Algorithm 10.1 cross term with the only
-full-space metric kl has, and reduces to chord at $D_{\mathrm{out}}=D_{\mathrm{in}}=I$.
-
-**Remark (option (b): commit to one diagonal metric).** The cross term needs a
-*full-space* output metric, but kl's dense $S_{\mathrm{curv}}$ lives only on
-$\operatorname{range}B$ and cannot weight it; kl's only full-space curvature is the
-diagonal $D_{\mathrm{out}}$. Two resolutions:
-
-- **Option (a)** (the mixed metric above) — keep the dense $S_{\mathrm{curv}}$ small
-  side; the cross uses the diagonals instead, a *different* metric, so it is approximate.
-- **Option (b)** — use one metric $(P,Q)$ in *every* block, making the program a single
-  consistent Algorithm 10.1 instance with an **exact** cross:
-  $$
-  M_A=B^\top P\,B,\qquad M_B=A\,Q\,A^\top,\qquad C=B^\top P\,\mathrm dB\,A\,Q .
-  $$
-  The dense small side $S_{\mathrm{curv},A}$ is replaced by $M_A=B^\top P B$. This is
-  legitimate because, at the KL fixed point, $S_{\mathrm{curv},A}=B^\top M_{\mathrm{out}}B$
-  with $M_{\mathrm{out}}=\tfrac1{d_{\mathrm{in}}}\mathbb E[G\,D_{\mathrm{in}}^{-1}G^\top]$
-  — so $S_{\mathrm{curv}}$ is just the dense output curvature seen on
-  $\operatorname{range}B$, and (b) uses its diagonal proxy everywhere.
+and use it everywhere: in the self metrics, in the cross term, and in the large-side
+whitening. The small-side metrics become the geometric contractions
+$$
+M_A=B^\top P\,B,\qquad
+M_B=A\,Q\,A^\top,
+$$
+and the A-side cross term is
+$$
+C_A=B^\top P\,\mathrm dB\,A\,Q
+$$
+with the B-side symmetric. This is the `kl-diag` variant: it replaces the independent
+dense KL small-side factors with the conjugate-diagonal contractions so the Picard
+loop is a single Algorithm 10.1 instance. Dense `kl-shampoo-polar` remains the $k=1$
+base method; pairing its independent $S_{\mathrm{curv}}$ self-solve with a diagonal
+cross would be a mixed-metric approximation, not the clean derivation here.
 
 The metric $(P,Q)$ is the pair of **relative-damped diagonals**
 $(\bar D_{\mathrm{out}},\bar D_{\mathrm{in}})$,
@@ -429,63 +414,94 @@ $$
 \bar D_{\mathrm{in}}=\operatorname{diag}\!\bigl(D_{\mathrm{in}}/D_{\mathrm{in},\max}+\delta\bigr),
 $$
 where $D_{\mathrm{out},\max}=\max_i (D_{\mathrm{out}})_i$ is the largest diagonal entry
-and $\delta>0$ floors the inverse root. The single-metric property is what makes (b)
-exact, so the *same* $\bar D$ must appear in $M_A$, $M_B$, and $C$ — using raw $D$ in one
-block and $\bar D$ in another breaks it. And $\bar D$ vs $D$ is not a global scalar: the
-$\delta\,B^\top B$ floor tilts $M_A$ and shifts even the $k{=}1$ step.
+and $\delta>0$ floors the inverse root. The single-metric property is what makes the
+Picard loop exact, so the *same* $\bar D$ must appear in $M_A$, $M_B$, and $C$ — using
+raw $D$ in one block and $\bar D$ in another breaks it. And $\bar D$ vs $D$ is not a
+global scalar: the $\delta\,B^\top B$ floor tilts $M_A$ and shifts even the $k{=}1$ step.
 
 **Corollary (the diagonal power is pinned at 1).** *The cross carries each metric
 diagonal to the power 1: $C=B^\top \bar D_{\mathrm{out}}\,\mathrm dB\,A\,\bar D_{\mathrm{in}}$,
 linear in $\bar D$.*
 
-*Proof.* The on-block large-side whitening is $Q^{-1/2}$, and kl whitens by $D^{-1/2}$,
+*Proof.* The on-block large-side whitening is $Q^{-1/2}$, and this variant whitens by $D^{-1/2}$,
 so $Q=D$ — power 1. $\blacksquare$
 
-The power is therefore fixed by the whitening convention, not free; only the *metric
-choice* $P\rightsquigarrow\bar D_{\mathrm{out}}$ is an approximation. AdaPreLoRA whitens
+The power is therefore fixed by the whitening convention, not free. AdaPreLoRA whitens
 instead by $R^{-1/4}$, so its $Q=R^{1/2}$ and its cross carries the diagonal at power
-$1/2$ — the exponents differ because the conventions differ, not because kl's is
-ambiguous. (So the cap-off check against AdaPreLoRA's closed form, `adaprelora` Thm 3.2
-with $L\to D_{\mathrm{out}},R\to D_{\mathrm{in}}$, validates a power-$1/2$ variant, not
-kl's power-1 step.)
+$1/2$ — the exponents differ because the conventions differ.
 
-**The loop.** Initialize $\mathrm dA^{(0)}=\mathrm dB^{(0)}=0$, so iter 0 is the
-$k{=}1$ step. For $n=0,\dots,k-1$: recompute $\tilde g_A^{(n)},\tilde g_B^{(n)}$ from
-the current $\mathrm dB^{(n)},\mathrm dA^{(n)}$ (at physical scale $\sigma_{\max}=\rho$),
-run each through the $k{=}1$ pipeline (whiten → polar → unwhiten → $\rho$-rescale), and
-update. The cross term is added to the momentum at solve time, not folded into the EMA.
-Every product stays in the skinny $r\times d$ factors — the dense
-$d_{\mathrm{out}}\times d_{\mathrm{in}}$ weight is never formed.
+**The loop, with fixed base normalization.** The polar map consumes whitened inputs, so
+normalize the raw base covectors once in that same space before the Picard loop:
+$$
+z_{A,0}=M_A^{-1/2}\,\hat m_A\,Q^{-1/2},\qquad
+s_{A,0}=\sigma_{\max}(z_{A,0}),\qquad
+\bar m_A=\frac{\hat m_A}{\max(s_{A,0},\varepsilon_s)}
+$$
+and symmetrically
+$$
+z_{B,0}=P^{-1/2}\,\hat m_B\,M_B^{-1/2},\qquad
+s_{B,0}=\sigma_{\max}(z_{B,0}),\qquad
+\bar m_B=\frac{\hat m_B}{\max(s_{B,0},\varepsilon_s)}.
+$$
+The guard $\varepsilon_s$ is numerical only; it is not a swept hyperparameter. The
+divisors $s_{A,0},s_{B,0}$ are computed from the raw base inputs and then held fixed
+inside the loop. Recomputing them after adding the cross would renormalize the residual
+being solved and change the Picard fixed point.
+
+Initialize $\mathrm dA^{(-1)}=\mathrm dB^{(-1)}=0$. For $n=0,\dots,k-1$:
+$$
+\begin{aligned}
+\tilde g_A^{(n)}
+&=\bar m_A+\tfrac1\eta\,B^\top P\,\mathrm dB^{(n-1)}\,A\,Q,\\
+\tilde g_B^{(n)}
+&=\bar m_B+\tfrac1\eta\,P\,B\,\mathrm dA^{(n-1)}\,Q\,A^\top,\\
+z_A^{(n)}
+&=M_A^{-1/2}\,\tilde g_A^{(n)}\,Q^{-1/2},\qquad
+z_B^{(n)}=P^{-1/2}\,\tilde g_B^{(n)}\,M_B^{-1/2},\\
+W_A^{(n)}
+&=M_A^{-1/2}\,\varphi(z_A^{(n)})\,Q^{-1/2},\qquad
+W_B^{(n)}=P^{-1/2}\,\varphi(z_B^{(n)})\,M_B^{-1/2},\\
+\mathrm dA^{(n)}
+&=-\rho\,\frac{W_A^{(n)}}{\sigma_{\max}(W_A^{(n)})},\qquad
+\mathrm dB^{(n)}
+=-c\,\rho\,\frac{W_B^{(n)}}{\sigma_{\max}(W_B^{(n)})}.
+\end{aligned}
+$$
+Return $\mathrm dA^{(k-1)},\mathrm dB^{(k-1)}$. The $n=0$ iterate has no cross term,
+so $k=1$ is the Part I update; the scalar base normalization is a no-op at $k=1$
+because $\varphi(cz)=\varphi(z)$ and the final $\rho$-rescale fixes the update size.
+The cross term is added to the solve input only, not folded into the EMA. Every product
+stays in the skinny $r\times d$ factors — the dense $d_{\mathrm{out}}\times d_{\mathrm{in}}$
+weight is never formed.
 
 ### Normalization: how large is the cross-correction?
 
-This section answers one question: how large is the cross term relative to the momentum
-it corrects? The metric in it is option (b)'s single $(\bar D_{\mathrm{out}},\bar D_{\mathrm{in}})$
-(Remark above). Name the objects:
+This section answers one question: how should the base covector be scaled relative to
+the Picard cross term? The metric is the single
+$(\bar D_{\mathrm{out}},\bar D_{\mathrm{in}})$ metric above. Name the objects:
 
 - $\hat m_A$ — kl's input to the polar step: the raw momentum (running average of the
   A-gradient $g_A=B^\top G$, with $G=\nabla_{\Delta W}\mathcal L$ the merged-weight
   gradient, §Notation).
-- $u_A=\hat m_A/(\sqrt{\hat v_A}+\varepsilon)$ — chord's input instead: the Adam
-  (RMS-normalized) direction.
+- $u_A=\hat m_A/(\sqrt{\hat v_A}+\varepsilon)$ — an Adam-normalized alternative input.
 - $C=B^\top\bar D_{\mathrm{out}}\,\mathrm dB\,A\,\bar D_{\mathrm{in}}$ — the cross term
   (Proposition 3), added to the input with coefficient $\tfrac1\eta$.
-- $z_A=M_A^{-1/2}\,(\text{input})\,\bar D_{\mathrm{in}}^{-1/2}$ — the whitened input the
+- $z_A=M_A^{-1/2}\,(\text{input})\,Q^{-1/2}$ — the whitened input the
   polar step $\varphi$ consumes; $s_A:=\sigma_{\max}(z_A)$ its largest singular value.
 - $r$ — the **correction-to-input ratio**, the size of the whitened cross over the size
   of the whitened input:
   $$
-  r:=\frac{\bigl\lVert M_A^{-1/2}\,(\tfrac1\eta C)\,\bar D_{\mathrm{in}}^{-1/2}\bigr\rVert}
-          {\bigl\lVert M_A^{-1/2}\,(\text{input})\,\bar D_{\mathrm{in}}^{-1/2}\bigr\rVert}.
+  r:=\frac{\bigl\lVert M_A^{-1/2}\,(\tfrac1\eta C)\,Q^{-1/2}\bigr\rVert}
+          {\bigl\lVert M_A^{-1/2}\,(\text{input})\,Q^{-1/2}\bigr\rVert}.
   $$
 
 **Only $r$ matters.** $\varphi$ normalizes — it keeps the direction of $z_A$ and discards
 its magnitude ($\varphi(c\,z_A)=\varphi(z_A)$); the update size is restored afterward by
 $\rho=\eta/(\sigma_{\max}(A)+\sigma_{\max}(B))$. So at $k{=}1$ the input's scale is
 irrelevant. At $k\ge2$ the input is $\hat m_A+\tfrac1\eta C$ and $\varphi$'s output
-depends only on $r$. What remains is to ask which input scaling sets $r$.
+depends only on the cross-to-base ratio in the whitened polar-input space.
 
-**Proposition 4 (the raw momentum self-sizes $r$).** *With input $\hat m_A$,*
+**Proposition 4 (the raw-momentum cross is suppressed by $1/\lVert G\rVert$).** *With input $\hat m_A$,*
 $$
 r \sim \frac{\sigma_{\max}(A)}{(\sigma_{\max}(A)+\sigma_{\max}(B))\,\lVert G\rVert},
 $$
@@ -501,38 +517,43 @@ r\sim\frac{\tfrac1\eta\,\sigma_{\max}(A)\sigma_{\max}(B)\rho}{\sigma_{\max}(B)\l
 $$
 the two $\eta$'s cancel. $\blacksquare$
 
-So with $\hat m_A$ the ratio neither grows with the learning rate nor needs tuning, and
-the $1/\lVert G\rVert$ makes the correction small early (large gradients) and larger
-toward convergence — a modest, self-sizing correction. (Read this as a leading-order
-operator-norm *scaling*, not an identity: it tracks the $\sigma_{\max}$ factors, measures
-the ratio in the whitened norm, and ignores metric-conditioning effects.)
+With $\hat m_A$ the ratio is $\eta$-independent, but it **decays as $1/\lVert G\rVert$**.
+That is the wrong invariance: multiplying the loss by a scalar does not change the
+$k=1$ polar direction, but it would change how much Picard correction survives at
+$k\ge2$. The cross $C$ is built from $\mathrm dB$, already normalized to the physical
+trust-region scale $\rho$, while the raw base $\hat m_A$ still carries the arbitrary
+gradient magnitude.
 
-**kl vs chord, through $s_A$.** Chord's input is $u_A$, not $\hat m_A$, and chord
-rescales its whitened input to unit singular value — which multiplies the ratio by
-$s_A$, i.e. $r\mapsto s_A\,r$. The two inputs sit on opposite sides of $s_A=1$:
+**The scalar spectral normalization is the correct base normalization for this
+derivation.** Compute $s_{A,0}$ from the raw base input before the loop and feed the
+polar
+$$
+\tfrac{1}{s_{A,0}}\,\hat m_A+\tfrac1\eta C
+$$
+(and symmetrically for $B$). This is the scalar gauge choice for a covector whose
+absolute magnitude the spectral LMO discards. It preserves the base direction, uses the
+same norm the polar map sees, and makes the Picard correction invariant to loss-scale
+changes.
 
-- with the Adam direction $u_A$, the whitened input is far from orthogonal and
-  $s_A\gg1$ — the rescale *lifts* $r$;
-- with the raw momentum $\hat m_A$, the whitened input is already nearly flat and
-  $s_A\ll1$ — the same rescale *shrinks* $r$.
+**Why not feed Adam as the base input?** Adam normalization also removes much of the
+gradient scale, but it is not a scalar gauge choice. It replaces $\hat m_A$ by
+$u_A=\hat m_A/(\sqrt{\hat v_A}+\varepsilon)$ coordinatewise before the KL metric and
+polar map see the covector. That changes the $k=1$ direction, adds an elementwise
+second-moment state on top of the KL curvature, and turns the method into an
+Adamized/SOAP-style variant rather than Picard-corrected KL-Shampoo. That variant is a
+reasonable ablation if the scalar-normalized Picard correction is still too weak, but it
+is not the proper normalization for this derivation.
 
-So chord's rescale does not transfer to kl. And chord's correction is large not because
-of that rescale but because $u_A$ has $\lVert G\rVert$ divided out (the $\sqrt{\hat v_A}$),
-removing the $1/\lVert G\rVert$ that damps $r$ for $\hat m_A$.
-
-**Which input to use.** The two choices optimize different objects:
-
-- $\hat m_A$ — the raw-gradient direction; its $1/\lVert G\rVert$ factor gives a
-  modest, self-sizing $r$ (Proposition 4, to leading order) that needs no tuning. It
-  is the natural input for kl, whose whole construction is built on the gradient
-  covector $g_A=B^\top G$.
-- $u_A$ — the Adam direction; removing the $1/\lVert G\rVert$ damping gives a larger,
-  $\lVert G\rVert$-independent $r$ and flatter behavior across learning rates, at the
-  cost of changing what kl optimizes ($u_A$ in place of $B^\top G$).
-
-kl uses $\hat m_A$, keeping the correction consistent with the gradient it is derived
-from; the $u_A$ version is a deliberate change of objective, not a refinement of the
-same one.
+If that Adamized variant is tested, the scalar normalization rule stays the same; only
+the base covector changes. Define
+$$
+z_{A,0}^{\mathrm{Adam}}=M_A^{-1/2}\,u_A\,Q^{-1/2},\qquad
+s_{A,0}^{\mathrm{Adam}}=\sigma_{\max}(z_{A,0}^{\mathrm{Adam}}),\qquad
+\bar u_A=\frac{u_A}{\max(s_{A,0}^{\mathrm{Adam}},\varepsilon_s)}
+$$
+and use $\bar u_A+\tfrac1\eta C_A$ in the Picard loop. The cross term is not divided
+coordinatewise by $\sqrt{\hat v_A}$ in this minimal ablation; doing that would be a
+third method that changes the cross metric itself, not just the base input.
 
 ## Regularization
 
@@ -540,6 +561,9 @@ The $(P,Q)$ program above is undamped — the ideal method. Two quantities are s
 initialization, so the running algorithm regularizes them. This is a numerical layer, not
 part of the derivation: the literature's variational derivations are likewise undamped
 ($\mathbb E[GG^\top]^{-1/2}G$, $S^*=\mathbb E[GG^\top]$), with damping added afterward.
+This section covers only the metric regularization. The scalar base normalization from
+§"Normalization" is a covector gauge applied before the LMO; it does not change which
+curvature matrices are floored.
 
 **The two singularities.** The A-update applies $M_A^{-1/2}(\cdot)\,Q^{-1/2}$, the B-update
 $P^{-1/2}(\cdot)\,M_B^{-1/2}$. Two distinct things vanish at init:
@@ -548,19 +572,31 @@ $P^{-1/2}(\cdot)\,M_B^{-1/2}$. Two distinct things vanish at init:
   $D^{-1/2}$ is undefined at step 0.
 - *The factor* — LoRA sets $B=0$, so $M_A=B^\top P B=0$ exactly ($M_B=A Q A^\top$ is milder).
 
-**The floor — additive form.** Keep each curvature away from zero by **adding a multiple of
-the identity** before inverting:
+**The floor — additive form.** For a nonzero curvature, keep it away from small
+eigenvalues by **adding a multiple of the identity** before inverting:
 $$
 X^{-1/2}\ \longrightarrow\ \bigl(X+\delta\,\lambda_{\max}(X)\,I\bigr)^{-1/2}
 $$
 — add $\delta$ times the top eigenvalue $\lambda_{\max}(X)$ (for the diagonal $P,Q$, the largest
 entry), the same $\delta$ at all four sites ($P$, $Q$, $M_A$, $M_B$). The floor on $P,Q$ handles
-$D=0$; the floor on $M_A,M_B$ handles $B=0$. This is distributed Shampoo's *scaled damping*
-(Anil et al. 2020, App. D).
+weak diagonal entries; the floor on $M_A,M_B$ handles weak factor directions. This is
+distributed Shampoo's *scaled damping* (Anil et al. 2020, App. D).
+
+Scaled damping by itself does not define an inverse root when $\lambda_{\max}(X)=0$.
+At the exactly uninitialized state, use the explicit zero-state convention
+$$
+\mathcal R_\delta(X)=
+\begin{cases}
+I, & \lambda_{\max}(X)=0,\\
+\bigl(X/\lambda_{\max}(X)+\delta I\bigr)^{-1/2}, & \lambda_{\max}(X)>0,
+\end{cases}
+$$
+so an all-zero curvature initially applies no whitening. Equivalently, this is an
+isotropic warm-start until the EMA or factor has moved enough to define its own scale.
 
 **Relative form.** Equivalently, divide inside the root by the top eigenvalue:
 $$
-\bigl(X/\lambda_{\max}(X)+\delta\bigr)^{-1/2}=\lambda_{\max}(X)^{1/2}\,\bigl(X+\delta\,\lambda_{\max}(X)\,I\bigr)^{-1/2}
+\bigl(X/\lambda_{\max}(X)+\delta I\bigr)^{-1/2}=\lambda_{\max}(X)^{1/2}\,\bigl(X+\delta\,\lambda_{\max}(X)\,I\bigr)^{-1/2}
 $$
 — the additive form times the scalar $\lambda_{\max}(X)^{1/2}$.
 
@@ -581,9 +617,10 @@ so the cross-to-momentum balance moves by $st$ — the cross rides the curvature
 Since the rest of the optimizer is curvature-scale-invariant (the polar discards magnitude),
 the relative form extends that invariance to the cross — so we use it.
 
-**Proposition 5 (the floored update is a coherent program).** *Floor every curvature by adding
-a multiple of $I$ — $X\mapsto X+c_X I$ at the four sites $P,Q,M_A,M_B$. The floored update
-(any Picard depth) is the exact block-coordinate LMO of*
+**Proposition 5 (the floored metric is a coherent program).** *For nonzero curvatures,
+floor every curvature by adding a multiple of $I$ — $X\mapsto X+c_X I$ at the four
+sites $P,Q,M_A,M_B$. Before the scalar base gauge, the floored update (any Picard
+depth) is the exact block-coordinate LMO of*
 $$
 \min_{\mathrm dA,\mathrm dB}\ \langle G,\,B\,\mathrm dA+\mathrm dB\,A\rangle
 +\tfrac1{2\eta}\Bigl[\lVert B\,\mathrm dA+\mathrm dB\,A\rVert^2_{(P+c_P I,\,Q+c_Q I)}
@@ -592,7 +629,8 @@ $$
 $$
 *Here $c_X=\delta\,\lambda_{\max}(X)$ is the floor of the previous subsection (its additive and
 relative forms are the same program — identical at $k=1$, the relative one scale-invariant at
-$k\ge2$).*
+$k\ge2$). If $\lambda_{\max}(X)=0$, the algorithm uses the zero-state identity convention
+above until the corresponding curvature becomes nonzero.*
 
 Write $\tilde P=P+c_P I$, $\tilde Q=Q+c_Q I$ for the floored metrics and
 $\tilde M_A=B^\top\tilde P B+c_{M_A}I$ for the floored A small-side. The proposition gives this
@@ -629,16 +667,20 @@ $$
 So the on-block linear cost is $\tilde g_A$ (momentum $\hat m_A$ in place of $B^\top G$, as
 elsewhere) and the self-metric is $(\tilde M_A,\tilde Q)$. The spectral-cap LMO of a linear
 cost under a Kronecker metric is the whitened polar (§"The whitened-polar step"), which is the
-A-block update above. The floors keep it well-posed: $\tilde M_A\!\to\!c_{M_A}I$ at $B{=}0$,
-and $\tilde P,\tilde Q$ stay positive-definite at $D{=}0$. The B-block is symmetric.
+A-block update above. The floors keep nonzero curvatures well-posed; the zero-state identity
+convention handles the exact $D=0$ and $B=0$ cases. The B-block is symmetric.
 $\blacksquare$
 
+In the normalized Picard loop, replace $\hat m_A,\hat m_B$ in this displayed block
+update by $\bar m_A,\bar m_B$ (or by $\bar u_A,\bar u_B$ in the Adamized ablation).
+The metric, cross term, floors, and zero-state convention are unchanged.
+
 **Recompute vs seed.** $M_A=B^\top\tilde P B$ is recomputed from the current $B$ every step, so
-it equals the curvature of the current factor — but is zero at $B=0$ and needs the floor. The
-alternative is to *seed* it: hold $M_A$ as its own running average over steps, initialized to
-a small nonzero constant so it is never zero. Seeding removes the floor but (i) makes that
-constant a knob and (ii) replaces the current-step curvature with an average of past
-steps' curvatures.
+it equals the curvature of the current factor — but is zero at $B=0$ and needs the
+zero-state convention until $B$ moves. The alternative is to *seed* it: hold $M_A$ as its
+own running average over steps, initialized to a small nonzero constant so it is never
+zero. Seeding removes the zero-state case but (i) makes that constant a knob and
+(ii) replaces the current-step curvature with an average of past steps' curvatures.
 
 **Knobs.** One tuning knob: $\delta$ (relative, so one fixed value, not swept). Everything
 else is universal ($\eta$, momentum $\beta_1$, the curvature-EMA rate) or a fixed
