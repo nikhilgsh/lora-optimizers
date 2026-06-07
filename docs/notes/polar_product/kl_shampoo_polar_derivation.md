@@ -509,23 +509,30 @@ the ratio in the whitened norm, and ignores metric-conditioning effects.)
 
 **kl vs chord, through $s_A$.** Chord's input is $u_A$, not $\hat m_A$, and chord
 rescales its whitened input to unit singular value — which multiplies the ratio by
-$s_A$, i.e. $r\mapsto s_A\,r$. The effect flips on $s_A\gtrless 1$:
+$s_A$, i.e. $r\mapsto s_A\,r$. The two inputs sit on opposite sides of $s_A=1$:
 
-- chord ($u_A$): $s_A$ is large (e.g. ${\approx}70$) — the rescale *lifts* $r$.
-- kl ($\hat m_A$): $s_A$ is small (e.g. ${\approx}0.05$) — the same rescale *shrinks* $r$ (${\sim}20\times$).
+- with the Adam direction $u_A$, the whitened input is far from orthogonal and
+  $s_A\gg1$ — the rescale *lifts* $r$;
+- with the raw momentum $\hat m_A$, the whitened input is already nearly flat and
+  $s_A\ll1$ — the same rescale *shrinks* $r$.
 
 So chord's rescale does not transfer to kl. And chord's correction is large not because
 of that rescale but because $u_A$ has $\lVert G\rVert$ divided out (the $\sqrt{\hat v_A}$),
 removing the $1/\lVert G\rVert$ that damps $r$ for $\hat m_A$.
 
-**The open choice.**
+**Which input to use.** The two choices optimize different objects:
 
-- Keep $\hat m_A$ — the exact-gradient covector; modest self-sizing $r$ (Proposition 4,
-  to leading order). This is what `CurvatureWhitenLoRA` does now.
-- Switch to $u_A$ — removes the $1/\lVert G\rVert$ damping, giving a larger,
-  $\lVert G\rVert$-independent $r$ and flatter behavior across learning rates. A
-  deliberate change of what kl optimizes ($u_A$ in place of the gradient $B^\top G$),
-  not a bug fix.
+- $\hat m_A$ — the raw-gradient direction; its $1/\lVert G\rVert$ factor gives a
+  modest, self-sizing $r$ (Proposition 4, to leading order) that needs no tuning. It
+  is the natural input for kl, whose whole construction is built on the gradient
+  covector $g_A=B^\top G$.
+- $u_A$ — the Adam direction; removing the $1/\lVert G\rVert$ damping gives a larger,
+  $\lVert G\rVert$-independent $r$ and flatter behavior across learning rates, at the
+  cost of changing what kl optimizes ($u_A$ in place of $B^\top G$).
+
+kl uses $\hat m_A$, keeping the correction consistent with the gradient it is derived
+from; the $u_A$ version is a deliberate change of objective, not a refinement of the
+same one.
 
 ## Regularization
 
@@ -555,7 +562,7 @@ $D=0$; the floor on $M_A,M_B$ handles $B=0$. This is distributed Shampoo's *scal
 $$
 \bigl(X/\lambda_{\max}(X)+\delta\bigr)^{-1/2}=\lambda_{\max}(X)^{1/2}\,\bigl(X+\delta\,\lambda_{\max}(X)\,I\bigr)^{-1/2}
 $$
-— the additive form times the scalar $\lambda_{\max}(X)^{1/2}$. This is what the code computes.
+— the additive form times the scalar $\lambda_{\max}(X)^{1/2}$.
 
 **Identical at $k=1$.** That scalar washes out: each inverse-root multiplies the whitened
 direction $z$ by an overall constant, and both the polar map ($\varphi(c\,z)=\varphi(z)$) and
@@ -629,9 +636,9 @@ $\blacksquare$
 **Recompute vs seed.** $M_A=B^\top\tilde P B$ is recomputed from the current $B$ every step, so
 it equals the curvature of the current factor — but is zero at $B=0$ and needs the floor. The
 alternative is to *seed* it: hold $M_A$ as its own running average over steps, initialized to
-a nonzero constant so it is never zero (dense kl; the `KL-Methods` code starts it at $0.1$).
-Seeding removes the floor but (i) makes that constant a knob and (ii) replaces the
-current-step curvature with an average of past steps' curvatures.
+a small nonzero constant so it is never zero. Seeding removes the floor but (i) makes that
+constant a knob and (ii) replaces the current-step curvature with an average of past
+steps' curvatures.
 
 **Knobs.** One tuning knob: $\delta$ (relative, so one fixed value, not swept). Everything
 else is universal ($\eta$, momentum $\beta_1$, the curvature-EMA rate) or a fixed
@@ -649,10 +656,15 @@ Picard depth defaults to $k=1$.
 
 ## Sources
 
-- Implementation: `CurvatureWhitenLoRA` in `lora_playground/optim.py` — KL curvature update at the `kl_coupled` branch of `_cw_apply_grouped` / `_cw_apply_per_pair`; the inner core, polar, and unwhiten sandwich in the same methods; guarded polar in `_polar_ns_guarded`; relative damping in `_rdinv`. Tests: `tests/test_kl_shampoo_lora.py`, `tests/test_curvature_whiten_lora.py`.
-- KL covariance fit and the two-sided stationarity coupling (Proposition 1): `docs/papers/kl_shampoo_2509.03378.pdf`; matrix-normal MLE reading (Dutilleul, 1999).
-- The two-sided spectral-cap program (the $(B^\top P B)^{-1/2}\varphi(\cdots)Q^{-1/2}$ sandwich, metric factors $(P,Q)$): `related_work_2026_05.md` §10.1–10.2 (Thm 10.1). AdaPreLoRA is the curvature instance $(P,Q)=(L^{1/2},R^{1/2})$ with the Frobenius cap (Cor 10.1; `adaprelora_2605.08734.pdf` Thm 3.2); chord-tight is the Frobenius instance $(P,Q)=(I,I)$ with the spectral cap (`algorithm_tight_chord.md`).
-- The generalized Picard block-coordinate solver and its cross-coupling term (Proposition 3): `related_work_2026_05.md` §10 (Algorithm 10.1); chord's factor-coordinate form (Lemma 1): `algorithm_tight_chord.md` §5.
-- Relative ("scaled") damping — $G+\varepsilon\,\lambda_{\max}(G)\,I$, scaled to the matrix's spectral norm to match the curvature scale and address rank-deficiency: Anil, Gupta, Koren, Regan, Singer, *Scalable Second Order Optimization for Deep Learning* (arXiv 2002.09018), App. D ("Scaled damping") and Alg. I.
-- The polar-on/off open question and the SOAP / non-separable-residual variants of the same class: `soap_curvature_whitening.md`.
-- Empirical lr-sensitivity motivation, the lr-band measurements, and the implementation plan for the Picard extension: `lr_robustness.md` (the derivation itself is §"Cross-coupling" above).
+- KL covariance fit and the two-sided stationarity coupling (Proposition 1):
+  KL-Shampoo (arXiv:2509.03378); the matrix-normal MLE reading (Dutilleul, 1999).
+- The two-sided spectral-cap program — the $(B^\top P B)^{-1/2}\varphi(\cdots)Q^{-1/2}$
+  sandwich with metric factors $(P,Q)$ — and its block-coordinate solver
+  (Proposition 3): the §10 two-sided framework (Thm 10.1, Algorithm 10.1). AdaPreLoRA
+  (arXiv:2605.08734, Thm 3.2) is its curvature instance $(P,Q)=(L^{1/2},R^{1/2})$ with
+  the Frobenius cap; the chord-tight family is the identity-metric instance
+  $(P,Q)=(I,I)$ with the spectral cap.
+- Relative ("scaled") damping — $G+\delta\,\lambda_{\max}(G)\,I$, scaled to the
+  matrix's spectral norm to match the curvature scale and address rank-deficiency:
+  Anil, Gupta, Koren, Regan, Singer, *Scalable Second Order Optimization for Deep
+  Learning* (arXiv:2002.09018), App. D ("Scaled damping") and Alg. I.
