@@ -1082,7 +1082,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
-                 diag_metric=False):
+                 diag_metric=False, cw_picard_iters=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1123,6 +1123,15 @@ class CurvatureWhitenLoRA(Optimizer):
         self.diag_metric = bool(diag_metric)
         if self.diag_metric and not self.kl_coupled:
             raise ValueError("diag_metric=True requires kl_coupled=True (it reuses the D_in/D_out EMAs).")
+        # Picard block-coordinate depth (cross-coupling). k=1 is the single-block
+        # step (no cross-term). k>=2 corrects the simultaneous-step coupling via the
+        # diagonal cross-term (kl_shampoo_polar_derivation.md §Cross-coupling) and is
+        # only defined for the kl path (the cross-term uses the D_in/D_out diagonals).
+        self.cw_picard_iters = int(cw_picard_iters)
+        if self.cw_picard_iters < 1:
+            raise ValueError("cw_picard_iters must be >= 1.")
+        if self.cw_picard_iters > 1 and self.soap_v:
+            raise ValueError("cw_picard_iters>1 is only defined for the kl path (soap_v=False).")
 
         # Q starts as identity → step 1 is plain Adam (no rotation), since the
         # eigenbasis must be built from gradients STRICTLY BEFORE the step it is
@@ -1379,34 +1388,49 @@ class CurvatureWhitenLoRA(Optimizer):
             evB = (QB * (RB @ QB)).sum(dim=0)
             lamA = self._rdinv(evA); lamB = self._rdinv(evB)
             dinA = self._rdinv(st['D_in']); doutB = self._rdinv(st['D_out'])
+            # SOAP v̂ EMA (state) once; mhat for the kl path.
             if self.soap_v:
                 gA_basis = QAt @ gA
                 gB_basis = gB @ QB
                 st['v_A'].mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
                 st['v_B'].mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
-                zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
-                zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
             else:
-                # KL-Shampoo inner core (mirror of the grouped path): closed-form
-                # Shampoo whitening S^{-1/2} m̂ D^{-1/2}.
                 mhatA = st['m_A'] / bc1; mhatB = st['m_B'] / bc1
-                zA = (QA @ ((QAt @ mhatA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                zB = (((mhatB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
-            if self.use_polar:
-                # Guarded gram-NS polar (σ_max-underestimate → NaN protection;
-                # see _polar_ns_guarded). Mirror of the grouped path so the
-                # batched/per-pair equivalence test stays valid.
-                zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
-                zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
-            WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-            WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
-            sA = self._smax_warm(A.detach().float().unsqueeze(0), [st], 'v_sigma_A')[0]
-            sB = self._smax_warm(B.detach().float().unsqueeze(0), [st], 'v_sigma_B')[0]
+            Af = A.detach().float(); Bf = B.detach().float()
+            sA = self._smax_warm(Af.unsqueeze(0), [st], 'v_sigma_A')[0]
+            sB = self._smax_warm(Bf.unsqueeze(0), [st], 'v_sigma_B')[0]
             rho = lr / (sA + sB + self.eps)
-            sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
-            sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
-            dA = -(rho / (sWA + self.eps)) * WA
-            dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
+            # Picard block-coordinate loop (mirror of _cw_apply_grouped). k=1 ⇒
+            # cross-term never formed ⇒ bit-identical to the pre-Picard step.
+            dA = torch.zeros_like(gA)
+            dB = torch.zeros_like(gB)
+            # Cross-term metric = relative-damped diagonals matching the whitening
+            # (M_in = dinA^(-2), M_out = doutB^(-2)); see _cw_apply_grouped.
+            Din_m = (dinA * dinA).reciprocal()
+            Dout_m = (doutB * doutB).reciprocal()
+            for _pic in range(self.cw_picard_iters):
+                if self.soap_v:
+                    zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
+                    zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
+                else:
+                    if _pic == 0:
+                        inA = mhatA; inB = mhatB
+                    else:
+                        cross_A = ((Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Af) * Din_m.unsqueeze(0)
+                        cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
+                        inA = mhatA + (1.0 / lr) * cross_A
+                        inB = mhatB + (1.0 / lr) * cross_B
+                    zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                    zB = (((inB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                if self.use_polar:
+                    zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
+                    zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
+                WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
+                sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
+                dA = -(rho / (sWA + self.eps)) * WA
+                dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
             emit_diag = self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0
             if emit_diag:
                 A_pre = A.detach().float()
@@ -1498,49 +1522,64 @@ class CurvatureWhitenLoRA(Optimizer):
             evB = (QB * (RB @ QB)).sum(dim=1)
             lamA = self._rdinv(evA); lamB = self._rdinv(evB)
             dinA = self._rdinv(Din); doutB = self._rdinv(Dout)
+            # SOAP v̂ EMA (state update, once) — only the SOAP-curvature arm.
             if self.soap_v:
                 gA_basis = QAt @ gA
                 gB_basis = gB @ QB
                 vA.mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
                 vB.mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
-                zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
-                zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
             else:
-                # KL-Shampoo inner: closed-form Shampoo whitening S^{-1/2} m̂ D^{-1/2}
-                # — the SAME operator as the outer sandwich below (polar, when on,
-                # sits between the two), so ΔA ∝ S^{-1/2} φ(S^{-1/2} m̂ D^{-1/2}) D^{-1/2}.
                 mhatA = mA / bc1; mhatB = mB / bc1
-                zA = (QA @ ((QAt @ mhatA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-                zB = (((mhatB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
-            if timer: timer.stop()
-            if self.use_polar:
-                if timer: timer.start("cw_polar_ns")
-                # Gram-form NS (Dao 2026; math-equiv to rect cubic Muon, ~7× fewer
-                # FLOPs for r≪d on the r×d_in factor). Keep the spec pre-norm
-                # (divide by σ_max so NS starts at the σ=1 fixed point): frob
-                # pre-norm starts at σ_max=1/√(stable_rank) and UNDER-converges at
-                # ns=5 for wide spectra (gram-NS docstring + a +0.004 eval-loss
-                # gate regression). σ_max via the power-iter (NOT the gram fn's
-                # "spec", which is a full SVD). pre_norm="none"+safety_factor=1.0
-                # on zA/σ_max ⇒ gram-fp32 is exactly the rect-fp32 task09 polar
-                # (tests/test_ns_gram.py).
-                grp_states_p = [S[i] for i in idxs]
-                zA = self._polar_ns_guarded(zA, grp_states_p, 'v_sigma_zA')
-                zB = self._polar_ns_guarded(zB, grp_states_p, 'v_sigma_zB')
-                if timer: timer.stop()
-            if timer: timer.start("cw_unwhiten")
-            WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-            WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
-            if timer: timer.stop()
-            if timer: timer.start("cw_rescale_sigma")
-            grp_states = [S[i] for i in idxs]
-            sA = self._smax_warm(Aw, grp_states, 'v_sigma_A')
-            sB = self._smax_warm(Bw, grp_states, 'v_sigma_B')
+            grp = [S[i] for i in idxs]
+            # σ_max(A), σ_max(B) and ρ are loop-invariant (factors don't move until
+            # the update is applied after the loop), so compute them once.
+            sA = self._smax_warm(Aw, grp, 'v_sigma_A')
+            sB = self._smax_warm(Bw, grp, 'v_sigma_B')
             rho = lr / (sA + sB + self.eps)
-            sWA = self._smax_warm(WA, grp_states, 'v_sigma_WA')
-            sWB = self._smax_warm(WB, grp_states, 'v_sigma_WB')
-            dA = -(rho / (sWA + self.eps)).view(-1, 1, 1) * WA
-            dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)).view(-1, 1, 1) * WB
+            # ── Picard block-coordinate loop (cw_picard_iters). k=1 ⇒ the cross-term
+            # is never formed (iter 0) ⇒ bit-identical to the pre-Picard step. For
+            # k≥2 each iter adds the cross-coupling correction (Jacobi)
+            #   g̃_A = m̂_A + (1/η)·Bᵀ diag(D_out) dB A diag(D_in)   (mirror for B)
+            # from kl_shampoo_polar_derivation.md §Cross-coupling (Prop 3): the
+            # full-space diagonals D_out,D_in at power 1 — exact for diag_metric
+            # (option b), mixed-metric for dense kl (option a). Reassociated to stay
+            # in the skinny r×d factors (no dense d_out×d_in). Magnitude is re-pinned
+            # (ρ-rescale) every iter, so each dA/dB fed forward is at physical scale
+            # and there is no cross-iter normalization drift to track.
+            dA = torch.zeros_like(gA)
+            dB = torch.zeros_like(gB)
+            # Cross-term metric = the SAME relative-damped diagonals the whitening
+            # uses (consistency with the k=1 sandwich, not raw D). The power-1 metric
+            # whose ^(-1/2) is the whitening factor: M_in = dinA^(-2) (= D_in/max+δ),
+            # M_out = doutB^(-2). At warmup (D≈0 ⇒ dinA=1) this is exactly chord's
+            # Frobenius cross-term Bᵀ dB A — well-scaled at all gradient magnitudes
+            # (raw D would vanish when gradients are small and mismatch the metric).
+            Din_m = (dinA * dinA).reciprocal()
+            Dout_m = (doutB * doutB).reciprocal()
+            if timer: timer.start("cw_picard")
+            for _pic in range(self.cw_picard_iters):
+                if self.soap_v:
+                    zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
+                    zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
+                else:
+                    if _pic == 0:
+                        inA = mhatA; inB = mhatB
+                    else:
+                        cross_A = ((Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Aw) * Din_m.unsqueeze(1)
+                        cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
+                        inA = mhatA + (1.0 / lr) * cross_A
+                        inB = mhatB + (1.0 / lr) * cross_B
+                    zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
+                    zB = (((inB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+                if self.use_polar:
+                    zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA')
+                    zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB')
+                WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
+                WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+                sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
+                sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
+                dA = -(rho / (sWA + self.eps)).view(-1, 1, 1) * WA
+                dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if timer: timer.start("cw_curv_grams")
             if self.kl_coupled:
@@ -11060,6 +11099,7 @@ def build_optimizer(
     picard_alpha: float = 1.0,
     htmuon_p: float | None = None,
     picard_iters_override: int | None = None,
+    cw_picard_iters: int = 1,
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,
@@ -11216,6 +11256,7 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             kl_coupled=True,
             soap_v=False,
+            cw_picard_iters=cw_picard_iters,
         )
     if optimizer_type in ("kl-diag-lora", "kl-diag-polar-lora"):
         # Option (b) of kl_shampoo_polar_derivation.md §"Cross-coupling": the
@@ -11243,6 +11284,7 @@ def build_optimizer(
             kl_coupled=True,
             soap_v=False,
             diag_metric=True,
+            cw_picard_iters=cw_picard_iters,
         )
     if optimizer_type == "adam-lin-core-lora":
         # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA

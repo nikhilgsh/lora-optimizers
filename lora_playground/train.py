@@ -668,6 +668,12 @@ def make_parser():
                         help="Override picard_iters for AdamPolarProductLoRA "
                              "(adam-polar-product-lora-coupled). Default uses the "
                              "factory's hardcoded value (3 for coupled).")
+    parser.add_argument("--cw_picard_iters", type=int, default=1,
+                        help="Picard block-coordinate depth for the CurvatureWhitenLoRA "
+                             "kl family (kl-shampoo[-polar]-lora, kl-diag[-polar]-lora). "
+                             "k=1 (default) is the single-block step; k>=2 adds the "
+                             "diagonal cross-coupling correction (kl_shampoo_polar_"
+                             "derivation.md section Cross-coupling).")
     parser.add_argument("--polar_core_remix_alpha", type=float, default=0.0,
                         help="Experimental core-coordinate remix coefficient. "
                              "0 disables it. Nonzero values replace the row(A) / "
@@ -1216,6 +1222,7 @@ def main():
         picard_alpha=args.picard_alpha,
         htmuon_p=args.htmuon_p,
         picard_iters_override=args.picard_iters_override,
+        cw_picard_iters=args.cw_picard_iters,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,
@@ -1348,6 +1355,7 @@ def main():
             "profile_steps": args.profile_steps,
             "picard_alpha": args.picard_alpha,
             "picard_iters_override": args.picard_iters_override,
+            "cw_picard_iters": args.cw_picard_iters,
             "anderson_m": args.anderson_m,
             "anderson_reg": args.anderson_reg,
             "soap_beta": args.soap_beta,
