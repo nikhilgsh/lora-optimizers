@@ -13,11 +13,11 @@ AlgoPerf-style performance profile across the 13 (model, dataset, rank) workload
 
 | canonical variant | coverage | robustness_score | mean ratio-to-best |
 |---|---|---|---|
-| `AdamW` | 13/13 | 0.865 | 1.391 |
-| `chord-tight ns=5 k=1 (abs=1e-6)` | 7/13 | 0.984 | 1.042 |
+| `AdamW` | 13/13 | 0.863 | 1.396 |
+| `chord-tight ns=5 k=1 (abs=1e-6)` | 7/13 | 0.982 | 1.048 |
 | `chord-tight ns=8 k=1 (abs=1e-6)` | 7/13 | 0.980 | 1.054 |
 
-_Coverage-starved (<5/13, not ranked — see the per-section tables): `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-3)` (4/13); `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/13); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/13); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/13); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` (3/13); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/13); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (3/13); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3)` (2/13); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/13); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/13); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/13); `chord-tight PE=10 k=1 (abs=1e-6)` (2/13); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/13); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/13); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/13); `KL-Shampoo +polar (f=10, β_c=0.99, δ=3e-5)` (1/13); `SOAP-curv +polar (f=10, β_c=0.99, δ=1e-3)` (1/13); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/13); `KL-Shampoo (f=10, β_c=0.99, δ=1e-3)` (1/13); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/13); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-2)` (1/13); `SOAP-curv (f=10, β_c=0.99, δ=1e-3)` (1/13)._
+_Coverage-starved (<5/13, not ranked — see the per-section tables): `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-3)` (4/13); `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/13); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/13); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/13); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` (3/13); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/13); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (3/13); `KL-diag +polar k2 (f=10, β_c=0.99, δ=1e-4)` (2/13); `KL-diag +polar (f=10, β_c=0.99, δ=1e-4)` (2/13); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3)` (2/13); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/13); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/13); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/13); `chord-tight PE=10 k=1 (abs=1e-6)` (2/13); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/13); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/13); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/13); `KL-Shampoo +polar (f=10, β_c=0.99, δ=3e-5)` (1/13); `SOAP-curv +polar (f=10, β_c=0.99, δ=1e-3)` (1/13); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/13); `KL-Shampoo (f=10, β_c=0.99, δ=1e-3)` (1/13); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/13); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-2)` (1/13); `SOAP-curv (f=10, β_c=0.99, δ=1e-3)` (1/13)._
 
 ### OLMo-2-1B × opc-sft-stage2 (Magicoder) × r=64
 
@@ -26,6 +26,8 @@ AdamW speed target (best-lr final loss): **0.7702**  ·  horizon 9000 steps
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
 | AdamW | 3e-04 | 0.7702 | 1.00× | 1.00× |
+| KL-diag +polar k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7555 | 1.64× | 1.24× |
+| KL-diag +polar (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7568 | 1.57× | 1.24× |
 | KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7566 | 1.57× | 1.14× |
 | chord-tight-clean ns=10 k=2 (κ_sr=0.75) | 1e-01 | 0.7571 | 1.57× | 1.35× |
 | chord-tight-clean ns=10 k=2 (c=0.2) | 1e-01 | 0.7575 | 1.57× | — |
@@ -82,6 +84,8 @@ AdamW speed target (best-lr final loss): **0.3964**  ·  horizon 9000 steps
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
 | AdamW | 1e-04 | 0.3964 | 1.00× | 1.00× |
+| KL-diag +polar k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3762 | 1.71× | 1.38× |
+| KL-diag +polar (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3766 | 1.71× | 1.40× |
 | KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.71× | 1.26× |
 | chord-tight ns=8 k=1 (abs=1e-6) | 3e-02 | 0.3788 | 1.57× | 1.48× |
 | chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.3820 | 1.50× | 1.37× |

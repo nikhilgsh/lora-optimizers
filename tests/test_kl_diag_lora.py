@@ -98,11 +98,14 @@ def test_batched_matches_per_pair(use_polar):
 
 def test_small_side_is_geometric_gram():
     """The defining identity: after a step, the stored small-side factor L_A equals
-    Bᵀ diag(D_out) B computed from the factor and diagonal as they were at the START
-    of that step (option b), NOT a dense EMA of g g^T."""
+    Bᵀ diag(M_out) B, where M_out = (D_out/D_out.max() + δ) is the relative-damped
+    output diagonal — the SAME metric the whitening and the Picard cross use (metric
+    coherence). Built from the factor and diagonal as they were at the START of that
+    step (option b), NOT a dense EMA of g gᵀ and NOT the raw D_out (which vanishes
+    early when D_out ≈ 0)."""
     m, x, target = _make(seed=7)
     opt = _diag_opt(m, lr=1e-2, use_polar=True)
-    # Warm up so D_out is non-zero (step 1 has D_out=0 ⇒ M_A=0).
+    # Warm up so D_out is non-zero (step 1 has D_out=0 ⇒ M_out=δ via _rdinv floor).
     for _ in range(3):
         ((m(x) - target) ** 2).mean().backward()
         opt.step(); opt.zero_grad()
@@ -113,9 +116,11 @@ def test_small_side_is_geometric_gram():
     ((m(x) - target) ** 2).mean().backward()
     opt.step(); opt.zero_grad()
     for i, (B_pre, Dout_pre) in enumerate(snap):
-        M_A = B_pre.transpose(-2, -1) @ (Dout_pre.unsqueeze(-1) * B_pre)
+        # M_out = _rdinv(D_out)^(-2), mirroring the code exactly (incl. the xmax≈0 floor).
+        M_out = opt._rdinv(Dout_pre).pow(-2)
+        M_A = B_pre.transpose(-2, -1) @ (M_out.unsqueeze(-1) * B_pre)
         assert torch.allclose(opt.pair_state[i]['L_A'], M_A, atol=1e-5, rtol=1e-4), \
-            f"pair {i}: L_A is not Bᵀ diag(D_out) B"
+            f"pair {i}: L_A is not Bᵀ diag(M_out) B (relative-damped)"
 
 
 def test_diag_differs_from_dense_kl():

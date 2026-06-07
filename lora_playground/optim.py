@@ -1377,17 +1377,23 @@ class CurvatureWhitenLoRA(Optimizer):
             bc2 = 1.0 - beta2 ** st['step']
             QA, QB, LA, RB = st['Q_A'], st['Q_B'], st['L_A'], st['R_B']
             QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
+            # SINGLE metric the diag arm commits to — used by the self small-side
+            # Gram, the whitening, and the Picard cross, coherently.
+            dinA = self._rdinv(st['D_in']); doutB = self._rdinv(st['D_out'])
+            Din_m = (dinA * dinA).reciprocal()
+            Dout_m = (doutB * doutB).reciprocal()
             if self.diag_metric:
-                # Option (b): mirror of the grouped path — M_A = Bᵀ diag(D_out) B,
-                # M_B = A diag(D_in) Aᵀ, recomputed and stored so the refresh tracks it.
+                # Option (b): M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the
+                # SAME damped diagonals the cross uses (metric coherence), recomputed
+                # and stored so the eigenbasis refresh tracks it.
                 Bf = B.detach().float(); Af = A.detach().float()
-                LA = Bf.transpose(-2, -1) @ (st['D_out'].unsqueeze(-1) * Bf)
-                RB = (Af * st['D_in'].unsqueeze(0)) @ Af.transpose(-2, -1)
+                LA = Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bf)
+                RB = (Af * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)
                 st['L_A'].copy_(LA); st['R_B'].copy_(RB)
             evA = (QA * (LA @ QA)).sum(dim=0)
             evB = (QB * (RB @ QB)).sum(dim=0)
             lamA = self._rdinv(evA); lamB = self._rdinv(evB)
-            dinA = self._rdinv(st['D_in']); doutB = self._rdinv(st['D_out'])
             # SOAP v̂ EMA (state) once; mhat for the kl path.
             if self.soap_v:
                 gA_basis = QAt @ gA
@@ -1404,10 +1410,6 @@ class CurvatureWhitenLoRA(Optimizer):
             # cross-term never formed ⇒ bit-identical to the pre-Picard step.
             dA = torch.zeros_like(gA)
             dB = torch.zeros_like(gB)
-            # Cross-term metric = relative-damped diagonals matching the whitening
-            # (M_in = dinA^(-2), M_out = doutB^(-2)); see _cw_apply_grouped.
-            Din_m = (dinA * dinA).reciprocal()
-            Dout_m = (doutB * doutB).reciprocal()
             for _pic in range(self.cw_picard_iters):
                 if self.soap_v:
                     zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
@@ -1504,15 +1506,22 @@ class CurvatureWhitenLoRA(Optimizer):
             Din = torch.stack([S[i]['D_in'] for i in idxs])
             Dout = torch.stack([S[i]['D_out'] for i in idxs])
             QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
+            # SINGLE metric the diag arm commits to — used by the self small-side
+            # Gram, the whitening, and the Picard cross, coherently.
+            dinA = self._rdinv(Din); doutB = self._rdinv(Dout)
+            Din_m = (dinA * dinA).reciprocal()
+            Dout_m = (doutB * doutB).reciprocal()
             if self.diag_metric:
                 # Option (b): small-side curvature = conjugate-diagonal-weighted
                 # geometric Gram, recomputed each step (replaces the dense S_curv
-                # EMA). M_A = Bᵀ diag(D_out) B, M_B = A diag(D_in) Aᵀ. Downstream
+                # EMA). M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the SAME
+                # damped diagonals the cross uses (metric coherence). Downstream
                 # Rayleigh eigenvalues / QR refresh / whitening and the diagonal KL
-                # coupling (which now whitens by M⁻¹) are unchanged; the write-back
-                # of L_A/R_B below stores M so the eigenbasis refresh tracks it.
-                LA = Bw.transpose(-2, -1) @ (Dout.unsqueeze(-1) * Bw)
-                RB = (Aw * Din.unsqueeze(1)) @ Aw.transpose(-2, -1)
+                # coupling are unchanged; the write-back of L_A/R_B below stores M so
+                # the eigenbasis refresh tracks it.
+                LA = Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bw)
+                RB = (Aw * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)
             if timer: timer.start("cw_basis_proj")
             # Relative-damped inverse-sqrt factors (-1/2 power) for the small (λ)
             # and large (D) sides; needed by both the outer sandwich and the
@@ -1521,7 +1530,6 @@ class CurvatureWhitenLoRA(Optimizer):
             evA = (QA * (LA @ QA)).sum(dim=1)
             evB = (QB * (RB @ QB)).sum(dim=1)
             lamA = self._rdinv(evA); lamB = self._rdinv(evB)
-            dinA = self._rdinv(Din); doutB = self._rdinv(Dout)
             # SOAP v̂ EMA (state update, once) — only the SOAP-curvature arm.
             if self.soap_v:
                 gA_basis = QAt @ gA
@@ -1548,14 +1556,6 @@ class CurvatureWhitenLoRA(Optimizer):
             # and there is no cross-iter normalization drift to track.
             dA = torch.zeros_like(gA)
             dB = torch.zeros_like(gB)
-            # Cross-term metric = the SAME relative-damped diagonals the whitening
-            # uses (consistency with the k=1 sandwich, not raw D). The power-1 metric
-            # whose ^(-1/2) is the whitening factor: M_in = dinA^(-2) (= D_in/max+δ),
-            # M_out = doutB^(-2). At warmup (D≈0 ⇒ dinA=1) this is exactly chord's
-            # Frobenius cross-term Bᵀ dB A — well-scaled at all gradient magnitudes
-            # (raw D would vanish when gradients are small and mismatch the metric).
-            Din_m = (dinA * dinA).reciprocal()
-            Dout_m = (doutB * doutB).reciprocal()
             if timer: timer.start("cw_picard")
             for _pic in range(self.cw_picard_iters):
                 if self.soap_v:
