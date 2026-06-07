@@ -67,4 +67,5 @@ python train_lora.py \
     --precond_delta "$precond_delta" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
+    --cw_picard_iters "${CW_PICARD_ITERS:-1}" \
     "${ckpt_args[@]}"
