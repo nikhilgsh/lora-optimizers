@@ -614,6 +614,8 @@ OPTIMIZER_CHOICES = {
     "curvature-whiten-polar-lora",
     "kl-shampoo-lora",
     "kl-shampoo-polar-lora",
+    "kl-diag-lora",
+    "kl-diag-polar-lora",
     "adam-scaled-lora-post",
     "adam-lin-lora-post",
     "adam-scaled-lora-matrix",
@@ -1079,7 +1081,8 @@ class CurvatureWhitenLoRA(Optimizer):
                  precond_delta_relative=False, adapter_name=None,
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
-                 precond_refresh_every=10, kl_coupled=False, soap_v=True):
+                 precond_refresh_every=10, kl_coupled=False, soap_v=True,
+                 diag_metric=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1109,6 +1112,17 @@ class CurvatureWhitenLoRA(Optimizer):
         # SOAP-curvature class unchanged.
         self.kl_coupled = bool(kl_coupled)
         self.soap_v = bool(soap_v)
+        # Option (b) of kl_shampoo_polar_derivation.md §"Cross-coupling": commit to
+        # the single global diagonal metric (P,Q)=(D_out, D_in). The small-side
+        # curvature is then the conjugate-diagonal-weighted geometric Gram,
+        # M_A = Bᵀ diag(D_out) B and M_B = A diag(D_in) Aᵀ (recomputed each step),
+        # in place of the dense KL S_curv. The diagonal KL coupling is unchanged
+        # but now whitens by M⁻¹, so the whole step is a consistent single-metric
+        # two-sided program with an exact cross term (vs the mixed-metric option a).
+        # Requires kl_coupled=True (it reuses the D_in/D_out EMAs).
+        self.diag_metric = bool(diag_metric)
+        if self.diag_metric and not self.kl_coupled:
+            raise ValueError("diag_metric=True requires kl_coupled=True (it reuses the D_in/D_out EMAs).")
 
         # Q starts as identity → step 1 is plain Adam (no rotation), since the
         # eigenbasis must be built from gradients STRICTLY BEFORE the step it is
@@ -1354,6 +1368,13 @@ class CurvatureWhitenLoRA(Optimizer):
             bc2 = 1.0 - beta2 ** st['step']
             QA, QB, LA, RB = st['Q_A'], st['Q_B'], st['L_A'], st['R_B']
             QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            if self.diag_metric:
+                # Option (b): mirror of the grouped path — M_A = Bᵀ diag(D_out) B,
+                # M_B = A diag(D_in) Aᵀ, recomputed and stored so the refresh tracks it.
+                Bf = B.detach().float(); Af = A.detach().float()
+                LA = Bf.transpose(-2, -1) @ (st['D_out'].unsqueeze(-1) * Bf)
+                RB = (Af * st['D_in'].unsqueeze(0)) @ Af.transpose(-2, -1)
+                st['L_A'].copy_(LA); st['R_B'].copy_(RB)
             evA = (QA * (LA @ QA)).sum(dim=0)
             evB = (QB * (RB @ QB)).sum(dim=0)
             lamA = self._rdinv(evA); lamB = self._rdinv(evB)
@@ -1414,10 +1435,11 @@ class CurvatureWhitenLoRA(Optimizer):
                 Dout_inv = doutB * doutB
                 SAinv = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
                 RBinv = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
-                st['L_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
-                                        alpha=(1.0 - cb) / d_in)
-                st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
-                                        alpha=(1.0 - cb) / d_out)
+                if not self.diag_metric:
+                    st['L_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
+                                            alpha=(1.0 - cb) / d_in)
+                    st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
+                                            alpha=(1.0 - cb) / d_out)
                 st['D_in'].mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
                 st['D_out'].mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
             else:
@@ -1458,6 +1480,15 @@ class CurvatureWhitenLoRA(Optimizer):
             Din = torch.stack([S[i]['D_in'] for i in idxs])
             Dout = torch.stack([S[i]['D_out'] for i in idxs])
             QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            if self.diag_metric:
+                # Option (b): small-side curvature = conjugate-diagonal-weighted
+                # geometric Gram, recomputed each step (replaces the dense S_curv
+                # EMA). M_A = Bᵀ diag(D_out) B, M_B = A diag(D_in) Aᵀ. Downstream
+                # Rayleigh eigenvalues / QR refresh / whitening and the diagonal KL
+                # coupling (which now whitens by M⁻¹) are unchanged; the write-back
+                # of L_A/R_B below stores M so the eigenbasis refresh tracks it.
+                LA = Bw.transpose(-2, -1) @ (Dout.unsqueeze(-1) * Bw)
+                RB = (Aw * Din.unsqueeze(1)) @ Aw.transpose(-2, -1)
             if timer: timer.start("cw_basis_proj")
             # Relative-damped inverse-sqrt factors (-1/2 power) for the small (λ)
             # and large (D) sides; needed by both the outer sandwich and the
@@ -1524,10 +1555,11 @@ class CurvatureWhitenLoRA(Optimizer):
                 Dout_inv = doutB * doutB
                 SAinv = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
                 RBinv = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
-                LA.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
-                                 alpha=(1.0 - cb) / d_in)
-                RB.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
-                                 alpha=(1.0 - cb) / d_out)
+                if not self.diag_metric:
+                    LA.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
+                                     alpha=(1.0 - cb) / d_in)
+                    RB.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
+                                     alpha=(1.0 - cb) / d_out)
                 Din.mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
                 Dout.mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
             else:
@@ -11184,6 +11216,33 @@ def build_optimizer(
             precond_refresh_every=precond_refresh_every,
             kl_coupled=True,
             soap_v=False,
+        )
+    if optimizer_type in ("kl-diag-lora", "kl-diag-polar-lora"):
+        # Option (b) of kl_shampoo_polar_derivation.md §"Cross-coupling": the
+        # consistent single diagonal metric (P,Q)=(D_out,D_in). Same class as
+        # kl-shampoo, but the dense small-side S_curv is replaced by the
+        # conjugate-diagonal-weighted geometric Gram (diag_metric=True), so the
+        # whole step is one self-consistent two-sided program. Polar on/off is the
+        # same optimizer-name axis. Tests the fidelity-vs-consistency fork: does
+        # dropping the dense latent curvature cost peak loss?
+        return CurvatureWhitenLoRA(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            curvature_beta=curvature_beta,
+            use_polar=(optimizer_type == "kl-diag-polar-lora"),
+            ns_steps=muon_ns_steps,
+            precond_delta_relative=precond_delta_relative,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics,
+            log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            kl_coupled=True,
+            soap_v=False,
+            diag_metric=True,
         )
     if optimizer_type == "adam-lin-core-lora":
         # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA

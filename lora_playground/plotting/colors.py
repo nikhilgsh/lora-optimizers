@@ -92,6 +92,9 @@ OPTIM_COLORS = {
     # KL-Shampoo-LoRA: coupled KL fixed-point curvature, no v̂; polar A/B
     "kl-shampoo-lora":             "#d4801f",
     "kl-shampoo-polar-lora":       "#9c27b0",
+    # Option (b): consistent diagonal global metric (geometric small side); polar A/B
+    "kl-diag-lora":                "#c2185b",
+    "kl-diag-polar-lora":          "#6a1b9a",
 }
 
 
@@ -120,6 +123,8 @@ OPTIM_FAMILIES = {
         "curvature-whiten-polar-lora",
         "kl-shampoo-lora",
         "kl-shampoo-polar-lora",
+        "kl-diag-lora",
+        "kl-diag-polar-lora",
         "adam-clip-product-lora",
         "adam-clip-product-lora-coupled",
         "adam-clip-product-lora-coupled-endrms",

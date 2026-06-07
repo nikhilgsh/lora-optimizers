@@ -96,8 +96,10 @@ $$
 \varphi\!\big(S_{\mathrm{curv},A}^{-1/2}\,\hat m_A\,D_{\mathrm{in}}^{-1/2}\big)\,
 D_{\mathrm{in}}^{-1/2},
 $$
-which is exactly the generalized program above (input $m=\hat m_A$) with small side
-$B^\top P B=S_{\mathrm{curv},A}$ and large side $Q'=D_{\mathrm{in}}$.
+which is the generalized program's **A-block** (input $m=\hat m_A$) under the
+A-factor's own metric — small side $S_{\mathrm{curv},A}$, large side $D_{\mathrm{in}}$.
+This identifies the metric *for that block alone*; it is **not** a single global
+weight metric $(P,Q)$ shared with the B-block (see the caveat at the KL fit below).
 
 - **$Q'$ is forced, not chosen.** It is the column-marginal of the same
   $\hat v_A$ SOAP already maintains — the gradient's per-input-feature energy. So
@@ -317,8 +319,14 @@ S_{\mathrm{curv},A}=\tfrac1{d_{\mathrm{in}}}\mathbb E[g_A D_{\mathrm{in}}^{-1}g_
 D_{\mathrm{in}}=\tfrac1{r}\,\mathrm{diag}\,\mathbb E[g_A^\top S_{\mathrm{curv},A}^{-1}g_A].
 $$
 Both inverses are cheap ($r\times r$, diagonal). This **derives** the consistent
-$(S_{\mathrm{curv},A},D_{\mathrm{in}})$ jointly, so $Q'=D_{\mathrm{in}}$ is not a
-swept knob but pinned by the joint fit — the coherent two-sided $(P,Q)$.
+$(S_{\mathrm{curv},A},D_{\mathrm{in}})$ jointly, so $D_{\mathrm{in}}$ is not a
+swept knob but pinned by the joint fit. The pairing is coherent **within the
+A-factor only**: the A- and B-factors are fit *independently*, so there is **no**
+single global weight metric $(P,Q)$. Forcing one would require
+$S_{\mathrm{curv},A}=B^\top D_{\mathrm{out}}B$ and $S_{\mathrm{curv},B}=A D_{\mathrm{in}}A^\top$
+(combining the A-block small side $B^\top P B=S_{\mathrm{curv},A}$ with the B-block's
+$P=D_{\mathrm{out}}$, and symmetrically), which the independent fits do not satisfy.
+kl-shampoo is the per-factor LMO, not a coupled single-metric instance.
 
 **Bearing on the polar fork.** In full-weight pretraining KL-Shampoo (this
 coupled estimate, *no polar, no Adam*) beats SOAP/Shampoo, and beats KL-SOAP
