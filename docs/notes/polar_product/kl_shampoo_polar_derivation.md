@@ -28,10 +28,10 @@ feeds — and finally the refinements that sit on top.
 
 ## Part I — the method
 
-*The sections through "The magnitude rule" specify the whole single-step ($k{=}1$)
-optimizer; there is no Picard / cross-coupling inner loop.*
+*Everything through "The magnitude rule" specifies the whole single-step ($k{=}1$)
+optimizer; the Picard / cross-coupling inner loop is Part II.*
 
-## Notation
+### Notation
 
 One PEFT LoRA pair, with $r\ll d_{\mathrm{in}},d_{\mathrm{out}}$:
 
@@ -54,10 +54,7 @@ factor; §"The curvature" derives them and states the fixed-point equations they
 satisfy. In practice the factors are maintained as damped streaming EMAs of that
 fixed point (one alternating update per step), not solved exactly.
 
-## The update, per step
-
-The five steps below are the whole optimizer ($k{=}1$; there is no Picard /
-cross-coupling inner loop).
+### The update, per step
 
 1. **Momentum.**
 $$
@@ -102,7 +99,7 @@ plain momentum step. The dense $S_{\mathrm{curv},A}^{-1/2}$ is applied in the
 eigenbasis of $S_{\mathrm{curv},A}$; $D_{\mathrm{in}}^{-1/2}$ is a diagonal scaling.
 (§"Regularization" treats the damping $\delta$ in full.)
 
-### The B-side update
+#### The B-side update
 
 The $B$ factor runs the identical pipeline, but the sandwich is **mirrored**: $B$
 is $d_{\mathrm{out}}\times r$, so its small ($r$) axis is the *columns* and its
@@ -131,7 +128,7 @@ $$
 The only asymmetries between the two factors are this orientation flip, the shared
 $\rho$, and the extra multiplier $c$ on $\mathrm dB$ ($c=1$ recovers full symmetry).
 
-## The curvature: a KL fit, not a Gram EMA
+### The curvature: a KL fit, not a Gram EMA
 
 The defining choice of `kl-shampoo` over plain Shampoo is **how the two curvature
 factors are estimated**. Shampoo sets each factor to its own gradient Gram EMA
@@ -190,7 +187,7 @@ The streaming form used here runs one alternation per optimizer step as an EMA
 point while the target $M$ itself drifts (since $g_A=B^\top G$ moves as $B$
 updates), so "solving more exactly" buys little.
 
-### LoRA instantiation
+#### LoRA instantiation
 
 Apply Proposition 1 to each LoRA factor as its own weight — small ($r$) side dense,
 large side constrained diagonal. The substitution dictionary:
@@ -231,7 +228,7 @@ the other factor $B$, so the fit estimates the covariance of the *factor* gradie
 (filtered through $B$), not of a free $r\times d_{\mathrm{in}}$ weight. The
 construction is the faithful LoRA analogue, not the identical object.
 
-## The whitened-polar step
+### The whitened-polar step
 
 Each factor's update (steps 2–4) is a **single-block spectral-cap LMO**: maximize
 alignment with the momentum'd gradient inside a spectral ball measured in a
@@ -297,7 +294,7 @@ averages over samples: then $z_A$ is no longer orthogonal, and $\varphi$ contrib
 real work — flattening the per-step singular-value spread that statistical whitening
 leaves behind.
 
-## The magnitude rule
+### The magnitude rule
 
 Steps 2–4 fix only the *direction* $W_A$. Step 5 sets its size. The trust radius
 $$
@@ -326,7 +323,7 @@ denominator unchanged.
 once (this section), and the numerical flooring that keeps the curvatures invertible
 (§"Regularization"). Both reduce to the Part I update at their trivial settings.*
 
-## Cross-coupling: the Picard correction
+### Cross-coupling: the Picard correction
 
 The single-step update solves each factor's subproblem as if the other were frozen.
 When both move together that leaves a first-order coupling unaddressed; closing it is
@@ -474,7 +471,7 @@ The cross term is added to the solve input only, not folded into the EMA. Every 
 stays in the skinny $r\times d$ factors — the dense $d_{\mathrm{out}}\times d_{\mathrm{in}}$
 weight is never formed.
 
-### Normalization: how large is the cross-correction?
+#### Normalization: how large is the cross-correction?
 
 This section answers one question: how should the base covector be scaled relative to
 the Picard cross term? The metric is the single
@@ -555,7 +552,7 @@ and use $\bar u_A+\tfrac1\eta C_A$ in the Picard loop. The cross term is not div
 coordinatewise by $\sqrt{\hat v_A}$ in this minimal ablation; doing that would be a
 third method that changes the cross metric itself, not just the base input.
 
-## Regularization
+### Regularization
 
 The $(P,Q)$ program above is undamped — the ideal method. Two quantities are singular at
 initialization, so the running algorithm regularizes them. This is a numerical layer, not

@@ -278,3 +278,92 @@ def test_factory_dispatch(name, polar):
     assert opt.kl_coupled is True
     assert opt.soap_v is False
     assert opt.use_polar is polar
+
+
+def _kl_k2_correction_vs_gscale(use_polar, gscale, batched=True):
+    """Warm up a kl-diag pair, then return the relative change the k=2 Picard
+    cross-coupling makes to the update, from an identical state, with grads
+    scaled by ``gscale``. Returns (rel_k2_vs_k1, dtheta_k1)."""
+    import copy
+    m, x, target = _make(seed=3)
+    opt = CurvatureWhitenLoRA(m, lr=1e-2, use_polar=use_polar, kl_coupled=True,
+                              soap_v=False, diag_metric=True)
+    opt._batched_step = batched
+    opt.cw_picard_iters = 1
+    for _ in range(12):
+        for p in m.parameters():
+            p.grad = None
+        (((m(x) - target) ** 2).mean() * gscale).backward()
+        opt.step()
+    snap = ([p.detach().clone() for p in m.parameters()], copy.deepcopy(opt.pair_state))
+
+    def upd(k):
+        opt.cw_picard_iters = k
+        with torch.no_grad():
+            for p, s in zip(m.parameters(), snap[0]):
+                p.copy_(s)
+        opt.pair_state = copy.deepcopy(snap[1])
+        pre = [p.detach().clone() for p in m.parameters()]
+        for p in m.parameters():
+            p.grad = None
+        (((m(x) - target) ** 2).mean() * gscale).backward()
+        opt.step()
+        return torch.cat([(p.detach() - s).flatten() for p, s in zip(m.parameters(), pre)])
+
+    d1, d2 = upd(1), upd(2)
+    return float((d2 - d1).norm() / d1.norm()), d1
+
+
+@pytest.mark.parametrize("use_polar", [False, True])
+def test_picard_cross_is_gradient_scale_invariant(use_polar):
+    """§2.5 pre-rescale (kl_shampoo_polar_derivation.md §"Normalization"): the
+    k=2 cross-coupling is added to a momentum normalized to unit spectral norm,
+    so its relative effect on the update is INDEPENDENT of the gradient scale.
+    Without the pre-rescale the cross is suppressed by 1/‖G‖ and this ratio
+    drops ~100x per decade of gradient — the regime in which the shipped k=2
+    runs were silently inert."""
+    r_small, _ = _kl_k2_correction_vs_gscale(use_polar, gscale=1.0)
+    r_large, _ = _kl_k2_correction_vs_gscale(use_polar, gscale=100.0)
+    assert r_small > 1e-3, "cross-correction vanished even at unit gradient scale"
+    # Scale-invariant: a 100x gradient must not shrink the correction (pre-fix
+    # it would fall ~100x). Allow generous tolerance for warm σ_max estimation.
+    assert abs(r_large - r_small) / r_small < 0.05, (
+        f"cross-correction not scale-invariant: {r_small:.3e} vs {r_large:.3e}")
+
+
+@pytest.mark.parametrize("use_polar", [False, True])
+def test_picard_converges_by_k2(use_polar):
+    """The Picard fixed-point iteration contracts: the k=2→k=3 increment is far
+    smaller than the k=1→k=2 increment, so k=2 captures the correction and
+    k>2 is unnecessary."""
+    import copy
+    m, x, target = _make(seed=3)
+    opt = CurvatureWhitenLoRA(m, lr=1e-2, use_polar=use_polar, kl_coupled=True,
+                              soap_v=False, diag_metric=True)
+    opt._batched_step = True
+    opt.cw_picard_iters = 1
+    for _ in range(12):
+        for p in m.parameters():
+            p.grad = None
+        (((m(x) - target) ** 2).mean() * 10.0).backward()
+        opt.step()
+    snap = ([p.detach().clone() for p in m.parameters()], copy.deepcopy(opt.pair_state))
+
+    def upd(k):
+        opt.cw_picard_iters = k
+        with torch.no_grad():
+            for p, s in zip(m.parameters(), snap[0]):
+                p.copy_(s)
+        opt.pair_state = copy.deepcopy(snap[1])
+        pre = [p.detach().clone() for p in m.parameters()]
+        for p in m.parameters():
+            p.grad = None
+        (((m(x) - target) ** 2).mean() * 10.0).backward()
+        opt.step()
+        return torch.cat([(p.detach() - s).flatten() for p, s in zip(m.parameters(), pre)])
+
+    d = {k: upd(k) for k in (1, 2, 3)}
+    inc_12 = (d[2] - d[1]).norm()
+    inc_23 = (d[3] - d[2]).norm()
+    assert inc_23 < 0.25 * inc_12, (
+        f"Picard not contracting by k=2: inc(2->3)={inc_23:.3e} vs inc(1->2)={inc_12:.3e}")

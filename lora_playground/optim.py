@@ -1406,6 +1406,17 @@ class CurvatureWhitenLoRA(Optimizer):
             sA = self._smax_warm(Af.unsqueeze(0), [st], 'v_sigma_A')[0]
             sB = self._smax_warm(Bf.unsqueeze(0), [st], 'v_sigma_B')[0]
             rho = lr / (sA + sB + self.eps)
+            # §2.5 pre-rescale (mirror of _cw_apply_grouped; see that comment): for
+            # k≥2, divide the momentum by σ_max of its whitened form so the cross is
+            # added on a unit-spectral-norm input. No-op at k=1, gated to keep it
+            # bit-identical to the pre-Picard step.
+            if self.cw_picard_iters > 1 and not self.soap_v:
+                zA_in = (QA @ ((QAt @ mhatA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                zB_in = (((mhatB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                sIA = self._smax_warm(zA_in.unsqueeze(0), [st], 'v_sigma_zA_in')[0]
+                sIB = self._smax_warm(zB_in.unsqueeze(0), [st], 'v_sigma_zB_in')[0]
+                mhatA = mhatA / (sIA + self.eps)
+                mhatB = mhatB / (sIB + self.eps)
             # Picard block-coordinate loop (mirror of _cw_apply_grouped). k=1 ⇒
             # cross-term never formed ⇒ bit-identical to the pre-Picard step.
             dA = torch.zeros_like(gA)
@@ -1544,6 +1555,19 @@ class CurvatureWhitenLoRA(Optimizer):
             sA = self._smax_warm(Aw, grp, 'v_sigma_A')
             sB = self._smax_warm(Bw, grp, 'v_sigma_B')
             rho = lr / (sA + sB + self.eps)
+            # §2.5 pre-rescale (kl_shampoo_polar_derivation.md §"Normalization"):
+            # for k≥2, divide the momentum by σ_max of its WHITENED form so the
+            # 1/η cross is added to a unit-spectral-norm input. Without it the cross
+            # is suppressed by 1/‖G‖ and k≥2 collapses onto k=1 at realistic gradient
+            # scale. No-op at k=1 (the polar and ρ-rescale are scale-invariant), so
+            # gate on k>1 to keep the shipped k=1 path bit-identical.
+            if self.cw_picard_iters > 1 and not self.soap_v:
+                zA_in = (QA @ ((QAt @ mhatA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
+                zB_in = (((mhatB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+                sIA = self._smax_warm(zA_in, grp, 'v_sigma_zA_in').view(-1, 1, 1)
+                sIB = self._smax_warm(zB_in, grp, 'v_sigma_zB_in').view(-1, 1, 1)
+                mhatA = mhatA / (sIA + self.eps)
+                mhatB = mhatB / (sIB + self.eps)
             # ── Picard block-coordinate loop (cw_picard_iters). k=1 ⇒ the cross-term
             # is never formed (iter 0) ⇒ bit-identical to the pre-Picard step. For
             # k≥2 each iter adds the cross-coupling correction (Jacobi)
