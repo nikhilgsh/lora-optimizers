@@ -18,6 +18,24 @@
     "git_commit": "f76f28d"
   },
   {
+    "key": "blackwell/OLMo-2-0425-1B/r256/kl-shampoo-polar-lora/ns5/k1",
+    "s_per_step": 1.713,
+    "measured_at_step": 9000,
+    "source_log": "logs/kl_shampoo_gdata_r256_openmath_olmo_blackwell/run_info/logs/log_0.out",
+    "hardware": "blackwell",
+    "model": "OLMo-2-0425-1B",
+    "lora_r": 256,
+    "optimizer_family": "kl-shampoo-polar-lora",
+    "ns_steps": 5,
+    "picard": 1,
+    "batch_size": 4,
+    "grad_accum_steps": 4,
+    "max_seq_length": 2048,
+    "compile": true,
+    "dtype": "bf16",
+    "git_commit": "1a39380"
+  },
+  {
     "key": "blackwell/OLMo-2-0425-1B/r64/kl-shampoo-polar-lora/ns5/k1",
     "s_per_step": 1.535,
     "measured_at_step": 9000,
