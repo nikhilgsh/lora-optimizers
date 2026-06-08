@@ -1,8 +1,8 @@
 #!/bin/bash
-# OLMo-2-1B × OpenMathInstruct-2 × r=64 Tanya-style polar sweep.
+# OLMo-2-1B × OpenMathInstruct-2 × r=64 polar-family sweep.
 # Positional args:
 #   1: task id from params/openmath_tanya_style_polar_r64.json
-task=${1:-fw_lr3e-2}
+task=${1:-chord_tight_clean_k1_lr3e-2}
 
 lr=""
 optimizer=""
@@ -17,37 +17,33 @@ case "$task" in
     adamw_lr1e-4) lr="1e-4"; optimizer="adamw" ;;
     adamw_lr3e-4) lr="3e-4"; optimizer="adamw" ;;
 
-    muon_lr1e-3) lr="1e-3"; optimizer="muon-lora" ;;
-    muon_lr3e-3) lr="3e-3"; optimizer="muon-lora" ;;
-    muon_lr1e-2) lr="1e-2"; optimizer="muon-lora" ;;
-
-    fw_lr1e-2)
+    chord_tight_clean_k1_lr1e-2)
         lr="1e-2"
         optimizer="adam-polar-product-lora-coupled-spectral-chord-tight-clean"
         picard_iters_override="1"
         ;;
-    fw_lr3e-2)
+    chord_tight_clean_k1_lr3e-2)
         lr="3e-2"
         optimizer="adam-polar-product-lora-coupled-spectral-chord-tight-clean"
         picard_iters_override="1"
         ;;
-    fw_lr1e-1)
+    chord_tight_clean_k1_lr1e-1)
         lr="1e-1"
         optimizer="adam-polar-product-lora-coupled-spectral-chord-tight-clean"
         picard_iters_override="1"
         ;;
 
-    bcd_lr1e-2)
+    chord_tight_clean_k2_lr1e-2)
         lr="1e-2"
         optimizer="adam-polar-product-lora-coupled-spectral-chord-tight-clean"
         picard_iters_override="2"
         ;;
-    bcd_lr3e-2)
+    chord_tight_clean_k2_lr3e-2)
         lr="3e-2"
         optimizer="adam-polar-product-lora-coupled-spectral-chord-tight-clean"
         picard_iters_override="2"
         ;;
-    bcd_lr1e-1)
+    chord_tight_clean_k2_lr1e-1)
         lr="1e-1"
         optimizer="adam-polar-product-lora-coupled-spectral-chord-tight-clean"
         picard_iters_override="2"
