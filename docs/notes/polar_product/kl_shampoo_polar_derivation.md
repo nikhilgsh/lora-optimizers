@@ -427,31 +427,17 @@ The power is therefore fixed by the whitening convention, not free. AdaPreLoRA w
 instead by $R^{-1/4}$, so its $Q=R^{1/2}$ and its cross carries the diagonal at power
 $1/2$ — the exponents differ because the conventions differ.
 
-**The loop, with fixed base normalization.** The polar map consumes whitened inputs, so
-normalize the raw base covectors once in that same space before the Picard loop:
-$$
-z_{A,0}=M_A^{-1/2}\,\hat m_A\,Q^{-1/2},\qquad
-s_{A,0}=\sigma_{\max}(z_{A,0}),\qquad
-\bar m_A=\frac{\hat m_A}{\max(s_{A,0},\varepsilon_s)}
-$$
-and symmetrically
-$$
-z_{B,0}=P^{-1/2}\,\hat m_B\,M_B^{-1/2},\qquad
-s_{B,0}=\sigma_{\max}(z_{B,0}),\qquad
-\bar m_B=\frac{\hat m_B}{\max(s_{B,0},\varepsilon_s)}.
-$$
-The guard $\varepsilon_s$ is numerical only; it is not a swept hyperparameter. The
-divisors $s_{A,0},s_{B,0}$ are computed from the raw base inputs and then held fixed
-inside the loop. Recomputing them after adding the cross would renormalize the residual
-being solved and change the Picard fixed point.
+**The loop (cross added to the raw momentum).** No base pre-normalization — the
+$\sigma_{\max}$ pre-rescale that was here diluted the cross by $\sqrt{\mathrm{sr}}$ and is
+removed (§"Normalization"). The cross is added directly to $\hat m_A$.
 
 Initialize $\mathrm dA^{(-1)}=\mathrm dB^{(-1)}=0$. For $n=0,\dots,k-1$:
 $$
 \begin{aligned}
 \tilde g_A^{(n)}
-&=\bar m_A+\tfrac1\eta\,B^\top P\,\mathrm dB^{(n-1)}\,A\,Q,\\
+&=\hat m_A+\tfrac1\eta\,B^\top P\,\mathrm dB^{(n-1)}\,A\,Q,\\
 \tilde g_B^{(n)}
-&=\bar m_B+\tfrac1\eta\,P\,B\,\mathrm dA^{(n-1)}\,Q\,A^\top,\\
+&=\hat m_B+\tfrac1\eta\,P\,B\,\mathrm dA^{(n-1)}\,Q\,A^\top,\\
 z_A^{(n)}
 &=M_A^{-1/2}\,\tilde g_A^{(n)}\,Q^{-1/2},\qquad
 z_B^{(n)}=P^{-1/2}\,\tilde g_B^{(n)}\,M_B^{-1/2},\\
@@ -465,9 +451,8 @@ W_B^{(n)}=P^{-1/2}\,\varphi(z_B^{(n)})\,M_B^{-1/2},\\
 \end{aligned}
 $$
 Return $\mathrm dA^{(k-1)},\mathrm dB^{(k-1)}$. The $n=0$ iterate has no cross term,
-so $k=1$ is the Part I update; the scalar base normalization is a no-op at $k=1$
-because $\varphi(cz)=\varphi(z)$ and the final $\rho$-rescale fixes the update size.
-The cross term is added to the solve input only, not folded into the EMA. Every product
+so $k=1$ is the Part I update unchanged. The cross term is added to the solve input
+only, not folded into the EMA. Every product
 stays in the skinny $r\times d$ factors — the dense $d_{\mathrm{out}}\times d_{\mathrm{in}}$
 weight is never formed.
 
@@ -521,36 +506,27 @@ $k\ge2$. The cross $C$ is built from $\mathrm dB$, already normalized to the phy
 trust-region scale $\rho$, while the raw base $\hat m_A$ still carries the arbitrary
 gradient magnitude.
 
-**The scalar spectral normalization is the correct base normalization for this
-derivation.** Compute $s_{A,0}$ from the raw base input before the loop and feed the
-polar
+**The $\sigma_{\max}$ spectral normalization is wrong — it dilutes the cross by
+$\sqrt{\mathrm{sr}}$.** A scalar pre-rescale $\hat m_A\mapsto\hat m_A/s_{A,0}$ with
+$s_{A,0}=\sigma_{\max}(z_A)$ was tried, to remove the $1/\lVert G\rVert$ decay. But the
+polar's response to the added cross is set by the **Frobenius** ratio
+$\lVert z_{\mathrm{cross}}\rVert_F/\lVert z_{\mathrm{base}}\rVert_F$, and normalizing the
+base to unit spectral norm leaves its Frobenius norm at $\sqrt{\mathrm{sr}}$
+($\mathrm{sr}=\lVert z_A\rVert_F^2/\sigma_{\max}(z_A)^2$, the stable rank). So with the
+$\sigma_{\max}$ pre-rescale,
 $$
-\tfrac{1}{s_{A,0}}\,\hat m_A+\tfrac1\eta C
+r=\frac{(1/\eta)\lVert z_{\mathrm{cross}}\rVert_F}{\sqrt{\mathrm{sr}}}.
 $$
-(and symmetrically for $B$). This is the scalar gauge choice for a covector whose
-absolute magnitude the spectral LMO discards. It preserves the base direction, uses the
-same norm the polar map sees, and makes the Picard correction invariant to loss-scale
-changes.
+On high-rank factors ($r{=}256$: measured $\sigma_{\max}(z_A)\approx 8.5\!\times\!10^{-3}$
+with $\sqrt{\mathrm{sr}}\approx 10$), this shrinks the cross ${\sim}10\times$ and $k\ge2$
+collapses onto $k=1$ — empirically a no-op.
 
-**Why not feed Adam as the base input?** Adam normalization also removes much of the
-gradient scale, but it is not a scalar gauge choice. It replaces $\hat m_A$ by
-$u_A=\hat m_A/(\sqrt{\hat v_A}+\varepsilon)$ coordinatewise before the KL metric and
-polar map see the covector. That changes the $k=1$ direction, adds an elementwise
-second-moment state on top of the KL curvature, and turns the method into an
-Adamized/SOAP-style variant rather than Picard-corrected KL-Shampoo. That variant is a
-reasonable ablation if the scalar-normalized Picard correction is still too weak, but it
-is not the proper normalization for this derivation.
-
-If that Adamized variant is tested, the scalar normalization rule stays the same; only
-the base covector changes. Define
-$$
-z_{A,0}^{\mathrm{Adam}}=M_A^{-1/2}\,u_A\,Q^{-1/2},\qquad
-s_{A,0}^{\mathrm{Adam}}=\sigma_{\max}(z_{A,0}^{\mathrm{Adam}}),\qquad
-\bar u_A=\frac{u_A}{\max(s_{A,0}^{\mathrm{Adam}},\varepsilon_s)}
-$$
-and use $\bar u_A+\tfrac1\eta C_A$ in the Picard loop. The cross term is not divided
-coordinatewise by $\sqrt{\hat v_A}$ in this minimal ablation; doing that would be a
-third method that changes the cross metric itself, not just the base input.
+**The pre-rescale is removed.** The cross is added to the raw momentum (Prop 4 regime,
+$r\propto 1/\lVert G\rVert$). This reintroduces loss-scale dependence, but on high-rank
+factors $\lVert z_A\rVert_F\ll\sqrt{\mathrm{sr}}$, so the raw ratio is far **larger** than
+the $\sigma_{\max}$-diluted one — i.e. removing the dilution is what makes $k\ge2$
+material. A norm-consistent fix (normalize the base by $\lVert z_A\rVert_F$ instead of
+$\sigma_{\max}$) is the principled alternative but is not what the shipped path does.
 
 ### Regularization
 
@@ -558,9 +534,7 @@ The $(P,Q)$ program above is undamped — the ideal method. Two quantities are s
 initialization, so the running algorithm regularizes them. This is a numerical layer, not
 part of the derivation: the literature's variational derivations are likewise undamped
 ($\mathbb E[GG^\top]^{-1/2}G$, $S^*=\mathbb E[GG^\top]$), with damping added afterward.
-This section covers only the metric regularization. The scalar base normalization from
-§"Normalization" is a covector gauge applied before the LMO; it does not change which
-curvature matrices are floored.
+This section covers only the metric regularization.
 
 **The two singularities.** The A-update applies $M_A^{-1/2}(\cdot)\,Q^{-1/2}$, the B-update
 $P^{-1/2}(\cdot)\,M_B^{-1/2}$. Two distinct things vanish at init:
@@ -668,8 +642,7 @@ A-block update above. The floors keep nonzero curvatures well-posed; the zero-st
 convention handles the exact $D=0$ and $B=0$ cases. The B-block is symmetric.
 $\blacksquare$
 
-In the normalized Picard loop, replace $\hat m_A,\hat m_B$ in this displayed block
-update by $\bar m_A,\bar m_B$ (or by $\bar u_A,\bar u_B$ in the Adamized ablation).
+The cross is added to the raw $\hat m_A,\hat m_B$ (no base pre-normalization).
 The metric, cross term, floors, and zero-state convention are unchanged.
 
 **Recompute vs seed.** $M_A=B^\top\tilde P B$ is recomputed from the current $B$ every step, so
