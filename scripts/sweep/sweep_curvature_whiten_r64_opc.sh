@@ -19,11 +19,14 @@
 #       δ=1e-6 amplifies weak curvature directions ~1000× → NaN; ~1e-3 caps it
 #       at ~31×. MUST be set — the CLI default 1e-6 diverges.)
 #   5: cw_picard_iters (optional; defaults to CW_PICARD_ITERS env or 1)
+#   6: curvature_beta  (optional; curvature-EMA decay, default 0.99 — the value
+#       all prior sweeps pin. Exposed positionally for the β_curv ablation.)
 lr=${1:-3e-3}
 optimizer=${2:-curvature-whiten-lora}
 seed=${3:-0}
 precond_delta=${4:-1e-3}
 cw_picard_iters=${5:-${CW_PICARD_ITERS:-1}}
+curvature_beta=${6:-0.99}
 
 compile_args=()
 if [ "${COMPILE:-1}" = "1" ]; then
@@ -64,7 +67,7 @@ python train_lora.py \
     --seed "$seed" \
     --lora_r 64 \
     --lora_alpha 64 \
-    --curvature_beta 0.99 \
+    --curvature_beta "$curvature_beta" \
     --precond_refresh_every 10 \
     --precond_delta "$precond_delta" \
     "${diag_args[@]}" \
