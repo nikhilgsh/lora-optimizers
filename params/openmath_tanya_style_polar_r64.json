@@ -1,8 +1,5 @@
 {
   "task": [
-    "adamw_lr3e-5",
-    "adamw_lr1e-4",
-    "adamw_lr3e-4",
     "chord_tight_clean_k1_lr1e-2",
     "chord_tight_clean_k1_lr3e-2",
     "chord_tight_clean_k1_lr1e-1",
