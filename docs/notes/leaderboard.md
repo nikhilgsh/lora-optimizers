@@ -17,7 +17,7 @@ AlgoPerf-style performance profile across the 14 (model, dataset, rank) workload
 | `chord-tight ns=5 k=1 (abs=1e-6)` | 7/14 | 0.982 | 1.048 |
 | `chord-tight ns=8 k=1 (abs=1e-6)` | 7/14 | 0.980 | 1.054 |
 
-_Coverage-starved (<5/14, not ranked — see the per-section tables): `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-3)` (4/14); `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/14); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/14); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/14); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` (3/14); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/14); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (3/14); `diag-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` (2/14); `KL-diag +polar (f=10, β_c=0.99, δ=1e-4)` (2/14); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3)` (2/14); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/14); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/14); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/14); `chord-tight PE=10 k=1 (abs=1e-6)` (2/14); `KL-diag +polar k2 (f=10, β_c=0.99, δ=1e-4)` (2/14); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/14); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/14); `KL-diag-flatout +polar (f=10, β_c=0.99, δ=1e-4)` (2/14); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/14); `KL-Shampoo +polar (f=10, β_c=0.99, δ=3e-5)` (1/14); `SOAP-curv +polar (f=10, β_c=0.99, δ=1e-3)` (1/14); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/14); `KL-Shampoo (f=10, β_c=0.99, δ=1e-3)` (1/14); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/14); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-2)` (1/14); `SOAP-curv (f=10, β_c=0.99, δ=1e-3)` (1/14)._
+_Coverage-starved (<5/14, not ranked — see the per-section tables): `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-3)` (4/14); `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/14); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/14); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/14); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` (3/14); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/14); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (3/14); `KL-diag +polar k2 (f=10, β_c=0.99, δ=1e-4)` (2/14); `diag-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` (2/14); `KL-diag +polar (f=10, β_c=0.99, δ=1e-4)` (2/14); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3)` (2/14); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/14); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/14); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/14); `chord-tight PE=10 k=1 (abs=1e-6)` (2/14); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/14); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/14); `KL-diag-flatout +polar (f=10, β_c=0.99, δ=1e-4)` (2/14); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/14); `KL-Shampoo +polar (f=10, β_c=0.99, δ=3e-5)` (1/14); `SOAP-curv +polar (f=10, β_c=0.99, δ=1e-3)` (1/14); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/14); `KL-Shampoo (f=10, β_c=0.99, δ=1e-3)` (1/14); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/14); `KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-2)` (1/14); `SOAP-curv (f=10, β_c=0.99, δ=1e-3)` (1/14)._
 
 ### OLMo-2-1B × opc-sft-stage2 (Magicoder) × r=64
 
@@ -87,12 +87,12 @@ AdamW speed target (best-lr final loss): **0.3964**  ·  horizon 9000 steps
 |---|---|---|---|---|
 | AdamW | 1e-04 | 0.3964 | 1.00× | 1.00× |
 | diag-Shampoo +polar (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.71× | 1.35× |
+| KL-diag +polar k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3773 | 1.71× | 1.38× |
 | KL-diag +polar (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3766 | 1.71× | 1.40× |
 | KL-Shampoo +polar (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.71× | 1.26× |
 | chord-tight ns=8 k=1 (abs=1e-6) | 3e-02 | 0.3788 | 1.57× | 1.48× |
 | chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.3820 | 1.50× | 1.37× |
 | KL-diag-flatout +polar (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.3844 | 1.38× | 1.19× |
-| KL-diag +polar k2 (f=10, β_c=0.99, δ=1e-4) | 1e-02 | 0.3882 | 1.29× | — |
 
 ### OLMo-2-1B × Tulu-3 SFT mixture × r=64
 
