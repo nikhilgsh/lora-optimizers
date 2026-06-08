@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with this repository.
 
+## Response style
+
+- **Terse. No walls of text**, no recaps, no restated plans, no "honest caveat" preambles. Lead with the result/decision. One question at a time.
+- **Math discussion is equation-first.** Define every symbol on first use (shape + meaning), then write the actual update/derivation as equations. Do NOT describe an update in prose or gesture at "metrics"/"powers of D̄" without the algebra. Show the substitution and the resulting expression — formal results, not hand-waving.
+- Don't oscillate: name where a claim is grounded (paper/code/derivation) before asserting it; if you contradict an earlier claim, say which was wrong and why.
+- **Accept the user's evidence and premises.** If the user says the experiments show X (e.g. "k2 is a no-op"), treat X as established. Do NOT re-litigate it, re-label it "confounded"/"unproven", or keep demanding your own re-run to "prove" it. Work forward from their premise.
+
 ## Project Overview
 
 This is a lean LoRA optimizer comparison playground in the style of `modded-nanogpt`. The goal is **optimizer comparison**, not best-model production: hold everything else fixed and measure how LoRA optimizer choices affect held-out loss, throughput, and memory when adapting a general LLM to code.
@@ -122,19 +129,8 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
   deterministic starts and lower-bound floors. When changing a `sigma_max`
   estimator or call site, add a known-positive regression for a bad start vector
   and run a high-rank GPU smoke that checks eval loss, `param_l2`, and nonfinite
-  gradient counts. **These blowups are SLOW-ONSET**: the run looks healthy for
-  hundreds of steps (param_l2 drifting up linearly, grads finite) and then goes
-  all-param NaN in a single step when the stale warm vector finally misses the
-  top direction (observed at r256: `kl-shampoo-polar` NaN'd at steps 750–3500
-  across lrs while a 30-step sanity passed clean). Rather than gate every sweep on
-  a long pre-smoke, rely on the production run's live guards — `--abort_on_nan_eval`,
-  the per-step nonfinite-grad diagnostics, and checkpoint-resume that retains the
-  latest checkpoint on a NaN-abort — to catch and recover a slow-onset blowup in
-  flight. Reserve a ≥1000-step high-rank stability smoke for when the `sigma_max` /
-  estimator code itself changed (the case that actually reintroduces the bias); a
-  fit/timing smoke at the production rank need not run to onset. The
-  no-`sigma_max`-divide arm of the same optimizer passing is not evidence the divide
-  arm is safe. **Fix the under-estimate at the
+  gradient counts. The no-`sigma_max`-divide arm of the same optimizer passing is
+  not evidence the divide arm is safe. **Fix the under-estimate at the
   SHARED estimator, never per-call-site.** The bias is a property of the estimator,
   so it bites EVERY site that divides by `sigma_max` — the polar/NS pre-norm AND
   the final `ρ/σ_max(ΔW)` rescale AND the `ρ = lr/(σ_max(A)+σ_max(B))` denominator.
