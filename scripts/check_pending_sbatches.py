@@ -133,6 +133,34 @@ def _prep_body_dryrun_msgs() -> list[str]:
             msgs.append(
                 f"  {sbatch.name}: prep body FAILED (exit {r.returncode}):\n{tail}"
             )
+            continue
+        # Prep body exited 0 — but generate_task_file.py can exit 0 while emitting
+        # a SYNTACtically broken task line (real failure 2026-06-07, jobs
+        # 6485808/6485810: a wrapper positional `${5:-${ENV:-default}}` got mangled
+        # into an unclosed `${ENV:-default`, swallowing the `> log 2> err` redirect,
+        # so every disBatch task was a shell syntax error and the job died in
+        # seconds). bash -n each generated task line to catch this whole class
+        # (unclosed braces, swallowed redirects) at the gate, not as a dead alloc.
+        path_m = re.search(r"Commands written to (.+?), number of lines", r.stdout or "")
+        if not path_m:
+            continue
+        tasks_path = Path(path_m.group(1).strip())
+        if not tasks_path.is_file():
+            continue
+        for i, line in enumerate(tasks_path.read_text().splitlines()):
+            if not line.strip():
+                continue
+            chk = subprocess.run(["bash", "-n", "-c", line],
+                                 capture_output=True, text=True)
+            if chk.returncode != 0:
+                detail = (chk.stderr or "").strip().splitlines()
+                tail = "\n".join("        " + ln for ln in detail[-3:])
+                msgs.append(
+                    f"  {sbatch.name}: generated task line {i} is not valid shell "
+                    f"(swallowed redirect / unclosed brace?):\n"
+                    f"        {line[:200]}\n{tail}"
+                )
+                break  # one bad line is enough to refuse this sbatch
     return msgs
 
 

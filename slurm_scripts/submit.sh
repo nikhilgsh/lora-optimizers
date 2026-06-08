@@ -42,6 +42,15 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Override with FORCE_DIRTY=1.
 REPO_DIR="${REPO_DIR}" "${REPO_DIR}/scripts/check_clean_tree.sh"
 
+# --emit-pending: do everything EXCEPT the final `sbatch` — write a self-contained
+# pending sbatch to slurm_pending/ instead (for when org policy bars running sbatch).
+# The task file is generated + validated in-session here; the pending sbatch just
+# disBatches it. Needs TIMING_S_PER_STEP=<wall-inclusive s/step> for the wall buffer.
+if [[ "${1:-}" == "--emit-pending" ]]; then
+    EMIT_PENDING=1
+    shift
+fi
+
 PARAM_FILE="$1"
 GROUP="$2"
 N_GPUS="$3"
@@ -182,12 +191,88 @@ PYEOF
 echo "Task file (${RUN_DIR}/tasks):"
 cat "${RUN_DIR}/tasks"
 echo ""
-echo "Submitting ${N_GPUS} tasks for group '${GROUP}' ..."
 
 export TASK_FILE="${RUN_DIR}/tasks"
-SBATCH_OUT=$(sbatch --ntasks="$N_GPUS" --job-name="$GROUP" "${REPO_DIR}/${SBATCH_SCRIPT}")
-echo "${SBATCH_OUT}"
-SLURM_JOB_ID=$(echo "${SBATCH_OUT}" | awk '{print $NF}')
+
+if [[ -n "${EMIT_PENDING:-}" ]]; then
+    # ── Emit a self-contained pending sbatch instead of calling sbatch ───────
+    PENDING_DIR="${PENDING_DIR:-${REPO_DIR}/slurm_pending}"
+    CELLS=$(grep -cve '^[[:space:]]*$' "${RUN_DIR}/tasks")
+    TASKS_PER_GPU=$(( (CELLS + N_GPUS - 1) / N_GPUS ))
+    MAX_STEPS=$(grep -oE 'MAX_STEPS:-[0-9]+' "${RUN_DIR}/sweep.sh" | grep -oE '[0-9]+' | head -1 || true)
+    : "${MAX_STEPS:=0}"
+    if [[ -z "${TIMING_S_PER_STEP:-}" ]]; then
+        echo "EMIT_PENDING: set TIMING_S_PER_STEP=<wall-inclusive s/step> (measure via" >&2
+        echo "  'python -m lora_playground.timing record <log> --hardware <hw>' or reuse a" >&2
+        echo "  same-class run's value). Needed for the wall-buffer header." >&2
+        exit 1
+    fi
+    # Validate every generated task line is well-formed shell BEFORE it can reach
+    # the cluster — catches the generate_task_file nested-default mangle (an
+    # unclosed ${...} that swallows the redirect) that otherwise dies silently.
+    while IFS= read -r _ln; do
+        [[ -z "${_ln// }" ]] && continue
+        if ! bash -n -c "$_ln" 2>/dev/null; then
+            echo "EMIT_PENDING: a generated task line is not valid shell (swallowed" >&2
+            echo "  redirect / unclosed brace — check the wrapper's positional defaults):" >&2
+            echo "  ${_ln}" >&2
+            exit 1
+        fi
+    done < "${RUN_DIR}/tasks"
+    REQ_TIME_S=$(python3 -c "import math;print(int(math.ceil(${MAX_STEPS}*${TIMING_S_PER_STEP}*${TASKS_PER_GPU}*1.5)))")
+    ETA_H=$(python3 -c "print(f'{${MAX_STEPS}*${TIMING_S_PER_STEP}*${TASKS_PER_GPU}/3600:.2f}')")
+    TMPL_TIME=$(grep -oE -- '--time[= ][0-9:-]+' "${REPO_DIR}/${SBATCH_SCRIPT}" | grep -oE '[0-9:-]+$' | head -1 || true)
+    TMPL_TIME_S=$(python3 -c "
+s='${TMPL_TIME:-0}'.strip(); d=0
+if '-' in s: d,s=s.split('-',1); d=int(d)
+p=[int(x) for x in s.split(':')] if s else [0]
+h,m,sec = (p+[0,0,0])[:3] if len(p)==3 else ((p[0],p[1],0) if len(p)==2 else (0,p[0],0))
+print(d*86400+h*3600+m*60+sec)")
+    if (( MAX_STEPS > 0 && TMPL_TIME_S < REQ_TIME_S )); then
+        echo "EMIT_PENDING: template --time (${TMPL_TIME}=${TMPL_TIME_S}s) < required ${REQ_TIME_S}s" >&2
+        echo "  (MAX_STEPS ${MAX_STEPS} × ${TIMING_S_PER_STEP} s/step × ${TASKS_PER_GPU} tasks/gpu × 1.5)." >&2
+        echo "  Pass a longer sbatch template as arg 5." >&2
+        exit 1
+    fi
+    mkdir -p "${PENDING_DIR}"
+    PEND="${PENDING_DIR}/${GROUP}.sbatch"
+    {
+        grep -E '^#!' "${REPO_DIR}/${SBATCH_SCRIPT}" | head -1
+        grep -E '^#SBATCH' "${REPO_DIR}/${SBATCH_SCRIPT}" | grep -vE -- '--output|--error|--ntasks|--job-name'
+        echo "#SBATCH --ntasks=${N_GPUS}"
+        echo "#SBATCH --job-name=${GROUP}"
+        echo "#SBATCH --output=${REPO_DIR}/slurm_logs/slurm_%j.out"
+        echo "#SBATCH --error=${REPO_DIR}/slurm_logs/slurm_%j.err"
+        echo "# ETA: ${ETA_H}"
+        echo "# CELLS: ${CELLS}"
+        echo "# MAX_STEPS: ${MAX_STEPS}"
+        echo "# TASKS_PER_GPU: ${TASKS_PER_GPU}"
+        echo "# TIMING_MEASURED: ${TIMING_S_PER_STEP} s/step (${TIMING_SOURCE:-submit.sh --emit-pending})"
+        echo "# Emitted by submit.sh --emit-pending: task file pre-generated in-session."
+    } > "$PEND"
+    cat >> "$PEND" <<PENDING_EOF
+
+cd ${REPO_DIR}
+mkdir -p slurm_logs disbatch_logs
+source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl
+set -eo pipefail
+export PYTHONUNBUFFERED=1
+export WANDB_MODE=offline
+export WANDB_PROJECT=lora-sweeps
+export TOKENIZERS_PARALLELISM=false
+export TASK_FILE="${RUN_DIR}/tasks"
+module load disBatch
+disBatch "\$TASK_FILE" --prefix "disbatch_logs"
+PENDING_EOF
+    echo "EMIT_PENDING: wrote ${PEND}"
+    echo "  CELLS=${CELLS} ntasks=${N_GPUS} TASKS_PER_GPU=${TASKS_PER_GPU} ETA=${ETA_H}h (task lines validated)"
+    SLURM_JOB_ID="pending"
+else
+    echo "Submitting ${N_GPUS} tasks for group '${GROUP}' ..."
+    SBATCH_OUT=$(sbatch --ntasks="$N_GPUS" --job-name="$GROUP" "${REPO_DIR}/${SBATCH_SCRIPT}")
+    echo "${SBATCH_OUT}"
+    SLURM_JOB_ID=$(echo "${SBATCH_OUT}" | awk '{print $NF}')
+fi
 
 # ── Manifest contract ─────────────────────────────────────────────────────────
 # Every sweep submission writes meta.json next to the run logs. The notebook
