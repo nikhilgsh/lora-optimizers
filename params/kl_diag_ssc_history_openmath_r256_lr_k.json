@@ -1,7 +1,0 @@
-{
-  "lr": ["1e-2", "3e-2", "1e-1", "3e-1"],
-  "optimizer": ["kl-diag-ssc-history-picard-lora"],
-  "seed": ["0"],
-  "precond_delta": ["1e-4"],
-  "cw_picard_iters": ["1", "2"]
-}

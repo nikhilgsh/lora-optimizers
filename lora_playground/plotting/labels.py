@@ -30,15 +30,6 @@ def _eps(x) -> str:
     return f"{float(x):.0e}".replace("e-0", "e-").replace("e+0", "e")
 
 
-def _cfg_get(cfg: dict, key: str, default=None):
-    """Read top-level cfg first, then optimizer_config fallback."""
-    val = cfg.get(key, default)
-    if val is not None:
-        return val
-    opt_cfg = cfg.get("optimizer_config") or {}
-    return opt_cfg.get(key, default)
-
-
 def _axes(cfg: dict) -> dict | None:
     """Extract the distinguishing axes from a run cfg. Returns None for
     optimizers outside the chord-tight family (and AdamW handled by callers).
@@ -107,28 +98,15 @@ def canonical_label(cfg: dict) -> str | None:
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
         return f"KL-Shampoo{polar}{ks} (f={f}{bc}{dd})"
-    if opt in ("kl-diag-lora", "kl-diag-polar-lora",
-               "kl-diag-ssc-history-picard-lora"):
-        if opt == "kl-diag-polar-lora":
-            polar = " +polar"
-        elif opt == "kl-diag-ssc-history-picard-lora":
-            polar = " +SSC-history"
-        else:
-            polar = ""
-        f = _cfg_get(cfg, "precond_refresh_every")
-        cb = _cfg_get(cfg, "curvature_beta")
+    if opt in ("kl-diag-lora", "kl-diag-polar-lora"):
+        polar = " +polar" if opt == "kl-diag-polar-lora" else ""
+        f = cfg.get("precond_refresh_every")
+        cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
-        dl = _cfg_get(cfg, "precond_delta")
+        dl = cfg.get("precond_delta")
         dd = f", δ={_eps(dl)}" if dl is not None else ""
-        pic = _cfg_get(cfg, "cw_picard_iters", 1) or 1
+        pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        if opt == "kl-diag-ssc-history-picard-lora":
-            sk = _cfg_get(cfg, "ssc_kappa")
-            sc = _cfg_get(cfg, "ssc_c")
-            sm = f", κ={sk:g}" if sk is not None else (
-                f", c={sc:g}" if sc is not None else ""
-            )
-            return f"KL-diag{polar}{ks} (f={f}{bc}{dd}{sm})"
         return f"KL-diag{polar}{ks} (f={f}{bc}{dd})"
     a = _axes(cfg)
     if a is None:

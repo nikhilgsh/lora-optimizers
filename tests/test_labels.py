@@ -28,14 +28,6 @@ def test_label_table():
     assert canonical_label(_cfg(OPT_CLEAN, muon_ns_steps=8, picard_iters_override=2,
                                 ssc_kappa=0.75)) \
         == "chord-tight-clean ns=8 k=2 (κ_sr=0.75)"
-    assert canonical_label(_cfg(
-        "kl-diag-ssc-history-picard-lora",
-        precond_refresh_every=10,
-        curvature_beta=0.99,
-        precond_delta=0.001,
-        cw_picard_iters=2,
-        optimizer_config={"ssc_kappa": 0.75},
-    )) == "KL-diag +SSC-history k2 (f=10, β_c=0.99, δ=1e-3, κ=0.75)"
 
 
 def test_non_family_optimizer_is_none():

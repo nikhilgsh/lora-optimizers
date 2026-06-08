@@ -616,7 +616,6 @@ OPTIMIZER_CHOICES = {
     "kl-shampoo-polar-lora",
     "kl-diag-lora",
     "kl-diag-polar-lora",
-    "kl-diag-ssc-history-picard-lora",
     "adam-scaled-lora-post",
     "adam-lin-lora-post",
     "adam-scaled-lora-matrix",
@@ -1083,10 +1082,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
-                 diag_metric=False, cw_picard_iters=1,
-                 cw_picard_mode="iterated", polar_method="ns",
-                 ssc_c=None, ssc_kappa=None, ssc_nsteps=10,
-                 ssc_kappa_solver="stable_rank", cw_eigh_seed=True):
+                 diag_metric=False, cw_picard_iters=1):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1099,29 +1095,6 @@ class CurvatureWhitenLoRA(Optimizer):
         self.curvature_beta = float(curvature_beta)
         self.use_polar = bool(use_polar)
         self.ns_steps = int(ns_steps)
-        self.polar_method = str(polar_method)
-        if self.polar_method not in {"ns", "ssc"}:
-            raise ValueError(
-                f"CurvatureWhitenLoRA polar_method must be 'ns' or 'ssc', got {polar_method!r}."
-            )
-        self.ssc_c = ssc_c
-        self.ssc_kappa = ssc_kappa
-        self.ssc_nsteps = int(ssc_nsteps)
-        self.ssc_kappa_solver = str(ssc_kappa_solver)
-        self.cw_eigh_seed = bool(cw_eigh_seed)
-        if self.polar_method == "ssc":
-            if not self.use_polar:
-                raise ValueError("polar_method='ssc' requires use_polar=True.")
-            n_ssc = (ssc_c is not None) + (ssc_kappa is not None)
-            if n_ssc != 1:
-                raise ValueError(
-                    "CurvatureWhitenLoRA SSC requires exactly one of ssc_c or ssc_kappa."
-                )
-            if ssc_kappa is not None and self.ssc_kappa_solver != "stable_rank":
-                raise ValueError(
-                    "CurvatureWhitenLoRA SSC only supports ssc_kappa_solver='stable_rank' "
-                    "to keep the KL Picard path eig/SVD-free."
-                )
         self.precond_delta_relative = bool(precond_delta_relative)
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_basic_diagnostics = bool(log_basic_diagnostics)
@@ -1155,28 +1128,16 @@ class CurvatureWhitenLoRA(Optimizer):
         # diagonal cross-term (kl_shampoo_polar_derivation.md §Cross-coupling) and is
         # only defined for the kl path (the cross-term uses the D_in/D_out diagonals).
         self.cw_picard_iters = int(cw_picard_iters)
-        self.cw_picard_mode = str(cw_picard_mode)
-        if self.cw_picard_mode not in {"iterated", "history_seeded"}:
-            raise ValueError(
-                f"cw_picard_mode must be 'iterated' or 'history_seeded', got {cw_picard_mode!r}."
-            )
         if self.cw_picard_iters < 1:
             raise ValueError("cw_picard_iters must be >= 1.")
         if self.cw_picard_iters > 1 and self.soap_v:
             raise ValueError("cw_picard_iters>1 is only defined for the kl path (soap_v=False).")
-        if self.cw_picard_mode == "history_seeded":
-            if not self.diag_metric:
-                raise ValueError("cw_picard_mode='history_seeded' is only defined for kl-diag.")
-            if self.cw_picard_iters > 2:
-                raise ValueError("cw_picard_mode='history_seeded' supports only k=1 or k=2.")
 
         # Q starts as identity → step 1 is plain Adam (no rotation), since the
         # eigenbasis must be built from gradients STRICTLY BEFORE the step it is
-        # used in (Alg 3 updates L/R/Q after the weight step). Standard modes use
-        # one first-step eigh seed. The history-seeded SSC Picard variant sets
-        # cw_eigh_seed=False, keeps the identity seed, and uses only QR refreshes
-        # thereafter so its hot path stays free of SVD/eigh.
-        self._q_initialized = not self.cw_eigh_seed
+        # used in (Alg 3 updates L/R/Q after the weight step). First eigh seed
+        # happens after step 1. Grams are zero-initialized (Alg 3 EMA).
+        self._q_initialized = False
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
             r, d_in = A.shape
@@ -1203,11 +1164,6 @@ class CurvatureWhitenLoRA(Optimizer):
                 # momentum on step 1).
                 'lam_A': torch.zeros(r, dtype=torch.float32, device=A.device),
                 'lam_B': torch.zeros(r, dtype=torch.float32, device=A.device),
-                # History-seeded Picard seed: previous physical factor update.
-                # This makes k=2 a single-operator warm-start correction instead
-                # of a second polar/SSC pass in the current step.
-                'cw_prev_dA': torch.zeros_like(A, dtype=torch.float32),
-                'cw_prev_dB': torch.zeros_like(B, dtype=torch.float32),
                 'step': 0,
             }
 
@@ -1224,9 +1180,7 @@ class CurvatureWhitenLoRA(Optimizer):
         return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
     def _cw_diag_record(self, *, A_post, B_post, A_pre, B_pre, dA, dB,
-                        lr, rho, sigma_A, sigma_B, sigma_WA, sigma_WB,
-                        cross_A=None, cross_B=None, base_A=None, base_B=None,
-                        ssc_c_A=None, ssc_c_B=None):
+                        lr, rho, sigma_A, sigma_B, sigma_WA, sigma_WB):
         """Diagnostics for one curvature-whiten step.
 
         Factor diagnostics are computed after applying the update, matching the
@@ -1250,27 +1204,6 @@ class CurvatureWhitenLoRA(Optimizer):
             "product_tangent_over_lr": float(tangent / max(lr_f, 1e-30)),
             "product_finite_over_lr": float(finite / max(lr_f, 1e-30)),
         })
-        if cross_A is not None and base_A is not None:
-            base_norm = float(base_A.detach().to(torch.float32).norm())
-            cross_norm = float(cross_A.detach().to(torch.float32).norm())
-            rec["cw_picard_cross_A_over_base"] = cross_norm / max(base_norm, 1e-30)
-        if cross_B is not None and base_B is not None:
-            base_norm = float(base_B.detach().to(torch.float32).norm())
-            cross_norm = float(cross_B.detach().to(torch.float32).norm())
-            rec["cw_picard_cross_B_over_base"] = cross_norm / max(base_norm, 1e-30)
-
-        def _add_ssc(side, c):
-            if c is None:
-                return
-            c_t = torch.as_tensor(c).detach().to(torch.float32).reshape(())
-            c_f = float(c_t)
-            rec[f"ssc_c_{side}"] = c_f
-            rec[f"ssc_top_shrink_{side}"] = float(
-                c_t / (c_t.square() + 1.0).sqrt()
-            )
-
-        _add_ssc("A", ssc_c_A)
-        _add_ssc("B", ssc_c_B)
         return rec
 
     @torch.no_grad()
@@ -1390,19 +1323,15 @@ class CurvatureWhitenLoRA(Optimizer):
                           f"warm={float(sf[i]):.5g} true={float(true[i]):.5g}", flush=True)
         return s
 
-    def _polar_ns_guarded(self, Z, states, key, side=None):
-        """Scale-invariant matrix operator for a batch ``Z`` (N,p,q), guarded
+    def _polar_ns_guarded(self, Z, states, key):
+        """Scale-invariant polar of a batch ``Z`` (N,p,q) via gram-NS, guarded
         against a σ_max UNDER-estimate.
 
-        ``polar_method='ns'`` applies the usual gram-NS polar map.
-        ``polar_method='ssc'`` applies SPECTRA soft spectral clipping on the
-        same σ_max-normalized input. Both routes keep the same outer KL sandwich
-        and trust-region rescale.
-
-        The spectral-norm-law failure: a stale/cold warm start vector can miss
-        ``Z``'s top singular direction, so the warm σ_max under-estimates;
-        ``Z / σ̂`` then enters the matrix function far above its intended input
-        scale. Two layers:
+        The spectral-norm-law failure (CLAUDE.md): a stale/cold warm start vector
+        can miss ``Z``'s top singular direction, so the warm σ_max under-estimates;
+        ``Z / σ̂`` then enters the Newton–Schulz far above its convergence basin
+        and diverges to NaN (the KL-coupled curvature shifts the spectrum enough
+        to trigger this; CPU repro in tests/test_kl_shampoo_lora.py). Two layers:
 
           1. Floor the warm σ_max at the largest row / column L2 norm — both are
              valid LOWER bounds on σ_max, so a stale estimate can't be grossly
@@ -1421,22 +1350,6 @@ class CurvatureWhitenLoRA(Optimizer):
         cn = Z.pow(2).sum(dim=-2).amax(dim=-1).clamp_min(0).sqrt()    # max col L2  ≤ σ_max
         s = torch.maximum(s, torch.maximum(rn, cn))
         Xn = Z / (s.view(-1, 1, 1) + eps)
-        if self.polar_method == "ssc":
-            if self.ssc_kappa is not None:
-                out, c = _ssc_adaptive_stable_rank_batched(
-                    Xn, kappa=float(self.ssc_kappa), nsteps=self.ssc_nsteps,
-                )
-            else:
-                out = _ssc_misr_batched(
-                    Xn, c=float(self.ssc_c), nsteps=self.ssc_nsteps,
-                ).float()
-                c = torch.full(
-                    (Z.shape[0],), float(self.ssc_c), device=Z.device, dtype=torch.float32,
-                )
-            if side is not None:
-                for j, st in enumerate(states):
-                    st[f"ssc_c_last_{side}"] = c.reshape(-1)[j].detach()
-            return out.float()
         out = _newton_schulz_gram_batched(Xn, nsteps=self.ns_steps, dtype=torch.float32,
                                           pre_norm="none", safety_factor=1.0)
         bad = ~torch.isfinite(out.flatten(1)).all(dim=1)             # (N,) per-matrix
@@ -1500,67 +1413,35 @@ class CurvatureWhitenLoRA(Optimizer):
             # cross-term never formed ⇒ bit-identical to the pre-Picard step.
             dA = torch.zeros_like(gA)
             dB = torch.zeros_like(gB)
-            cross_A_log = None
-            cross_B_log = None
-            base_A_log = mhatA if not self.soap_v else None
-            base_B_log = mhatB if not self.soap_v else None
-            if self.cw_picard_mode == "history_seeded":
-                if self.cw_picard_iters == 1:
-                    inA = mhatA; inB = mhatB
+            for _pic in range(self.cw_picard_iters):
+                if self.soap_v:
+                    zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
+                    zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
                 else:
-                    dA_seed = st.get('cw_prev_dA', dA)
-                    dB_seed = st.get('cw_prev_dB', dB)
-                    cross_A = ((Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB_seed)) @ Af) * Din_m.unsqueeze(0)
-                    cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA_seed * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
-                    cross_A_log = (1.0 / lr) * cross_A
-                    cross_B_log = (1.0 / lr) * cross_B
-                    inA = mhatA + (1.0 / lr) * cross_A
-                    inB = mhatB + (1.0 / lr) * cross_B
-                zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                zB = (((inB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                    if _pic == 0:
+                        inA = mhatA; inB = mhatB
+                    else:
+                        cross_A = ((Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Af) * Din_m.unsqueeze(0)
+                        cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
+                        inA = mhatA + (1.0 / lr) * cross_A
+                        inB = mhatB + (1.0 / lr) * cross_B
+                    zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                    zB = (((inB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
                 if self.use_polar:
-                    zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA', side='A')[0]
-                    zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB', side='B')[0]
+                    zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
+                    zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
                 WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
                 WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
                 dA = -(rho / (sWA + self.eps)) * WA
                 dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
-            else:
-                for _pic in range(self.cw_picard_iters):
-                    if self.soap_v:
-                        zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
-                        zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
-                    else:
-                        if _pic == 0:
-                            inA = mhatA; inB = mhatB
-                        else:
-                            cross_A = ((Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Af) * Din_m.unsqueeze(0)
-                            cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
-                            cross_A_log = (1.0 / lr) * cross_A
-                            cross_B_log = (1.0 / lr) * cross_B
-                            inA = mhatA + (1.0 / lr) * cross_A
-                            inB = mhatB + (1.0 / lr) * cross_B
-                        zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                        zB = (((inB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
-                    if self.use_polar:
-                        zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA', side='A')[0]
-                        zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB', side='B')[0]
-                    WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                    WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
-                    sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
-                    sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
-                    dA = -(rho / (sWA + self.eps)) * WA
-                    dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
             emit_diag = self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0
             if emit_diag:
                 A_pre = A.detach().float()
                 B_pre = B.detach().float()
             A.add_(dA.to(dtype=A.dtype, device=A.device))
             B.add_(dB.to(dtype=B.dtype, device=B.device))
-            st['cw_prev_dA'].copy_(dA.detach())
-            st['cw_prev_dB'].copy_(dB.detach())
             if emit_diag:
                 self._last_cw_diag_records.append(self._cw_diag_record(
                     A_post=A,
@@ -1575,12 +1456,6 @@ class CurvatureWhitenLoRA(Optimizer):
                     sigma_B=sB,
                     sigma_WA=sWA,
                     sigma_WB=sWB,
-                    cross_A=cross_A_log,
-                    cross_B=cross_B_log,
-                    base_A=base_A_log,
-                    base_B=base_B_log,
-                    ssc_c_A=st.get('ssc_c_last_A'),
-                    ssc_c_B=st.get('ssc_c_last_B'),
                 ))
             if self.kl_coupled:
                 # Coupled KL fixed point (Prop 4); mirror of _cw_apply_grouped.
@@ -1689,60 +1564,30 @@ class CurvatureWhitenLoRA(Optimizer):
             # and there is no cross-iter normalization drift to track.
             dA = torch.zeros_like(gA)
             dB = torch.zeros_like(gB)
-            cross_A_log = None
-            cross_B_log = None
-            base_A_log = mhatA if not self.soap_v else None
-            base_B_log = mhatB if not self.soap_v else None
             if timer: timer.start("cw_picard")
-            if self.cw_picard_mode == "history_seeded":
-                if self.cw_picard_iters == 1:
-                    inA = mhatA; inB = mhatB
+            for _pic in range(self.cw_picard_iters):
+                if self.soap_v:
+                    zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
+                    zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
                 else:
-                    dA_seed = torch.stack([S[i]['cw_prev_dA'] for i in idxs])
-                    dB_seed = torch.stack([S[i]['cw_prev_dB'] for i in idxs])
-                    cross_A = ((Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB_seed)) @ Aw) * Din_m.unsqueeze(1)
-                    cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA_seed * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
-                    cross_A_log = (1.0 / lr) * cross_A
-                    cross_B_log = (1.0 / lr) * cross_B
-                    inA = mhatA + (1.0 / lr) * cross_A
-                    inB = mhatB + (1.0 / lr) * cross_B
-                zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-                zB = (((inB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+                    if _pic == 0:
+                        inA = mhatA; inB = mhatB
+                    else:
+                        cross_A = ((Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Aw) * Din_m.unsqueeze(1)
+                        cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
+                        inA = mhatA + (1.0 / lr) * cross_A
+                        inB = mhatB + (1.0 / lr) * cross_B
+                    zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
+                    zB = (((inB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
                 if self.use_polar:
-                    zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA', side='A')
-                    zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB', side='B')
+                    zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA')
+                    zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB')
                 WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
                 WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
                 sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
                 dA = -(rho / (sWA + self.eps)).view(-1, 1, 1) * WA
                 dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)).view(-1, 1, 1) * WB
-            else:
-                for _pic in range(self.cw_picard_iters):
-                    if self.soap_v:
-                        zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
-                        zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
-                    else:
-                        if _pic == 0:
-                            inA = mhatA; inB = mhatB
-                        else:
-                            cross_A = ((Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Aw) * Din_m.unsqueeze(1)
-                            cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
-                            cross_A_log = (1.0 / lr) * cross_A
-                            cross_B_log = (1.0 / lr) * cross_B
-                            inA = mhatA + (1.0 / lr) * cross_A
-                            inB = mhatB + (1.0 / lr) * cross_B
-                        zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-                        zB = (((inB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
-                    if self.use_polar:
-                        zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA', side='A')
-                        zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB', side='B')
-                    WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-                    WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
-                    sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
-                    sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
-                    dA = -(rho / (sWA + self.eps)).view(-1, 1, 1) * WA
-                    dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if timer: timer.start("cw_curv_grams")
             if self.kl_coupled:
@@ -1788,19 +1633,11 @@ class CurvatureWhitenLoRA(Optimizer):
                         sigma_B=sB[j],
                         sigma_WA=sWA[j],
                         sigma_WB=sWB[j],
-                        cross_A=(cross_A_log[j] if cross_A_log is not None else None),
-                        cross_B=(cross_B_log[j] if cross_B_log is not None else None),
-                        base_A=(base_A_log[j] if base_A_log is not None else None),
-                        base_B=(base_B_log[j] if base_B_log is not None else None),
-                        ssc_c_A=S[i].get('ssc_c_last_A'),
-                        ssc_c_B=S[i].get('ssc_c_last_B'),
                     ))
                 S[i]['m_A'].copy_(mA[j]); S[i]['m_B'].copy_(mB[j])
                 S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])
                 S[i]['L_A'].copy_(LA[j]); S[i]['R_B'].copy_(RB[j])
                 S[i]['D_in'].copy_(Din[j]); S[i]['D_out'].copy_(Dout[j])
-                S[i]['cw_prev_dA'].copy_(dA[j].detach())
-                S[i]['cw_prev_dB'].copy_(dB[j].detach())
                 A_.grad.zero_(); B_.grad.zero_()
 
 
@@ -11429,8 +11266,7 @@ def build_optimizer(
             soap_v=False,
             cw_picard_iters=cw_picard_iters,
         )
-    if optimizer_type in ("kl-diag-lora", "kl-diag-polar-lora",
-                          "kl-diag-ssc-history-picard-lora"):
+    if optimizer_type in ("kl-diag-lora", "kl-diag-polar-lora"):
         # Option (b) of kl_shampoo_polar_derivation.md §"Cross-coupling": the
         # consistent single diagonal metric (P,Q)=(D_out,D_in). Same class as
         # kl-shampoo, but the dense small-side S_curv is replaced by the
@@ -11438,17 +11274,6 @@ def build_optimizer(
         # whole step is one self-consistent two-sided program. Polar on/off is the
         # same optimizer-name axis. Tests the fidelity-vs-consistency fork: does
         # dropping the dense latent curvature cost peak loss?
-        use_ssc_history = optimizer_type == "kl-diag-ssc-history-picard-lora"
-        ssc_c_eff = ssc_c
-        ssc_kappa_eff = ssc_kappa
-        ssc_kappa_solver_eff = ssc_kappa_solver
-        if use_ssc_history:
-            # This named variant is the no-SVD/eigh candidate. κ-adaptive SSC
-            # therefore always uses the stable-rank solver, and a bare factory
-            # call defaults to the same κ=0.75 setting used by the SSC sweeps.
-            ssc_kappa_solver_eff = "stable_rank"
-            if ssc_c_eff is None and ssc_kappa_eff is None:
-                ssc_kappa_eff = 0.75
         return CurvatureWhitenLoRA(
             model,
             lr=lr,
@@ -11456,7 +11281,7 @@ def build_optimizer(
             delta=precond_delta,
             eps=1e-8,
             curvature_beta=curvature_beta,
-            use_polar=(optimizer_type == "kl-diag-polar-lora" or use_ssc_history),
+            use_polar=(optimizer_type == "kl-diag-polar-lora"),
             ns_steps=muon_ns_steps,
             precond_delta_relative=precond_delta_relative,
             lora_plus_multiplier=lora_plus_multiplier,
@@ -11468,13 +11293,6 @@ def build_optimizer(
             soap_v=False,
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,
-            cw_picard_mode="history_seeded" if use_ssc_history else "iterated",
-            polar_method="ssc" if use_ssc_history else "ns",
-            ssc_c=ssc_c_eff,
-            ssc_kappa=ssc_kappa_eff,
-            ssc_nsteps=ssc_nsteps,
-            ssc_kappa_solver=ssc_kappa_solver_eff,
-            cw_eigh_seed=not use_ssc_history,
         )
     if optimizer_type == "adam-lin-core-lora":
         # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA

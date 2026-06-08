@@ -13,8 +13,6 @@ equivalence on the diag path (both code paths were edited), the defining identit
 L_A == Bᵀ diag(D_out) B, factory dispatch, and that diag (b) actually differs from
 dense kl-shampoo (a).
 """
-import copy
-
 import torch
 import torch.nn as nn
 import pytest
@@ -57,21 +55,6 @@ def _make(seed=0):
 def _diag_opt(m, lr=1e-2, use_polar=True, **kw):
     return CurvatureWhitenLoRA(m, lr=lr, use_polar=use_polar,
                                kl_coupled=True, soap_v=False, diag_metric=True, **kw)
-
-
-def _ssc_history_opt(m, lr=1e-2, k=1, **kw):
-    return _diag_opt(
-        m,
-        lr=lr,
-        use_polar=True,
-        cw_picard_iters=k,
-        cw_picard_mode="history_seeded",
-        polar_method="ssc",
-        ssc_kappa=0.75,
-        ssc_kappa_solver="stable_rank",
-        cw_eigh_seed=False,
-        **kw,
-    )
 
 
 def test_requires_kl_coupled():
@@ -158,15 +141,8 @@ def test_diag_differs_from_dense_kl():
         "diag_metric produced the same params as dense kl — substitution not in effect"
 
 
-@pytest.mark.parametrize(
-    "name,polar,mode,method",
-    [
-        ("kl-diag-lora", False, "iterated", "ns"),
-        ("kl-diag-polar-lora", True, "iterated", "ns"),
-        ("kl-diag-ssc-history-picard-lora", True, "history_seeded", "ssc"),
-    ],
-)
-def test_factory_dispatch(name, polar, mode, method):
+@pytest.mark.parametrize("name,polar", [("kl-diag-lora", False), ("kl-diag-polar-lora", True)])
+def test_factory_dispatch(name, polar):
     m, _, _ = _make()
     opt = build_optimizer(
         m, optimizer_type=name, lr=1e-3,
@@ -178,168 +154,3 @@ def test_factory_dispatch(name, polar, mode, method):
     assert opt.kl_coupled is True
     assert opt.soap_v is False
     assert opt.use_polar is polar
-    assert opt.cw_picard_mode == mode
-    assert opt.polar_method == method
-    if name == "kl-diag-ssc-history-picard-lora":
-        assert opt.ssc_kappa == 0.75
-        assert opt.ssc_kappa_solver == "stable_rank"
-        assert opt.cw_eigh_seed is False
-        assert opt._q_initialized is True
-
-
-@pytest.mark.parametrize("k", [1, 2])
-def test_ssc_history_picard_uses_one_operator_pass_per_step(monkeypatch, k):
-    """History-seeded k=2 may add one skinny cross term, but must not pay for a
-    second SSC/polar operator call in the current step."""
-    m, x, target = _make(seed=13)
-    opt = _ssc_history_opt(m, k=k)
-    opt._batched_step = False
-    calls = []
-    original = opt._polar_ns_guarded
-
-    def counted(Z, states, key, side=None):
-        calls.append((side, tuple(Z.shape)))
-        return original(Z, states, key, side=side)
-
-    monkeypatch.setattr(opt, "_polar_ns_guarded", counted)
-    ((m(x) - target) ** 2).mean().backward()
-    opt.step(); opt.zero_grad()
-
-    assert len(calls) == 2 * len(opt.pairs)
-    assert sorted(side for side, _shape in calls) == ["A", "A", "B", "B"]
-
-
-def test_ssc_history_k2_engages_after_seed_step():
-    """The first k=2 step has a zero history seed; subsequent steps must differ
-    from k=1 if the stored physical update is actually used."""
-    def run(k):
-        m, x, target = _make(seed=17)
-        opt = _ssc_history_opt(m, k=k)
-        for _ in range(4):
-            ((m(x) - target) ** 2).mean().backward()
-            opt.step(); opt.zero_grad()
-        return [p.detach().clone() for p in m.parameters()]
-
-    k1 = run(1)
-    k2 = run(2)
-    assert any(not torch.allclose(a, b, atol=1e-6) for a, b in zip(k1, k2)), \
-        "history-seeded k=2 matched k=1 after the seed step"
-
-
-def test_ssc_history_k2_tracks_exact_picard_correction():
-    """History-seeded k=2 is the cheap production proxy for exact same-step k=2.
-
-    From the same frozen state and gradient, compare only the Picard correction
-    vectors: exact-k2 minus k1 versus history-k2 minus k1. After the first seed
-    steps, the history correction should point in nearly the same direction as
-    the exact same-step Picard correction and have comparable norm. This is the
-    numerical guard that the efficient variant is not just "different from k1".
-    """
-    def run_from_state(model, opt, param_snap, state_snap, grad_snap, k, mode):
-        for p, ps, g in zip(model.parameters(), param_snap, grad_snap):
-            p.data.copy_(ps)
-            p.grad = g.clone()
-        opt.pair_state = copy.deepcopy(state_snap)
-        opt.cw_picard_iters = k
-        opt.cw_picard_mode = mode
-        opt.step()
-        opt.zero_grad()
-        return torch.cat([
-            (p.detach() - ps).flatten()
-            for p, ps in zip(model.parameters(), param_snap)
-        ])
-
-    m, x, target = _make(seed=23)
-    opt = _ssc_history_opt(m, k=1, lr=1e-2, precond_refresh_every=2)
-    opt._batched_step = False
-    cosines = []
-    norm_ratios = []
-    rel_errors = []
-    for step in range(1, 12):
-        ((m(x) - target) ** 2).mean().backward()
-        param_snap = [p.detach().clone() for p in m.parameters()]
-        grad_snap = [p.grad.detach().clone() for p in m.parameters()]
-        state_snap = copy.deepcopy(opt.pair_state)
-
-        d1 = run_from_state(m, opt, param_snap, state_snap, grad_snap,
-                            k=1, mode="history_seeded")
-        d_exact = run_from_state(m, opt, param_snap, state_snap, grad_snap,
-                                 k=2, mode="iterated")
-        d_hist = run_from_state(m, opt, param_snap, state_snap, grad_snap,
-                                k=2, mode="history_seeded")
-        exact_corr = d_exact - d1
-        hist_corr = d_hist - d1
-        exact_norm = exact_corr.norm().clamp_min(1e-30)
-        hist_norm = hist_corr.norm().clamp_min(1e-30)
-
-        if step >= 4:
-            cosines.append(torch.dot(exact_corr, hist_corr) / (exact_norm * hist_norm))
-            norm_ratios.append(hist_norm / exact_norm)
-            rel_errors.append((hist_corr - exact_corr).norm() / exact_norm)
-
-        # Advance the reference trajectory with the production history path so
-        # cw_prev_dA/cw_prev_dB remain realistic for the next comparison.
-        for p, ps, g in zip(m.parameters(), param_snap, grad_snap):
-            p.data.copy_(ps)
-            p.grad = g.clone()
-        opt.pair_state = copy.deepcopy(state_snap)
-        opt.cw_picard_iters = 2
-        opt.cw_picard_mode = "history_seeded"
-        opt.step()
-        opt.zero_grad()
-
-    mean_cos = torch.stack(cosines).mean()
-    mean_ratio = torch.stack(norm_ratios).mean()
-    mean_rel_error = torch.stack(rel_errors).mean()
-    assert mean_cos > 0.95, f"history correction points away from exact Picard: cos={mean_cos:.3f}"
-    assert 0.75 < mean_ratio < 1.25, f"history correction has wrong norm ratio: {mean_ratio:.3f}"
-    assert mean_rel_error < 0.35, f"history correction too far from exact Picard: {mean_rel_error:.3f}"
-
-
-def test_ssc_history_diagnostics_report_clipping_and_cross_terms():
-    m, x, target = _make(seed=29)
-    opt = _ssc_history_opt(
-        m,
-        k=2,
-        log_basic_diagnostics=True,
-        diagnostics_every=1,
-    )
-    opt._batched_step = False
-    for _ in range(2):
-        ((m(x) - target) ** 2).mean().backward()
-        opt.step()
-        opt.zero_grad()
-
-    records = opt._last_cw_diag_records
-    assert records
-    for rec in records:
-        assert "ssc_c_A" in rec and "ssc_c_B" in rec
-        assert 0.0 < rec["ssc_top_shrink_A"] <= 1.0
-        assert 0.0 < rec["ssc_top_shrink_B"] <= 1.0
-        assert "cw_picard_cross_A_over_base" in rec
-        assert "cw_picard_cross_B_over_base" in rec
-        assert rec["cw_picard_cross_A_over_base"] >= 0.0
-        assert rec["cw_picard_cross_B_over_base"] >= 0.0
-
-
-def test_ssc_history_factory_step_avoids_svd_and_eigh(monkeypatch):
-    """The efficient named variant must not call SVD/eigh in construction or step.
-    The class's standard first-step eigenseed is disabled for this path."""
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("SVD/eigh is forbidden on kl-diag-ssc-history-picard-lora")
-
-    monkeypatch.setattr(torch.linalg, "eigh", forbidden)
-    monkeypatch.setattr(torch.linalg, "svd", forbidden)
-    monkeypatch.setattr(torch.linalg, "svdvals", forbidden)
-
-    m, x, target = _make(seed=19)
-    opt = build_optimizer(
-        m,
-        optimizer_type="kl-diag-ssc-history-picard-lora",
-        lr=1e-3,
-        cw_picard_iters=2,
-        precond_refresh_every=1,
-    )
-    for _ in range(2):
-        ((m(x) - target) ** 2).mean().backward()
-        opt.step(); opt.zero_grad()
