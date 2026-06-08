@@ -36,6 +36,7 @@ _DATA_DIR_RE = re.compile(r"--data_dir\s+(\S+)")
 _DATASET_SUBSTRINGS: tuple[tuple[str, str], ...] = (  # ordered; first match wins
     ("opc_sft_stage2", "opc"),
     ("aya_bengali", "bengali"),
+    ("openwebmath", "openwebmath"),  # pretrain corpus; checked before "openmath"
     ("openmath", "openmath"),
     ("tulu3", "tulu3"),
     ("magicoder_seq512", "magicoder"),  # legacy; never a leaderboard cell
@@ -120,6 +121,7 @@ class Workload:
 
 _OPC_DISPLAY = "opc-sft-stage2 (Magicoder)"
 _OPENMATH_DISPLAY = "OpenMathInstruct-2"
+_OPENWEBMATH_DISPLAY = "OpenWebMath"
 _TULU3_DISPLAY = "Tulu-3 SFT mixture"
 _BENGALI_DISPLAY = "Aya-Bengali"
 
@@ -147,6 +149,9 @@ WORKLOADS: list[Workload] = [
     # ── Meta-Llama-3-8B (scale-up; model_display gives label "Meta/..." so it
     #    does not collide with Llama-3.2-1B's "Llama/..." cross-setting key) ────
     Workload("meta-llama/Meta-Llama-3-8B", "opc", 256, "Meta-Llama-3-8B", _OPC_DISPLAY, 9000, _SIGMA, True),
+    # ── Qwen3-0.6B-Base (continued PRETRAINING on OpenWebMath; tanya-style
+    #    polar-family sweep — all-token loss, not instruction tuning) ──────────
+    Workload("Qwen/Qwen3-0.6B-Base", "openwebmath", 64, "Qwen3-0.6B", _OPENWEBMATH_DISPLAY, 9000, _SIGMA, True),
 ]
 
 
