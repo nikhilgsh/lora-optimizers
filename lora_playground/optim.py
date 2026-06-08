@@ -616,6 +616,8 @@ OPTIMIZER_CHOICES = {
     "kl-shampoo-polar-lora",
     "kl-diag-lora",
     "kl-diag-polar-lora",
+    "diag-shampoo-lora",
+    "diag-shampoo-polar-lora",
     "adam-scaled-lora-post",
     "adam-lin-lora-post",
     "adam-scaled-lora-matrix",
@@ -1121,8 +1123,11 @@ class CurvatureWhitenLoRA(Optimizer):
         # two-sided program with an exact cross term (vs the mixed-metric option a).
         # Requires kl_coupled=True (it reuses the D_in/D_out EMAs).
         self.diag_metric = bool(diag_metric)
-        if self.diag_metric and not self.kl_coupled:
-            raise ValueError("diag_metric=True requires kl_coupled=True (it reuses the D_in/D_out EMAs).")
+        # diag_metric reuses the D_in/D_out EMAs as the single global diagonal metric.
+        # With kl_coupled=True those diagonals are the KL coupled fixed point (Prop 4);
+        # with kl_coupled=False they are plain grad-energy EMAs (the diag-shampoo arm).
+        # Both are valid — the small side M_A = Bᵀ diag(D_out) B is recomputed each step
+        # either way; only the diagonal accumulation rule differs.
         # Picard block-coordinate depth (cross-coupling). k=1 is the single-block
         # step (no cross-term). k>=2 corrects the simultaneous-step coupling via the
         # diagonal cross-term (kl_shampoo_polar_derivation.md §Cross-coupling) and is
@@ -1472,8 +1477,11 @@ class CurvatureWhitenLoRA(Optimizer):
                 st['D_in'].mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
                 st['D_out'].mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
             else:
-                st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-                st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+                # diag_metric recomputes L_A/R_B from the diagonals each step (above), so
+                # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
+                if not self.diag_metric:
+                    st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+                    st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
                 st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
             A.grad.zero_(); B.grad.zero_()
@@ -1610,8 +1618,11 @@ class CurvatureWhitenLoRA(Optimizer):
                 Din.mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
                 Dout.mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
             else:
-                LA.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-                RB.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+                # diag_metric recomputes LA/RB from the diagonals each step (above), so
+                # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
+                if not self.diag_metric:
+                    LA.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+                    RB.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
                 Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
             if timer: timer.stop()
@@ -11290,6 +11301,32 @@ def build_optimizer(
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
             kl_coupled=True,
+            soap_v=False,
+            diag_metric=True,
+            cw_picard_iters=cw_picard_iters,
+        )
+    if optimizer_type in ("diag-shampoo-lora", "diag-shampoo-polar-lora"):
+        # Non-KL ablation of kl-diag (option b): SAME consistent diagonal metric
+        # (small side M_A = Bᵀ diag(D_out) B, diag_metric=True) and closed-form
+        # Shampoo whiten (soap_v=False), but the diagonals D_in/D_out are textbook
+        # grad-energy EMAs instead of the KL coupled fixed point (kl_coupled=False).
+        # Isolates what the KL coupling buys at fixed diagonal-metric geometry.
+        return CurvatureWhitenLoRA(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            curvature_beta=curvature_beta,
+            use_polar=(optimizer_type == "diag-shampoo-polar-lora"),
+            ns_steps=muon_ns_steps,
+            precond_delta_relative=precond_delta_relative,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics,
+            log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            kl_coupled=False,
             soap_v=False,
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,

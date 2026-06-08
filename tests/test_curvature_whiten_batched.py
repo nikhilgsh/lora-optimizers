@@ -27,11 +27,11 @@ class _Model(nn.Module):
         self.l4 = _LoraLin(16, 48, 4)   # singleton (different d_out)
 
 
-def _run(use_polar):
+def _run(use_polar, **extra):
     torch.manual_seed(0)
     m_batched = _Model()
     m_ref = copy.deepcopy(m_batched)
-    common = dict(lr=1e-3, use_polar=use_polar, precond_refresh_every=3, delta=1e-3)
+    common = dict(lr=1e-3, use_polar=use_polar, precond_refresh_every=3, delta=1e-3, **extra)
     o_b = CurvatureWhitenLoRA(m_batched, **common); o_b._batched_step = True
     o_r = CurvatureWhitenLoRA(m_ref, **common);     o_r._batched_step = False
     g = torch.Generator().manual_seed(1)
@@ -57,3 +57,10 @@ def test_grouped_matches_per_pair_polar():
 
 def test_grouped_matches_per_pair_no_polar():
     _run(use_polar=False)
+
+
+def test_grouped_matches_per_pair_diag_shampoo():
+    # The diag-shampoo arm: diag_metric=True, soap_v=False, kl_coupled=False.
+    # Touches the else-branch L_A/R_B clobber guard in BOTH step paths, so the
+    # batched↔per-pair equivalence must still hold.
+    _run(use_polar=True, diag_metric=True, soap_v=False, kl_coupled=False)
