@@ -616,6 +616,7 @@ OPTIMIZER_CHOICES = {
     "kl-shampoo-polar-lora",
     "kl-diag-lora",
     "kl-diag-polar-lora",
+    "kl-diag-polar-flatout-lora",
     "diag-shampoo-lora",
     "diag-shampoo-polar-lora",
     "adam-scaled-lora-post",
@@ -1084,7 +1085,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
-                 diag_metric=False, cw_picard_iters=1):
+                 diag_metric=False, cw_picard_iters=1, flat_outer=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1132,6 +1133,12 @@ class CurvatureWhitenLoRA(Optimizer):
         # step (no cross-term). k>=2 corrects the simultaneous-step coupling via the
         # diagonal cross-term (kl_shampoo_polar_derivation.md §Cross-coupling) and is
         # only defined for the kl path (the cross-term uses the D_in/D_out diagonals).
+        # flat_outer: skip the un-whiten so dX ∝ φ(z) (flat-spectrum, chord-tight
+        # basin, curvature-chosen frame). Heuristic robustness probe — NOT the
+        # curvature-metric LMO. Only meaningful with polar (it IS the polar step).
+        self.flat_outer = bool(flat_outer)
+        if self.flat_outer and not use_polar:
+            raise ValueError("flat_outer=True requires use_polar=True (it is the polar-without-unwhiten step).")
         self.cw_picard_iters = int(cw_picard_iters)
         if self.cw_picard_iters < 1:
             raise ValueError("cw_picard_iters must be >= 1.")
@@ -1435,8 +1442,15 @@ class CurvatureWhitenLoRA(Optimizer):
                 if self.use_polar:
                     zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
                     zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
-                WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                if self.flat_outer:
+                    # Robustness probe (heuristic, NOT the curvature-metric LMO):
+                    # skip the un-whiten. dX ∝ φ(z) is flat-spectrum (chord-tight
+                    # basin) with a curvature-chosen frame — trust curvature for
+                    # direction, not magnitude. σmax(φ(z))≈1, so the rescale → ρ.
+                    WA, WB = zA, zB
+                else:
+                    WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                    WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
                 dA = -(rho / (sWA + self.eps)) * WA
@@ -1590,8 +1604,12 @@ class CurvatureWhitenLoRA(Optimizer):
                 if self.use_polar:
                     zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA')
                     zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB')
-                WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-                WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+                if self.flat_outer:
+                    # See _cw_apply_per_pair: skip the un-whiten (flat-spectrum probe).
+                    WA, WB = zA, zB
+                else:
+                    WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
+                    WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
                 sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
                 dA = -(rho / (sWA + self.eps)).view(-1, 1, 1) * WA
@@ -11304,6 +11322,32 @@ def build_optimizer(
             soap_v=False,
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,
+        )
+    if optimizer_type == "kl-diag-polar-flatout-lora":
+        # Robustness probe: kl-diag-polar with the un-whiten REMOVED (flat_outer).
+        # dX ∝ φ(z) is flat-spectrum (chord-tight basin) with a curvature-chosen
+        # frame. Heuristic (not the curvature-metric LMO) — tests whether the
+        # tuned-lr peak survives without the basin-sharpening un-whiten.
+        return CurvatureWhitenLoRA(
+            model,
+            lr=lr,
+            betas=(0.9, 0.999),
+            delta=precond_delta,
+            eps=1e-8,
+            curvature_beta=curvature_beta,
+            use_polar=True,
+            ns_steps=muon_ns_steps,
+            precond_delta_relative=precond_delta_relative,
+            lora_plus_multiplier=lora_plus_multiplier,
+            log_basic_diagnostics=log_basic_diagnostics,
+            log_heavy_diagnostics=log_heavy_diagnostics,
+            diagnostics_every=optim_diagnostics_every,
+            precond_refresh_every=precond_refresh_every,
+            kl_coupled=True,
+            soap_v=False,
+            diag_metric=True,
+            cw_picard_iters=cw_picard_iters,
+            flat_outer=True,
         )
     if optimizer_type in ("diag-shampoo-lora", "diag-shampoo-polar-lora"):
         # Non-KL ablation of kl-diag (option b): SAME consistent diagonal metric

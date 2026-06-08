@@ -98,6 +98,15 @@ def canonical_label(cfg: dict) -> str | None:
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
         return f"KL-Shampoo{polar}{ks} (f={f}{bc}{dd})"
+    if opt == "kl-diag-polar-flatout-lora":
+        f = cfg.get("precond_refresh_every")
+        cb = cfg.get("curvature_beta")
+        bc = f", β_c={cb:g}" if cb is not None else ""
+        dl = cfg.get("precond_delta")
+        dd = f", δ={_eps(dl)}" if dl is not None else ""
+        pic = cfg.get("cw_picard_iters", 1) or 1
+        ks = f" k{pic}" if pic > 1 else ""
+        return f"KL-diag-flatout +polar{ks} (f={f}{bc}{dd})"
     if opt in ("kl-diag-lora", "kl-diag-polar-lora"):
         polar = " +polar" if opt == "kl-diag-polar-lora" else ""
         f = cfg.get("precond_refresh_every")

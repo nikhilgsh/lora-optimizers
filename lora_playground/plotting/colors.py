@@ -95,6 +95,8 @@ OPTIM_COLORS = {
     # Option (b): consistent diagonal global metric (geometric small side); polar A/B
     "kl-diag-lora":                "#c2185b",
     "kl-diag-polar-lora":          "#6a1b9a",
+    # kl-diag-polar with the un-whiten removed (flat-spectrum robustness probe)
+    "kl-diag-polar-flatout-lora":  "#ad1457",
     # Non-KL ablation of option (b): same diagonal metric, plain grad-energy EMA
     # diagonals (no KL fixed point); polar A/B
     "diag-shampoo-lora":           "#00897b",
@@ -129,6 +131,7 @@ OPTIM_FAMILIES = {
         "kl-shampoo-polar-lora",
         "kl-diag-lora",
         "kl-diag-polar-lora",
+        "kl-diag-polar-flatout-lora",
         "diag-shampoo-lora",
         "diag-shampoo-polar-lora",
         "adam-clip-product-lora",
