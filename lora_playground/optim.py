@@ -1224,7 +1224,9 @@ class CurvatureWhitenLoRA(Optimizer):
         return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
     def _cw_diag_record(self, *, A_post, B_post, A_pre, B_pre, dA, dB,
-                        lr, rho, sigma_A, sigma_B, sigma_WA, sigma_WB):
+                        lr, rho, sigma_A, sigma_B, sigma_WA, sigma_WB,
+                        cross_A=None, cross_B=None, base_A=None, base_B=None,
+                        ssc_c_A=None, ssc_c_B=None):
         """Diagnostics for one curvature-whiten step.
 
         Factor diagnostics are computed after applying the update, matching the
@@ -1248,6 +1250,27 @@ class CurvatureWhitenLoRA(Optimizer):
             "product_tangent_over_lr": float(tangent / max(lr_f, 1e-30)),
             "product_finite_over_lr": float(finite / max(lr_f, 1e-30)),
         })
+        if cross_A is not None and base_A is not None:
+            base_norm = float(base_A.detach().to(torch.float32).norm())
+            cross_norm = float(cross_A.detach().to(torch.float32).norm())
+            rec["cw_picard_cross_A_over_base"] = cross_norm / max(base_norm, 1e-30)
+        if cross_B is not None and base_B is not None:
+            base_norm = float(base_B.detach().to(torch.float32).norm())
+            cross_norm = float(cross_B.detach().to(torch.float32).norm())
+            rec["cw_picard_cross_B_over_base"] = cross_norm / max(base_norm, 1e-30)
+
+        def _add_ssc(side, c):
+            if c is None:
+                return
+            c_t = torch.as_tensor(c).detach().to(torch.float32).reshape(())
+            c_f = float(c_t)
+            rec[f"ssc_c_{side}"] = c_f
+            rec[f"ssc_top_shrink_{side}"] = float(
+                c_t / (c_t.square() + 1.0).sqrt()
+            )
+
+        _add_ssc("A", ssc_c_A)
+        _add_ssc("B", ssc_c_B)
         return rec
 
     @torch.no_grad()
@@ -1477,6 +1500,10 @@ class CurvatureWhitenLoRA(Optimizer):
             # cross-term never formed ⇒ bit-identical to the pre-Picard step.
             dA = torch.zeros_like(gA)
             dB = torch.zeros_like(gB)
+            cross_A_log = None
+            cross_B_log = None
+            base_A_log = mhatA if not self.soap_v else None
+            base_B_log = mhatB if not self.soap_v else None
             if self.cw_picard_mode == "history_seeded":
                 if self.cw_picard_iters == 1:
                     inA = mhatA; inB = mhatB
@@ -1485,6 +1512,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     dB_seed = st.get('cw_prev_dB', dB)
                     cross_A = ((Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB_seed)) @ Af) * Din_m.unsqueeze(0)
                     cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA_seed * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
+                    cross_A_log = (1.0 / lr) * cross_A
+                    cross_B_log = (1.0 / lr) * cross_B
                     inA = mhatA + (1.0 / lr) * cross_A
                     inB = mhatB + (1.0 / lr) * cross_B
                 zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
@@ -1509,6 +1538,8 @@ class CurvatureWhitenLoRA(Optimizer):
                         else:
                             cross_A = ((Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Af) * Din_m.unsqueeze(0)
                             cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
+                            cross_A_log = (1.0 / lr) * cross_A
+                            cross_B_log = (1.0 / lr) * cross_B
                             inA = mhatA + (1.0 / lr) * cross_A
                             inB = mhatB + (1.0 / lr) * cross_B
                         zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
@@ -1544,6 +1575,12 @@ class CurvatureWhitenLoRA(Optimizer):
                     sigma_B=sB,
                     sigma_WA=sWA,
                     sigma_WB=sWB,
+                    cross_A=cross_A_log,
+                    cross_B=cross_B_log,
+                    base_A=base_A_log,
+                    base_B=base_B_log,
+                    ssc_c_A=st.get('ssc_c_last_A'),
+                    ssc_c_B=st.get('ssc_c_last_B'),
                 ))
             if self.kl_coupled:
                 # Coupled KL fixed point (Prop 4); mirror of _cw_apply_grouped.
@@ -1652,6 +1689,10 @@ class CurvatureWhitenLoRA(Optimizer):
             # and there is no cross-iter normalization drift to track.
             dA = torch.zeros_like(gA)
             dB = torch.zeros_like(gB)
+            cross_A_log = None
+            cross_B_log = None
+            base_A_log = mhatA if not self.soap_v else None
+            base_B_log = mhatB if not self.soap_v else None
             if timer: timer.start("cw_picard")
             if self.cw_picard_mode == "history_seeded":
                 if self.cw_picard_iters == 1:
@@ -1661,6 +1702,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     dB_seed = torch.stack([S[i]['cw_prev_dB'] for i in idxs])
                     cross_A = ((Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB_seed)) @ Aw) * Din_m.unsqueeze(1)
                     cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA_seed * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
+                    cross_A_log = (1.0 / lr) * cross_A
+                    cross_B_log = (1.0 / lr) * cross_B
                     inA = mhatA + (1.0 / lr) * cross_A
                     inB = mhatB + (1.0 / lr) * cross_B
                 zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
@@ -1685,6 +1728,8 @@ class CurvatureWhitenLoRA(Optimizer):
                         else:
                             cross_A = ((Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Aw) * Din_m.unsqueeze(1)
                             cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
+                            cross_A_log = (1.0 / lr) * cross_A
+                            cross_B_log = (1.0 / lr) * cross_B
                             inA = mhatA + (1.0 / lr) * cross_A
                             inB = mhatB + (1.0 / lr) * cross_B
                         zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
@@ -1743,6 +1788,12 @@ class CurvatureWhitenLoRA(Optimizer):
                         sigma_B=sB[j],
                         sigma_WA=sWA[j],
                         sigma_WB=sWB[j],
+                        cross_A=(cross_A_log[j] if cross_A_log is not None else None),
+                        cross_B=(cross_B_log[j] if cross_B_log is not None else None),
+                        base_A=(base_A_log[j] if base_A_log is not None else None),
+                        base_B=(base_B_log[j] if base_B_log is not None else None),
+                        ssc_c_A=S[i].get('ssc_c_last_A'),
+                        ssc_c_B=S[i].get('ssc_c_last_B'),
                     ))
                 S[i]['m_A'].copy_(mA[j]); S[i]['m_B'].copy_(mB[j])
                 S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])

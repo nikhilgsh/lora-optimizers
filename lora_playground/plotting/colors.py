@@ -95,6 +95,7 @@ OPTIM_COLORS = {
     # Option (b): consistent diagonal global metric (geometric small side); polar A/B
     "kl-diag-lora":                "#c2185b",
     "kl-diag-polar-lora":          "#6a1b9a",
+    "kl-diag-ssc-history-picard-lora": "#00897b",
 }
 
 
@@ -125,6 +126,7 @@ OPTIM_FAMILIES = {
         "kl-shampoo-polar-lora",
         "kl-diag-lora",
         "kl-diag-polar-lora",
+        "kl-diag-ssc-history-picard-lora",
         "adam-clip-product-lora",
         "adam-clip-product-lora-coupled",
         "adam-clip-product-lora-coupled-endrms",

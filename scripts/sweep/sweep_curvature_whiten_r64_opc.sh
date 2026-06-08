@@ -18,10 +18,12 @@
 #   4: precond_delta  (relative damping δ for the inverse-sqrts; the critical HP.
 #       δ=1e-6 amplifies weak curvature directions ~1000× → NaN; ~1e-3 caps it
 #       at ~31×. MUST be set — the CLI default 1e-6 diverges.)
+#   5: cw_picard_iters (optional; defaults to CW_PICARD_ITERS env or 1)
 lr=${1:-3e-3}
 optimizer=${2:-curvature-whiten-lora}
 seed=${3:-0}
 precond_delta=${4:-1e-3}
+cw_picard_iters=${5:-${CW_PICARD_ITERS:-1}}
 
 compile_args=()
 if [ "${COMPILE:-1}" = "1" ]; then
@@ -67,5 +69,5 @@ python train_lora.py \
     --precond_delta "$precond_delta" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
-    --cw_picard_iters "${CW_PICARD_ITERS:-1}" \
+    --cw_picard_iters "$cw_picard_iters" \
     "${ckpt_args[@]}"

@@ -30,8 +30,9 @@ fine; for projecting an end-to-end production wall at a new training config
 smoke at that exact config and read `peak_memory_mb` + `tokens_per_sec` from
 the eval log line.
 
-Hardware: A100 is canonical; A6000 is acceptable for relative ratios since
-they apply uniformly across rows.
+Hardware: use the canonical GPU for the target campaign. For current
+leaderboard/polar-product acceptance timing, run on Blackwell RTX PRO 6000.
+A6000 timings are functional or preliminary only.
 
 Usage:
     # Smoke
@@ -82,6 +83,9 @@ GRAM_PRECOND_OPTIMIZERS = [
     # confirm step-time parity (drops the v̂ EMA, adds the coupled-Gram matmuls).
     "kl-shampoo-lora",
     "kl-shampoo-polar-lora",
+    "kl-diag-lora",
+    "kl-diag-polar-lora",
+    "kl-diag-ssc-history-picard-lora",
 ]
 # Coupled-core solver variants (no precond_refresh; per-step QR + small SVDs).
 # Included in default bench list at K=1 only.
@@ -243,6 +247,9 @@ def parse_args():
     parser.add_argument("--picard_iters_override", type=int, default=None,
                         help="Override picard_iters. Used for the chord-tight-clean "
                              "variant to compare k=2 vs k=3 at fixed ns_form.")
+    parser.add_argument("--cw_picard_iters", type=int, default=1,
+                        help="Picard cross-coupling depth for CurvatureWhitenLoRA "
+                             "KL-family optimizers.")
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Learning rate (immaterial for timing; passed through).")
     parser.add_argument("--batch_size", type=int, default=2,
@@ -425,7 +432,7 @@ def main():
                     print(f"# skip unknown optimizer: {opt_name}", flush=True)
                 continue
             ks = args.precond_refresh_every if opt_name in GRAM_PRECOND_OPTIMIZERS else [1]
-            methods = args.precond_method if opt_name in POLAR_OPTIMIZERS else ["eigh"]
+            methods = args.precond_method if opt_name in POLAR_OPTIMIZERS else ["none"]
             for method in methods:
                 for K in ks:
                     # Construct a fresh optimizer per cell so K-stale caches don't
@@ -437,12 +444,13 @@ def main():
                         optimizer_type=opt_name,
                         lr=args.lr,
                         precond_refresh_every=K,
-                        precond_method=method,
+                        precond_method=method if method != "none" else "higham",
                         higham_iters=args.higham_iters,
                         higham_compute_dtype=args.higham_compute_dtype,
                         ns_form=args.ns_form,
                         muon_ns_steps=args.muon_ns_steps,
                         picard_iters_override=args.picard_iters_override,
+                        cw_picard_iters=args.cw_picard_iters,
                     )
                     n_reps = args.n_cycles * K
                     if device.type == "cuda":
@@ -529,6 +537,7 @@ def main():
                             args.n_docs_per_slot
                             if args.data_pipeline_version == "packed_v1" else None
                         ),
+                        "cw_picard_iters": args.cw_picard_iters,
                         "mfu": mfu,
                         "mfu_peak_tflops": peak_tflops,
                         "mfu_n_params": n_total_params,

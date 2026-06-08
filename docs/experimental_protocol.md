@@ -35,7 +35,7 @@ Pre-tokenized cache: run `python scripts/data/prepare_data.py --out_dir data/mag
 
 **1-epoch invariant:** `max_train_samples` must equal `max_steps × effective_batch_size`. Violating this causes multi-epoch training under constant LR, which diverges. Check before submitting any new sweep.
 
-**Hardware:** H100 PCIe (`--gpus-per-task=h100_pcie:1`) is the standard sweep hardware. A100 is acceptable and produces equivalent eval_loss values. Do not compare timing metrics across GPU types.
+**Hardware:** Use the canonical hardware for the target campaign. For current polar-product and leaderboard experiments, Blackwell RTX PRO 6000 is canonical. Older H100/A100 runs can be useful for functional checks or loss-only comparisons when the campaign allows it, but do not use their timings as evidence for Blackwell leaderboard claims. Do not compare timing metrics across GPU types.
 
 ## Fixed Comparison Rules
 
@@ -70,9 +70,9 @@ Do not compare throughput across different hardware, compile settings, dtype, se
 
 ## Hardware Policy
 
-Use A100 runs for profiling and runtime estimates because A100 is the intended comparison hardware. The local RTX A6000 is acceptable for functional GPU smokes, model-download checks, and quick debugging, but A6000 timings should not be used to estimate production runtime or compare optimizers.
+Use the target campaign's canonical hardware for profiling and runtime estimates. For current polar-product and leaderboard experiments, use Blackwell RTX PRO 6000. The local RTX A6000 is acceptable for functional GPU smokes, model-download checks, and quick debugging, but A6000 timings should not be used to estimate production runtime or compare optimizers.
 
-Before every GPU command, check live GPU utilization and memory with `nvidia-smi`. If the local GPU is busy, do not use it. For A100 profiling, use the interactive GPU workflow and record the GPU type in the JSON config or run notes.
+Before every GPU command, check live GPU utilization and memory with `nvidia-smi`. If the local GPU is busy, do not use it. For production profiling, use the interactive GPU or SLURM workflow for the campaign hardware and record the GPU type in the JSON config or run notes.
 
 ## Smoke Tests
 
