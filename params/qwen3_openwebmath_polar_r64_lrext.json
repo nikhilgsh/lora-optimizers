@@ -1,0 +1,12 @@
+{
+  "task": [
+    "adamw_lr1e-5",
+    "adamw_lr3e-5",
+    "ct_clean_k1_lr1e-4",
+    "ct_clean_k1_lr3e-4",
+    "ct_clean_k2_lr1e-4",
+    "ct_clean_k2_lr3e-4",
+    "kl_diag_polar_lr1e-4",
+    "kl_diag_polar_lr3e-4"
+  ]
+}
