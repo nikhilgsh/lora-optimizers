@@ -1,0 +1,483 @@
+\documentclass[11pt]{article}
+
+% ---------------------------------------------------------------------------
+% WORKSHOP / arXiv preprint draft -- SKELETON ONLY (prose to be authored).
+% Swap \documentclass for the venue style file once a target is chosen.
+% Story (LOCKED 2026-06-08):
+%   Headline   : WE WIN -- the cheapest spectral-polar member is the fastest
+%                LoRA optimizer.
+%   Protagonist: diagonal Shampoo+polar.
+%   Claim      : it matches the expensive members and beats AdamW 1.5-1.7x
+%                across 14 (model,dataset,rank) settings -- the expensive
+%                machinery is dead weight.
+% ---------------------------------------------------------------------------
+
+\usepackage{amssymb,amsmath,amsthm,amsbsy,amsfonts}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+% Looser line spacing inside algorithm blocks for readability.
+\makeatletter
+\newcommand{\algspacing}{\setlength{\@tempdima}{0pt}\renewcommand{\baselinestretch}{1.25}\selectfont}
+\makeatother
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+% Phase header: blank line + vertical space above, bold label.
+\algnewcommand\algorithmicphase{\vspace{5pt}\textbf}
+\algnewcommand\Phase{\Statex\algorithmicphase}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage[nameinlink]{cleveref}
+\usepackage[firstinits=true,backend=bibtex,style=numeric-comp,citestyle=numeric-comp,sorting=nyt,url=false,arxiv=false,isbn=false,doi=false]{biblatex}
+\bibliography{references}
+
+\graphicspath{{figs/}}
+
+% --- macros -----------------------------------------------------------------
+\renewcommand{\vec}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\bm{#1}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newcommand{\smax}{\sigma_{\max}}
+\newcommand{\DW}{\Delta W}
+\newcommand{\polar}{\varphi}                 % polar map  U\Sigma V^T -> U V^T
+% Working method name -- rename in one place once finalized.
+\newcommand{\methodname}{\textsc{Polar-LoRA}\xspace}
+\usepackage{xspace}
+% Visible marker for numbers pending the full-polar confirm/negate sweep.
+\newcommand{\PLACEHOLDER}[1]{\textcolor{red}{[#1]}}
+% theorem environments
+\theoremstyle{plain}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\title{\methodname}  % working title -- revisit before submission
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+% ===========================================================================
+\begin{abstract}
+% SKELETON: Farquhar 5-sentence formula -- one stub per sentence, author expands.
+% Numbers are placeholders; RE-PULL from the loader before submission.
+% (1) what:        introduce \methodname (Shampoo-style two-sided curvature whiten
+%                  -> full polar -> operator-norm step radius).
+% (2) why-hard:    spectral updates on the LoRA factors fail (factorization-dependent,
+%                  factor norms diverge); known fixes appear in isolation, bundled
+%                  into heavy methods -- unclear which ingredient carries the gain.
+% (3) how:         keep the cheap essential parts -- diagonal two-sided whitener,
+%                  full polar via PolarExpress, operator-norm step radius.
+% (4) evidence:    14 (model,dataset,rank) settings, 4 base models, 4 corpora;
+%                  reaches AdamW's loss in \PLACEHOLDER{1.2--1.7}$\times$ fewer steps;
+%                  ablations isolate the polar cap; diagonal curvature suffices.
+% (5) number:      near-free -- $\le 6\%$ wall per step at production batch.
+\end{abstract}
+
+% ===========================================================================
+\section{Introduction}
+\label{sec:intro}
+% Hard limits: <= 1.5 pages; methods by page 2-3; 2-4 contribution bullets <=2 lines.
+%
+% Citation keys (verify entries in references.bib against arXiv before submission):
+%   kang_specgf=2602.06385, imuon=2605.09238, spectron=2602.12429,
+%   soap=2409.11321, adaprelora=2605.08734, mua=2602.06204,
+%   polarexpress=2505.16932, muon=<verify>.
+
+% SKELETON -- author writes prose. Beats to hit, in order:
+% - Hook: LoRA is the default; the optimizer that trains the adapter is the
+%   under-examined lever (practice defaults to AdamW).
+% - Challenge: spectral/steepest-descent (Muon family) and Shampoo curvature both
+%   reach target loss in fewer steps on full-weight training, but carrying them to
+%   the LoRA factors is not straightforward -- per-factor polar is not invariant
+%   to the dW = BA reparameterization; factor norms can diverge \cite{kang_specgf, imuon}.
+% - Gap (remedies are partial, each bundled with expensive machinery):
+%     * iMuon \cite{imuon}: reparam-invariance via partner-Gram-whitened polar,
+%       but controls only the PRODUCT step -- per-factor step unbounded, no
+%       lr transfer across rank.
+%     * Spectron \cite{spectron}: per-factor operator-norm step radius, but for
+%       native low-rank PRETRAINING, no rank-transfer claim.
+%     * Shampoo/SOAP, AdaPreLoRA \cite{soap, adaprelora}: two-sided curvature, no
+%       spectral cap; AdaPreLoRA cost scales with the dense weight.
+%     * lr-scaling rules for LoRA \cite{mua}: rate-rank relationship, but for
+%       sign/Adam-style updates, not spectral.
+% - Approach: assemble the cheap union, ablate the expensive parts away.
+%   \methodname = momentum -> two-sided DIAGONAL curvature whiten -> FULL polar
+%   (spectral cap) -> operator-norm step radius rho = eta/(smax(A)+smax(B)).
+%
+% CONSTRAINT (author feedback): the lr-transfer claim is EMPIRICAL ONLY --
+%   "our optimal learning rate transfers across rank; AdamW's does not."
+%   Do NOT assert r^{-1/2}, do NOT say "theory predicts", do NOT claim what
+%   \cite{mua} predicts for our method (mua may be cited as related work on
+%   rank-aware lr, but state no prediction).
+
+\paragraph{Contributions.}
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \textbf{Fast, cheap LoRA optimizer.} Reaches AdamW's eval loss in
+        \PLACEHOLDER{1.2--1.7}$\times$ fewer steps across 14 settings; $\le 6\%$
+        wall per step.
+  \item \textbf{Operator-norm lr transfer (empirical).} Optimal rate stable across
+        rank; AdamW's shrinks with rank; iMuon (no radius) does not transfer.
+  \item \textbf{What carries the gain.} Ablation isolates the polar cap; cheap
+        diagonal curvature suffices.
+  \item \textbf{Benchmark.} A 14-setting LoRA-optimizer comparison under a
+        speedup-to-AdamW metric over 4 base models and 4 corpora.
+\end{itemize}
+
+% Results-preview stub (author expands): speedup is task-dependent -- largest
+% out-of-distribution and at higher rank
+% (\PLACEHOLDER{$1.20\times$ in-distribution code vs.\ $1.57\times$ OOD, same model/rank});
+% per-step overhead leaves the step-count speedup intact in wall-clock.
+
+% ===========================================================================
+\section{Setup and metric}
+\label{sec:setup}
+% SKELETON -- TODO author:
+% - LoRA factor convention (A:(r,d_in), B:(d_out,r), dW=(alpha/r)BA).
+% - Held-everything-fixed protocol (model, data+split, r/alpha, targets, seq len,
+%   batch, dtype, constant LR no warmup).
+% - Speedup-vs-AdamW metric (horizon / steps-to-match-AdamW-final-loss).
+% - AdamW noise floor sigma as the unit for Delta claims.
+
+% ===========================================================================
+\section{Method: \methodname}
+\label{sec:method}
+% MAIN STORY (outlined): all three updates are the SAME object -- the linear-
+% minimization oracle (LMO) of the gradient under a norm -- and differ ONLY in the
+% norm / metric. 3.1 decoupled per-factor spectral norm; 3.2 coupled product/manifold
+% metric; 3.3 learned two-sided curvature metric + explicit operator-norm budget.
+% Prose is terse here by design (author expands); the equations are the content.
+% Citation keys (verify in references.bib): kang_specgf, imuon, spectron,
+% polarexpress, soap, mua, tilde_csd (compositional steepest descent -- no arXiv).
+
+% --- setup + the steepest-descent (LMO) view (MAIN STORY) ---------------------
+% All three updates are the same step (steepest descent under a norm) under
+% different norms. Statements in body; proofs in \Cref{app:proofs}.
+\paragraph{Setup.}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item LoRA factors $A\in\R^{r\times d_{\mathrm{in}}}$, $B\in\R^{d_{\mathrm{out}}\times r}$; adapter $\DW=(\alpha/r)\,BA$.
+  \item $G\triangleq\partial L/\partial(BA)$: gradient of the loss w.r.t.\ the \emph{unscaled} product $BA$ (the $\alpha/r$ scale is absorbed into the learning rate $\eta>0$). Per-factor gradients $G_A=B^\top G$, $G_B=GA^\top$.
+  \item $\dot A,\dot B$: the updates applied to the factors ($A\leftarrow A+\dot A$).
+  \item $\polar(M)=UV^\top$ for the SVD $M=U\Sigma V^\top$ (sets each nonzero singular value to $1$); spectral norm $\|M\|_2=\smax(M)$; $\langle X,Y\rangle=\operatorname{tr}(X^\top Y)$; Gram matrices $S_A=AA^\top$, $S_B=B^\top B$.
+\end{itemize}
+\textbf{Steepest descent under a norm} (the LMO), for a factor gradient $M$ and a norm $\|\cdot\|$, is the update
+\begin{equation}
+  \eta\,\argmin_{\|U\|\le1}\langle M,U\rangle .
+  \label{eq:lmo}
+\end{equation}
+The three variants specialize $\|\cdot\|$ to three different norms; \Cref{lem:lmo} is the case of the spectral norm $\|\cdot\|_2$.
+
+\subsection{Naive Muon on the factors}
+\label{sec:method-naive}
+\paragraph{Norm.} The spectral norm $\|\cdot\|_2$, applied to each factor separately.
+\begin{lemma}[Spectral-norm LMO]\label{lem:lmo}
+$-\polar(M)\in\argmin_{\|U\|_2\le1}\langle M,U\rangle$ for any matrix $M$ (uniquely so when $M$ has full rank with distinct singular values). \emph{(\Cref{app:proofs}.)}
+\end{lemma}
+\noindent Applying \Cref{lem:lmo} to each factor gradient:
+\begin{equation}
+  \dot A=-\eta\,\polar(G_A),\qquad \dot B=-\eta\,\polar(G_B).
+  \label{eq:naive}
+\end{equation}
+Two defects on a factored weight:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \emph{Factorization-dependent.} The product $\DW=BA$ is invariant under $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$, but the factor gradient transforms as $G_A\mapsto N^{-\top}G_A$. Since $\polar$ is not equivariant, \eqref{eq:naive} depends on the factorization, not on $\DW$ alone \cite{imuon}.
+  \item \emph{Unbounded merged step.} The merged step
+        $\|B\dot A+\dot B A\|_2\le\eta\big(\|A\|_2+\|B\|_2\big)$
+        grows with the factor norms, which can diverge under the corresponding flow \cite{kang_specgf}.
+\end{itemize}
+
+\subsection{iMuon / compositional Muon}
+\label{sec:method-imuon}
+\paragraph{LMO (half-split).} Budget each factor's contribution to the product step separately --- the tractable surrogate \cite{tilde_csd} for the harder joint constraint $\|\dot B A+B\dot A\|_2\le\eta$:
+\begin{equation}
+  \min_{\dot A}\ \langle G_A,\dot A\rangle \ \ \text{s.t.}\ \ \|B\dot A\|_2\le\eta,
+  \qquad
+  \min_{\dot B}\ \langle G_B,\dot B\rangle \ \ \text{s.t.}\ \ \|\dot B A\|_2\le\eta .
+  \label{eq:imuon-lmo}
+\end{equation}
+\begin{proposition}[Partner-Gram step]\label{prop:imuon}
+The solution of \eqref{eq:imuon-lmo} whitens each factor by its partner's Gram root:
+\begin{equation*}
+  \dot A=-\eta\,S_B^{-1/2}\,\polar\!\big(S_B^{-1/2}G_A\big),\qquad
+  \dot B=-\eta\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2}.
+\end{equation*}
+\emph{(\Cref{app:proofs}; iMuon \cite{imuon}, and the half-split of compositional Muon \cite{tilde_csd}.)}
+\end{proposition}
+\begin{corollary}[Product-step invariance]\label{cor:imuon}
+$\|B\dot A\|_2=\eta$, independent of the factor norms --- so no runtime rescale is needed. \emph{(\Cref{app:proofs}.)}
+\end{corollary}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
+  \item \emph{The gap we close.} The raw factor step is uncontrolled --- $\|\dot A\|_2$ scales as $\eta/\sigma_{\min}(B)$ --- and there is no per-factor operator-norm radius, so the learning rate does not transfer across rank.
+\end{itemize}
+
+\subsection{Ours: \methodname}
+\label{sec:method-ours}
+\paragraph{Motivation.} Naive Muon (\Cref{lem:lmo}) and iMuon (\Cref{prop:imuon}) are the same LMO under the Euclidean inner product, differing only in what they cap. \methodname keeps the LMO and changes the \emph{inner product} to a curvature-weighted one.
+
+\paragraph{Curvature inner product.} Equip weight space with
+\begin{equation}
+  \langle X,Y\rangle_{P,Q}=\operatorname{tr}(X^\top P\,Y\,Q),\qquad
+  \|X\|_{P,Q}=\|P^{1/2}XQ^{1/2}\|_2,
+  \label{eq:ours-metric}
+\end{equation}
+where $P,Q\succ0$ are two diagonal curvatures --- per-coordinate gradient energy on the output and input space (EMAs, decay $\beta_2$),
+\begin{equation*}
+  P_{ii}=\mathrm{EMA}\,\big\|(G_B)_{i,:}\big\|_2^2,\qquad
+  Q_{jj}=\mathrm{EMA}\,\big\|(G_A)_{:,j}\big\|_2^2,
+\end{equation*}
+and $\|\cdot\|_{P,Q}$ is the operator norm this inner product induces.
+
+\paragraph{Derivation.} Cap the product step in this inner product and maximize alignment with the gradient:
+\begin{equation}
+  \max_{\dot A}\ \langle B\dot A,\,-G\rangle
+  \quad\text{s.t.}\quad
+  \|B\dot A\|_{P,Q}\le\tau .
+  \label{eq:ours-opt}
+\end{equation}
+This is the LMO of \Cref{lem:lmo} in the curvature inner product. Whitening both sides reduces it to the spectral case, giving a closed form.
+\begin{proposition}[Curvature-metric LMO]\label{prop:ours}
+For $B$ of full column rank, the solution of \eqref{eq:ours-opt} is
+\begin{equation*}
+  \dot A = -\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,g_A\,Q^{-1/2}\big)\,Q^{-1/2},
+  \qquad C_A=B^\top P B .
+\end{equation*}
+\end{proposition}
+\medskip
+\noindent \methodname applies \Cref{prop:ours} to the bias-corrected momentum $\hat M_A$:
+\begin{equation}
+  W_A \;=\; C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,\hat M_A\,Q^{-1/2}\big)\,Q^{-1/2},
+  \label{eq:ours-lmo}
+\end{equation}
+with $W_B$ the mirror ($C_B=AQA^\top$). \Cref{alg:ours} sets the step magnitude by the operator-norm budget $\rho=\eta/(\smax(A)+\smax(B))$, which caps the merged step independent of rank:
+\begin{equation}
+  \|B\dot A+\dot B A\|_2\le\rho\big(\smax(A)+\smax(B)\big)=\eta ,
+  \label{eq:ours-prodcap}
+\end{equation}
+so the learning rate transfers across rank.
+
+\begin{remark}[Relation to AdaPreLoRA]
+\Cref{prop:ours} caps $Y_A$ in operator norm. Capping it in Frobenius norm instead, $\|Y_A\|_F\le\tau$, replaces the polar with the linear solve $\dot A\propto C_A^{-1}g_A Q^{-1}$ --- this is AdaPreLoRA \cite{adaprelora}, the same projection without the spectral cap.
+\end{remark}
+
+\begin{algorithm}[t]
+\caption{\methodname{} step for one LoRA pair $(A,B)$ at iteration $t$}
+\label{alg:ours}
+\begin{algorithmic}[1]
+\Require gradients $G_A,G_B$; momenta $M_A,M_B$; diagonal curvatures $P,Q$; decays $\beta_1,\beta_2$; rate $\eta$
+
+\Phase{Momentum} (bias-corrected)
+\State $M_A\gets\beta_1 M_A+(1-\beta_1)\,G_A$, \qquad $\hat M_A\gets M_A/(1-\beta_1^{\,t})$
+\State $M_B\gets\beta_1 M_B+(1-\beta_1)\,G_B$, \qquad $\hat M_B\gets M_B/(1-\beta_1^{\,t})$
+
+\Phase{Diagonal curvature} (per-coordinate gradient energy)
+\State $Q_{jj}\gets\beta_2\,Q_{jj}+(1-\beta_2)\,\|(G_A)_{:,j}\|_2^2$ \Comment{input side}
+\State $P_{ii}\gets\beta_2\,P_{ii}+(1-\beta_2)\,\|(G_B)_{i,:}\|_2^2$ \Comment{output side}
+
+\Phase{Whiten, polar, unwhiten}
+\State $C_A\gets B^\top P B$, \qquad $C_B\gets A Q A^\top$ \Comment{small-side curvature, $r\times r$}
+\State $W_A\gets C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,\hat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$
+\State $W_B\gets P^{-1/2}\,\polar\!\big(P^{-1/2}\,\hat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
+
+\Phase{Operator-norm step}
+\State $\rho\gets\eta/(\smax(A)+\smax(B))$ \Comment{\Cref{eq:ours-prodcap}}
+\State $\dot A\gets-\rho\,W_A/\smax(W_A)$, \qquad $A\gets A+\dot A$
+\State $\dot B\gets-\rho\,W_B/\smax(W_B)$, \qquad $B\gets B+\dot B$
+\end{algorithmic}
+\end{algorithm}
+\noindent Every $\smax(\cdot)$ is the guarded estimate of \Cref{alg:smax}, and every inverse-sqrt is relative-damped (\Cref{app:damping}).
+
+\paragraph{Cost.} Beyond AdamW's two factor momenta:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item Extra memory $O(d_{\mathrm{in}}+d_{\mathrm{out}}+r^2)$: the two diagonals plus the two $r\times r$ eigenbases of $C_A,C_B$; no $O(d_{\mathrm{in}}d_{\mathrm{out}})$ dense state.
+  \item Extra compute per step $O\!\big((d_{\mathrm{in}}+d_{\mathrm{out}})\,r^2\big)$ (one full polar per factor --- PolarExpress \cite{polarexpress} in Gram form \cite{gram_ns}), plus an eigenbasis refresh (QR with power-subspace iteration \cite{soap}) every $K{=}10$ steps, amortizing to $O(r^3/K)$.
+  \item Measured wall overhead $1.01$--$1.06\times$ AdamW at production batch (\Cref{sec:exp-walltime}).
+\end{itemize}
+
+% ===========================================================================
+\section{Experiments}
+\label{sec:exp}
+
+\subsection{Main result: speedup across 14 settings}
+% SKELETON -- Figure 1 = AlgoPerf-style performance profile, \methodname vs AdamW
+% vs the expensive spectral-polar members over all 14 workloads. The "we win" figure.
+\begin{figure}[t]
+  \centering
+  % \includegraphics[width=\linewidth]{performance_profile.pdf}
+  \fbox{\parbox{0.9\linewidth}{\centering\vspace{3em}
+    \textbf{Figure 1 (placeholder).} Performance profile across 14 settings:
+    fraction of settings where each method is within $\tau$ of the fastest.
+    \methodname dominates. Generated after the coverage fill.\vspace{3em}}}
+  \caption{Placeholder.}
+  \label{fig:profile}
+\end{figure}
+
+\subsection{Ablations: what carries the speedup}
+% SKELETON -- keystone figure. Knobs at 2-3 anchor cells:
+%   (a) +polar vs -polar (curvature-only)        -> polar is essential
+%   (b) dense vs diagonal curvature              -> flavor doesn't matter
+%   (c) single-pass vs refined inner iteration   -> refinement doesn't matter
+% NOTE: the -polar arm is nearly unrun today (1/14) -- MUST run.
+
+\subsection{From step speedup to wall-clock}
+\label{sec:exp-walltime}
+% MAIN POINT (author's): a step-count speedup only matters if it survives in
+% wall-clock. The optimizer.step is a fixed cost (batch-independent), so its share
+% shrinks as batch grows -> the overhead amortizes. Numbers below are MEASURED
+% (Blackwell, OLMo-2-1B, all-linear, seq=2048, full polar PE=8 vs AdamW) -- these
+% are final, not placeholders.
+\begin{table}[h]\centering\small
+\begin{tabular}{lccc}
+\toprule
+per-step wall $/$ AdamW & global batch 4 & 16 (production) & 64 \\
+\midrule
+$r=64$  & $1.12\times$ & $1.03\times$ & $1.01\times$ \\
+$r=256$ & $1.21\times$ & $1.06\times$ & $1.01\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Measured per-step wall overhead of \methodname{} (full polar) over AdamW;
+8B/$r{=}256\approx 1.04\times$ at production batch. opt.step is fixed, so overhead
+amortizes with batch.}
+\end{table}
+% TODO author: wall-clock speedup = (step speedup) / (per-step ratio); only the tiny
+% global-batch-4 regime, which we do not run, costs >10%.
+
+\subsection{Task dependence of the speedup}
+\label{sec:exp-taskdep}
+% MAIN POINT (author's): the speedup is task-dependent -- it grows with how OOD the
+% task is and with rank; it is smallest on in-distribution code at the larger models.
+% Numbers (speedup-vs-AdamW @ best lr; \PLACEHOLDER -- partial-polar data, refresh
+% after the full-polar sweep):
+%   - hard / in-distribution code ~1.2x: Llama-3-8B/opc r256 = 1.24x;
+%     Qwen2.5-1.5B/opc r256 = 1.20x.
+%   - OOD higher: Qwen2.5-1.5B/Bengali r256 = 1.57x (SAME model & rank as opc 1.20x
+%     -- the clean controlled pair: only the dataset changes).
+%   - rank: OLMo-2-1B/OpenMath r64 -> r256 = 1.50x -> 1.71x.
+% TODO author: figure -- speedup vs (OOD proxy, rank).
+
+% ===========================================================================
+\section{Related work}
+\label{sec:related}
+% SKELETON -- organize by methodological axis, NOT paper-by-paper:
+%   - spectral / steepest-descent updates: Muon and variants.
+%   - Shampoo / SOAP curvature.
+%   - Riemannian-preconditioned LoRA -- the product-norm precedent.
+%   - LoRA optimizer/init work (GaLore, LoRA+, nonzero-init).
+%   - rank-aware lr rules \cite{mua} -- cite as related work only; no prediction.
+
+% ===========================================================================
+\section{Limitations}
+\label{sec:limitations}
+% SKELETON -- TODO author: single base-model family scale ceiling (<=8B);
+% eval-loss primary, downstream pass@1 limited/absent; single/low seed count
+% -> state sigma coverage.
+
+% ===========================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% SKELETON -- TODO author.
+
+% ===========================================================================
+\appendix
+\section{Proofs}
+\label{app:proofs}
+
+\begin{proof}[Proof of \Cref{lem:lmo}]
+Let $M=U\Sigma V^\top$. For any $U'$ with $\|U'\|_2\le1$,
+\[
+  \langle M,U'\rangle=\sum_i\sigma_i\,u_i^\top U' v_i \;\ge\; -\sum_i\sigma_i,
+\]
+since $|u_i^\top U' v_i|\le\|U'\|_2\le1$. Equality holds at $U'=-\polar(M)$, uniquely when $M$ has full rank with distinct singular values; the zero and repeated singular directions otherwise leave $U'$ free.
+\end{proof}
+
+\begin{proof}[Proof of \Cref{prop:imuon}]
+The objective separates over the two factors:
+\[
+  \langle G,\ \dot B A+B\dot A\rangle=\langle G_A,\dot A\rangle+\langle G_B,\dot B\rangle .
+\]
+Take the $A$-block under its budget $\|B\dot A\|_2\le\eta$. Write $B=U_B S_B^{1/2}$ with $U_B^\top U_B=I$, so that $\|B\dot A\|_2=\|S_B^{1/2}\dot A\|_2$. The substitution $Z=S_B^{1/2}\dot A$ turns the block into
+\[
+  \min_{\|Z\|_2\le\eta}\ \langle S_B^{-1/2}G_A,\,Z\rangle,
+\]
+which \Cref{lem:lmo} solves at $Z=-\eta\,\polar(S_B^{-1/2}G_A)$. Undoing the substitution gives
+\[
+  \dot A=S_B^{-1/2}Z=-\eta\,S_B^{-1/2}\polar\!\big(S_B^{-1/2}G_A\big),
+\]
+and the $B$-block is symmetric. This recovers iMuon \cite{imuon}, the per-factor split of compositional Muon \cite{tilde_csd}.
+\end{proof}
+
+\begin{proof}[Proof of \Cref{cor:imuon}]
+With $U_B=BS_B^{-1/2}$ (orthonormal columns),
+\[
+  B\dot A=-\eta\,U_B\,\polar(S_B^{-1/2}G_A).
+\]
+Left-multiplication by $U_B$ preserves the spectral norm, and $\polar(\cdot)$ has unit nonzero singular values, so $\|B\dot A\|_2=\eta$.
+\end{proof}
+
+\begin{proof}[Proof of \Cref{prop:ours}]
+Write $C_A=B^\top P B$ and substitute $Y_A=C_A^{1/2}\dot A\,Q^{1/2}$, so $\dot A=C_A^{-1/2}Y_A Q^{-1/2}$. Since $P^{1/2}B\,C_A^{-1/2}$ has orthonormal columns (its Gram is $I$), left-multiplication preserves singular values:
+\[
+  \|B\dot A\|_{P,Q}=\|P^{1/2}B\dot A\,Q^{1/2}\|_2=\|Y_A\|_2 .
+\]
+The objective is plain in $Y_A$ as well: with $g_A=B^\top G$ and trace cyclicity,
+\[
+  \langle B\dot A,-G\rangle=\langle\dot A,-g_A\rangle=\langle Y_A,-H_A\rangle,\qquad H_A=C_A^{-1/2}g_A Q^{-1/2}.
+\]
+So the problem reduces to $\max_{\|Y_A\|_2\le\tau}\langle Y_A,-H_A\rangle$, solved by $Y_A=-\tau\,\polar(H_A)$ (\Cref{lem:lmo}); unwhitening,
+\[
+  \dot A=-\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}g_A Q^{-1/2}\big)\,Q^{-1/2}.
+\]
+The Frobenius ball $\|Y_A\|_F\le\tau$ instead gives $\dot A\propto C_A^{-1}g_A Q^{-1}$, recovering AdaPreLoRA.
+\end{proof}
+
+\section{Spectral-norm estimation}
+\label{app:smax}
+\Cref{alg:smax} estimates every $\smax(\cdot)$ in \Cref{alg:ours}. The floor at the larger row/column $\ell_2$ norm (both lower-bound $\smax$) is load-bearing: a cold or stale power iteration can under-estimate $\smax$, and an under-estimate at the rescale $W/\smax(W)$ inflates the step past $\rho$ and can diverge.
+
+\begin{algorithm}[h]
+\caption{Guarded spectral-norm estimate $\smax(M)$}
+\label{alg:smax}
+\begin{algorithmic}[1]
+\Require matrix $M$; warm-start vector $v$ (cached across steps); iterations $K$
+\Statex
+
+\State $\ell\gets\max\!\big(\max_i\|M_{i,:}\|_2,\ \max_j\|M_{:,j}\|_2\big)$
+\Statex
+
+\For{$k=1,\dots,K$} \Comment{power iteration on $M^\top M$}
+  \State $w\gets Mv$
+  \State $v\gets M^\top w \,/\, \|M^\top w\|_2$
+\EndFor
+\Statex
+
+\State \Return $\max\!\big(\|Mv\|_2,\ \ell\big)$ \Comment{$\ell$ floor}
+\end{algorithmic}
+\end{algorithm}
+
+\section{Relative damping}
+\label{app:damping}
+Each curvature inverse-sqrt in \Cref{alg:ours} is relative-damped: for a curvature factor $X$ with top eigenvalue $\lambda_{\max}$,
+\begin{equation*}
+  X^{-1/2}\ \longmapsto\ \big(X/\lambda_{\max}+\delta I\big)^{-1/2},\qquad \delta>0 .
+\end{equation*}
+The normalization and the floor each follow from the step's structure.
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \emph{Normalize by $\lambda_{\max}$.} The whitened polar depends only on the curvature's \emph{shape}, not its scale: $\polar\!\big(C_A^{-1/2}\hat M_A Q^{-1/2}\big)$ is invariant under $X\mapsto cX$, and the operator-norm rescale $W_A/\smax(W_A)$ reabsorbs any global factor. The scale-free representative is the normalized spectrum $X/\lambda_{\max}\in(0,1]$.
+  \item \emph{Floor by $\delta$.} On that spectrum $\delta$ is one conditioning knob: it caps the metric's condition number at ${\sim}1/\delta$, so a near-null curvature direction cannot amplify the step without bound.
+  \item \emph{Warmup.} A still-zero factor ($\lambda_{\max}=0$) maps to $I$, so steps before the EMAs warm up are plain momentum.
+\end{itemize}
+
+\printbibliography
+\end{document}
