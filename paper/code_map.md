@@ -5,7 +5,7 @@ This file maps each to its implementation. Released alongside source; not cited 
 
 | Paper name | Source identifier | Where |
 |---|---|---|
-| `Polar-LoRA` (protagonist) | diag-Shampoo + polar, `k=1` | `lora_playground/optim.py` (`OPTIMIZER_CHOICES`); leaderboard label `diag-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` |
+| `Polar-LoRA` (protagonist) | `diag-shampoo-polar-lora`, **full polar PE=8** (`--polar_method polar_express --muon_ns_steps 8`), `k=1` (`--cw_picard_iters 1`), plain momentum (`--cw_nesterov` OFF — Nesterov is an ablation), `β_c=0.99`, `δ=1e-4`, `--precond_refresh_every 10` | `lora_playground/optim.py` (`OPTIMIZER_CHOICES`); leaderboard label `diag-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` |
 | polar map φ | spectral-cap via Newton–Schulz | `lora_playground/spectral.py` |
 | spectral trust-region rescale | ρ = η/(σ_max(A)+σ_max(B)), guarded σ_max | `lora_playground/spectral.py` (`_smax_warm`) |
 | full KL-Shampoo+polar (ablation) | KL-Kronecker coupled curvature | label `KL-Shampoo +polar` |

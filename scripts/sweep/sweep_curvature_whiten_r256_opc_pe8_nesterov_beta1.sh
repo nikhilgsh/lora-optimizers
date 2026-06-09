@@ -1,0 +1,69 @@
+#!/bin/bash
+# BETA1-SENSITIVITY sweep of the r256 opc PE=8 Nesterov protagonist: identical to
+# sweep_curvature_whiten_r256_opc_pe8_nesterov.sh EXCEPT --beta1 (momentum decay) is a
+# positional knob instead of the train.py default 0.9. Used to check whether the
+# protagonist's final loss is sensitive to β1=0.9 vs 0.95 (iMuon uses 0.95). One cell
+# (OLMo opc r256), single β1 value per sweep, lr swept; the β1=0.9 baseline is the
+# existing diag_shampoo_polar_r256_opc_nesterov_olmo runs.
+#
+# Positional args (must match params JSON key order):
+#   1: lr   2: optimizer   3: seed   4: precond_delta   5: beta1
+lr=${1:-3e-3}
+optimizer=${2:-curvature-whiten-lora}
+seed=${3:-0}
+precond_delta=${4:-1e-3}
+beta1=${5:-0.9}
+
+# Full-polar knobs — PE=8 by default; overridable for ablation.
+polar_method=${POLAR_METHOD:-polar_express}
+muon_ns_steps=${MUON_NS_STEPS:-8}
+
+compile_args=()
+if [ "${COMPILE:-1}" = "1" ]; then
+    compile_args=(--compile)
+fi
+
+diag_args=(--log_basic_diagnostics)
+if [ "${LOG_DIAGNOSTICS:-1}" = "0" ]; then
+    diag_args=(--no-log_basic_diagnostics)
+fi
+
+ckpt_args=()
+if [ -n "${CHECKPOINT_DIR:-}" ]; then
+    ckpt_args=(
+        --checkpoint_dir "$CHECKPOINT_DIR"
+        --resume_from "$CHECKPOINT_DIR"
+        --checkpoint_keep_last "${CHECKPOINT_KEEP_LAST:-2}"
+    )
+    if [ -n "${CHECKPOINT_EVERY:-}" ]; then
+        ckpt_args+=(--checkpoint_every "$CHECKPOINT_EVERY")
+    fi
+fi
+
+python train_lora.py \
+    --data_dir data/opc_sft_stage2_all_packed_seq2048 \
+    --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \
+    --max_seq_length 2048 \
+    --attn_implementation sdpa \
+    --device cuda \
+    --bf16 \
+    "${compile_args[@]}" \
+    --batch_size "${BATCH_SIZE:-4}" \
+    --grad_accum_steps "${GRAD_ACCUM:-4}" \
+    --max_steps "${MAX_STEPS:-9000}" \
+    --eval_every "${EVAL_EVERY:-250}" \
+    --lr "$lr" \
+    --optimizer "$optimizer" \
+    --seed "$seed" \
+    --lora_r 256 \
+    --lora_alpha 256 \
+    --beta1 "$beta1" \
+    --curvature_beta 0.99 \
+    --precond_refresh_every 10 \
+    --precond_delta "$precond_delta" \
+    --polar_method "$polar_method" \
+    --muon_ns_steps "$muon_ns_steps" \
+    --cw_nesterov \
+    "${diag_args[@]}" \
+    --optim_diagnostics_every 100 \
+    "${ckpt_args[@]}"
