@@ -1,6 +1,6 @@
 #!/bin/bash
 # NESTEROV ABLATION of the r256 opc PE=8 protagonist: identical to
-# sweep_curvature_whiten_r256_opc_pe8.sh EXCEPT adds --cw_nesterov (Muon-style
+# sweep_curvature_whiten_r256_opc_pe8.sh EXCEPT it enables Nesterov-lookahead momentum (Muon-style
 # realizes a TRUE full polar (σ→1) instead of the ns=5 PARTIAL polar the base wrapper
 # inherits from train.py default (muon_ns_steps=5). High-rank arm of the SAME-DATASET
 # (opc) rank contrast vs sweep_curvature_whiten_r64_opc_pe8.sh; baseline launched
