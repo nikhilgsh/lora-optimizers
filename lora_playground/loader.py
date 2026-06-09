@@ -74,6 +74,61 @@ HARDCODED_DEFAULT_HISTORY: dict[tuple[str, str], list[tuple[str, Any, str]]] = {
     ],
 }
 
+# Optimizers whose build_optimizer branch routes to ``CurvatureWhitenLoRA``.
+# This class HARDCODED its polar step to ``ns_steps=muon_ns_steps`` and
+# ``polar_method=polar_method`` (train.py defaults: ``muon_ns_steps=5``,
+# ``polar_method="ns"``), but did NOT emit those two fields into the cfg
+# event — so every existing run of these optimizers ran a PARTIAL polar
+# (Newton-Schulz, ns=5) with no record of it in the log. The loader
+# safety-net below backfills both fields from the train.py default so the
+# canonical label can render partial-polar (ns=5) runs distinctly from any
+# future full-polar (polar_express / ns>=8) runs of the same optimizer.
+# This is the generic family-keyed extension of the existing schema-growth
+# backfill — NOT a per-flag one-off. The ``-polar`` variants are the ones
+# that actually run a polar step; the non-polar variants carry the fields
+# harmlessly (use_polar=False, so the tag is irrelevant for them).
+_CURVATURE_WHITEN_OPTIMIZERS = frozenset({
+    "curvature-whiten-lora", "curvature-whiten-polar-lora",
+    "kl-shampoo-lora", "kl-shampoo-polar-lora",
+    "kl-diag-lora", "kl-diag-polar-lora",
+    "kl-diag-polar-flatout-lora",
+    "diag-shampoo-lora", "diag-shampoo-polar-lora",
+})
+# The train.py CLI defaults the CurvatureWhitenLoRA constructor read at the
+# time these runs launched (train.py: --muon_ns_steps default=5,
+# --polar_method default="ns"). The constructor stores the step count under
+# the kwarg name ``ns_steps`` (sourced from CLI ``muon_ns_steps``), so the
+# optimizer_config block carries ``ns_steps``; older/top-level cfgs carry
+# ``muon_ns_steps``. Both are normalized below. Keyed by field name so the
+# backfill stays generic (one dict, not one clause per flag).
+_CURVATURE_WHITEN_POLAR_NS_DEFAULT = 5
+_CURVATURE_WHITEN_POLAR_METHOD_DEFAULT = "ns"
+
+
+def _derive_effective_polar_iters(cfg: dict, opt_cfg: dict) -> int | None:
+    """Step count of the polar map a CurvatureWhitenLoRA-backed run actually
+    ran (the ``N`` in ns=N / PE=N). ``None`` for non-CurvatureWhitenLoRA
+    optimizers, where the field is meaningless.
+
+    Source precedence (highest first):
+      1. ``opt_cfg["ns_steps"]`` — the constructor kwarg the optimizer stored
+         (ground truth; present on every protagonist run logged to date).
+      2. ``opt_cfg["muon_ns_steps"]`` / top-level ``cfg["muon_ns_steps"]`` —
+         the CLI name, for cfgs that surfaced it there instead.
+      3. train.py default (5) — the value the hardcoded polar step used for
+         the runs that logged neither, since the class read ns_steps=
+         muon_ns_steps and muon_ns_steps defaulted to 5.
+    """
+    if cfg.get("optimizer") not in _CURVATURE_WHITEN_OPTIMIZERS:
+        return None
+    for src in (opt_cfg.get("ns_steps"), opt_cfg.get("muon_ns_steps"),
+                cfg.get("muon_ns_steps")):
+        if src is not None:
+            v = _coerce(src, int)
+            if isinstance(v, int):
+                return v
+    return _CURVATURE_WHITEN_POLAR_NS_DEFAULT
+
 
 @lru_cache(maxsize=4096)
 def _is_ancestor(commit: str, descendant: str = "HEAD") -> bool:
@@ -161,6 +216,19 @@ def _backfill_optimizer_config(cfg: dict) -> dict:
         flag_val = parse_flag(cmd, f"--{kw}")
         if flag_val is not None:
             backfilled[kw] = flag_val
+    # Safety-net for CurvatureWhitenLoRA-backed optimizers: their polar step
+    # was hardcoded to muon_ns_steps / polar_method but the CLI fields were
+    # never logged. Fill from the train.py default (ns=5, method=ns) only when
+    # still absent after the CLI/top-level passes above, so an explicitly-logged
+    # value (a future full-polar run) is never clobbered. The authoritative
+    # step count when present is the constructor kwarg ``ns_steps`` (handled by
+    # ``_derive_effective_polar_iters``); this block only matters for the
+    # rare cfgs lacking an optimizer_config block entirely.
+    if cfg.get("optimizer") in _CURVATURE_WHITEN_OPTIMIZERS:
+        if backfilled.get("muon_ns_steps") is None and cfg.get("muon_ns_steps") is None:
+            backfilled["muon_ns_steps"] = _CURVATURE_WHITEN_POLAR_NS_DEFAULT
+        if backfilled.get("polar_method") is None and cfg.get("polar_method") is None:
+            backfilled["polar_method"] = _CURVATURE_WHITEN_POLAR_METHOD_DEFAULT
     return backfilled
 
 
@@ -439,6 +507,15 @@ def _enrich_cfg(cfg: dict) -> dict:
         k, k_certain = _derive_effective_picard_iters(cfg, opt_cfg)
         derived["effective_picard_iters"] = k
         derived["effective_picard_iters_certain"] = k_certain
+    # Polar step count (ns=N / PE=N). CurvatureWhitenLoRA-backed optimizers
+    # hardcoded the polar step to ns_steps but only the optimizer_config block
+    # records it; surface it so the canonical label can distinguish a partial
+    # (ns=5) polar from a future full (polar_express / ns>=8) polar. Prefer the
+    # cfg-emitted optimizer_effective field when newer runs add one.
+    if "effective_polar_iters" in opt_eff:
+        derived["effective_polar_iters"] = opt_eff["effective_polar_iters"]
+    else:
+        derived["effective_polar_iters"] = _derive_effective_polar_iters(cfg, opt_cfg)
     k = derived["effective_picard_iters"]
     k_certain = derived["effective_picard_iters_certain"]
     # Promote canonical resolved-values to top-level scalars. `series_id`
@@ -450,6 +527,8 @@ def _enrich_cfg(cfg: dict) -> dict:
     # SERIES_AXIS_FIELDS (plot) as redundant, and the effective value is
     # the single source of truth.
     cfg["effective_picard_iters"] = k
+    if derived["effective_polar_iters"] is not None:
+        cfg["effective_polar_iters"] = derived["effective_polar_iters"]
     if derived["effective_inner_polar"] is not None:
         cfg["effective_inner_polar"] = derived["effective_inner_polar"]
     if derived["effective_polar_pre_norm"] is not None:

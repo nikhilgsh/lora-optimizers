@@ -1081,6 +1081,7 @@ class CurvatureWhitenLoRA(Optimizer):
     """
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-3, eps=1e-8,
                  curvature_beta=0.99, use_polar=False, ns_steps=5,
+                 polar_method="ns",
                  precond_delta_relative=False, adapter_name=None,
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
@@ -1098,6 +1099,11 @@ class CurvatureWhitenLoRA(Optimizer):
         self.curvature_beta = float(curvature_beta)
         self.use_polar = bool(use_polar)
         self.ns_steps = int(ns_steps)
+        if polar_method not in {"ns", "polar_express"}:
+            raise ValueError(
+                f"CurvatureWhitenLoRA polar_method must be 'ns' or 'polar_express', "
+                f"got {polar_method!r}")
+        self.polar_method = str(polar_method)
         self.precond_delta_relative = bool(precond_delta_relative)
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_basic_diagnostics = bool(log_basic_diagnostics)
@@ -1335,6 +1341,22 @@ class CurvatureWhitenLoRA(Optimizer):
                           f"warm={float(sf[i]):.5g} true={float(true[i]):.5g}", flush=True)
         return s
 
+    def _polar_poly_batched(self, X):
+        """Dispatch the spectral nonlinearity on a σ_max-normalized batch ``X``.
+
+        ``polar_method='ns'`` → cubic-Muon Newton–Schulz (the legacy hardcoded
+        path); ``'polar_express'`` → Amsel et al. (2505.16932) quintic-Remez
+        polar. ``X`` is already normalized by ``_polar_ns_guarded`` so both use
+        ``pre_norm='none'``. NOTE ns=5 is a PARTIAL polar; a true full polar
+        needs ns≥8 or PolarExpress≥6 (see reference_full_polar_iteration_floor).
+        """
+        if self.polar_method == "polar_express":
+            return _polar_express_gram_batched(
+                X, nsteps=self.ns_steps, dtype=torch.float32, pre_norm="none")
+        return _newton_schulz_gram_batched(
+            X, nsteps=self.ns_steps, dtype=torch.float32, pre_norm="none",
+            safety_factor=1.0)
+
     def _polar_ns_guarded(self, Z, states, key):
         """Scale-invariant polar of a batch ``Z`` (N,p,q) via gram-NS, guarded
         against a σ_max UNDER-estimate.
@@ -1355,22 +1377,45 @@ class CurvatureWhitenLoRA(Optimizer):
              from the Frobenius-normalized input. σ_max ≤ ‖·‖_F, so that input is
              guaranteed in-basin. φ is scale-invariant, so the fallback changes
              only NS convergence speed, never the polar target.
+
+        PolarExpress exception (Amsel et al. 2505.16932 §3.3, Algorithm 1 ln 10):
+        the quintic-Remez polynomials are derived for an input rescaled so its
+        singular values lie in [ℓ, u] with u=1. Per Thm 3.3 / §3.3 the lower
+        bound is forgiving — "the method converges for any ℓ∈(0,u], and even an
+        order of magnitude error only delays convergence by a few iterations" —
+        but VIOLATING the upper bound (σ>1) detonates the iteration. Offline on
+        real snapshot momenta this is a CLIFF: σ_out=1 exactly when input σ_max
+        ≤ u, fully non-finite at a ≥3% σ_max UNDER-estimate (no finite-but-
+        overscaled window). The warm σ_max floor under-estimates by ~3.3× median
+        at r=256, so an estimate-based denominator would detonate most pairs every
+        step. The paper's own prescription is the fix: "a trivial upper bound is
+        given by ‖M‖_F ... we therefore rescale M by ‖M‖_F and set u=1." So
+        normalize the PolarExpress path by the Frobenius norm (a GUARANTEED upper
+        bound, σ_max ≤ ‖·‖_F), removing the σ_max-accuracy dependence entirely;
+        the loose lower bound only costs a couple iters (PE6 already gives σ_out=1,
+        verified). The strict-below-u margin (§3.4's x→p_t(x/1.01) round-off trick)
+        is supplied downstream by ``_polar_express_gram_batched``'s default
+        safety_factor=1.05, so the polynomial sees σ_max ≤ 1/1.05 < 1. Cubic
+        Newton–Schulz keeps the tight σ_max denominator (it needs σ≈1 to converge
+        at ns=5/8 and degrades, not detonates, on over-compressed input). The
+        finiteness fallback stays as defense-in-depth for both. ``_smax_warm`` is
+        still called to keep the warm-start cache fresh for the other σ_max sites.
         """
         eps = self.eps
         s = self._smax_warm(Z, states, key)                          # (N,) warm σ_max
         rn = Z.pow(2).sum(dim=-1).amax(dim=-1).clamp_min(0).sqrt()    # max row L2  ≤ σ_max
         cn = Z.pow(2).sum(dim=-2).amax(dim=-1).clamp_min(0).sqrt()    # max col L2  ≤ σ_max
         s = torch.maximum(s, torch.maximum(rn, cn))
+        if self.polar_method == "polar_express":
+            s = Z.flatten(1).norm(dim=1)                              # ‖·‖_F ≥ σ_max (no detonation)
         Xn = Z / (s.view(-1, 1, 1) + eps)
-        out = _newton_schulz_gram_batched(Xn, nsteps=self.ns_steps, dtype=torch.float32,
-                                          pre_norm="none", safety_factor=1.0)
+        out = self._polar_poly_batched(Xn)
         bad = ~torch.isfinite(out.flatten(1)).all(dim=1)             # (N,) per-matrix
         if bool(bad.any()):
             fro = Z[bad].flatten(1).norm(dim=1).view(-1, 1, 1)
             Xf = Z[bad] / (fro + eps)                                # σ_max ≤ 1 guaranteed
             out = out.clone()
-            out[bad] = _newton_schulz_gram_batched(Xf, nsteps=self.ns_steps, dtype=torch.float32,
-                                                   pre_norm="none", safety_factor=1.0)
+            out[bad] = self._polar_poly_batched(Xf)
         return out
 
     def _cw_apply_per_pair(self, lr, cb, b1, eps):
@@ -11262,6 +11307,7 @@ def build_optimizer(
             curvature_beta=curvature_beta,
             use_polar=(optimizer_type == "curvature-whiten-polar-lora"),
             ns_steps=muon_ns_steps,
+            polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics,
@@ -11285,6 +11331,7 @@ def build_optimizer(
             curvature_beta=curvature_beta,
             use_polar=(optimizer_type == "kl-shampoo-polar-lora"),
             ns_steps=muon_ns_steps,
+            polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics,
@@ -11312,6 +11359,7 @@ def build_optimizer(
             curvature_beta=curvature_beta,
             use_polar=(optimizer_type == "kl-diag-polar-lora"),
             ns_steps=muon_ns_steps,
+            polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics,
@@ -11337,6 +11385,7 @@ def build_optimizer(
             curvature_beta=curvature_beta,
             use_polar=True,
             ns_steps=muon_ns_steps,
+            polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics,
@@ -11364,6 +11413,7 @@ def build_optimizer(
             curvature_beta=curvature_beta,
             use_polar=(optimizer_type == "diag-shampoo-polar-lora"),
             ns_steps=muon_ns_steps,
+            polar_method=polar_method,
             precond_delta_relative=precond_delta_relative,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics,

@@ -30,6 +30,25 @@ def _eps(x) -> str:
     return f"{float(x):.0e}".replace("e-0", "e-").replace("e+0", "e")
 
 
+def _polar_quality_tag(cfg: dict) -> str:
+    """Polar-quality suffix for CurvatureWhitenLoRA-backed +polar optimizers.
+
+    These optimizers hardcoded their polar step to Newton-Schulz at
+    ``ns_steps`` (train.py default 5), so every existing run is a PARTIAL
+    polar; without this tag a future full-polar (polar_express / ns>=8) run
+    would share a label with the ns=5 partial-polar runs. Reads the loader's
+    derived ``effective_polar_iters`` (step count) and ``effective_inner_polar``
+    (method); ``PE=N`` for polar_express, ``ns=N`` otherwise. Returns "" when
+    the step count couldn't be resolved (never silently implies a quality)."""
+    d = cfg.get("_derived", {})
+    n = d.get("effective_polar_iters")
+    if n is None:
+        return ""
+    method = d.get("effective_inner_polar") or cfg.get("polar_method")
+    prefix = "PE" if method == "polar_express" else "ns"
+    return f" {prefix}={n}"
+
+
 def _axes(cfg: dict) -> dict | None:
     """Extract the distinguishing axes from a run cfg. Returns None for
     optimizers outside the chord-tight family (and AdamW handled by callers).
@@ -81,7 +100,8 @@ def canonical_label(cfg: dict) -> str | None:
         return "AdamW"
     opt = cfg.get("optimizer")
     if opt in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
-        polar = " +polar" if opt == "curvature-whiten-polar-lora" else ""
+        is_polar = opt == "curvature-whiten-polar-lora"
+        polar = (" +polar" + _polar_quality_tag(cfg)) if is_polar else ""
         f = cfg.get("precond_refresh_every")
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
@@ -89,7 +109,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         return f"SOAP-curv{polar} (f={f}{bc}{dd})"
     if opt in ("kl-shampoo-lora", "kl-shampoo-polar-lora"):
-        polar = " +polar" if opt == "kl-shampoo-polar-lora" else ""
+        polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "kl-shampoo-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
@@ -99,6 +119,7 @@ def canonical_label(cfg: dict) -> str | None:
         ks = f" k{pic}" if pic > 1 else ""
         return f"KL-Shampoo{polar}{ks} (f={f}{bc}{dd})"
     if opt == "kl-diag-polar-flatout-lora":
+        pq = _polar_quality_tag(cfg)
         f = cfg.get("precond_refresh_every")
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
@@ -106,9 +127,9 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"KL-diag-flatout +polar{ks} (f={f}{bc}{dd})"
+        return f"KL-diag-flatout +polar{pq}{ks} (f={f}{bc}{dd})"
     if opt in ("kl-diag-lora", "kl-diag-polar-lora"):
-        polar = " +polar" if opt == "kl-diag-polar-lora" else ""
+        polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "kl-diag-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
@@ -118,7 +139,7 @@ def canonical_label(cfg: dict) -> str | None:
         ks = f" k{pic}" if pic > 1 else ""
         return f"KL-diag{polar}{ks} (f={f}{bc}{dd})"
     if opt in ("diag-shampoo-lora", "diag-shampoo-polar-lora"):
-        polar = " +polar" if opt == "diag-shampoo-polar-lora" else ""
+        polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "diag-shampoo-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""

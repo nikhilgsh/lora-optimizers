@@ -32,6 +32,10 @@ def main():
                     help="Match production (sweeps pass --precond_method higham). "
                          "build_optimizer's default is 'eigh' (a slow per-pair fallback), "
                          "so profile with higham to reflect the real chord-tight path.")
+    ap.add_argument("--polar_method", default="ns", choices=["ns", "polar_express"],
+                    help="ns=Newton-Schulz (ns=5 partial polar); polar_express=full polar.")
+    ap.add_argument("--ns_steps", type=int, default=5,
+                    help="Polar iteration count (ns or PE). Full polar needs ns>=8 or PE>=6.")
     args = ap.parse_args()
 
     dev = torch.device("cuda")
@@ -49,8 +53,9 @@ def main():
         bare, optimizer_type=args.optimizer, lr=1e-3,
         precond_refresh_every=args.refresh_every, precond_delta=1e-3, curvature_beta=0.99,
         precond_method=args.precond_method,
+        muon_ns_steps=args.ns_steps, polar_method=args.polar_method,
     )
-    print(f"# precond_method={args.precond_method}", flush=True)
+    print(f"# precond_method={args.precond_method} polar_method={args.polar_method} ns_steps={args.ns_steps}", flush=True)
     ids = torch.randint(0, bare.config.vocab_size, (1, 128), device=dev)
 
     def make_grads():

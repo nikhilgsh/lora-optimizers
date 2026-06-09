@@ -82,6 +82,11 @@ GRAM_PRECOND_OPTIMIZERS = [
     # confirm step-time parity (drops the v̂ EMA, adds the coupled-Gram matmuls).
     "kl-shampoo-lora",
     "kl-shampoo-polar-lora",
+    # diag-Shampoo (non-KL ablation: textbook grad-energy diagonal metric, no
+    # coupled fixed point). diag-shampoo-polar-lora is the paper protagonist;
+    # same precond_refresh_every gate (production uses 10).
+    "diag-shampoo-lora",
+    "diag-shampoo-polar-lora",
 ]
 # Coupled-core solver variants (no precond_refresh; per-step QR + small SVDs).
 # Included in default bench list at K=1 only.
@@ -243,6 +248,11 @@ def parse_args():
     parser.add_argument("--picard_iters_override", type=int, default=None,
                         help="Override picard_iters. Used for the chord-tight-clean "
                              "variant to compare k=2 vs k=3 at fixed ns_form.")
+    parser.add_argument("--polar_method", type=str, default="ns",
+                        choices=["ns", "polar_express"],
+                        help="Spectral nonlinearity for the curvature-whiten / "
+                             "shampoo-polar family. 'ns'=Newton-Schulz (ns=5 is "
+                             "partial polar); 'polar_express'=full polar (use ns_steps>=6).")
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Learning rate (immaterial for timing; passed through).")
     parser.add_argument("--batch_size", type=int, default=2,
@@ -442,6 +452,7 @@ def main():
                         higham_compute_dtype=args.higham_compute_dtype,
                         ns_form=args.ns_form,
                         muon_ns_steps=args.muon_ns_steps,
+                        polar_method=args.polar_method,
                         picard_iters_override=args.picard_iters_override,
                     )
                     n_reps = args.n_cycles * K
