@@ -17,7 +17,7 @@ lr=${1:-3e-3}
 optimizer=${2:-curvature-whiten-lora}
 seed=${3:-0}
 precond_delta=${4:-1e-3}
-cw_picard_iters=${5:-${CW_PICARD_ITERS:-1}}
+cw_picard_iters=1   # fixed k=1 (was 5th positional; nested default mangled task-gen)
 
 # Full-polar knobs — PE=8 by default; overridable for ablation.
 polar_method=${POLAR_METHOD:-polar_express}
