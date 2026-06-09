@@ -194,6 +194,8 @@ Companion: `inventory_runs(logs_root)` returns a structured audit (orphaned grou
 
 To **exclude an old sweep** from analysis, delete its log dir. Newest-wins-on-collision (in `merge_runs`) handles "rerun supersedes old" automatically when the new sweep covers the same configs.
 
+**Dirty-tree exclusion keys on `execution_source_dirty`, NOT `git_dirty`.** A run's cfg carries both. `git_dirty: true` fires for ANY uncommitted change including **untracked scratch files** (e.g. `bench_polar_out/`, ad-hoc logs) — this is audit-only and does **not** exclude the run. The loader's Phase-4 dispatch (`loader.py` `_resolve_effective_commit`, ~line 841) is: if `execution_source_dirty` is false, the run resolves to its `git_commit` and **loads normally** regardless of `git_dirty`. `execution_source_dirty` is true only when the train.py **import-closure** (`lora_playground/*.py`, `train_lora.py`, the sweep/sbatch shell scripts in `execution_source_paths`) has uncommitted changes at submission — that, and only that, requires a commit or a `dirty_attestation` to load. So: untracked scratch files in the tree are harmless to analysis; `submit.sh`'s `check_clean_tree.sh` likewise scopes to the import-closure, not the whole tree. (Stop re-deriving this each session — this paragraph is the answer.)
+
 ### Updating docs/notes from sweep data — mandatory provenance
 
 Before writing any numerical claim to `docs/notes/*.md` (final losses, Δ vs baseline, "best η", "pinned/not pinned", leaderboard rows), the source MUST be one of:
