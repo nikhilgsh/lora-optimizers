@@ -147,7 +147,8 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"diag-Shampoo{polar}{ks} (f={f}{bc}{dd})"
+        nes = " +nesterov" if cfg.get("cw_nesterov") else ""
+        return f"diag-Shampoo{polar}{nes}{ks} (f={f}{bc}{dd})"
     a = _axes(cfg)
     if a is None:
         return None

@@ -674,6 +674,12 @@ def make_parser():
                              "k=1 (default) is the single-block step; k>=2 adds the "
                              "diagonal cross-coupling correction (kl_shampoo_polar_"
                              "derivation.md section Cross-coupling).")
+    parser.add_argument("--cw_nesterov", action="store_true",
+                        help="Use Nesterov-lookahead momentum (ĝ + β₁·m, Muon "
+                             "convention) into the CurvatureWhitenLoRA whiten→polar "
+                             "core instead of plain bias-corrected EMA. Ablation for "
+                             "diag-shampoo[-polar]-lora; the operator-norm rescale "
+                             "makes this a direction-only change.")
     parser.add_argument("--polar_core_remix_alpha", type=float, default=0.0,
                         help="Experimental core-coordinate remix coefficient. "
                              "0 disables it. Nonzero values replace the row(A) / "
@@ -1223,6 +1229,7 @@ def main():
         htmuon_p=args.htmuon_p,
         picard_iters_override=args.picard_iters_override,
         cw_picard_iters=args.cw_picard_iters,
+        cw_nesterov=args.cw_nesterov,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,
@@ -1356,6 +1363,7 @@ def main():
             "picard_alpha": args.picard_alpha,
             "picard_iters_override": args.picard_iters_override,
             "cw_picard_iters": args.cw_picard_iters,
+            "cw_nesterov": args.cw_nesterov,
             "anderson_m": args.anderson_m,
             "anderson_reg": args.anderson_reg,
             "soap_beta": args.soap_beta,

@@ -1086,7 +1086,8 @@ class CurvatureWhitenLoRA(Optimizer):
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
-                 diag_metric=False, cw_picard_iters=1, flat_outer=False):
+                 diag_metric=False, cw_picard_iters=1, flat_outer=False,
+                 cw_nesterov=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1150,6 +1151,16 @@ class CurvatureWhitenLoRA(Optimizer):
             raise ValueError("cw_picard_iters must be >= 1.")
         if self.cw_picard_iters > 1 and self.soap_v:
             raise ValueError("cw_picard_iters>1 is only defined for the kl path (soap_v=False).")
+        # Nesterov lookahead on the momentum fed to the whiten→polar→unwhiten core
+        # (Muon convention: orthogonalize ĝ + β₁·m rather than m̂). Ablation only —
+        # the Shampoo lineage this curvature whitening inherits from uses plain EMA
+        # momentum (~/SOAP, Meta distributed_shampoo); Muon uses Nesterov. The
+        # operator-norm rescale ρ/σmax(W) normalizes magnitude, so this changes only
+        # the momentum DIRECTION (no lr recalibration). Defined for the closed-form
+        # Shampoo core (soap_v=False); the SOAP-v̂ arm keeps plain EMA.
+        self.cw_nesterov = bool(cw_nesterov)
+        if self.cw_nesterov and self.soap_v:
+            raise ValueError("cw_nesterov is only defined for the soap_v=False (closed-form Shampoo) path.")
 
         # Q starts as identity → step 1 is plain Adam (no rotation), since the
         # eigenbasis must be built from gradients STRICTLY BEFORE the step it is
@@ -1458,7 +1469,13 @@ class CurvatureWhitenLoRA(Optimizer):
                 st['v_A'].mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
                 st['v_B'].mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
             else:
-                mhatA = st['m_A'] / bc1; mhatB = st['m_B'] / bc1
+                if self.cw_nesterov:
+                    # Lookahead: β₁·m + (1−β₁)·g (m already updated this step) — the
+                    # EMA analog of Muon's ĝ + β·buf. Only direction matters downstream.
+                    mhatA = (st['m_A'].mul(b1).add(gA, alpha=1.0 - b1)) / bc1
+                    mhatB = (st['m_B'].mul(b1).add(gB, alpha=1.0 - b1)) / bc1
+                else:
+                    mhatA = st['m_A'] / bc1; mhatB = st['m_B'] / bc1
             Af = A.detach().float(); Bf = B.detach().float()
             sA = self._smax_warm(Af.unsqueeze(0), [st], 'v_sigma_A')[0]
             sB = self._smax_warm(Bf.unsqueeze(0), [st], 'v_sigma_B')[0]
@@ -1607,7 +1624,12 @@ class CurvatureWhitenLoRA(Optimizer):
                 vA.mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
                 vB.mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
             else:
-                mhatA = mA / bc1; mhatB = mB / bc1
+                if self.cw_nesterov:
+                    # Lookahead (mA/mB already updated this step); mirror of per-pair.
+                    mhatA = (mA.mul(b1).add(gA, alpha=1.0 - b1)) / bc1
+                    mhatB = (mB.mul(b1).add(gB, alpha=1.0 - b1)) / bc1
+                else:
+                    mhatA = mA / bc1; mhatB = mB / bc1
             grp = [S[i] for i in idxs]
             # σ_max(A), σ_max(B) and ρ are loop-invariant (factors don't move until
             # the update is applied after the loop), so compute them once.
@@ -11182,6 +11204,7 @@ def build_optimizer(
     htmuon_p: float | None = None,
     picard_iters_override: int | None = None,
     cw_picard_iters: int = 1,
+    cw_nesterov: bool = False,
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,
@@ -11424,6 +11447,7 @@ def build_optimizer(
             soap_v=False,
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,
+            cw_nesterov=cw_nesterov,
         )
     if optimizer_type == "adam-lin-core-lora":
         # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA
