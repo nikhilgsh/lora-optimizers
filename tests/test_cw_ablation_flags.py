@@ -133,3 +133,32 @@ def test_no_diag_curv_requires_diag_metric():
     pairs_model = m
     with pytest.raises(ValueError, match="diag_metric"):
         CurvatureWhitenLoRA(pairs_model, lr=1e-2, diag_metric=False, cw_no_diag_curv=True)
+
+
+@pytest.mark.parametrize("opt_name", [
+    "kl-shampoo-polar-lora", "kl-shampoo-lora", "kl-diag-polar-lora",
+])
+def test_cw_nesterov_honored_by_kl_branches(opt_name):
+    """Regression: --cw_nesterov was passed to the optimizer in the diag-shampoo branch
+    ONLY; the kl-* branches (soap_v=False, so Nesterov IS valid) dropped it and used the
+    False default while train.py logged args.cw_nesterov=True — a silent provenance bug
+    that confounded kl-vs-diag comparisons. The kl-* branches must now honor the flag."""
+    from lora_playground.optim import build_optimizer
+    for want in (True, False):
+        m, _, _ = _make()
+        opt = build_optimizer(m, opt_name, lr=1e-2, curvature_beta=0.99,
+                              muon_ns_steps=5, precond_delta=1e-4, cw_nesterov=want)
+        assert opt.cw_nesterov is want, f"{opt_name} ignored cw_nesterov={want}"
+
+
+def test_curvature_whiten_does_not_apply_nesterov_and_logs_effective():
+    """curvature-whiten is soap_v=True (SOAP path); cw_nesterov is incompatible (the
+    optimizer raises if both are set), so the build does NOT wire it — opt.cw_nesterov
+    stays False even when requested. Provenance is kept honest by logging the EFFECTIVE
+    optimizer attr (train.py), not args.cw_nesterov. This asserts the effective value
+    that the config event reads."""
+    from lora_playground.optim import build_optimizer
+    m, _, _ = _make()
+    opt = build_optimizer(m, "curvature-whiten-polar-lora", lr=1e-2, curvature_beta=0.99,
+                          muon_ns_steps=5, precond_delta=1e-4, cw_nesterov=True)
+    assert opt.cw_nesterov is False  # silently not applied; the config logs this False

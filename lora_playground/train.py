@@ -1384,7 +1384,11 @@ def main():
             "picard_alpha": args.picard_alpha,
             "picard_iters_override": args.picard_iters_override,
             "cw_picard_iters": args.cw_picard_iters,
-            "cw_nesterov": args.cw_nesterov,
+            # EFFECTIVE value (not args.cw_nesterov): some CurvatureWhitenLoRA branches
+            # (curvature-whiten/soap_v=True) don't honor the flag, so logging the CLI arg
+            # misrepresents what ran and confounds kl-vs-diag analysis. Read it off the
+            # built optimizer; fall back to the CLI value for optimizers without the attr.
+            "cw_nesterov": getattr(optimizer, "cw_nesterov", args.cw_nesterov),
             "cw_no_radius": args.cw_no_radius,
             "cw_no_diag_curv": args.cw_no_diag_curv,
             "cw_factor_a": args.cw_factor_a,

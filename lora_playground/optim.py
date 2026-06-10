@@ -11404,6 +11404,9 @@ def build_optimizer(
             log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
             precond_refresh_every=precond_refresh_every,
+            # NOTE: curvature-whiten is soap_v=True (SOAP path); cw_nesterov is only
+            # defined for soap_v=False, so it is NOT wired here (would raise). The
+            # config event logs the EFFECTIVE cw_nesterov, so such runs read False.
         )
     if optimizer_type in ("kl-shampoo-lora", "kl-shampoo-polar-lora"):
         # KL-Shampoo-LoRA (soap_curvature_whitening.md exp 5): same class as
@@ -11431,6 +11434,7 @@ def build_optimizer(
             kl_coupled=True,
             soap_v=False,
             cw_picard_iters=cw_picard_iters,
+            cw_nesterov=cw_nesterov,
         )
     if optimizer_type in ("kl-diag-lora", "kl-diag-polar-lora"):
         # Option (b) of kl_shampoo_polar_derivation.md §"Cross-coupling": the
@@ -11460,6 +11464,7 @@ def build_optimizer(
             soap_v=False,
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,
+            cw_nesterov=cw_nesterov,
         )
     if optimizer_type == "kl-diag-polar-flatout-lora":
         # Robustness probe: kl-diag-polar with the un-whiten REMOVED (flat_outer).
@@ -11487,6 +11492,7 @@ def build_optimizer(
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,
             flat_outer=True,
+            cw_nesterov=cw_nesterov,
         )
     if optimizer_type in ("diag-shampoo-lora", "diag-shampoo-polar-lora"):
         # Non-KL ablation of kl-diag (option b): SAME consistent diagonal metric
