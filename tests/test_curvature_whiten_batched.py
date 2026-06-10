@@ -59,6 +59,16 @@ def test_grouped_matches_per_pair_no_polar():
     _run(use_polar=False)
 
 
+def test_grouped_matches_per_pair_no_radius():
+    # ablation --cw_no_radius (ρ=lr): grouped and per-pair must still agree
+    _run(use_polar=True, cw_no_radius=True)
+
+
+def test_grouped_matches_per_pair_no_diag_curv():
+    # ablation --cw_no_diag_curv (P=Q=I → C_A=BᵀB): requires diag_metric; paths must agree
+    _run(use_polar=True, diag_metric=True, cw_no_diag_curv=True)
+
+
 def test_grouped_matches_per_pair_diag_shampoo():
     # The diag-shampoo arm: diag_metric=True, soap_v=False, kl_coupled=False.
     # Touches the else-branch L_A/R_B clobber guard in BOTH step paths, so the
