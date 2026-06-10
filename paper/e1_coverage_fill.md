@@ -11,10 +11,10 @@ Paper baselines are **AdamW + iMuon only** (see `paper/PLAN.md`). No other basel
 - **Protagonist** (`diag-shampoo-polar-lora`): `--polar_method polar_express --muon_ns_steps 8
   --cw_picard_iters 1 --curvature_beta 0.99 --precond_delta 1e-4 --precond_refresh_every 10
   --cw_nesterov --beta1 0.95`. (Existing OLMo cells ran β1=0.9 — ≤0.2σ ≡ 0.95, admissible.)
-- **iMuon baseline** (`imuon-lora` = `IMuonLoRA`): the **published decoupled Corollary 4.1**
-  (per-factor Nesterov β=0.95 → symmetric Gram-whitened polar, scalar lr, ε=1e-6). NOT the
-  authors' joint-momentum `v5` (uninterpretable, not in the paper) — see `paper/PLAN.md` E0.
-  lr grid-searched per cell.
+- **iMuon baseline** (`imuon-lora`): the authors' vendored **`v5_warmup`** (joint form),
+  momentum=0.95 Nesterov, wd=0, ns=5, ε=1e-6, adjust_lr=False. The decoupled Cor 4.1 (Prop 2)
+  is non-viable at B=0 init — see `paper/PLAN.md` E0. ~3.9 s/step (slow). **Only 2 demonstration
+  cells** (1 + 5), lr-tuned, to show it loses to AdamW — NOT all cells, NOT the ladder.
 - **AdamW**: universal reference / speedup denominator.
 - Protocol (all): global batch 16, seq 2048, 9000 steps, eval 250, packed_v1.1, bf16, compile.
 
@@ -36,10 +36,12 @@ Paper baselines are **AdamW + iMuon only** (see `paper/PLAN.md`). No other basel
   job 6492862) — it IS the protagonist config at 0.95, so no separate run. The old β1=0.9
   runs are superseded.
 
-## To-run (16 sweeps)
+## To-run
 
 - **Protagonist** (7): cells 2,3,4,5,6,7,8. (cell 1 = the in-flight β1=0.95 sweep, job 6492862.)
-- **iMuon** (8): all cells 1–8.
+- **iMuon** (**2 demonstration cells only**, lr-tuned): cell **1** (OLMo opc r256, in-distribution)
+  + cell **5** (Qwen bengali r256, OOD) — show it loses to AdamW. NOT cells 2,3,4,6,7,8, NOT the
+  ladder (it's slow ~3.9 s/step + a pretraining-oriented method that underperforms AdamW here).
 - **AdamW** (1): cell 7 only (the empty r128 rung; every other cell already has AdamW).
 
 ## Wrappers

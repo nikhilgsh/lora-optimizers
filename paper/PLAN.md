@@ -126,47 +126,47 @@ Each cell earns its place; this is the whole grid.
   cheap ablation workhorse.
 - **Optional free bonus:** OLMo openmath r256 (in hand) as a 2nd math data point.
 
-### Baselines present at every breadth + ladder cell
+### Baselines
 
-- **AdamW** (universal reference + speedup denominator) — already covered at all cells.
-- **iMuon** (the main spectral rival) — **always-present** at the breadth + ladder cells.
-  E0 implements it; see below.
+- **AdamW** (universal reference + speedup denominator) — at **all** cells; the competitive default.
+- **iMuon** (the spectral rival) — **only 2 demonstration cells** (OLMo opc r256 + Qwen bengali
+  r256), **lr-tuned**, to show it loses to AdamW across an in-distribution and an OOD setting.
+  NOT at all cells, NOT in the rank ladder. Rationale: iMuon is slow (~3.9 s/step, ~10h/run,
+  v5_warmup) and a pretraining-oriented method that underperforms AdamW in LoRA finetuning —
+  it's the right rival to *cite + beat*, but running it 8× wastes GPU. (Tune its lr so the loss
+  is fair; if it surprisingly competes, widen.) E0 implements it; see below.
 - These two are the ONLY comparison baselines. The "expensive machinery is dead weight"
   claim is the **E2 leave-one-out ablation** (remove curvature flavor / Picard from the
   protagonist), not a separate expensive-optimizer overlay.
 
 ### Experiments in dependency order
 
-- **E0 — iMuon baseline = the PUBLISHED decoupled Corollary 4.1 (done).** We benchmark the
-  paper's *proven* method, implemented as `IMuonLoRA` in `optim.py` (registered as
-  `imuon-lora`), NOT the authors' shipped code. Tests pin it: `tests/test_imuon_lora.py`
-  (4 pass), incl. a step == the Cor 4.1 closed form. Production smoke PASSED
-  (`_optim_class: IMuonLoRA`, finite). Verified against an SVD reference (rel ≈ 2e-15), == Prop 2.
-  - **Algorithm (per pair, decoupled):** per-factor Nesterov `M̃ = G + β·m`, then
-    `Ȧ = (BᵀB)^{-1/2}·φ((BᵀB)^{-1/2}·M̃_A)`, `Ḃ = φ(M̃_B·(AAᵀ)^{-1/2})·(AAᵀ)^{-1/2}`,
-    `φ` = exact polar (thin SVD), scalar lr, Gram damping `ε=1e-6`. `momentum=0.95` (Appendix K).
-  - **Why implement, not call the library:** the library has **no** decoupled Cor 4.1 — all
-    five variants (`full`, v2, v3, v5, v5_compact) use the **joint** `M_t = M_B A + B M_A` form
-    (verified: every variant rel ≥ 0.15 vs Cor 4.1; v5 rel 0.55). The joint momentum is
-    **not in the paper's theory, has no performance justification, and makes iMuon
-    uninterpretable as a baseline** (it is structurally the authors' own Riemannion, which the
-    paper reports is worse). So we run the proven theorem instead; the vendored
-    `third_party/imuon_muon.py` is kept only as documentation of the v5 variant we did NOT run.
-  - **HPs:** `momentum=0.95` Nesterov (Appendix K, matched to our protagonist), `wd=0`
-    (our protocol), `ε=1e-6`, scalar lr (no Muon `0.2·√(max dim)` heuristic — not in the paper).
-    lr grid-searched per cell (3–4 lrs, edge-checked — NOT a wide sweep).
-  - **Momentum note:** β=0.95 is *matched-momentum symmetry* with the protagonist, not a claim
-    it is iMuon's strongest config (the paper's headline is momentum-free). We report
-    "matched-momentum, both at β=0.95."
-  - **Paper framing:** skeleton Prop 2 == this baseline (decoupled Cor 4.1) — the run and the
-    theory agree. One caveat sentence: the authors' shipped code uses a joint-momentum variant
-    (v5) that differs from their proven Cor 4.1 and which we do not run.
-  - Run at the breadth + ladder cells, **especially the rank ladder** (does iMuon's best-η
-    drift with rank — the C1 evidence). **Spectron stays argument-only**.
-- **E1 — coverage fill.** Locked protagonist (7 cells) + iMuon (8 cells) + AdamW (cell 7
-  only) at an lr grid ({0.01, 0.03, 0.1} brackets the OLMo optimum — **verify best-η isn't at
-  a grid edge per cell**, widen if it is). 16 sweeps; tracked in `paper/e1_coverage_fill.md`.
-  Gate for the headline performance profile.
+- **E0 — iMuon baseline = the authors' vendored `v5_warmup` (done).** We call the authors'
+  reference code (`third_party/imuon_muon.py`, imuon @4f1d4b1) directly via `imuon-lora`,
+  `variant='v5_warmup'` (their built-in init-stable variant: joint `full` warmup to grow B
+  from zero, then v5). Tests pin the wiring (`tests/test_imuon_lora.py`, 3 pass); production
+  smoke PASSED (stable, eval decreasing). `momentum=0.95` Nesterov (Appendix K, matched),
+  `wd=0` (our protocol), `ε=1e-6`, `ns=5`, `adjust_lr=False` (scalar lr). ~3.9 s/step.
+  - **Why NOT the decoupled Corollary 4.1:** we first implemented the paper's *proven* decoupled
+    closed form (`Ȧ = (BᵀB)^{-1/2} φ((BᵀB)^{-1/2} M̃_A)` … = skeleton Prop 2). It is **numerically
+    non-viable at our B=0 LoRA init** — `(BᵀB)^{-1/2} ≈ δ^{-1/2}` blows the A-side step up
+    (param_l2 711→1485 in 15 steps, loss flat, no viable lr — measured). That is exactly why the
+    authors ship the **joint** projector form + warmup (the `Bᵀ` prefactor kills the large inverse
+    at B=0). So we run their joint v5_warmup, not our decoupled implementation.
+  - **Tried + rejected (perf):** the authors' BATCHED `MuonBatched` (v5) was measured *slower*
+    here (4.05 vs 3.87 s/step) — heterogeneous all-linear shapes → tiny per-shape groups →
+    grouping overhead > batching benefit. Stayed on per-pair `Muon` v5_warmup.
+  - **Paper framing:** skeleton Prop 2 (decoupled Cor 4.1) is iMuon's canonical *theory* (and is
+    bit-exact correct as an equation), but it is not numerically realizable at our init; the
+    optimizer we **run** is the authors' shipped **joint** v5_warmup. One caveat sentence states
+    this. **Spectron stays argument-only.**
+  - Run at **2 demonstration cells only** (OLMo opc r256 + Qwen bengali r256), **lr-tuned**
+    (short pilot first) — show it loses to AdamW. NOT the ladder, NOT all cells (it's slow +
+    weak; see Baselines). **Spectron stays argument-only**.
+- **E1 — coverage fill.** Locked protagonist (7 cells) + iMuon (**2** demonstration cells,
+  lr-tuned) + AdamW (cell 7 only) at an lr grid ({0.01, 0.03, 0.1} brackets the OLMo optimum —
+  **verify best-η isn't at a grid edge per cell**, widen if it is). Tracked in
+  `paper/e1_coverage_fill.md`. Gate for the headline performance profile.
 - **E2 — ablation (leave-one-out)** at **OLMo opc r256 + Qwen-bengali r256**. From the full
   method, remove exactly one component (order-independent — NOT a "peel weakest first" stack):
   - **−radius** → (diag-Shampoo + polar, plain η). Score by the **transfer figure** (E3),
@@ -184,8 +184,9 @@ Each cell earns its place; this is the whole grid.
     a cumulative-climb narrative at writing time, re-plot the same arms (a matplotlib call,
     not an experiment).
 - **E3 — lr-transfer figure (C1).** Fixed η across the Llama-math ladder (r64/r128/r256) for
-  protagonist vs −radius vs iMuon vs AdamW; overlay the muA r^{−1/2} line. **Empirical claim
-  only** — no rank-invariance theorem.
+  protagonist vs −radius vs AdamW; overlay the muA r^{−1/2} line. (iMuon dropped from the
+  ladder — too slow to run 3× for a marginal "it also doesn't transfer" strengthening; the
+  core claim is ours-transfers-vs-AdamW-doesn't.) **Empirical claim only** — no rank-invariance theorem.
 - **E4 — walltime.** Profile the protagonist's per-step (fwd/bwd/opt split) vs AdamW at the
   headline cells, **global batch ∈ {16 (comparison horizon), 64 (timing-only bench)}**.
   Publish walltime speedup = step-speedup ÷ per-step-ratio. **Never profiled the
