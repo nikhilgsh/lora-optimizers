@@ -152,12 +152,14 @@ Each cell earns its place; this is the whole grid.
     `dA = (BᵀB)⁻¹·Bᵀ·Ortho(P_B·M_t)` with row/col projectors `P_A,P_B`; `Ortho` = quintic
     Keller–Jordan **NS5** (approx, σ→~(0.5,1.5)) on the 2r×2r core; shape-scaled lr
     `0.2·√(max dim)`.
-  - **Locked HPs (all from their config; one enforced deviation):** `variant=v5`,
-    `ns_steps=5`, `ortho='ns'` (KJ-NS5), `adjust_lr=True`, `ε=1e-6` — their defaults/headline;
-    **`momentum=0.95` + Nesterov** — their Appendix-K with-momentum config, **matched** to our
-    momentum protagonist (held-fixed principle); **`wd=0.0` — ENFORCED**, our protocol
-    (overrides their 0.1 default / 0.01 E2E), the one deliberate change to avoid a wd confound.
-    `lr` swept per cell.
+  - **Locked HPs:** `variant=v5`, `ns_steps=5`, `ortho='ns'` (KJ-NS5), `ε=1e-6` — their
+    defaults/headline; **`momentum=0.95` + Nesterov** — their Appendix-K with-momentum config,
+    **matched** to our momentum protagonist (held-fixed principle). Two deliberate deviations:
+    **`wd=0.0`** (our protocol; overrides their 0.1 default, avoids a wd confound) and
+    **`adjust_lr=False`** — the Muon `0.2·√(max dim)` per-shape lr heuristic is NOT in the
+    paper (Cor 4.1 / Algorithm 1 use a scalar τ), so we disable it and benchmark the published
+    method with a clean scalar lr. `lr` grid-searched per cell (the paper's own protocol;
+    one short pilot to locate iMuon's basin, then a normal 3-lr grid — NOT a wide sweep).
   - **Momentum note:** β=0.95 is chosen for *matched-momentum symmetry*, not because it is
     iMuon's strongest config — the paper's headline (Tables 1–2) is momentum-free and hints
     momentum-free is iMuon's best on E2E (Table 7: 70.74). At our 9000-step scale momentum

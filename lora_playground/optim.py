@@ -12308,8 +12308,13 @@ def build_optimizer(
         #                      the library default is 0.1 and would be an unfair confound.
         #   momentum=0.95,  -> per-factor Nesterov, exactly Appendix K.
         #   nesterov=True
-        #   ns_steps=5,     -> iMuon's own defaults (Ortho on the 2r×2r core; shape-
-        #   adjust_lr=True     scaled lr). lr is swept per cell.
+        #   ns_steps=5      -> iMuon's own default (Ortho on the 2r×2r core).
+        #   adjust_lr=False -> DISABLE the Muon `0.2·√(max dim)` per-shape lr heuristic.
+        #                      It is NOT part of the iMuon method — the paper (Cor 4.1 /
+        #                      Algorithm 1) uses a single SCALAR norm-ball radius τ, not a
+        #                      per-layer √d factor. Disabling it benchmarks the *published*
+        #                      method with a clean scalar lr (swept per cell), matching the
+        #                      paper's "lr tuned per method by grid search".
         from .third_party.imuon_muon import Muon as _IMuonRef
         pairs = collect_lora_pairs(model)
         if not pairs:
@@ -12322,7 +12327,7 @@ def build_optimizer(
             lora_pairs=pairs,
             lora_riemannian_muon=True,
             lora_riemannian_variant="v5",
-            lora_riemannian_adjust_lr=True,
+            lora_riemannian_adjust_lr=False,
         )
     if optimizer_type == "product-muon-lora":
         return ProductMuonLoRA(

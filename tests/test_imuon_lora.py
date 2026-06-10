@@ -57,7 +57,9 @@ def test_imuon_dispatch_and_locked_config():
     # v5 = the Table-1 headline variant (NOT the library default 'full').
     assert opt.lora_riemannian_variant == "v5"
     assert opt.lora_riemannian_muon is True
-    assert opt.lora_riemannian_adjust_lr is True
+    # adjust_lr OFF: the Muon 0.2·√(max dim) per-shape heuristic is NOT part of the iMuon
+    # method (paper uses a scalar τ). Disabled so lr is a clean scalar, swept per cell.
+    assert opt.lora_riemannian_adjust_lr is False
     assert opt.lora_riemannian_ortho_method == "ns"
     assert math.isclose(opt.lora_precond_eps, 1e-6, rel_tol=0, abs_tol=0)
 
@@ -104,7 +106,7 @@ def test_imuon_adapter_matches_direct_construction():
         lr=2e-2, wd=0.0, muon_params=muon_params2,
         momentum=0.95, nesterov=True, ns_steps=5,
         lora_pairs=pairs2, lora_riemannian_muon=True,
-        lora_riemannian_variant="v5", lora_riemannian_adjust_lr=True,
+        lora_riemannian_variant="v5", lora_riemannian_adjust_lr=False,
     )
 
     for m, opt in ((m1, opt1), (m2, opt2)):

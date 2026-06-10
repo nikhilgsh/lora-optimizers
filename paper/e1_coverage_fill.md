@@ -12,7 +12,8 @@ Paper baselines are **AdamW + iMuon only** (see `paper/PLAN.md`). No other basel
   --cw_picard_iters 1 --curvature_beta 0.99 --precond_delta 1e-4 --precond_refresh_every 10
   --cw_nesterov --beta1 0.95`. (Existing OLMo cells ran β1=0.9 — ≤0.2σ ≡ 0.95, admissible.)
 - **iMuon baseline** (`imuon-lora`): authors' vendored v5; `momentum=0.95` Nesterov, `wd=0`,
-  `ns_steps=5`, `adjust_lr`, `ε=1e-6` (see `paper/PLAN.md` E0).
+  `ns_steps=5`, `ε=1e-6`, **`adjust_lr=False`** (the Muon `0.2·√(max dim)` lr heuristic is not
+  in the paper; scalar τ instead — see `paper/PLAN.md` E0). lr grid-searched per cell.
 - **AdamW**: universal reference / speedup denominator.
 - Protocol (all): global batch 16, seq 2048, 9000 steps, eval 250, packed_v1.1, bf16, compile.
 
@@ -71,6 +72,8 @@ encoding its model/data_dir/lora_r as single-value lists.)
 
 - 2026-06-09: audit done; matrix populated; configs locked. 3 generic wrappers built +
   syntax-checked. iMuon production smoke PASSED. Nothing submitted yet.
-- **Open before submit:** per-cell params JSONs (iMuon lr basin is unknown — adjust_lr
-  scales step by 0.2·√d, so iMuon's raw-lr optimum is ~9× below the protagonist's; needs a
-  wider/lower grid, verify no edge). 8B per-step timing before its `--time`.
+- 2026-06-09 (later): iMuon `adjust_lr` turned OFF (not in the paper; scalar τ). Now a clean
+  scalar lr — locate the basin with one short pilot (OLMo opc r256), then a 3-lr grid per
+  cell (NOT a wide sweep).
+- **Open before submit:** iMuon lr pilot (1 cell, short) → 3-lr grids; per-cell params JSONs;
+  8B per-step timing before its `--time`.
