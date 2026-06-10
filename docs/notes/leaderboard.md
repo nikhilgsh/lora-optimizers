@@ -14,7 +14,7 @@ AlgoPerf-style performance profile across the 14 (model, dataset, rank) workload
 | canonical variant | coverage | robustness_score | mean ratio-to-best |
 |---|---|---|---|
 | `AdamW` | 14/14 | 0.847 | 1.450 |
-| `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4)` | 8/14 | 0.998 | 1.005 |
+| `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4)` | 8/14 | 0.990 | 1.028 |
 | `chord-tight ns=5 k=1 (abs=1e-6)` | 7/14 | 0.978 | 1.056 |
 | `chord-tight ns=8 k=1 (abs=1e-6)` | 7/14 | 0.951 | 1.130 |
 
@@ -172,7 +172,7 @@ AdamW speed target (best-lr final loss): **0.3823**  ·  horizon 9000 steps
 |---|---|---|---|---|
 | AdamW | 1e-04 | 0.3823 | 1.00× | 1.00× |
 | chord-tight ns=8 k=1 (abs=1e-6) | 3e-03 | 0.3710 | 1.33× | 1.19× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3727 | 1.29× | — |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 1e-02 | 0.3653 | 1.09× | 1.19× |
 
 ### Qwen2.5-1.5B × opc-sft-stage2 (Magicoder) × r=256
 
