@@ -20,7 +20,7 @@ truth for what runs, its status, and provenance. **Coverage numbers are loader-d
 
 | # | cell | model | data_dir | proto | iMuon | chord | AdamW |
 |---|------|-------|----------|:--:|:--:|:--:|:--:|
-| 1 | OLMo opc r256 | allenai/OLMo-2-0425-1B | opc_…_seq2048 | 3 (β.9) | **0** | 7 | 5 |
+| 1 | OLMo opc r256 | allenai/OLMo-2-0425-1B | opc_…_seq2048 | β.95 in-flight ‡ | **0** | 7 | 5 |
 | 2 | Qwen opc r256 | Qwen/Qwen2.5-1.5B | opc_…_qwen25 | **0** | **0** | 6 | 5 |
 | 3 | Llama3.2 opc r256 | meta-llama/Llama-3.2-1B | opc_…_llama32 | **0** | **0** | 5 | 5 |
 | 4 | Llama3-8B opc r256 | meta-llama/Meta-Llama-3-8B | opc_…_llama32 † | **0** | **0** | **0** | 4 |
@@ -30,13 +30,16 @@ truth for what runs, its status, and provenance. **Coverage numbers are loader-d
 | 8 | Llama3.2 openmath r256 | meta-llama/Llama-3.2-1B | openmath_…_llama32 | **0** | **0** | 6 | 4 |
 
 † Llama-3-8B reuses the `_llama32` opc data (Llama-3.x tokenizer identity — no rebuild).
+‡ Cell 1 protagonist @β1=0.95 is the in-flight β1 sweep (`diag_shampoo_polar_r256_opc_beta1_095`,
+  job 6492862) — it IS the protagonist config at 0.95, so no separate run. The old β1=0.9
+  runs are superseded.
 
 ## To-run (16 sweeps)
 
 E1's job is the protagonist + the two baselines it's *measured against*: AdamW (speedup
 denominator) and iMuon (the rival). That's it.
 
-- **Protagonist** (7): cells 2,3,4,5,6,7,8. (cell 1 OLMo β.9 admissible.)
+- **Protagonist** (7): cells 2,3,4,5,6,7,8. (cell 1 = the in-flight β1=0.95 sweep, job 6492862.)
 - **iMuon** (8): all cells 1–8.
 - **AdamW** (1): cell 7 only (the empty r128 rung; every other cell already has AdamW).
 
