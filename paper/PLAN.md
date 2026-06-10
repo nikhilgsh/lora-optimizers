@@ -131,11 +131,9 @@ Each cell earns its place; this is the whole grid.
 - **AdamW** (universal reference + speedup denominator) — already covered at all cells.
 - **iMuon** (the main spectral rival) — **always-present** at the breadth + ladder cells.
   E0 implements it; see below.
-- **chord-tight** (the expensive family member, for "expensive machinery is dead weight").
-  Already covered at 5 of the run-cells (OLMo/Qwen/Llama-3.2 opc r256, Llama-3.2 openmath
-  r64/r256). **Fill 2 cells: Llama-3-8B opc r256 + Qwen bengali r256.** (KL-Shampoo
-  curvature-whiten is OLMo-only → keep the *KL-Kronecker-flavor* claim scoped to the
-  ablation anchors; chord-tight carries the broad claim.)
+- These two are the ONLY comparison baselines. The "expensive machinery is dead weight"
+  claim is the **E2 leave-one-out ablation** (remove curvature flavor / Picard from the
+  protagonist), not a separate expensive-optimizer overlay.
 
 ### Experiments in dependency order
 
@@ -172,10 +170,10 @@ Each cell earns its place; this is the whole grid.
     state the version.
   - Run at the breadth + ladder cells, **especially the rank ladder** (does iMuon's best-η
     drift with rank — the C1 evidence). **Spectron stays argument-only**.
-- **E1 — coverage fill.** Locked protagonist across the 7 to-run cells at an lr grid
-  ({0.01, 0.03, 0.1} brackets the OLMo optimum — **verify best-η isn't at a grid edge per
-  cell**, widen if it is). Gate for the headline performance profile. Also run the 2
-  chord-tight fill cells here.
+- **E1 — coverage fill.** Locked protagonist (7 cells) + iMuon (8 cells) + AdamW (cell 7
+  only) at an lr grid ({0.01, 0.03, 0.1} brackets the OLMo optimum — **verify best-η isn't at
+  a grid edge per cell**, widen if it is). 16 sweeps; tracked in `paper/e1_coverage_fill.md`.
+  Gate for the headline performance profile.
 - **E2 — ablation (leave-one-out)** at **OLMo opc r256 + Qwen-bengali r256**. From the full
   method, remove exactly one component (order-independent — NOT a "peel weakest first" stack):
   - **−radius** → (diag-Shampoo + polar, plain η). Score by the **transfer figure** (E3),
