@@ -1079,6 +1079,18 @@ class CurvatureWhitenLoRA(Optimizer):
     outer curvature whitening, giving a direct "SOAP inner, chord-tight outer"
     ablation. ``precond_delta_relative`` is accepted for factory compatibility
     (damping here is always relative).
+
+    ── CANONICAL SPEC: paper/skeleton.tex Algorithm 1 (`alg:ours`). ─────────────
+    That algorithm is the source of truth for the protagonist's update math
+    (whiten → polar → unwhiten + operator-norm radius ρ=η/(σmax(A)+σmax(B))).
+    THIS class is the IMPLEMENTATION; it realizes that math via an EIGENBASIS
+    (Q diagonalises the small-side curvature S_r), so the in-code form looks like
+    ``Q @ (m / √λ) @ Qᵀ …`` — that is the eigenbasis realization of Alg 1's
+    ``C_A^{-1/2} φ(C_A^{-1/2} M̂_A Q^{-1/2}) Q^{-1/2}``, NOT a different update.
+    Branches: the protagonist (`diag-shampoo-polar` + `cw_nesterov`) runs the
+    ``soap_v=False`` closed-form-Shampoo path; ``soap_v=True`` is the SOAP-v̂ EMA
+    variant (a different arm). When describing the METHOD or its ablations, cite
+    Alg 1 — do NOT paraphrase from these eigenbasis fragments.
     """
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-3, eps=1e-8,
                  curvature_beta=0.99, use_polar=False, ns_steps=5,
