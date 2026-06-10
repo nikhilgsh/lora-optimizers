@@ -666,6 +666,7 @@ OPTIMIZER_CHOICES = {
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
+    "imuon-lora",
     "product-muon-lora",
     "adam-muon-lora",
     "adam-product-muon-lora",
@@ -12297,6 +12298,31 @@ def build_optimizer(
         return MuonLoRA(
             model, lr=lr, ns_steps=muon_ns_steps,
             lr_b_multiplier=lora_plus_multiplier,
+        )
+    if optimizer_type == "imuon-lora":
+        # iMuon baseline = the authors' VENDORED reference (arXiv:2605.09238),
+        # `lora_riemannian_variant='v5'` (their Table-1 config). NOTE: v5 is the
+        # JOINT-momentum form (M_t = M_B A + B M_A), which differs from the paper's
+        # proven decoupled Corollary 4.1 (= skeleton Prop 2). Config is deliberate:
+        #   wd=0.0          -> matches this project's protocol (train.py default 0);
+        #                      the library default is 0.1 and would be an unfair confound.
+        #   momentum=0.95,  -> per-factor Nesterov, exactly Appendix K.
+        #   nesterov=True
+        #   ns_steps=5,     -> iMuon's own defaults (Ortho on the 2r×2r core; shape-
+        #   adjust_lr=True     scaled lr). lr is swept per cell.
+        from .third_party.imuon_muon import Muon as _IMuonRef
+        pairs = collect_lora_pairs(model)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model for imuon-lora.")
+        muon_params = [p for A, B in pairs for p in (A, B)]
+        return _IMuonRef(
+            lr=lr, wd=0.0,
+            muon_params=muon_params,
+            momentum=0.95, nesterov=True, ns_steps=5,
+            lora_pairs=pairs,
+            lora_riemannian_muon=True,
+            lora_riemannian_variant="v5",
+            lora_riemannian_adjust_lr=True,
         )
     if optimizer_type == "product-muon-lora":
         return ProductMuonLoRA(

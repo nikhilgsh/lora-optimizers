@@ -21,6 +21,7 @@ OPTIM_COLORS = {
     "scaled-lora":                 "#ff7f0e",
     "lin-lora":                    "#2ca02c",
     "muon-lora":                   "#e377c2",
+    "imuon-lora":                  "#17becf",   # iMuon reference baseline (arXiv:2605.09238, v5)
     "polar-product-lora":          "#c49c94",
     # pre-Adam preconditioning (geometry → Adam)
     "adam-scaled-lora":            "#d62728",
@@ -171,6 +172,7 @@ OPTIM_FAMILIES = {
     "no_adam": {
         "adamw",
         "muon-lora",
+        "imuon-lora",
         "polar-product-lora",
         "lin-lora",
         "scaled-lora",
@@ -240,6 +242,7 @@ OPTIM_MARKERS = {
     "adam-scaled-lora":            "o",
     "adamuon-lora":                "X",
     "muon-lora":                   "*",
+    "imuon-lora":                  "X",
     # Blues/cyans cluster
     "adamuon-polar-product-lora":  "o",
     "diag-scaled-lora":            "s",

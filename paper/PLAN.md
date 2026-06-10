@@ -130,22 +130,39 @@ Each cell earns its place; this is the whole grid.
 
 ### Experiments in dependency order
 
-- **E0 — implement iMuon baseline.** Implement the **published closed form, iMuon
-  Corollary 4.1** (arXiv 2605.09238) — the *decoupled per-factor* Gram-root-whitened polar:
-  `Ȧ = (BᵀB)^{-1/2} Ortho((BᵀB)^{-1/2} G_A)`, `Ḃ = Ortho(G_B (AAᵀ)^{-1/2}) (AAᵀ)^{-1/2}`,
-  `G_A = A.grad`, `G_B = B.grad`. This is **bit-exact equal to skeleton Prop 2** (verified
-  numerically, rel ≈ 2e-15). With-momentum runs use **per-factor Nesterov β=0.95** (Appendix
-  K). Add to `optim.py` + `OPTIMIZER_CHOICES`; behavioral-equivalence test vs a direct
-  SVD-based Cor 4.1 (rel < 1e-6). Run at the breadth + ladder cells, **especially the rank
-  ladder** (does iMuon's best-η drift with rank — the C1 evidence). **Spectron stays
-  argument-only** (native pretraining; our −radius ablation arm already exercises its
-  mechanism internally).
-  - **Subtlety to note in the paper (one sentence):** the authors' reference code ships a
-    *joint-`M_t`* variant (`M_t = M_B A + B M_A`, project-then-orthogonalize — their `v5`,
-    used for the Table-1 headline) that does **not** match the proven Cor 4.1 closed form
-    (verified: every repo variant rel ≥ 0.15, cos ≤ 0.99) and is structurally the paper's
-    *Riemannion* (coupled tangent projection), a baseline iMuon beats. We benchmark the
-    canonical decoupled closed form; no evidence the joint form helps.
+- **E0 — iMuon baseline = CALL THE AUTHORS' VENDORED CODE (done).** We run the authors'
+  reference implementation directly, not a re-derivation. Vendored verbatim to
+  `lora_playground/third_party/imuon_muon.py` (imuon @ `4f1d4b1`; stdlib+torch only, no
+  ms-swift dep), registered as `imuon-lora` in `OPTIMIZER_CHOICES` + `build_optimizer`.
+  Wiring pinned by `tests/test_imuon_lora.py` (3 pass).
+  - **Why call it rather than implement Cor 4.1:** the library contains **no** decoupled
+    Cor 4.1 — *all five* of its variants (`full`, v2, v3, v5, v5_compact) use the **joint**
+    `M_t = M_B·A + B·M_A` project-then-orthogonalize form (verified: every variant rel ≥ 0.15
+    vs Cor 4.1; v5 rel 0.55, cos 0.66). So "call the library" ⟺ run **v5** (their Table-1
+    headline). Running their actual code is the strongest "we ran real iMuon" claim; parity
+    is automatic.
+  - **v5 algorithm (per pair):** `M_t = M_B A + B M_A`; `dB = Ortho(M_t·P_A)·Aᵀ(AAᵀ)⁻¹`,
+    `dA = (BᵀB)⁻¹·Bᵀ·Ortho(P_B·M_t)` with row/col projectors `P_A,P_B`; `Ortho` = quintic
+    Keller–Jordan **NS5** (approx, σ→~(0.5,1.5)) on the 2r×2r core; shape-scaled lr
+    `0.2·√(max dim)`.
+  - **Locked HPs (all from their config; one enforced deviation):** `variant=v5`,
+    `ns_steps=5`, `ortho='ns'` (KJ-NS5), `adjust_lr=True`, `ε=1e-6` — their defaults/headline;
+    **`momentum=0.95` + Nesterov** — their Appendix-K with-momentum config, **matched** to our
+    momentum protagonist (held-fixed principle); **`wd=0.0` — ENFORCED**, our protocol
+    (overrides their 0.1 default / 0.01 E2E), the one deliberate change to avoid a wd confound.
+    `lr` swept per cell.
+  - **Momentum note:** β=0.95 is chosen for *matched-momentum symmetry*, not because it is
+    iMuon's strongest config — the paper's headline (Tables 1–2) is momentum-free and hints
+    momentum-free is iMuon's best on E2E (Table 7: 70.74). At our 9000-step scale momentum
+    almost certainly helps; we report "matched-momentum, both at β=0.95," not "iMuon at its
+    best." No secondary momentum-free arm (overkill).
+  - **Paper caveat (one sentence):** skeleton Prop 2 / Cor 4.1 (decoupled, symmetric `S⁻¹ᐟ²`)
+    is iMuon's canonical *theory* and is bit-exact correct (rel ≈ 2e-15); the optimizer we
+    *run* is the authors' shipped **v5** (joint `M_t`), which differs from their own proven
+    Cor 4.1 and is structurally their *Riemannion* (coupled projection). We run their code and
+    state the version.
+  - Run at the breadth + ladder cells, **especially the rank ladder** (does iMuon's best-η
+    drift with rank — the C1 evidence). **Spectron stays argument-only**.
 - **E1 — coverage fill.** Locked protagonist across the 7 to-run cells at an lr grid
   ({0.01, 0.03, 0.1} brackets the OLMo optimum — **verify best-η isn't at a grid edge per
   cell**, widen if it is). Gate for the headline performance profile. Also run the 2
