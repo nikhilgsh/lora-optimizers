@@ -46,9 +46,13 @@ Existing protagonist wrappers are OLMo-only and don't pass `--beta1`. For a 16-s
 build **generic per-optimizer wrappers** parameterized by `MODEL`/`DATA_DIR`/`LORA_R` (env)
 rather than bespoke files — DECIDED. Wrappers needed:
 
-- [ ] `sweep_protagonist_generic.sh` (PE8+Nesterov+β1=0.95; MODEL/DATA_DIR/LORA_R env)
-- [ ] `sweep_imuon_generic.sh` (`imuon-lora`; MODEL/DATA_DIR/LORA_R env)
-- [ ] `sweep_adamw_generic.sh` (cell 7 only; MODEL/DATA_DIR/LORA_R env) — or reuse existing
+- [x] `sweep_protagonist_generic.sh` — model/data_dir/lora_r as trailing positionals (pos 6/7/8)
+- [x] `sweep_imuon_generic.sh` — `imuon-lora`; positionals 4/5/6 = model/data_dir/lora_r
+- [x] `sweep_adamw_generic.sh` — cell 7 only; positionals 4/5/6 = model/data_dir/lora_r
+
+(model/data_dir/lora_r are POSITIONALS, not env — env doesn't propagate through
+`submit.sh --emit-pending`; positionals land in the task line. Each cell gets a params JSON
+encoding its model/data_dir/lora_r as single-value lists.)
 
 ## Gating step
 
