@@ -102,6 +102,46 @@ def _hidden_axis_diffs(cfg_a: dict, cfg_b: dict) -> list[tuple]:
     return diffs
 
 
+def _stitch_runs(runs: list[tuple[int, int, dict, list[dict]]]
+                 ) -> tuple[dict, list[dict]]:
+    """Stitch all same-key colliding runs into one step-monotonic trajectory.
+
+    ``runs`` is a list of ``(final_step, idx, cfg, evs)`` sharing a dedup key.
+    Evals are concatenated in order of their FIRST step (earliest segment
+    first); for each run only the evals whose ``step`` exceeds the running max
+    are appended. This is a strict generalization of "longest trajectory wins":
+
+    - **Resume continuation** (the case this fixes): an original partial run
+      (e.g. steps 250→8000) and its ``--resume_from`` continuation (8250→9000)
+      collide on the same key. Stitching yields the full 250→9000 trajectory
+      instead of dropping the pre-resume segment.
+    - **Overlapping rerun** (e.g. in-flight 0→3000 vs completed 0→9000, or two
+      identical 0→9000 reruns): same first step → ordered longest-first, so the
+      longer run populates fully and the shorter contributes nothing new. The
+      result equals the old longest-wins-then-priority behavior exactly.
+
+    The representative cfg is the run with the greatest ``final_step`` (ties
+    broken by group priority — lowest ``idx``), so leaderboard "final" reads the
+    most-progressed run's config/last eval, matching the prior winner selection.
+    """
+    rep_final, rep_idx, rep_cfg, _ = max(runs, key=lambda r: (r[0], -r[1]))
+
+    def _first_step(evs: list[dict]) -> int:
+        return evs[0]["step"] if evs else 0
+
+    # Earliest segment first; among equal first-steps, longer run first, then
+    # higher group priority (lower idx) — so reruns reduce to longest-wins.
+    ordered = sorted(runs, key=lambda r: (_first_step(r[3]), -r[0], r[1]))
+    stitched: list[dict] = []
+    max_step: int | None = None
+    for _final, _idx, _cfg, evs in ordered:
+        for e in evs:
+            if max_step is None or e["step"] > max_step:
+                stitched.append(e)
+                max_step = e["step"]
+    return rep_cfg, stitched
+
+
 def merge_runs(group_priority: Iterable[str],
                key_fn: Callable[[dict], tuple],
                filter_fn: Callable[[dict], bool] | None = None,
@@ -110,11 +150,13 @@ def merge_runs(group_priority: Iterable[str],
                *, strict_hidden_axes: bool = True) -> list[tuple[dict, list[dict]]]:
     """Merge sweeps, deduplicating by ``key_fn(cfg)``.
 
-    Dedup rule: **longest trajectory wins**, ties broken by group priority
-    order (earlier group in ``group_priority`` wins). This handles the
-    common case where an in-flight rerun has the same key as a completed
-    older run — the completed run keeps its slot until the rerun catches
-    up, and only takes over when the rerun reaches the same final step.
+    Dedup rule: **same-key runs are stitched into one step-monotonic
+    trajectory** (see :func:`_stitch_runs`). For runs covering disjoint step
+    ranges — an original run and its ``--resume_from`` continuation — this
+    concatenates the segments into the full trajectory. For overlapping ranges
+    (an in-flight rerun vs a completed older run, or duplicate reruns) it
+    reduces to the prior behavior: **longest trajectory wins**, ties broken by
+    group priority order (earlier group in ``group_priority`` wins).
 
     Robustness check (``strict_hidden_axes=True`` default): if two runs
     collide on ``key_fn(cfg)`` but differ on a "hidden" cfg axis (e.g.
@@ -127,7 +169,7 @@ def merge_runs(group_priority: Iterable[str],
     collapsed (e.g., showing the best-of across m∈{1,4} as one curve).
     """
     prio = {g: i for i, g in enumerate(group_priority)}
-    best: dict[tuple, tuple[int, int, dict, list[dict]]] = {}
+    collected: dict[tuple, list[tuple[int, int, dict, list[dict]]]] = {}
     for group, idx in sorted(prio.items(), key=lambda kv: kv[1]):
         if not has_runs(group, logs_root):
             continue
@@ -139,12 +181,14 @@ def merge_runs(group_priority: Iterable[str],
                 continue
             k = key_fn(cfg)
             final_step = evs[-1]["step"] if evs else 0
-            existing = best.get(k)
-            if existing is None:
-                best[k] = (final_step, idx, cfg, evs)
+            bucket = collected.get(k)
+            if bucket is None:
+                collected[k] = [(final_step, idx, cfg, evs)]
                 continue
-            ex_step, ex_idx, ex_cfg, _ex_evs = existing
             if strict_hidden_axes:
+                # Compare against the bucket's first cfg; if all members agree
+                # with it on non-runtime fields they mutually agree (transitive).
+                ex_cfg = bucket[0][2]
                 diffs = _hidden_axis_diffs(ex_cfg, cfg)
                 if diffs:
                     field_summary = ", ".join(
@@ -161,9 +205,8 @@ def merge_runs(group_priority: Iterable[str],
                         f"if collapsing is intended. "
                         f"Groups: {ex_cfg.get('log_group')!r} vs {cfg.get('log_group')!r}."
                     )
-            if final_step > ex_step or (final_step == ex_step and idx < ex_idx):
-                best[k] = (final_step, idx, cfg, evs)
-    return [(cfg, evs) for _, _, cfg, evs in best.values()]
+            bucket.append((final_step, idx, cfg, evs))
+    return [_stitch_runs(runs) for runs in collected.values()]
 
 
 # ─── diverged-run filtering ───────────────────────────────────────────────────
