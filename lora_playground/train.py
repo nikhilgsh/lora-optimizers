@@ -689,6 +689,14 @@ def make_parser():
                              "curvatures to identity → C_A=BᵀB, C_B=AAᵀ (partner-Gram, "
                              "iMuon-like). Tests whether the two-sided diagonal Shampoo "
                              "curvature helps. Requires the diag_metric (protagonist) path.")
+    parser.add_argument("--cw_factor_a", type=float, default=0.0,
+                        help="Per-factor shape exponent for A: c_A=(r/d_in)^a, folded "
+                             "into the operator-norm radius (product cap preserved). "
+                             "0=current (equal radius). Rules: Keller a=0, MuP a=0.5, "
+                             "Codex-rowspace a=0.25.")
+    parser.add_argument("--cw_factor_b", type=float, default=0.0,
+                        help="Per-factor shape exponent for B: c_B=(d_out/r)^b. "
+                             "0=current. Keller/MuP/Codex all use b=0.5 (expansion side).")
     parser.add_argument("--polar_core_remix_alpha", type=float, default=0.0,
                         help="Experimental core-coordinate remix coefficient. "
                              "0 disables it. Nonzero values replace the row(A) / "
@@ -1241,6 +1249,8 @@ def main():
         cw_nesterov=args.cw_nesterov,
         cw_no_radius=args.cw_no_radius,
         cw_no_diag_curv=args.cw_no_diag_curv,
+        cw_factor_a=args.cw_factor_a,
+        cw_factor_b=args.cw_factor_b,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,
@@ -1377,6 +1387,8 @@ def main():
             "cw_nesterov": args.cw_nesterov,
             "cw_no_radius": args.cw_no_radius,
             "cw_no_diag_curv": args.cw_no_diag_curv,
+            "cw_factor_a": args.cw_factor_a,
+            "cw_factor_b": args.cw_factor_b,
             "anderson_m": args.anderson_m,
             "anderson_reg": args.anderson_reg,
             "soap_beta": args.soap_beta,

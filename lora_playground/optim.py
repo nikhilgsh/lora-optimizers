@@ -1100,7 +1100,8 @@ class CurvatureWhitenLoRA(Optimizer):
                  log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
-                 cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False):
+                 cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
+                 cw_factor_a=0.0, cw_factor_b=0.0):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1186,6 +1187,16 @@ class CurvatureWhitenLoRA(Optimizer):
         self.cw_no_diag_curv = bool(cw_no_diag_curv)
         if self.cw_no_diag_curv and not self.diag_metric:
             raise ValueError("cw_no_diag_curv requires diag_metric=True (the protagonist path).")
+        # Per-factor shape scaling (sweep knob). c_A = (r/d_in)^a, c_B = (d_out/r)^b,
+        # folded into the operator-norm radius so the merged product cap stays η:
+        #   ρ = η / (c_A·σmax(B) + c_B·σmax(A)),  σmax(dA)=c_A·ρ,  σmax(dB)=c_B·ρ.
+        # (0,0) is bit-identical to the protagonist (equal radius). Named rules are
+        # points in (a,b): Keller (0, 1/2), Codex-rowspace (1/4, 1/2), MuP (1/2, 1/2).
+        # The max(1,·) of Keller/MuP is inert for LoRA shapes (r<d_in, d_out>r always),
+        # so it collapses to a fixed a — no separate clamp needed. Only the ratio
+        # c_A/c_B matters (the product cap removes the common scale).
+        self.cw_factor_a = float(cw_factor_a)
+        self.cw_factor_b = float(cw_factor_b)
 
         # Q starts as identity → step 1 is plain Adam (no rotation), since the
         # eigenbasis must be built from gradients STRICTLY BEFORE the step it is
@@ -1329,6 +1340,17 @@ class CurvatureWhitenLoRA(Optimizer):
             if not records:
                 records = [factor_diagnostics(A, B) for (A, B) in self.pairs]
             _emit_optim_diagnostics(step_count, records)
+
+    def _factor_scales(self, r, d_in, d_out):
+        """Per-factor shape coefficients (c_A, c_B) from the (a, b) exponents.
+
+        c_A = (r/d_in)^a (compression side), c_B = (d_out/r)^b (expansion side).
+        (0,0) → (1, 1). Returns python floats (shape-derived, constant per group).
+        """
+        a, b = self.cw_factor_a, self.cw_factor_b
+        c_A = 1.0 if a == 0.0 else (r / d_in) ** a
+        c_B = 1.0 if b == 0.0 else (d_out / r) ** b
+        return c_A, c_B
 
     def _smax_warm(self, M, states, key, n_warm=3):
         """Warm-started batched σ_max with per-pair v_init caching.
@@ -1507,7 +1529,10 @@ class CurvatureWhitenLoRA(Optimizer):
             Af = A.detach().float(); Bf = B.detach().float()
             sA = self._smax_warm(Af.unsqueeze(0), [st], 'v_sigma_A')[0]
             sB = self._smax_warm(Bf.unsqueeze(0), [st], 'v_sigma_B')[0]
-            rho = lr if self.cw_no_radius else lr / (sA + sB + self.eps)
+            # c_A, c_B fold the per-factor shape scaling into ρ; merged cap
+            # ρ(c_A·σmax(B) + c_B·σmax(A)) = η preserved (=current when c=1).
+            cA, cB = self._factor_scales(Af.shape[0], Af.shape[1], Bf.shape[0])
+            rho = lr if self.cw_no_radius else lr / (cA * sB + cB * sA + self.eps)
             # No §2.5 pre-rescale: σ_max momentum-normalization diluted the cross by
             # √(stable_rank) of the whitened momentum, making k≥2 a no-op. Cross is
             # added to the raw momentum (mirror of _cw_apply_grouped).
@@ -1543,8 +1568,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
-                dA = -(rho / (sWA + self.eps)) * WA
-                dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)) * WB
+                dA = -(cA * rho / (sWA + self.eps)) * WA
+                dB = -self.lora_plus_multiplier * (cB * rho / (sWB + self.eps)) * WB
             emit_diag = self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0
             if emit_diag:
                 A_pre = A.detach().float()
@@ -1666,7 +1691,10 @@ class CurvatureWhitenLoRA(Optimizer):
             # the update is applied after the loop), so compute them once.
             sA = self._smax_warm(Aw, grp, 'v_sigma_A')
             sB = self._smax_warm(Bw, grp, 'v_sigma_B')
-            rho = lr if self.cw_no_radius else lr / (sA + sB + self.eps)
+            # c_A, c_B: per-factor shape scaling folded into ρ (shape-constant within
+            # the group); merged cap ρ(c_A·σmax(B)+c_B·σmax(A))=η preserved.
+            cA, cB = self._factor_scales(Aw.shape[-2], Aw.shape[-1], Bw.shape[-2])
+            rho = lr if self.cw_no_radius else lr / (cA * sB + cB * sA + self.eps)
             # No §2.5 pre-rescale: the σ_max momentum-normalization diluted the cross
             # by √(stable_rank) of the whitened momentum (σ_max=1 base has Frobenius
             # √sr ≫ 1), so k≥2 collapsed onto k=1. The cross is added to the raw
@@ -1710,8 +1738,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
                 sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
-                dA = -(rho / (sWA + self.eps)).view(-1, 1, 1) * WA
-                dB = -self.lora_plus_multiplier * (rho / (sWB + self.eps)).view(-1, 1, 1) * WB
+                dA = -(cA * rho / (sWA + self.eps)).view(-1, 1, 1) * WA
+                dB = -self.lora_plus_multiplier * (cB * rho / (sWB + self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if timer: timer.start("cw_curv_grams")
             if self.kl_coupled:
@@ -11238,6 +11266,8 @@ def build_optimizer(
     cw_nesterov: bool = False,
     cw_no_radius: bool = False,
     cw_no_diag_curv: bool = False,
+    cw_factor_a: float = 0.0,
+    cw_factor_b: float = 0.0,
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,
@@ -11483,6 +11513,8 @@ def build_optimizer(
             cw_nesterov=cw_nesterov,
             cw_no_radius=cw_no_radius,
             cw_no_diag_curv=cw_no_diag_curv,
+            cw_factor_a=cw_factor_a,
+            cw_factor_b=cw_factor_b,
         )
     if optimizer_type == "adam-lin-core-lora":
         # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA
