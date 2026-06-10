@@ -11,9 +11,10 @@ Paper baselines are **AdamW + iMuon only** (see `paper/PLAN.md`). No other basel
 - **Protagonist** (`diag-shampoo-polar-lora`): `--polar_method polar_express --muon_ns_steps 8
   --cw_picard_iters 1 --curvature_beta 0.99 --precond_delta 1e-4 --precond_refresh_every 10
   --cw_nesterov --beta1 0.95`. (Existing OLMo cells ran β1=0.9 — ≤0.2σ ≡ 0.95, admissible.)
-- **iMuon baseline** (`imuon-lora`): authors' vendored v5; `momentum=0.95` Nesterov, `wd=0`,
-  `ns_steps=5`, `ε=1e-6`, **`adjust_lr=False`** (the Muon `0.2·√(max dim)` lr heuristic is not
-  in the paper; scalar τ instead — see `paper/PLAN.md` E0). lr grid-searched per cell.
+- **iMuon baseline** (`imuon-lora` = `IMuonLoRA`): the **published decoupled Corollary 4.1**
+  (per-factor Nesterov β=0.95 → symmetric Gram-whitened polar, scalar lr, ε=1e-6). NOT the
+  authors' joint-momentum `v5` (uninterpretable, not in the paper) — see `paper/PLAN.md` E0.
+  lr grid-searched per cell.
 - **AdamW**: universal reference / speedup denominator.
 - Protocol (all): global batch 16, seq 2048, 9000 steps, eval 250, packed_v1.1, bf16, compile.
 

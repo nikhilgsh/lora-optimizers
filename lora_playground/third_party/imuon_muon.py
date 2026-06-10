@@ -1,11 +1,13 @@
-# VENDORED — DO NOT EDIT. Authors' reference iMuon implementation.
+# VENDORED — DOCUMENTATION ONLY, **NOT RUN**. Authors' reference iMuon implementation.
 # Source: manifold-intrinsic-muon @ 4f1d4b1
 #         imuon/swift/trainers/optimizers/muon.py
 # Paper:  Intrinsic Muon (arXiv:2605.09238).
-# We run the `lora_riemannian_variant='v5'` path (their Table-1 config).
-# NOTE: v5 uses the JOINT-momentum form (M_t = M_B A + B M_A), which differs
-#       from the paper's proven decoupled Corollary 4.1 (= our Prop 2). See
-#       paper/PLAN.md E0 note.
+#
+# Our iMuon baseline is `IMuonLoRA` in lora_playground/optim.py — the PUBLISHED decoupled
+# Corollary 4.1. We do NOT import or run this file. It is kept only to document the authors'
+# shipped `v5` variant, which uses a JOINT momentum (M_t = M_B A + B M_A) that differs from
+# the paper's proven Cor 4.1 (every variant here rel ≥ 0.15 vs Cor 4.1; v5 rel 0.55) and has
+# no performance justification. See paper/PLAN.md E0.
 # Imports are stdlib + torch only (no ms-swift dependency).
 
 # Copyright (c) Alibaba, Inc. and its affiliates.

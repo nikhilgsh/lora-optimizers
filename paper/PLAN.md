@@ -137,39 +137,30 @@ Each cell earns its place; this is the whole grid.
 
 ### Experiments in dependency order
 
-- **E0 — iMuon baseline = CALL THE AUTHORS' VENDORED CODE (done).** We run the authors'
-  reference implementation directly, not a re-derivation. Vendored verbatim to
-  `lora_playground/third_party/imuon_muon.py` (imuon @ `4f1d4b1`; stdlib+torch only, no
-  ms-swift dep), registered as `imuon-lora` in `OPTIMIZER_CHOICES` + `build_optimizer`.
-  Wiring pinned by `tests/test_imuon_lora.py` (3 pass).
-  - **Why call it rather than implement Cor 4.1:** the library contains **no** decoupled
-    Cor 4.1 — *all five* of its variants (`full`, v2, v3, v5, v5_compact) use the **joint**
-    `M_t = M_B·A + B·M_A` project-then-orthogonalize form (verified: every variant rel ≥ 0.15
-    vs Cor 4.1; v5 rel 0.55, cos 0.66). So "call the library" ⟺ run **v5** (their Table-1
-    headline). Running their actual code is the strongest "we ran real iMuon" claim; parity
-    is automatic.
-  - **v5 algorithm (per pair):** `M_t = M_B A + B M_A`; `dB = Ortho(M_t·P_A)·Aᵀ(AAᵀ)⁻¹`,
-    `dA = (BᵀB)⁻¹·Bᵀ·Ortho(P_B·M_t)` with row/col projectors `P_A,P_B`; `Ortho` = quintic
-    Keller–Jordan **NS5** (approx, σ→~(0.5,1.5)) on the 2r×2r core; shape-scaled lr
-    `0.2·√(max dim)`.
-  - **Locked HPs:** `variant=v5`, `ns_steps=5`, `ortho='ns'` (KJ-NS5), `ε=1e-6` — their
-    defaults/headline; **`momentum=0.95` + Nesterov** — their Appendix-K with-momentum config,
-    **matched** to our momentum protagonist (held-fixed principle). Two deliberate deviations:
-    **`wd=0.0`** (our protocol; overrides their 0.1 default, avoids a wd confound) and
-    **`adjust_lr=False`** — the Muon `0.2·√(max dim)` per-shape lr heuristic is NOT in the
-    paper (Cor 4.1 / Algorithm 1 use a scalar τ), so we disable it and benchmark the published
-    method with a clean scalar lr. `lr` grid-searched per cell (the paper's own protocol;
-    one short pilot to locate iMuon's basin, then a normal 3-lr grid — NOT a wide sweep).
-  - **Momentum note:** β=0.95 is chosen for *matched-momentum symmetry*, not because it is
-    iMuon's strongest config — the paper's headline (Tables 1–2) is momentum-free and hints
-    momentum-free is iMuon's best on E2E (Table 7: 70.74). At our 9000-step scale momentum
-    almost certainly helps; we report "matched-momentum, both at β=0.95," not "iMuon at its
-    best." No secondary momentum-free arm (overkill).
-  - **Paper caveat (one sentence):** skeleton Prop 2 / Cor 4.1 (decoupled, symmetric `S⁻¹ᐟ²`)
-    is iMuon's canonical *theory* and is bit-exact correct (rel ≈ 2e-15); the optimizer we
-    *run* is the authors' shipped **v5** (joint `M_t`), which differs from their own proven
-    Cor 4.1 and is structurally their *Riemannion* (coupled projection). We run their code and
-    state the version.
+- **E0 — iMuon baseline = the PUBLISHED decoupled Corollary 4.1 (done).** We benchmark the
+  paper's *proven* method, implemented as `IMuonLoRA` in `optim.py` (registered as
+  `imuon-lora`), NOT the authors' shipped code. Tests pin it: `tests/test_imuon_lora.py`
+  (4 pass), incl. a step == the Cor 4.1 closed form. Production smoke PASSED
+  (`_optim_class: IMuonLoRA`, finite). Verified against an SVD reference (rel ≈ 2e-15), == Prop 2.
+  - **Algorithm (per pair, decoupled):** per-factor Nesterov `M̃ = G + β·m`, then
+    `Ȧ = (BᵀB)^{-1/2}·φ((BᵀB)^{-1/2}·M̃_A)`, `Ḃ = φ(M̃_B·(AAᵀ)^{-1/2})·(AAᵀ)^{-1/2}`,
+    `φ` = exact polar (thin SVD), scalar lr, Gram damping `ε=1e-6`. `momentum=0.95` (Appendix K).
+  - **Why implement, not call the library:** the library has **no** decoupled Cor 4.1 — all
+    five variants (`full`, v2, v3, v5, v5_compact) use the **joint** `M_t = M_B A + B M_A` form
+    (verified: every variant rel ≥ 0.15 vs Cor 4.1; v5 rel 0.55). The joint momentum is
+    **not in the paper's theory, has no performance justification, and makes iMuon
+    uninterpretable as a baseline** (it is structurally the authors' own Riemannion, which the
+    paper reports is worse). So we run the proven theorem instead; the vendored
+    `third_party/imuon_muon.py` is kept only as documentation of the v5 variant we did NOT run.
+  - **HPs:** `momentum=0.95` Nesterov (Appendix K, matched to our protagonist), `wd=0`
+    (our protocol), `ε=1e-6`, scalar lr (no Muon `0.2·√(max dim)` heuristic — not in the paper).
+    lr grid-searched per cell (3–4 lrs, edge-checked — NOT a wide sweep).
+  - **Momentum note:** β=0.95 is *matched-momentum symmetry* with the protagonist, not a claim
+    it is iMuon's strongest config (the paper's headline is momentum-free). We report
+    "matched-momentum, both at β=0.95."
+  - **Paper framing:** skeleton Prop 2 == this baseline (decoupled Cor 4.1) — the run and the
+    theory agree. One caveat sentence: the authors' shipped code uses a joint-momentum variant
+    (v5) that differs from their proven Cor 4.1 and which we do not run.
   - Run at the breadth + ladder cells, **especially the rank ladder** (does iMuon's best-η
     drift with rank — the C1 evidence). **Spectron stays argument-only**.
 - **E1 — coverage fill.** Locked protagonist (7 cells) + iMuon (8 cells) + AdamW (cell 7

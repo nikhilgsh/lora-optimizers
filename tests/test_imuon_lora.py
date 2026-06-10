@@ -1,22 +1,16 @@
-"""iMuon baseline = the authors' VENDORED reference implementation
-(arXiv:2605.09238), `lora_riemannian_variant='v5'`. These tests pin the
-build_optimizer wiring so the config can't silently drift:
+"""iMuon baseline = the PUBLISHED decoupled Corollary 4.1 (arXiv:2605.09238), implemented
+as `IMuonLoRA` (== skeleton Prop 2). Tests pin: (1) build_optimizer wiring, (2) a step
+matches the Cor 4.1 closed form, (3) the step is finite and moves params.
 
-  - variant v5 (their Table-1 headline; the joint-M_t form, NOT the decoupled
-    Corollary 4.1 — see paper/PLAN.md E0);
-  - ns_steps=5 + Keller-Jordan NS ('ns') — their default;
-  - momentum=0.95 + Nesterov — Appendix-K with-momentum config (matched to our
-    momentum protagonist; held fixed across optimizers);
-  - wd=0.0 — OUR protocol (overrides the library's 0.1 default; the one
-    enforced deviation, to avoid a weight-decay confound);
-  - adjust_lr=True, lora_precond_eps=1e-6 — library defaults.
+We deliberately do NOT run the authors' shipped `v5` (joint momentum M_t = M_B A + B M_A) —
+it is uninterpretable and performance-unjustified; the library has no decoupled Cor 4.1.
 """
 import math
 import torch
 import torch.nn as nn
 
-from lora_playground.optim import build_optimizer
-from lora_playground.third_party.imuon_muon import Muon as _IMuonRef
+from lora_playground.optim import IMuonLoRA, build_optimizer
+from lora_playground.utils import collect_lora_pairs
 
 
 class _FakeLoRALinear(nn.Module):
@@ -48,70 +42,69 @@ def _make(seed=0):
     return _TinyLoRAModel(), torch.randn(3, 8), torch.randn(3, 8)
 
 
-def test_imuon_dispatch_and_locked_config():
-    """build_optimizer('imuon-lora') returns the authors' Muon at our locked config."""
+def _polar(M):
+    U, _, Vh = torch.linalg.svd(M, full_matrices=False)
+    return U @ Vh
+
+
+def _isqrt(S):
+    w, Q = torch.linalg.eigh(S)
+    return (Q * w.clamp_min(1e-30).rsqrt()) @ Q.T
+
+
+def test_dispatch_and_config():
     m, _, _ = _make()
     opt = build_optimizer(m, "imuon-lora", lr=3e-2)
-
-    assert isinstance(opt, _IMuonRef)
-    # v5 = the Table-1 headline variant (NOT the library default 'full').
-    assert opt.lora_riemannian_variant == "v5"
-    assert opt.lora_riemannian_muon is True
-    # adjust_lr OFF: the Muon 0.2·√(max dim) per-shape heuristic is NOT part of the iMuon
-    # method (paper uses a scalar τ). Disabled so lr is a clean scalar, swept per cell.
-    assert opt.lora_riemannian_adjust_lr is False
-    assert opt.lora_riemannian_ortho_method == "ns"
-    assert math.isclose(opt.lora_precond_eps, 1e-6, rel_tol=0, abs_tol=0)
-
-    g = opt.param_groups[0]
-    assert math.isclose(g["lr"], 3e-2)
-    assert math.isclose(g["momentum"], 0.95)   # Appendix-K with-momentum, matched to protagonist
-    assert g["nesterov"] is True
-    assert g["ns_steps"] == 5                    # their default + headline
-    assert g["wd"] == 0.0                        # ENFORCED: our protocol, no wd confound
+    assert isinstance(opt, IMuonLoRA)
+    assert math.isclose(opt.momentum, 0.95)   # Appendix-K with-momentum, matched to protagonist
+    assert math.isclose(opt.delta, 1e-6)        # their Gram damping ε
+    assert math.isclose(opt.param_groups[0]["lr"], 3e-2)
 
 
-def test_imuon_v5_path_executes_and_is_finite():
-    """A real step routes through the Riemannian v5 update on every LoRA pair,
-    moves the parameters, and stays finite."""
+def test_step_matches_corollary_4_1():
+    """One step equals the decoupled Cor 4.1 closed form computed independently (float32)."""
+    lr, beta, delta = 2e-2, 0.95, 1e-6
+    m, x, tgt = _make(seed=1)
+    opt = build_optimizer(m, "imuon-lora", lr=lr)
+    pairs = collect_lora_pairs(m)
+    before = [(A.detach().clone().float(), B.detach().clone().float()) for A, B in pairs]
+    ((m(x) - tgt) ** 2).mean().backward()
+    grads = [(A.grad.detach().clone().float(), B.grad.detach().clone().float()) for A, B in pairs]
+    opt.step()
+
+    for (A, B), (A0, B0), (gA, gB) in zip(pairs, before, grads):
+        # First step: momentum buffer starts at 0, so Nesterov lookahead M̃ = (1+β)·g.
+        mtA, mtB = gA + beta * gA, gB + beta * gB
+        r = A0.shape[0]
+        eye = torch.eye(r, dtype=torch.float32)
+        isA = _isqrt(A0 @ A0.T + delta * eye)        # (A Aᵀ)^{-1/2}
+        isB = _isqrt(B0.T @ B0 + delta * eye)        # (Bᵀ B)^{-1/2}
+        dA = isB @ _polar(isB @ mtA)
+        dB = _polar(mtB @ isA) @ isA
+        exp_A = A0 - lr * dA
+        exp_B = B0 - lr * dB
+        assert torch.allclose(A.detach().float(), exp_A, atol=1e-5, rtol=1e-4)
+        assert torch.allclose(B.detach().float(), exp_B, atol=1e-5, rtol=1e-4)
+
+
+def test_step_finite_and_moves():
     m, x, tgt = _make()
     opt = build_optimizer(m, "imuon-lora", lr=3e-2)
-
     before = [p.detach().clone() for grp in opt.param_groups for p in grp["params"]]
     ((m(x) - tgt) ** 2).mean().backward()
-    opt._diagnostic_updated_pairs = 0
     opt.step()
     after = [p.detach().clone() for grp in opt.param_groups for p in grp["params"]]
-
-    # Both LoRA pairs went through the v5 Riemannian path (not the vanilla-Muon fallback).
-    assert opt._diagnostic_updated_pairs == 2
-    moved = sum((a - b).norm().item() for a, b in zip(after, before))
-    assert moved > 0.0
+    assert sum((a - b).norm().item() for a, b in zip(after, before)) > 0.0
     assert all(torch.isfinite(p).all() for p in after)
 
 
-def test_imuon_adapter_matches_direct_construction():
-    """The build_optimizer adapter passes exactly the flags a direct IMuonRef
-    construction would — same seed/grads -> bit-identical updates. Guards against
-    a future edit to the adapter silently changing the config."""
-    m1, x, tgt = _make(seed=1)
-    m2, _, _ = _make(seed=1)  # identical init (same seed)
-
-    opt1 = build_optimizer(m1, "imuon-lora", lr=2e-2)
-
-    from lora_playground.utils import collect_lora_pairs
-    pairs2 = collect_lora_pairs(m2)
-    muon_params2 = [p for A, B in pairs2 for p in (A, B)]
-    opt2 = _IMuonRef(
-        lr=2e-2, wd=0.0, muon_params=muon_params2,
-        momentum=0.95, nesterov=True, ns_steps=5,
-        lora_pairs=pairs2, lora_riemannian_muon=True,
-        lora_riemannian_variant="v5", lora_riemannian_adjust_lr=False,
-    )
-
-    for m, opt in ((m1, opt1), (m2, opt2)):
+def test_momentum_accumulates():
+    """Second step's lookahead uses the accumulated buffer (β·m + g), not a fresh gradient."""
+    m, x, tgt = _make(seed=2)
+    opt = build_optimizer(m, "imuon-lora", lr=1e-2)
+    for _ in range(2):
+        opt.zero_grad(set_to_none=False)
         ((m(x) - tgt) ** 2).mean().backward()
         opt.step()
-
-    for (n1, p1), (n2, p2) in zip(m1.named_parameters(), m2.named_parameters()):
-        assert torch.equal(p1.detach(), p2.detach()), f"adapter diverged from direct at {n1}"
+    # buffers are non-zero after two steps (momentum is live)
+    assert any(st["m_A"].abs().sum() > 0 for st in opt.pair_state.values())

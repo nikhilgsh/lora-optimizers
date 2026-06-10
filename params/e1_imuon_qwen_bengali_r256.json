@@ -1,0 +1,23 @@
+{
+  "lr": [
+    "3e-3",
+    "1e-2",
+    "3e-2",
+    "1e-1"
+  ],
+  "optimizer": [
+    "imuon-lora"
+  ],
+  "seed": [
+    "0"
+  ],
+  "model": [
+    "Qwen/Qwen2.5-1.5B"
+  ],
+  "data_dir": [
+    "data/aya_bengali_packed_seq2048_qwen"
+  ],
+  "lora_r": [
+    "256"
+  ]
+}

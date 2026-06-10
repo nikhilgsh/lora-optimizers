@@ -1,0 +1,23 @@
+{
+  "lr": [
+    "3e-3",
+    "1e-2",
+    "3e-2",
+    "1e-1"
+  ],
+  "optimizer": [
+    "imuon-lora"
+  ],
+  "seed": [
+    "0"
+  ],
+  "model": [
+    "allenai/OLMo-2-0425-1B"
+  ],
+  "data_dir": [
+    "data/opc_sft_stage2_all_packed_seq2048"
+  ],
+  "lora_r": [
+    "256"
+  ]
+}
