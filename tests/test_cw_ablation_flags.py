@@ -42,7 +42,7 @@ def _make(seed=0):
 
 def _build(model, **kw):
     return build_optimizer(model, "diag-shampoo-polar-lora", lr=3e-2,
-                           curvature_beta=0.99, muon_ns_steps=8, precond_delta=1e-4, **kw)
+                           curvature_beta=0.99, muon_ns_steps=8, precond_delta=1e-4, cw_nesterov=True, **kw)
 
 
 def _step_capture(opt, model, x, tgt):

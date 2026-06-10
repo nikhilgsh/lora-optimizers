@@ -12334,15 +12334,15 @@ def build_optimizer(
             lr_b_multiplier=lora_plus_multiplier,
         )
     if optimizer_type == "imuon-lora":
-        # iMuon baseline = the authors' VENDORED reference (arXiv:2605.09238), called directly.
-        # We use the BATCHED implementation (MuonBatched: groups same-shape pairs → one batched
-        # QR/NS/bmm per shape group, ~2× faster than the per-pair Muon) with `variant='v5'`.
-        # Plain v5's projector form is self-stabilizing at our B=0 LoRA init
-        # (dA=(BᵀB)⁻¹Bᵀ·Ortho(P_B·M_t)→0 when B=0; B grows via dB), so no warmup is needed —
-        # the decoupled closed-form Cor 4.1 is the only non-viable form (δ^{-1/2} blowup,
-        # measured). Deviations from their default: wd=0 (our protocol) and adjust_lr=False
-        # (scalar lr, not the Muon √d heuristic). Still the JOINT-momentum form (≠ proven Cor 4.1).
-        from .third_party.imuon_muon_batched import MuonBatched as _IMuonRef
+        # iMuon baseline = the authors' VENDORED reference (arXiv:2605.09238), `variant='v5_warmup'`
+        # (their built-in init-stable variant: runs the joint `full` form to grow B from zero,
+        # then v5). Measured ~3.9 s/step at OLMo r256. NOTE: we tried the authors' BATCHED
+        # MuonBatched for speed — it was marginally SLOWER here (4.05 s/step) because the
+        # all-linear LoRA shapes are heterogeneous (tiny per-shape groups → grouping overhead >
+        # batching benefit), and lacks the warmup (higher param_l2). So we stay on per-pair Muon
+        # v5_warmup. The decoupled Cor 4.1 is non-viable at B=0 (δ^{-1/2} blowup). Deviations
+        # from default: wd=0 (our protocol), adjust_lr=False (scalar lr). JOINT-momentum (≠ Cor 4.1).
+        from .third_party.imuon_muon import Muon as _IMuonRef
         pairs = collect_lora_pairs(model)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model for imuon-lora.")
@@ -12353,7 +12353,7 @@ def build_optimizer(
             momentum=0.95, nesterov=True, ns_steps=5,
             lora_pairs=pairs,
             lora_riemannian_muon=True,
-            lora_riemannian_variant="v5",
+            lora_riemannian_variant="v5_warmup",
             lora_riemannian_adjust_lr=False,
         )
     if optimizer_type == "product-muon-lora":

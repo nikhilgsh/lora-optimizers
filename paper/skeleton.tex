@@ -278,9 +278,10 @@ so the learning rate transfers across rank.
 \begin{algorithmic}[1]
 \Require gradients $G_A,G_B$; momenta $M_A,M_B$; diagonal curvatures $P,Q$; decays $\beta_1,\beta_2$; rate $\eta$
 
-\Phase{Momentum} (bias-corrected)
-\State $M_A\gets\beta_1 M_A+(1-\beta_1)\,G_A$, \qquad $\hat M_A\gets M_A/(1-\beta_1^{\,t})$
-\State $M_B\gets\beta_1 M_B+(1-\beta_1)\,G_B$, \qquad $\hat M_B\gets M_B/(1-\beta_1^{\,t})$
+\Phase{Momentum} (Nesterov lookahead, bias-corrected)
+\State $M_A\gets\beta_1 M_A+(1-\beta_1)\,G_A$, \qquad $\hat M_A\gets\big(\beta_1 M_A+(1-\beta_1)G_A\big)/(1-\beta_1^{\,t})$
+\State $M_B\gets\beta_1 M_B+(1-\beta_1)\,G_B$, \qquad $\hat M_B\gets\big(\beta_1 M_B+(1-\beta_1)G_B\big)/(1-\beta_1^{\,t})$
+\Statex \hspace{1.2em}\emph{(EMA analog of Muon's $\hat g+\beta\,\mathrm{buf}$; plain $\hat M_A\!=\!M_A/(1-\beta_1^t)$ is the $-$Nesterov ablation.)}
 
 \Phase{Diagonal curvature} (per-coordinate gradient energy)
 \State $Q_{jj}\gets\beta_2\,Q_{jj}+(1-\beta_2)\,\|(G_A)_{:,j}\|_2^2$ \Comment{input side}

@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from lora_playground.optim import build_optimizer
-from lora_playground.third_party.imuon_muon_batched import MuonBatched as _IMuonRef
+from lora_playground.third_party.imuon_muon import Muon as _IMuonRef
 
 
 class _FakeLoRALinear(nn.Module):
@@ -50,7 +50,7 @@ def test_dispatch_and_locked_config():
     opt = build_optimizer(m, "imuon-lora", lr=3e-2)
 
     assert isinstance(opt, _IMuonRef)
-    assert opt.lora_riemannian_variant == "v5"  # plain v5; projector form self-stabilizes at B=0
+    assert opt.lora_riemannian_variant == "v5_warmup"  # plain v5; projector form self-stabilizes at B=0
     assert opt.lora_riemannian_muon is True
     assert opt.lora_riemannian_adjust_lr is False       # scalar lr (no Muon √d heuristic)
     assert opt.lora_riemannian_ortho_method == "ns"
@@ -95,7 +95,7 @@ def test_adapter_matches_direct_construction():
         lr=2e-2, wd=0.0, muon_params=muon_params2,
         momentum=0.95, nesterov=True, ns_steps=5,
         lora_pairs=pairs2, lora_riemannian_muon=True,
-        lora_riemannian_variant="v5", lora_riemannian_adjust_lr=False,
+        lora_riemannian_variant="v5_warmup", lora_riemannian_adjust_lr=False,
     )
 
     for m, opt in ((m1, opt1), (m2, opt2)):
