@@ -15,6 +15,11 @@ model=${6:-allenai/OLMo-2-0425-1B}
 data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${8:-256}
 
+# Per-task torch.compile cache dir: disBatch co-locates tasks on a node; a SHARED
+# inductor/AOTAutograd cache gets corrupted by concurrent compiles (JSONDecodeError
+# in AOTAutogradCache.load at startup). $$ (task PID) isolates each task's cache.
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/inductor_${USER:-u}_$$}"
+
 compile_args=()
 [ "${COMPILE:-1}" = "1" ] && compile_args=(--compile)
 

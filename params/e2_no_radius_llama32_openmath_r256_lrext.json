@@ -1,8 +1,7 @@
 {
   "lr": [
-    "1e-3",
-    "3e-3",
-    "1e-2"
+    "1e-2",
+    "3e-2"
   ],
   "optimizer": [
     "diag-shampoo-polar-lora"
@@ -17,10 +16,10 @@
     "0.95"
   ],
   "model": [
-    "meta-llama/Meta-Llama-3-8B"
+    "meta-llama/Llama-3.2-1B"
   ],
   "data_dir": [
-    "data/opc_sft_stage2_all_packed_seq2048_llama32"
+    "data/openmath_instruct_2_2m_packed_seq2048_llama32"
   ],
   "lora_r": [
     "256"
