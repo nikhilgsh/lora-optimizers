@@ -1100,7 +1100,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
-                 cw_nesterov=False):
+                 cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1174,6 +1174,18 @@ class CurvatureWhitenLoRA(Optimizer):
         self.cw_nesterov = bool(cw_nesterov)
         if self.cw_nesterov and self.soap_v:
             raise ValueError("cw_nesterov is only defined for the soap_v=False (closed-form Shampoo) path.")
+        # ABLATION (−radius / Spectron): use ρ=lr (plain) instead of the operator-norm
+        # radius ρ=lr/(σmax(A)+σmax(B)). Tests whether the Spectron-style spectral
+        # trust-region scaling helps. Default False = protagonist (radius on).
+        self.cw_no_radius = bool(cw_no_radius)
+        # ABLATION (−Shampoo / no diagonal curvature): force the relative-damped input/
+        # output diagonals to identity (dinA=doutB=1). On the diag_metric path this makes
+        # C_A=BᵀB, C_B=AAᵀ (the bare partner-Grams, i.e. P=Q=I in skeleton Alg 1) and drops
+        # the input/output diagonal whitening — a partner-Gram-whitened polar (iMuon-like).
+        # Tests whether the two-sided diagonal Shampoo curvature helps. Requires diag_metric.
+        self.cw_no_diag_curv = bool(cw_no_diag_curv)
+        if self.cw_no_diag_curv and not self.diag_metric:
+            raise ValueError("cw_no_diag_curv requires diag_metric=True (the protagonist path).")
 
         # Q starts as identity → step 1 is plain Adam (no rotation), since the
         # eigenbasis must be built from gradients STRICTLY BEFORE the step it is
@@ -1461,7 +1473,10 @@ class CurvatureWhitenLoRA(Optimizer):
             # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
             # SINGLE metric the diag arm commits to — used by the self small-side
             # Gram, the whitening, and the Picard cross, coherently.
-            dinA = self._rdinv(st['D_in']); doutB = self._rdinv(st['D_out'])
+            if self.cw_no_diag_curv:  # −Shampoo: M_in=M_out=I → C_A=BᵀB, C_B=AAᵀ
+                dinA = torch.ones_like(st['D_in']); doutB = torch.ones_like(st['D_out'])
+            else:
+                dinA = self._rdinv(st['D_in']); doutB = self._rdinv(st['D_out'])
             Din_m = (dinA * dinA).reciprocal()
             Dout_m = (doutB * doutB).reciprocal()
             if self.diag_metric:
@@ -1492,7 +1507,7 @@ class CurvatureWhitenLoRA(Optimizer):
             Af = A.detach().float(); Bf = B.detach().float()
             sA = self._smax_warm(Af.unsqueeze(0), [st], 'v_sigma_A')[0]
             sB = self._smax_warm(Bf.unsqueeze(0), [st], 'v_sigma_B')[0]
-            rho = lr / (sA + sB + self.eps)
+            rho = lr if self.cw_no_radius else lr / (sA + sB + self.eps)
             # No §2.5 pre-rescale: σ_max momentum-normalization diluted the cross by
             # √(stable_rank) of the whitened momentum, making k≥2 a no-op. Cross is
             # added to the raw momentum (mirror of _cw_apply_grouped).
@@ -1609,7 +1624,10 @@ class CurvatureWhitenLoRA(Optimizer):
             # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
             # SINGLE metric the diag arm commits to — used by the self small-side
             # Gram, the whitening, and the Picard cross, coherently.
-            dinA = self._rdinv(Din); doutB = self._rdinv(Dout)
+            if self.cw_no_diag_curv:  # −Shampoo: M_in=M_out=I → C_A=BᵀB, C_B=AAᵀ
+                dinA = torch.ones_like(Din); doutB = torch.ones_like(Dout)
+            else:
+                dinA = self._rdinv(Din); doutB = self._rdinv(Dout)
             Din_m = (dinA * dinA).reciprocal()
             Dout_m = (doutB * doutB).reciprocal()
             if self.diag_metric:
@@ -1648,7 +1666,7 @@ class CurvatureWhitenLoRA(Optimizer):
             # the update is applied after the loop), so compute them once.
             sA = self._smax_warm(Aw, grp, 'v_sigma_A')
             sB = self._smax_warm(Bw, grp, 'v_sigma_B')
-            rho = lr / (sA + sB + self.eps)
+            rho = lr if self.cw_no_radius else lr / (sA + sB + self.eps)
             # No §2.5 pre-rescale: the σ_max momentum-normalization diluted the cross
             # by √(stable_rank) of the whitened momentum (σ_max=1 base has Frobenius
             # √sr ≫ 1), so k≥2 collapsed onto k=1. The cross is added to the raw
@@ -11218,6 +11236,8 @@ def build_optimizer(
     picard_iters_override: int | None = None,
     cw_picard_iters: int = 1,
     cw_nesterov: bool = False,
+    cw_no_radius: bool = False,
+    cw_no_diag_curv: bool = False,
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,
@@ -11461,6 +11481,8 @@ def build_optimizer(
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,
             cw_nesterov=cw_nesterov,
+            cw_no_radius=cw_no_radius,
+            cw_no_diag_curv=cw_no_diag_curv,
         )
     if optimizer_type == "adam-lin-core-lora":
         # Cross-check: same Sylvester solver as adam-lin-lora, but Adam-EMA

@@ -680,6 +680,15 @@ def make_parser():
                              "core instead of plain bias-corrected EMA. Ablation for "
                              "diag-shampoo[-polar]-lora; the operator-norm rescale "
                              "makes this a direction-only change.")
+    parser.add_argument("--cw_no_radius", action="store_true",
+                        help="ABLATION (−radius/Spectron): use ρ=lr instead of the "
+                             "operator-norm radius ρ=lr/(σmax(A)+σmax(B)). Tests whether "
+                             "the Spectron spectral trust-region scaling helps.")
+    parser.add_argument("--cw_no_diag_curv", action="store_true",
+                        help="ABLATION (−Shampoo): force the input/output diagonal "
+                             "curvatures to identity → C_A=BᵀB, C_B=AAᵀ (partner-Gram, "
+                             "iMuon-like). Tests whether the two-sided diagonal Shampoo "
+                             "curvature helps. Requires the diag_metric (protagonist) path.")
     parser.add_argument("--polar_core_remix_alpha", type=float, default=0.0,
                         help="Experimental core-coordinate remix coefficient. "
                              "0 disables it. Nonzero values replace the row(A) / "
@@ -1230,6 +1239,8 @@ def main():
         picard_iters_override=args.picard_iters_override,
         cw_picard_iters=args.cw_picard_iters,
         cw_nesterov=args.cw_nesterov,
+        cw_no_radius=args.cw_no_radius,
+        cw_no_diag_curv=args.cw_no_diag_curv,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,
@@ -1364,6 +1375,8 @@ def main():
             "picard_iters_override": args.picard_iters_override,
             "cw_picard_iters": args.cw_picard_iters,
             "cw_nesterov": args.cw_nesterov,
+            "cw_no_radius": args.cw_no_radius,
+            "cw_no_diag_curv": args.cw_no_diag_curv,
             "anderson_m": args.anderson_m,
             "anderson_reg": args.anderson_reg,
             "soap_beta": args.soap_beta,
