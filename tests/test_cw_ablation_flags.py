@@ -110,6 +110,23 @@ def test_no_diag_curv_differs_and_finite():
     assert all(torch.isfinite(p).all() for p in m2.parameters())
 
 
+def test_no_radius_grouped_with_diagnostics_no_crash():
+    """Regression: cw_no_radius on the GROUPED (higham) path with basic diagnostics ON.
+    The diagnostic record indexes ρ[j]; pre-fix ρ was a scalar float in the cw_no_radius
+    branch → 'float object is not subscriptable' once diagnostics fired (~step 100 in
+    production). The -radius sweep runs exactly this path (higham + --log_basic_diagnostics
+    + --optim_diagnostics_every), so it must run and stay finite. The default-eigh,
+    no-diagnostics test above does NOT exercise this branch."""
+    m, x, tgt = _make(seed=3)
+    opt = _build(m, cw_no_radius=True, precond_method="higham",
+                 log_basic_diagnostics=True, optim_diagnostics_every=1)
+    for _ in range(3):
+        opt.zero_grad(set_to_none=False)
+        ((m(x) - tgt) ** 2).mean().backward()
+        opt.step()  # must not raise (ρ[j] indexing on the grouped diagnostic path)
+    assert all(torch.isfinite(p).all() for p in m.parameters())
+
+
 def test_no_diag_curv_requires_diag_metric():
     """The flag is only defined on the diag_metric (protagonist) path."""
     m, _, _ = _make()

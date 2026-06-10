@@ -1694,7 +1694,11 @@ class CurvatureWhitenLoRA(Optimizer):
             # c_A, c_B: per-factor shape scaling folded into ρ (shape-constant within
             # the group); merged cap ρ(c_A·σmax(B)+c_B·σmax(A))=η preserved.
             cA, cB = self._factor_scales(Aw.shape[-2], Aw.shape[-1], Bw.shape[-2])
-            rho = lr if self.cw_no_radius else lr / (cA * sB + cB * sA + self.eps)
+            # cw_no_radius: plain η per group. Keep ρ a (ngroups,) tensor (not a
+            # python float) so the per-group ρ[j] in the diagnostic record below and
+            # the broadcast cA·ρ/σ rescale both stay shape-correct.
+            rho = (torch.full_like(sB, float(lr)) if self.cw_no_radius
+                   else lr / (cA * sB + cB * sA + self.eps))
             # No §2.5 pre-rescale: the σ_max momentum-normalization diluted the cross
             # by √(stable_rank) of the whitened momentum (σ_max=1 base has Frobenius
             # √sr ≫ 1), so k≥2 collapsed onto k=1. The cross is added to the raw

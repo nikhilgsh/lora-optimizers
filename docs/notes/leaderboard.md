@@ -172,7 +172,7 @@ AdamW speed target (best-lr final loss): **0.3823**  ·  horizon 9000 steps
 |---|---|---|---|---|
 | AdamW | 1e-04 | 0.3823 | 1.00× | 1.00× |
 | chord-tight ns=8 k=1 (abs=1e-6) | 3e-03 | 0.3710 | 1.33× | 1.19× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 1e-02 | 0.3653 | 1.09× | 1.19× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 1e-02 | 0.3644 | 1.09× | 1.19× |
 
 ### Qwen2.5-1.5B × opc-sft-stage2 (Magicoder) × r=256
 
