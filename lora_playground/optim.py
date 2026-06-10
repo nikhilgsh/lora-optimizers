@@ -743,85 +743,6 @@ class ScaledLoRA(Optimizer):
             A.grad.zero_()
             B.grad.zero_()
 
-class IMuonLoRA(Optimizer):
-    """iMuon (Li et al., arXiv:2605.09238) — the PUBLISHED decoupled Corollary 4.1 method.
-
-    Per-factor Nesterov momentum, then the symmetric partner-Gram-whitened polar (a single
-    scalar step size — no Muon `0.2·√(max dim)` shape-lr heuristic, which is not in the paper):
-
-        S_A = A Aᵀ + δI,    S_B = Bᵀ B + δI                  (r×r Gram + damping)
-        m_A ← β m_A + G_A,   M̃_A = G_A + β m_A                (Nesterov lookahead; B-side mirror)
-        Ȧ = S_B^{-1/2} φ(S_B^{-1/2} M̃_A)
-        Ḃ = φ(M̃_B S_A^{-1/2}) S_A^{-1/2}
-        A ← A − lr·Ȧ,        B ← B − lr·Ḃ
-
-    where φ(M) = U Vᵀ is the polar factor (exact, via thin SVD), G_A = A.grad, G_B = B.grad.
-
-    This is the paper's proven closed form (== skeleton Prop 2, verified rel ≈ 2e-15). It is
-    deliberately NOT the authors' shipped `v5` variant, which uses a JOINT momentum
-    M_t = M_B A + B M_A — an uninterpretable, performance-unjustified deviation from the proven
-    theorem (structurally their own Riemannion baseline). See paper/PLAN.md E0.
-    """
-    def __init__(self, model, lr=2e-3, momentum=0.95, delta=1e-6, adapter_name=None):
-        pairs = collect_lora_pairs(model, adapter_name)
-        if not pairs:
-            raise ValueError("No LoRA (A,B) tensors found on model.")
-        params = [p for A, B in pairs for p in (A, B)]
-        super().__init__([{"params": params, "lr": lr}], {})
-        self.pairs = pairs
-        self.momentum = float(momentum)
-        self.delta = float(delta)
-        self.pair_state = {}
-
-    @staticmethod
-    def _inv_sqrt(S):
-        # symmetric inverse-sqrt of a small (r×r) SPD matrix via eigendecomposition, float32
-        w, Q = torch.linalg.eigh(S)
-        return (Q * w.clamp_min(1e-30).rsqrt()) @ Q.T
-
-    @staticmethod
-    def _polar(M):
-        U, _, Vh = torch.linalg.svd(M, full_matrices=False)
-        return U @ Vh
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        if closure is not None:
-            with torch.enable_grad():
-                closure()
-        lr = self.param_groups[0]["lr"]
-        beta = self.momentum
-        for i, (A, B) in enumerate(self.pairs):  # A:(r,d_in), B:(d_out,r)
-            if A.grad is None or B.grad is None:
-                raise ValueError("Gradients are required for IMuonLoRA update.")
-            gA = A.grad.to(torch.float32)
-            gB = B.grad.to(torch.float32)
-            st = self.pair_state.get(i)
-            if st is None:
-                st = {"m_A": torch.zeros_like(gA), "m_B": torch.zeros_like(gB)}
-                self.pair_state[i] = st
-            # Per-factor Nesterov momentum (classic, no (1-β) damping — matches Appendix K).
-            st["m_A"].mul_(beta).add_(gA)
-            st["m_B"].mul_(beta).add_(gB)
-            mtA = gA + beta * st["m_A"]
-            mtB = gB + beta * st["m_B"]
-
-            A32 = A.to(torch.float32)
-            B32 = B.to(torch.float32)
-            r = A.shape[0]
-            eye = torch.eye(r, device=A.device, dtype=torch.float32)
-            isqrt_SA = self._inv_sqrt(A32 @ A32.T + self.delta * eye)   # (A Aᵀ)^{-1/2}
-            isqrt_SB = self._inv_sqrt(B32.T @ B32 + self.delta * eye)   # (Bᵀ B)^{-1/2}
-
-            dA = isqrt_SB @ self._polar(isqrt_SB @ mtA)                 # (r, d_in)
-            dB = self._polar(mtB @ isqrt_SA) @ isqrt_SA                 # (d_out, r)
-
-            A.add_((-lr * dA).to(dtype=A.dtype))
-            B.add_((-lr * dB).to(dtype=B.dtype))
-            A.grad.zero_()
-            B.grad.zero_()
-
-
 class LinLoRA(Optimizer):
     """
     LinLoRA: Linearized least-squares update for LoRA (A, B) tensors.
@@ -12379,12 +12300,27 @@ def build_optimizer(
             lr_b_multiplier=lora_plus_multiplier,
         )
     if optimizer_type == "imuon-lora":
-        # iMuon baseline = the PUBLISHED decoupled Corollary 4.1 (arXiv:2605.09238) — per-factor
-        # Nesterov (β=0.95, Appendix K) → symmetric partner-Gram-whitened polar, scalar lr.
-        # We implement the proven theorem (= skeleton Prop 2), NOT the authors' shipped `v5`
-        # (joint momentum M_t = M_B A + B M_A) — v5 is uninterpretable and performance-
-        # unjustified. δ=1e-6 matches their Gram damping. See paper/PLAN.md E0.
-        return IMuonLoRA(model, lr=lr, momentum=0.95, delta=1e-6)
+        # iMuon baseline = the authors' VENDORED reference (arXiv:2605.09238), called directly.
+        # We use `variant='v5_warmup'` — their built-in init-stable variant (runs the joint
+        # `full` form to grow B away from zero, then switches to v5). The decoupled closed-form
+        # Corollary 4.1 is NOT viable at our B=0 init (S_B^{-1/2} ≈ δ^{-1/2} blowup; param_l2
+        # explodes, loss flat — measured), which is exactly why the authors ship the joint
+        # projector form and a warmup. We run their code. Deviations from their default: only
+        # wd=0 (our protocol) and adjust_lr=False (scalar lr, not the Muon √d heuristic).
+        from .third_party.imuon_muon import Muon as _IMuonRef
+        pairs = collect_lora_pairs(model)
+        if not pairs:
+            raise ValueError("No LoRA (A,B) tensors found on model for imuon-lora.")
+        muon_params = [p for A, B in pairs for p in (A, B)]
+        return _IMuonRef(
+            lr=lr, wd=0.0,
+            muon_params=muon_params,
+            momentum=0.95, nesterov=True, ns_steps=5,
+            lora_pairs=pairs,
+            lora_riemannian_muon=True,
+            lora_riemannian_variant="v5_warmup",
+            lora_riemannian_adjust_lr=False,
+        )
     if optimizer_type == "product-muon-lora":
         return ProductMuonLoRA(
             model, lr=lr, ns_steps=muon_ns_steps,
