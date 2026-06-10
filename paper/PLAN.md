@@ -19,9 +19,9 @@ the step speedup survives into walltime.
 
 ## Protagonist (the cheap variant) — LOCKED 2026-06-09
 
-diag-Shampoo + **full polar (PolarExpress, PE=8)**, k=1, **Nesterov momentum (β1=0.9)**.
+diag-Shampoo + **full polar (PolarExpress, PE=8)**, k=1, **Nesterov momentum (β1=0.95)**.
 Per factor (A-side; B-side symmetric):
-1. Nesterov momentum `m_A ← β1 m_A + g_A`, lookahead `g̃_A ← g_A + β1 m_A` (β1=0.9)
+1. Nesterov momentum `m_A ← β1 m_A + g_A`, lookahead `g̃_A ← g_A + β1 m_A` (β1=0.95)
 2. two-sided whiten `z_A = S_curv,A^{-1/2} m̂_A D_in^{-1/2}` — partner-side dense `r×r` Gram
    root **plus large-axis diagonal** curvature (the second Shampoo side; this is what
    iMuon omits and what Adam was implicitly providing in chord-tight)
@@ -33,19 +33,28 @@ Per factor (A-side; B-side symmetric):
 **Exact config string** (the one all coverage/ablation/walltime numbers must use):
 `--optimizer diag-shampoo-polar-lora --polar_method polar_express --muon_ns_steps 8
 --cw_picard_iters 1 --curvature_beta 0.99 --precond_delta 1e-4 --precond_refresh_every 10
---cw_nesterov` (Nesterov momentum ON, β1=0.9). δ=1e-4 is locked — cross-family δ sweeps
-(chord-tight/curvature-whiten) show it's insensitive; no δ pilot needed.
+--cw_nesterov --beta1 0.95` (Nesterov momentum ON, β1=0.95). δ=1e-4 is locked — cross-family
+δ sweeps (chord-tight/curvature-whiten) show it's insensitive; no δ pilot needed. Existing
+OLMo cells ran at β1=0.9 (≤0.2σ ≡ 0.95, admissible — see below); new cells use 0.95.
 
 **Protocol (LOCKED):** global batch 16 (`--batch_size 4 --grad_accum_steps 4`),
 `--max_seq_length 2048`, `--max_steps 9000`, `--eval_every 250`, `packed_v1.1`, bf16,
 `--compile`. Matches the existing OLMo protagonist + AdamW runs, so new cells stay
 comparable — no re-run for consistency.
 
-**Nesterov decision:** IN the protagonist (β1=0.9). Step-matched Δ vs plain-EMA
+**Nesterov decision:** IN the protagonist. Step-matched Δ vs plain-EMA
 (σ_AdamW = 0.0017): OLMo opc r64 +0.94σ, opc r256 **+1.33σ**, openmath r256 +0.24σ —
 consistently positive, and opc r256 exceeds the 1σ floor, so it is NOT "within noise": a
 small but real gain. The ±Nesterov ablation row *quantifies* this (it does not justify
-exclusion). iMuon baseline uses its own β=0.95 (Appendix K) — intentional asymmetry, stated.
+exclusion).
+
+**β1 = 0.95 (switched from 0.9).** β1 sweep `diag_shampoo_polar_r256_opc_beta1_095`
+(OLMo opc r256, step-matched @5250): best-lr Δ(0.9−0.95) = **−0.18σ**, near-identical at
+every lr — β1 is a no-op for the protagonist. We adopt **0.95** because (a) it is the
+Muon/iMuon-canonical momentum, so **all** spectral methods (protagonist + iMuon) sit at one
+β with no β-asymmetry confound, and (b) it is free (≤0.2σ). The existing β1=0.9 OLMo runs
+stay admissible as protagonist data (within-noise equivalent — note it, don't re-run); new
+E1 cells run at 0.95. (Confirm the ≤0.2σ holds at the 9000 horizon when the sweep finishes.)
 
 Verify exact diagonal form against `lora_playground/optim.py` before writing the §Method
 equations. Derivation of record: `docs/notes/polar_product/kl_shampoo_polar_derivation.md`.
