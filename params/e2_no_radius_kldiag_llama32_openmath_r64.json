@@ -1,8 +1,8 @@
 {
   "lr": [
-    "3e-3",
-    "1e-2",
-    "3e-2"
+    "3e-4",
+    "1e-3",
+    "3e-3"
   ],
   "optimizer": [
     "kl-diag-polar-lora"
@@ -17,12 +17,12 @@
     "0.9"
   ],
   "model": [
-    "Qwen/Qwen2.5-1.5B"
+    "meta-llama/Llama-3.2-1B"
   ],
   "data_dir": [
-    "data/aya_bengali_packed_seq2048_qwen"
+    "data/openmath_instruct_2_2m_packed_seq2048_llama32"
   ],
   "lora_r": [
-    "256"
+    "64"
   ]
 }
