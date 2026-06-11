@@ -627,16 +627,16 @@ def make_parser():
                              "behavior; K>1 reuses the cached preconditioner for K-1 steps after "
                              "each refresh, trading a small amount of staleness for a large step-time "
                              "speedup at high LoRA rank.")
-    parser.add_argument("--precond_method", choices=["eigh", "higham"], default="higham",
-                        help="Method for computing S^{-1/2} in the polar-product optimizers. "
-                             "'higham' (default) uses Newton-Schulz iteration (matmul-only) — much faster "
-                             "at high LoRA rank because it avoids the eigh kernel-launch storm. "
-                             "Validated against eigh on the loose-chord variant "
-                             "(profiling_a100_canonical_2026_05_04.md, 0 non_finite_Z events on 224k probes, "
-                             "trajectory matches eigh within 0.07σ). Tight-chord inherits the same precond "
-                             "machinery; verification cell pending. "
-                             "'eigh' is the reference path (eigendecomp + diag-pow + reconstruct), kept "
-                             "for sanity / equivalence checks.")
+    parser.add_argument("--precond_method", choices=["eigh", "higham", "gram_ns"], default=None,
+                        help="Method for computing S^{-1/2} in the curvature/polar-product optimizers. "
+                             "DEFAULT None = use each optimizer family's own default (curvature-whiten → "
+                             "'eigh' QR eigenbasis; polar-product → 'higham' Newton-Schulz). Set explicitly "
+                             "to override: 'higham' = coupled Iannazzo NS (matmul-only, avoids the eigh "
+                             "kernel-launch storm at high rank); 'gram_ns' = Polar-Express Gram NS "
+                             "(curvature-whiten only — eigh-free, fresh every step, no stale eigenbasis; "
+                             "see docs/notes/inverse_sqrt_variant_plan.md); 'eigh' = reference eigendecomp. "
+                             "Passing it explicitly for curvature-whiten now reaches the optimizer (it used "
+                             "to be silently dropped by the spec skip).")
     parser.add_argument("--higham_iters", type=int, default=10,
                         help="Newton-Schulz iterations when --precond_method=higham. "
                              "10 is needed for κ ≈ 200 (the worst case observed for SB "

@@ -107,6 +107,28 @@ def time_full_step(model, optimizer, batch, n_warmup, n_reps, K, grad_accum_step
     return per_step, is_refresh, phase_times
 
 
+def build_protagonist_direct(bare, cfg: BenchConfig, *, precond_method, K):
+    """Build ``CurvatureWhitenLoRA`` directly with an EXPLICIT precond_method.
+
+    The factory cannot do this today: the cw protagonist specs skip
+    ``precond_method`` (``_CW_PRECOND_SKIP``) because ``build_optimizer``'s default
+    is ``"higham"`` — wrong for cw — so an explicit ``precond_method="gram_ns"`` is
+    silently dropped to the class default ``eigh`` (verified). This builds the
+    optimizer exactly as the spec would once gram_ns is adopted via ``fixed``
+    (identity flags pulled from the spec so they cannot drift), with the chosen
+    inverse-sqrt method actually in effect — the faithful retiming measurement.
+    """
+    from ..optim import CurvatureWhitenLoRA
+    from ..optim_specs import REGISTRY
+    identity = dict(REGISTRY[cfg.optimizer].fixed)  # kl_coupled/soap_v/diag_metric/use_polar
+    return CurvatureWhitenLoRA(
+        bare, lr=1e-3, betas=(cfg.beta1, cfg.beta2), delta=cfg.precond_delta,
+        curvature_beta=cfg.curvature_beta, ns_steps=cfg.muon_ns_steps,
+        polar_method=cfg.polar_method, cw_picard_iters=cfg.cw_picard_iters,
+        cw_nesterov=cfg.cw_nesterov, precond_refresh_every=K,
+        precond_method=precond_method, higham_iters=cfg.higham_iters, **identity)
+
+
 def build_model(cfg: BenchConfig, device):
     """Build the PEFT model for ``cfg`` (production dtype/compile/target_modules)."""
     dtype = torch.bfloat16 if cfg.bf16 else torch.float32

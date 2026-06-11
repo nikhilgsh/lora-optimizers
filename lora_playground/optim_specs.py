@@ -113,7 +113,13 @@ def build_from_spec(model_or_targets, name: str, config: OptimizerConfig):
             if fld in s.skip:
                 continue  # this variant must not receive this field → class default
             if fld in CONFIG_FIELDS:
-                kwargs[n] = getattr(config, fld)
+                val = getattr(config, fld)
+                # precond_method=None means "use the class's family default" (cw→eigh,
+                # polar-product→higham): omit it so each class applies its own default.
+                # An explicit value still forwards (and raises if invalid for the family).
+                if n == "precond_method" and val is None:
+                    continue
+                kwargs[n] = val
             # else: not a config field and not fixed → class default
     # Apply any fixed keys the signature loop didn't cover — these are absorbed
     # by the class's **kwargs (e.g. eps on the soap/adafactor polar-product
@@ -131,9 +137,15 @@ def build_from_spec(model_or_targets, name: str, config: OptimizerConfig):
 # reproduces the legacy drops on the others (soap_v=True rejects cw_nesterov /
 # cw_picard_iters; the radius/diag/factor ablations are scoped to kl-diag).
 _CW = _optim.CurvatureWhitenLoRA
+# precond_method/higham_iters now forward from the config (default None → the cw
+# class default eigh, via build_from_spec's None-omit), so an explicit
+# precond_method="gram_ns"/"higham" reaches the cw protagonist instead of being
+# silently dropped. `_CW_PRECOND_SKIP` is kept (empty) as the composition anchor for
+# the soap/ablation skip sets below, in case cw-only skips are needed later.
+_CW_PRECOND_SKIP: set = set()
 _CW_SOAP_SKIP = {"cw_nesterov", "cw_picard_iters", "cw_no_radius", "cw_no_diag_curv",
-                 "cw_factor_a", "cw_factor_b"}                       # soap_v=True: all cw_* invalid
-_CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_factor_a", "cw_factor_b"}  # kl-shampoo/flatout
+                 "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP     # soap_v=True: all cw_* invalid
+_CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # kl-shampoo/flatout
 
 spec("curvature-whiten-lora", _CW, skip=_CW_SOAP_SKIP,
      fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": False})
@@ -143,16 +155,16 @@ spec("kl-shampoo-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": False, "use_polar": False})
 spec("kl-shampoo-polar-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": False, "use_polar": True})
-spec("kl-diag-lora", _CW,
+spec("kl-diag-lora", _CW, skip=_CW_PRECOND_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": False})
-spec("kl-diag-polar-lora", _CW,
+spec("kl-diag-polar-lora", _CW, skip=_CW_PRECOND_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": True})
 spec("kl-diag-polar-flatout-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": True,
             "flat_outer": True})
-spec("diag-shampoo-lora", _CW,
+spec("diag-shampoo-lora", _CW, skip=_CW_PRECOND_SKIP,
      fixed={"kl_coupled": False, "soap_v": False, "diag_metric": True, "use_polar": False})
-spec("diag-shampoo-polar-lora", _CW,
+spec("diag-shampoo-polar-lora", _CW, skip=_CW_PRECOND_SKIP,
      fixed={"kl_coupled": False, "soap_v": False, "diag_metric": True, "use_polar": True})
 
 

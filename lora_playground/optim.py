@@ -1094,7 +1094,7 @@ class CurvatureWhitenLoRA(Optimizer):
     """
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-3, eps=1e-8,
                  curvature_beta=0.99, use_polar=False, ns_steps=5,
-                 polar_method="ns",
+                 polar_method="ns", precond_method="eigh", higham_iters=10,
                  precond_delta_relative=False, adapter_name=None,
                  lora_plus_multiplier=1.0, log_basic_diagnostics=False,
                  log_heavy_diagnostics=False, diagnostics_every=20,
@@ -1119,6 +1119,26 @@ class CurvatureWhitenLoRA(Optimizer):
                 f"CurvatureWhitenLoRA polar_method must be 'ns' or 'polar_express', "
                 f"got {polar_method!r}")
         self.polar_method = str(polar_method)
+        # Small-side Shampoo inverse-sqrt S^{-1/2} method, computed fresh every step
+        # on the small-side Gram (form-once: S^{-1} = S^{-1/2} @ S^{-1/2}):
+        #   'eigh'     = the QR eigenbasis (SOAP Alg 4, the validated default);
+        #   'gram_ns'  = Polar-Express Gram Newton–Schulz (`gram_ns_inv_sqrt`) — fp32,
+        #                eigh-free, exact every step (no stale eigenbasis); ~wall-parity
+        #                with the amortized eigh path at production cadence, not a
+        #                speedup (inverse_sqrt_variant_plan.md);
+        #   'higham'   = coupled-Iannazzo NS (`spd_inv_sqrt_higham_batched`), kept
+        #                for the A/B retiming (needs ≥16 iters to converge).
+        # The NS methods need soap_v=False (the SOAP v̂ path consumes the eigenbasis
+        # itself, which NS does not produce). Only the grouped/batched step supports
+        # the NS methods; the per-pair reference path stays eigh.
+        if precond_method not in {"eigh", "higham", "gram_ns"}:
+            raise ValueError(
+                f"precond_method must be 'eigh', 'gram_ns', or 'higham', got {precond_method!r}")
+        if precond_method != "eigh" and soap_v:
+            raise ValueError(f"precond_method={precond_method!r} requires soap_v=False (the SOAP "
+                             "v̂ path needs the eigenbasis the NS methods do not produce).")
+        self.precond_method = str(precond_method)
+        self.higham_iters = int(higham_iters)
         self.precond_delta_relative = bool(precond_delta_relative)
         self.lora_plus_multiplier = lora_plus_multiplier
         self.log_basic_diagnostics = bool(log_basic_diagnostics)
@@ -1311,7 +1331,8 @@ class CurvatureWhitenLoRA(Optimizer):
         # QR cost at r=256); the step's eigenvalues come from the cheap Rayleigh
         # diagonal above, not a fresh eigh. ──────────────────────────────────
         step_count = self.pair_state[0]['step']
-        if (not self._q_initialized) or (step_count % self.precond_refresh_every == 0):
+        if self.precond_method == "eigh" and (
+                (not self._q_initialized) or (step_count % self.precond_refresh_every == 0)):
             if _timer: _timer.start("cw_refresh")
             LA_stack = torch.stack([self.pair_state[i]['L_A'] for i in range(n)])
             RB_stack = torch.stack([self.pair_state[i]['R_B'] for i in range(n)])
@@ -1637,15 +1658,17 @@ class CurvatureWhitenLoRA(Optimizer):
             Bw = torch.stack([pairs[i][1].detach().float() for i in idxs])
             mA = torch.stack([S[i]['m_A'] for i in idxs]).mul_(b1).add_(gA, alpha=1.0 - b1)
             mB = torch.stack([S[i]['m_B'] for i in idxs]).mul_(b1).add_(gB, alpha=1.0 - b1)
-            QA = torch.stack([S[i]['Q_A'] for i in idxs])
-            QB = torch.stack([S[i]['Q_B'] for i in idxs])
             LA = torch.stack([S[i]['L_A'] for i in idxs])
             RB = torch.stack([S[i]['R_B'] for i in idxs])
             vA = torch.stack([S[i]['v_A'] for i in idxs])
             vB = torch.stack([S[i]['v_B'] for i in idxs])
             Din = torch.stack([S[i]['D_in'] for i in idxs])
             Dout = torch.stack([S[i]['D_out'] for i in idxs])
-            QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            _eigh = (self.precond_method == "eigh")
+            if _eigh:
+                QA = torch.stack([S[i]['Q_A'] for i in idxs])
+                QB = torch.stack([S[i]['Q_B'] for i in idxs])
+                QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
             # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
             # SINGLE metric the diag arm commits to — used by the self small-side
             # Gram, the whitening, and the Picard cross, coherently.
@@ -1670,9 +1693,51 @@ class CurvatureWhitenLoRA(Optimizer):
             # and large (D) sides; needed by both the outer sandwich and the
             # KL-Shampoo inner core. evA/evB are the Rayleigh eigenvalues of the
             # curvature in the current eigenbasis.
-            evA = (QA * (LA @ QA)).sum(dim=1)
-            evB = (QB * (RB @ QB)).sum(dim=1)
-            lamA = self._rdinv(evA); lamB = self._rdinv(evB)
+            # S_A^{-1/2}, S_B^{-1/2} applied as closures _whA/_whB; S_A^{-1}, S_B^{-1}
+            # as SAinv_full/RBinv_full. eigh: Q diag(λ^{-1/2}) Qᵀ from the QR
+            # eigenbasis + Rayleigh λ. higham: the batched Newton–Schulz inverse-sqrt
+            # of the small-side Gram directly (form-once: S^{-1} = S^{-1/2} @ S^{-1/2}).
+            if _eigh:
+                evA = (QA * (LA @ QA)).sum(dim=1)
+                evB = (QB * (RB @ QB)).sum(dim=1)
+                lamA = self._rdinv(evA); lamB = self._rdinv(evB)
+                def _whA(x): return QA @ ((QAt @ x) * lamA.unsqueeze(-1))
+                def _whB(x): return ((x @ QB) * lamB.unsqueeze(1)) @ QBt
+                SAinv_full = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
+                RBinv_full = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
+            elif self.precond_method == "gram_ns":
+                # Polar-Express Gram Newton–Schulz (gram_ns_inv_sqrt docstring). fp32,
+                # eigh-free, fresh every step (no stale eigenbasis); ~wall-parity with
+                # the amortized eigh/QR path at production cadence, not a speedup.
+                # eps_relative=True (NOT precond_delta_relative): the eigh path's
+                # `_rdinv` damps the NORMALIZED eigenvalues (x/x_max+δ) — i.e. an
+                # unconditional δ·λ_max relative floor — so the NS drop-in must do
+                # the same to match. The per-pair λ_max scale `_rdinv` also carries
+                # washes out (polar is scale-invariant; the σ_max radius rescale
+                # removes it), leaving the damping the only thing that must agree.
+                SAh = gram_ns_inv_sqrt(
+                    self._sym(LA), nsteps=self.higham_iters, eps=self.delta,
+                    eps_relative=True)
+                SBh = gram_ns_inv_sqrt(
+                    self._sym(RB), nsteps=self.higham_iters, eps=self.delta,
+                    eps_relative=True)
+                def _whA(x): return SAh @ x
+                def _whB(x): return x @ SBh
+                SAinv_full = SAh @ SAh
+                RBinv_full = SBh @ SBh
+            else:  # "higham" — coupled Iannazzo/Denman–Beavers (needs ≥16 iters;
+                   # under-converged at the default 10. Kept for the A/B retiming).
+                from .utils import spd_inv_sqrt_higham_batched
+                SAh = spd_inv_sqrt_higham_batched(
+                    self._sym(LA), n_iters=self.higham_iters, eps=self.delta,
+                    eps_relative=True)
+                SBh = spd_inv_sqrt_higham_batched(
+                    self._sym(RB), n_iters=self.higham_iters, eps=self.delta,
+                    eps_relative=True)
+                def _whA(x): return SAh @ x
+                def _whB(x): return x @ SBh
+                SAinv_full = SAh @ SAh
+                RBinv_full = SBh @ SBh
             # SOAP v̂ EMA (state update, once) — only the SOAP-curvature arm.
             if self.soap_v:
                 gA_basis = QAt @ gA
@@ -1729,8 +1794,8 @@ class CurvatureWhitenLoRA(Optimizer):
                         cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
                         inA = mhatA + (1.0 / lr) * cross_A
                         inB = mhatB + (1.0 / lr) * cross_B
-                    zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-                    zB = (((inB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+                    zA = _whA(inA) * dinA.unsqueeze(1)
+                    zB = _whB(inB) * doutB.unsqueeze(-1)
                 if self.use_polar:
                     zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA')
                     zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB')
@@ -1738,8 +1803,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     # See _cw_apply_per_pair: skip the un-whiten (flat-spectrum probe).
                     WA, WB = zA, zB
                 else:
-                    WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(1)
-                    WB = (((zB @ QB) * lamB.unsqueeze(1)) @ QBt) * doutB.unsqueeze(-1)
+                    WA = _whA(zA) * dinA.unsqueeze(1)
+                    WB = _whB(zB) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
                 sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
                 dA = -(cA * rho / (sWA + self.eps)).view(-1, 1, 1) * WA
@@ -1756,8 +1821,8 @@ class CurvatureWhitenLoRA(Optimizer):
                 r = gA.shape[1]; d_in = gA.shape[2]; d_out = gB.shape[1]
                 Din_inv = dinA * dinA
                 Dout_inv = doutB * doutB
-                SAinv = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
-                RBinv = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
+                SAinv = SAinv_full
+                RBinv = RBinv_full
                 if not self.diag_metric:
                     LA.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
                                      alpha=(1.0 - cb) / d_in)
@@ -3703,6 +3768,82 @@ def _polar_express_gram(X, nsteps=5, eps=1e-7):
     if X.dim() == 2:
         return _polar_express_gram_batched(X.unsqueeze(0), nsteps=nsteps, eps=eps).squeeze(0)
     return _polar_express_gram_batched(X, nsteps=nsteps, eps=eps)
+
+
+def gram_ns_inv_sqrt(S, nsteps=8, eps=1e-4, eps_relative=False, restart_at=2,
+                     safety_factor=1.05):
+    """Batched (S + δ_eff·I)^{-1/2} for SPD S: (..., r, r) via Gram Newton–Schulz
+    with the polar map's OWN Polar-Express coefficients (`_POLAR_EXPRESS_COEFFS`).
+
+    Gram NS (Zhang/Amsel/Chen/Dao 2026, Alg 2): with R_0 = S_normed, Q_0 = I, and the
+    degree-5 polynomial M_t = a_t I + b_t R + c_t R²,  Q <- M_t Q,  R <- M_t R M_t,
+    drives R -> I and Q -> S_normed^{-1/2}. One coefficient family for the polar map
+    AND the inverse-sqrt — no second hyperparameter surface.
+
+    The small-side Shampoo inverse-sqrt option for `CurvatureWhitenLoRA`
+    (`precond_method="gram_ns"`). Benchmarked in
+    `lora_playground/bench/inverse_sqrt_candidates.py` + `docs/notes/inverse_sqrt_variant_plan.md`:
+    matches eigh accuracy (rel_p99 ~1e-4) and converges in 8 iters vs the coupled-
+    Iannazzo `spd_inv_sqrt_higham_batched`'s 16 (degree-5 Remez). The isolated-call
+    cost is far below a cold batched eigh, but the production `eigh` path AMORTIZES a
+    warm QR eigenbasis refresh 1-in-`precond_refresh_every`, so the honest end-to-end
+    `optimizer.step()` comparison is ~wall-PARITY at the production cadence (gram_ns
+    slightly faster at r256, slightly slower at r64; both <1% of the full step at
+    production batch — docs/notes/inverse_sqrt_variant_plan.md). The real value is
+    exact `S^{-1/2}` every step (no 10-step-stale eigenbasis), eigh-free (no cuSOLVER),
+    and dropping the refresh-cadence knob — at wall-parity, not a speedup. MUST run in
+    fp32: bf16 blows up at the δ-floor (cond≈1/δ) via the Dao spurious-negative-
+    eigenvalue failure — the r×r matrices are tiny, so fp32 is cheap and correct.
+
+    Normalization is load-bearing: divide the (damped) Gram by tr(S)·safety² (==
+    `_polar_express_gram_batched` pre_norm="frob": Frobenius-of-factor² = trace-of-Gram),
+    NOT by tight λ_max. λ_max-norm pins the top eigenvalue at 1 with no headroom, the
+    aggressive first Remez coeff overshoots, and R<-MRM squares it into a blowup.
+
+    eps_relative: damp by δ·λ_max(S) (caps effective cond at ~1/δ) instead of absolute δ.
+    restart_at: re-anchor R <- Q R0 Qᵀ after iter τ to cap spurious-eigenvalue growth.
+    """
+    from .spectral import lambda_max_power_iter_psd_batched
+    S = 0.5 * (S + S.transpose(-2, -1))
+    n = S.shape[-1]
+    dev, dt = S.device, S.dtype
+    eye = torch.eye(n, dtype=dt, device=dev).expand_as(S)
+
+    lam_max, _ = lambda_max_power_iter_psd_batched(S, n_iters=8)
+    lam = lam_max.reshape(*lam_max.shape[: S.dim() - 2], 1, 1)
+    eps_eff = (eps * lam).clamp_min(1e-12) if eps_relative else torch.as_tensor(
+        float(eps), device=dev, dtype=dt)
+    S_d = S + eps_eff * eye
+    tr = S_d.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(*lam.shape).clamp_min(1e-30)
+    scale = tr * (safety_factor ** 2)          # S_d = scale·R0  =>  S_d^{-1/2} = Q/√scale
+    R0 = S_d / scale                           # λ_max(R0) ≤ 1/safety² (headroom)
+
+    coeffs = _POLAR_EXPRESS_COEFFS[:nsteps]
+    if len(coeffs) < nsteps:
+        coeffs = coeffs + [_POLAR_EXPRESS_COEFFS[-1]] * (nsteps - len(coeffs))
+
+    R = R0.clone()
+    Q = eye.clone()
+    use_tf32_guard = (dt == torch.float32) and S.is_cuda
+    prev_tf32 = None
+    if use_tf32_guard:
+        prev_tf32 = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        for t, (a, b, c) in enumerate(coeffs, start=1):
+            if restart_at is not None and t == restart_at + 1:
+                R = Q @ R0 @ Q.transpose(-2, -1)
+                R = 0.5 * (R + R.transpose(-2, -1))
+            R2 = R @ R
+            M = (b * R) + (c * R2)
+            M.diagonal(dim1=-2, dim2=-1).add_(a)
+            Q = M @ Q
+            R = M @ R @ M
+            R = 0.5 * (R + R.transpose(-2, -1))
+    finally:
+        if use_tf32_guard:
+            torch.backends.cuda.matmul.allow_tf32 = prev_tf32
+    return Q / scale.sqrt()
 
 
 class MuonLoRA(Optimizer):
@@ -8625,7 +8766,7 @@ class AdamPolarProductLoRAGauge(Optimizer):
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
                  picard_iters=1,
-                 precond_method="eigh", higham_iters=10,
+                 precond_method="higham", higham_iters=10,  # polar-product family default (was eigh; train.py forced higham — now explicit)
                  precond_delta_relative=False,
                  log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
@@ -8937,7 +9078,7 @@ class AdamPolarProductLoRAClipGauge(Optimizer):
                  eps=1e-8, ns_steps=5, adapter_name=None,
                  lora_plus_multiplier=1.0,
                  picard_iters=1,
-                 precond_method="eigh", higham_iters=10,
+                 precond_method="higham", higham_iters=10,  # polar-product family default (was eigh; train.py forced higham — now explicit)
                  precond_delta_relative=False,
                  log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20):
         pairs = collect_lora_pairs(model, adapter_name)
@@ -9204,7 +9345,7 @@ class AdamuonPolarProductLoRA(Optimizer):
                  adapter_name=None, lora_plus_multiplier=1.0,
                  log_basic_diagnostics=False, log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=1,
-                 precond_method="eigh", higham_iters=10,
+                 precond_method="higham", higham_iters=10,  # polar-product family default (was eigh; train.py forced higham — now explicit)
                  precond_delta_relative=False):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -11261,7 +11402,12 @@ def build_optimizer(
     log_heavy_diagnostics: bool = False,
     optim_diagnostics_every: int = 20,
     precond_refresh_every: int = 1,
-    precond_method: str = "higham",
+    # None = "use the optimizer class's family default" (curvature-whiten → eigh,
+    # polar-product → higham). Spec forwarding omits precond_method when None, so a
+    # caller that doesn't set it gets each family's correct default; an EXPLICIT
+    # value (e.g. "gram_ns") now reaches the cw protagonist instead of being
+    # silently dropped by the spec skip. See optim_specs.build_from_spec.
+    precond_method: str | None = None,
     higham_iters: int = 10,
     picard_alpha: float = 1.0,
     htmuon_p: float | None = None,

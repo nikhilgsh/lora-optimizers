@@ -33,7 +33,7 @@ class OptimizerConfig:
     precond_gamma: float = 0.5
     precond_ema_beta: float = 0.99
     precond_refresh_every: int = 1
-    precond_method: str = "higham"
+    precond_method: str | None = None  # None → optimizer class's family default (cw=eigh, pp=higham)
     higham_iters: int = 10
     higham_compute_dtype: str = "fp32"
     curvature_beta: float = 0.99

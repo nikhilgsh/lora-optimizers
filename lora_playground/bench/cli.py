@@ -85,7 +85,8 @@ def main(argv=None):
     sw.add_argument("--lora_r", type=int, required=True)
     sw.add_argument("--optimizer", default="kl-diag-polar-lora")
     sw.add_argument("--preset", default="protagonist", choices=["protagonist", "none"])
-    sw.add_argument("--methods", nargs="+", default=["eigh"], choices=["eigh", "higham"])
+    sw.add_argument("--methods", nargs="+", default=["eigh"],
+                    choices=["eigh", "higham", "gram_ns"])
     sw.add_argument("--ks", nargs="+", type=int, default=[10])
     sw.add_argument("--batch_size", type=int, default=None)
     sw.add_argument("--grad_accum_steps", type=int, default=None)
