@@ -1,6 +1,6 @@
 """Behavioral-equivalence gate for the declarative-factory migration.
 
-For every migrated optimizer, the NEW generic builder (build_v2 + a spec) must
+For every migrated optimizer, the NEW generic builder (build_from_spec + a spec) must
 produce an optimizer that is attribute-identical AND step-identical to the LEGACY
 ``build_optimizer`` branch, at the same hyperparameters. A migrated optimizer is
 not "done" until it passes here. See docs/notes/optimizer_factory_redesign.md.
@@ -15,7 +15,7 @@ import torch.nn as nn
 
 from lora_playground.optim import build_optimizer
 from lora_playground.optim_config import OptimizerConfig
-from lora_playground.optim_specs import build_v2, REGISTRY
+from lora_playground.optim_specs import build_from_spec, REGISTRY
 
 
 class _Pair(nn.Module):
@@ -59,7 +59,7 @@ def _assert_step_identical(name, cfg, n_steps=3):
     m_old = _Model()
     m_new = copy.deepcopy(m_old)
     opt_old = _old(m_old, name, cfg)
-    opt_new = build_v2(m_new, name, cfg)
+    opt_new = build_from_spec(m_new, name, cfg)
     for step in range(n_steps):
         _inject_grads(m_old, 100 + step)
         _inject_grads(m_new, 100 + step)
@@ -91,7 +91,7 @@ _CW_FAMILY = ["curvature-whiten-lora", "curvature-whiten-polar-lora",
 @pytest.mark.parametrize("name", _CW_FAMILY)
 def test_cw_attr_identical(name):
     old = _scalars(_old(_Model(), name, _COMMON))
-    new = _scalars(build_v2(_Model(), name, _COMMON))
+    new = _scalars(build_from_spec(_Model(), name, _COMMON))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: attr divergence old/new -> {diff}"
@@ -114,7 +114,7 @@ _CW_DIAG = ["kl-diag-lora", "kl-diag-polar-lora",
 def test_cw_ablation_flags_equivalent(name):
     """The protagonist family forwards its ablation flags identically old/new."""
     old = _scalars(_old(_Model(), name, _CW_ABLATION))
-    new = _scalars(build_v2(_Model(), name, _CW_ABLATION))
+    new = _scalars(build_from_spec(_Model(), name, _CW_ABLATION))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: ablation-flag divergence old/new -> {diff}"
@@ -143,7 +143,7 @@ _POLAR_FAMILY = [
 @pytest.mark.parametrize("name", _POLAR_FAMILY)
 def test_polar_attr_identical(name):
     old = _scalars(_old(_Model(), name, _COMMON))
-    new = _scalars(build_v2(_Model(), name, _COMMON))
+    new = _scalars(build_from_spec(_Model(), name, _COMMON))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: attr divergence old/new -> {diff}"
@@ -185,7 +185,7 @@ _COUPLED_CORE_FAMILY = _POLAR_COUPLED_CORE_FAMILY + _MUON_COUPLED_CORE_FAMILY
 @pytest.mark.parametrize("name", _COUPLED_CORE_FAMILY)
 def test_coupled_core_attr_identical(name):
     old = _scalars(_old(_Model(), name, _COMMON))
-    new = _scalars(build_v2(_Model(), name, _COMMON))
+    new = _scalars(build_from_spec(_Model(), name, _COMMON))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: attr divergence old/new -> {diff}"
@@ -200,7 +200,7 @@ def test_muon_coupled_core_beta1_is_pinned_not_config():
     """muon-coupled-core HARDCODES beta1=0.95 (Muon momentum convention), NOT the
     auto-forwarded config.beta1 (0.93 in _COMMON). Pin must survive."""
     for name in _MUON_COUPLED_CORE_FAMILY:
-        opt = build_v2(_Model(), name, _COMMON)
+        opt = build_from_spec(_Model(), name, _COMMON)
         assert opt.beta1 == 0.95, f"{name}: beta1 should be the pinned 0.95, got {opt.beta1}"
 
 
@@ -219,7 +219,7 @@ _MUON_FAMILY = [
 @pytest.mark.parametrize("name", _MUON_FAMILY)
 def test_muon_attr_identical(name):
     old = _scalars(_old(_Model(), name, _COMMON))
-    new = _scalars(build_v2(_Model(), name, _COMMON))
+    new = _scalars(build_from_spec(_Model(), name, _COMMON))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: attr divergence old/new -> {diff}"
@@ -245,7 +245,7 @@ _BASELINE_FAMILY = [
 @pytest.mark.parametrize("name", _BASELINE_FAMILY)
 def test_baseline_attr_identical(name):
     old = _scalars(_old(_Model(), name, _COMMON))
-    new = _scalars(build_v2(_Model(), name, _COMMON))
+    new = _scalars(build_from_spec(_Model(), name, _COMMON))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: attr divergence old/new -> {diff}"
@@ -259,7 +259,7 @@ def test_baseline_step_identical(name):
 def test_adamw_betas_forwarded_via_param_groups():
     """adamw (LoRAPlusAdamW) stores betas in param_groups, not self.beta1 — the
     generic attr test can't see them. Pin the (beta1, beta2) forward explicitly."""
-    opt = build_v2(_Model(), "adamw", _COMMON)
+    opt = build_from_spec(_Model(), "adamw", _COMMON)
     assert tuple(opt.param_groups[0]["betas"]) == (_COMMON.beta1, _COMMON.beta2)
 
 
@@ -269,7 +269,7 @@ def test_lin_scaled_delta_is_pinned_not_swept():
     for name in ["lin-lora", "scaled-lora", "adam-scaled-lora", "adam-lin-lora",
                  "adam-lin-core-lora", "adam-scaled-lora-post", "adam-lin-lora-post",
                  "adam-scaled-lora-matrix", "adam-lin-lora-matrix"]:
-        opt = build_v2(_Model(), name, _COMMON)
+        opt = build_from_spec(_Model(), name, _COMMON)
         assert opt.delta == 1e-6, f"{name}: delta should be pinned 1e-6, got {opt.delta}"
 
 
@@ -301,14 +301,14 @@ def test_ucv_core_attr_and_step_identical():
     pairs too). Build both old/new on a UCV fixture and compare attrs + steps."""
     name = "adam-ucv-core-lora"
     old = _scalars(_old(_ucv_model(), name, _COMMON))
-    new = _scalars(build_v2(_ucv_model(), name, _COMMON))
+    new = _scalars(build_from_spec(_ucv_model(), name, _COMMON))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: attr divergence old/new -> {diff}"
     m_old = _ucv_model()
     m_new = _ucv_model()
     opt_old = _old(m_old, name, _COMMON)
-    opt_new = build_v2(m_new, name, _COMMON)
+    opt_new = build_from_spec(m_new, name, _COMMON)
     for step in range(3):
         _inject_grads(m_old, 100 + step)
         _inject_grads(m_new, 100 + step)
@@ -348,12 +348,12 @@ def _old_targets(targets, name, cfg):
 @pytest.mark.parametrize("name", _TARGETS_FAMILY)
 def test_targets_attr_identical(name):
     old = _scalars(_old_targets(_targets(), name, _TARGETS_CFG))
-    new = _scalars(build_v2(_targets(), name, _TARGETS_CFG))
+    new = _scalars(build_from_spec(_targets(), name, _TARGETS_CFG))
     diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
             if old.get(k) != new.get(k)}
     assert not diff, f"{name}: attr divergence old/new -> {diff}"
     # rank + eps are the load-bearing identity values.
-    o = build_v2(_targets(), name, _TARGETS_CFG)
+    o = build_from_spec(_targets(), name, _TARGETS_CFG)
     assert o.rank == _TARGETS_CFG.svd_rank
     assert o.param_groups[0]["eps"] == (1e-6 if name == "galore-adamw" else 1e-8)
 
@@ -363,7 +363,7 @@ def test_targets_step_identical(name):
     t_old = _targets()
     t_new = _targets()
     opt_old = _old_targets(t_old, name, _TARGETS_CFG)
-    opt_new = build_v2(t_new, name, _TARGETS_CFG)
+    opt_new = build_from_spec(t_new, name, _TARGETS_CFG)
     for step in range(3):
         g = torch.Generator().manual_seed(200 + step)
         grads = [torch.randn(tw.weight.shape, generator=g) for tw in t_old]
@@ -383,9 +383,12 @@ def test_targets_step_identical(name):
 
 
 def test_registry_specs_have_valid_fixed_keys():
-    """Every spec.fixed key is a real __init__ param of its class."""
+    """Every spec.fixed key is a real __init__ param of its class (custom-build
+    specs carry a `build` callable and no cls to introspect — skip them)."""
     bad = {}
     for name, s in REGISTRY.items():
+        if s.cls is None:
+            continue
         sig = inspect.signature(s.cls.__init__)
         params = set(sig.parameters)
         has_var_kw = any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
@@ -396,16 +399,30 @@ def test_registry_specs_have_valid_fixed_keys():
     assert not bad, f"specs with fixed keys not in __init__ (no **kwargs): {bad}"
 
 
-# These 4 are NOT migratable to a generic spec (see optimizer_factory_redesign
-# report): adafactor is a builder FUNCTION (no __init__ to introspect); sgd/sgd-m
-# take a filtered param LIST + a hardcoded momentum, not (model, lr, **kwargs);
-# imuon-lora is a vendored ref with a bespoke (muon_params/lora_pairs/...) sig.
-_UNMIGRATABLE = {"adafactor", "sgd", "sgd-m", "imuon-lora"}
+# Custom-build optimizers (spec.build callable, no introspectable cls): adafactor
+# (builder function), sgd/sgd-m (torch.optim + filtered param list + fixed
+# momentum), imuon-lora (vendored ref with derived muon_params/lora_pairs).
+# Equivalence to the legacy branch still holds — the builder replicates it.
+_CUSTOM_FAMILY = ["adafactor", "sgd", "sgd-m", "imuon-lora"]
 
 
-def test_every_choice_migrated_or_flagged():
-    """Every OPTIMIZER_CHOICES name is either in the REGISTRY or in the explicit
-    not-generically-migratable set — no silent gaps."""
+@pytest.mark.parametrize("name", _CUSTOM_FAMILY)
+def test_custom_build_attr_identical(name):
+    old = _scalars(_old(_Model(), name, _COMMON))
+    new = _scalars(build_from_spec(_Model(), name, _COMMON))
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    assert not diff, f"{name}: attr divergence old/new -> {diff}"
+
+
+@pytest.mark.parametrize("name", _CUSTOM_FAMILY)
+def test_custom_build_step_identical(name):
+    _assert_step_identical(name, _COMMON)
+
+
+def test_every_choice_has_a_spec():
+    """Every OPTIMIZER_CHOICES name is registered — declarative or build=callable.
+    No limbo set; a new optimizer must register a spec or this fails."""
     from lora_playground.optim import OPTIMIZER_CHOICES
-    missing = set(OPTIMIZER_CHOICES) - set(REGISTRY) - _UNMIGRATABLE
-    assert not missing, f"unmigrated and unflagged optimizers: {sorted(missing)}"
+    missing = set(OPTIMIZER_CHOICES) - set(REGISTRY)
+    assert not missing, f"OPTIMIZER_CHOICES with no spec: {sorted(missing)}"

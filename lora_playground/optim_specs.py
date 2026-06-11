@@ -17,25 +17,43 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+import torch as _torch
 
 from .optim_config import OptimizerConfig, ALIAS, CONFIG_FIELDS
 from . import optim as _optim
+from .utils import collect_lora_pairs as _collect_lora_pairs
 
 
 @dataclass
 class OptimizerSpec:
-    cls: type
+    cls: Optional[type] = None
     fixed: dict = field(default_factory=dict)      # identity constants (eps, kl_coupled, …)
     defaults: dict = field(default_factory=dict)   # per-optimizer default for an auto-forwarded kwarg
     alias: dict = field(default_factory=dict)      # per-spec override of the global ALIAS
     takes_targets: bool = False                    # built from `targets`, not `model`
+    # Custom builder for optimizers NOT expressible as cls(model_or_targets, lr,
+    # **introspected_kwargs): a function-built optimizer (adafactor), torch.optim
+    # with a filtered param list (sgd), or a vendored reference with derived args
+    # (imuon). A permanent category — new optimizers may need one too — not a
+    # migration leftover. When set, build_from_spec calls it instead of cls.
+    build: Optional[Callable] = None
+    # Config fields this variant must NOT receive even though its class accepts
+    # them — left at the class default. The legacy branch dropped them on purpose
+    # (a flag invalid for THIS variant, e.g. cw_nesterov on the soap_v=True
+    # curvature-whiten path, which the constructor rejects). Distinct from `fixed`
+    # (a constant we DO pass): skip means "use the class default."
+    skip: set = field(default_factory=set)
 
 
 REGISTRY: dict[str, OptimizerSpec] = {}
 
 
-def spec(name, cls, *, fixed=None, defaults=None, alias=None, takes_targets=False):
-    REGISTRY[name] = OptimizerSpec(cls, fixed or {}, defaults or {}, alias or {}, takes_targets)
+def spec(name, cls=None, *, fixed=None, defaults=None, alias=None,
+         takes_targets=False, build=None, skip=None):
+    REGISTRY[name] = OptimizerSpec(cls, fixed or {}, defaults or {}, alias or {},
+                                   takes_targets, build, skip or set())
 
 
 def _forwardable_params(cls):
@@ -69,11 +87,15 @@ def _forwardable_params(cls):
     return list(seen.values())
 
 
-def build_v2(model_or_targets, name: str, config: OptimizerConfig):
-    """Generic builder. Forwarding is by introspection over ``spec.cls.__init__``."""
+def build_from_spec(model_or_targets, name: str, config: OptimizerConfig):
+    """The single declarative optimizer builder. A spec with a custom ``build``
+    callable is built by it; otherwise config fields are forwarded by
+    introspection over ``spec.cls.__init__`` (the generic path)."""
     if name not in REGISTRY:
-        raise KeyError(f"optimizer '{name}' not yet migrated to a declarative spec")
+        raise KeyError(f"optimizer '{name}' has no declarative spec")
     s = REGISTRY[name]
+    if s.build is not None:
+        return s.build(model_or_targets, config)
     kwargs = {}
     for p in _forwardable_params(s.cls):
         n = p.name
@@ -88,6 +110,8 @@ def build_v2(model_or_targets, name: str, config: OptimizerConfig):
             kwargs[n] = s.defaults[n]
         else:
             fld = s.alias.get(n) or ALIAS.get(n, n)
+            if fld in s.skip:
+                continue  # this variant must not receive this field → class default
             if fld in CONFIG_FIELDS:
                 kwargs[n] = getattr(config, fld)
             # else: not a config field and not fixed → class default
@@ -102,24 +126,28 @@ def build_v2(model_or_targets, name: str, config: OptimizerConfig):
 # ─── Curvature-whiten family (the paper protagonist) ─────────────────────────
 # All nine share CurvatureWhitenLoRA; `fixed` is the (kl_coupled, soap_v,
 # diag_metric, use_polar[, flat_outer]) identity. `eps`=1e-8 is the class default
-# (the legacy branch passed it explicitly; same value). Everything else
-# (betas, delta, ns_steps, polar_method, curvature_beta, precond_*, lora_plus_*,
-# diagnostics, cw_*) auto-forwards.
+# (the legacy branch passed it explicitly; same value). The cw_* ablation flags
+# auto-forward ONLY on the kl-diag / diag-shampoo protagonist branches; `skip`
+# reproduces the legacy drops on the others (soap_v=True rejects cw_nesterov /
+# cw_picard_iters; the radius/diag/factor ablations are scoped to kl-diag).
 _CW = _optim.CurvatureWhitenLoRA
+_CW_SOAP_SKIP = {"cw_nesterov", "cw_picard_iters", "cw_no_radius", "cw_no_diag_curv",
+                 "cw_factor_a", "cw_factor_b"}                       # soap_v=True: all cw_* invalid
+_CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_factor_a", "cw_factor_b"}  # kl-shampoo/flatout
 
-spec("curvature-whiten-lora", _CW,
+spec("curvature-whiten-lora", _CW, skip=_CW_SOAP_SKIP,
      fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": False})
-spec("curvature-whiten-polar-lora", _CW,
+spec("curvature-whiten-polar-lora", _CW, skip=_CW_SOAP_SKIP,
      fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": True})
-spec("kl-shampoo-lora", _CW,
+spec("kl-shampoo-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": False, "use_polar": False})
-spec("kl-shampoo-polar-lora", _CW,
+spec("kl-shampoo-polar-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": False, "use_polar": True})
 spec("kl-diag-lora", _CW,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": False})
 spec("kl-diag-polar-lora", _CW,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": True})
-spec("kl-diag-polar-flatout-lora", _CW,
+spec("kl-diag-polar-flatout-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": True,
             "flat_outer": True})
 spec("diag-shampoo-lora", _CW,
@@ -135,7 +163,7 @@ spec("diag-shampoo-polar-lora", _CW,
 _APP = _optim.AdamPolarProductLoRA
 _E8 = {"eps": 1e-8}
 # base + coupled share AdamPolarProductLoRA's default magnitude rule (not passed).
-spec("adam-polar-product-lora", _APP, fixed=_E8, defaults={"picard_iters": 1},
+spec("adam-polar-product-lora", _APP, fixed=_E8,
      alias={"core_remix_alpha": "polar_core_remix_alpha"})
 spec("adam-polar-product-lora-coupled", _APP, fixed=_E8, defaults={"picard_iters": 3})
 spec("adam-polar-product-lora-coupled-endrms", _APP,
@@ -143,37 +171,34 @@ spec("adam-polar-product-lora-coupled-endrms", _APP,
 spec("adam-polar-product-lora-coupled-spectral-chord", _APP,
      fixed={**_E8, "magnitude_rule": "spectral_chord"}, defaults={"picard_iters": 3})
 spec("adam-polar-product-lora-coupled-spectral-chord-tight", _APP,
-     fixed={**_E8, "magnitude_rule": "spectral_chord_tight"}, defaults={"picard_iters": 1})
+     fixed={**_E8, "magnitude_rule": "spectral_chord_tight"})
 spec("adam-polar-product-lora-coupled-spectral-chord-tight-clean", _APP,
-     fixed={**_E8, "magnitude_rule": "spectral_chord_tight_clean"}, defaults={"picard_iters": 1})
+     fixed={**_E8, "magnitude_rule": "spectral_chord_tight_clean"})
 spec("adam-polar-product-lora-coupled-spectral-chord-tight-clean-full-fw", _APP,
-     fixed={**_E8, "magnitude_rule": "spectral_chord_tight_clean", "fw_linearization": "full"},
-     defaults={"picard_iters": 1})
+     fixed={**_E8, "magnitude_rule": "spectral_chord_tight_clean", "fw_linearization": "full"})
 spec("adam-polar-product-lora-coupled-spectral-chord-tight-no-rho", _APP,
-     fixed={**_E8, "magnitude_rule": "spectral_chord_tight_no_rho"}, defaults={"picard_iters": 1})
+     fixed={**_E8, "magnitude_rule": "spectral_chord_tight_no_rho"})
 spec("adam-polar-product-lora-coupled-spectral-chord-tight-exact", _APP,
-     fixed={**_E8, "magnitude_rule": "spectral_chord_tight", "exact_chord": True},
-     defaults={"picard_iters": 1})
+     fixed={**_E8, "magnitude_rule": "spectral_chord_tight", "exact_chord": True})
 spec("adam-polar-product-lora-coupled-spectral-chord-tight-no-whitening", _APP,
-     fixed={**_E8, "magnitude_rule": "spectral_chord_tight", "disable_whitening": True},
-     defaults={"picard_iters": 1})
+     fixed={**_E8, "magnitude_rule": "spectral_chord_tight", "disable_whitening": True})
 spec("adam-polar-product-lora-coupled-spectral-chord-direction", _APP,
-     fixed={**_E8, "magnitude_rule": "spectral_chord_direction"}, defaults={"picard_iters": 1})
+     fixed={**_E8, "magnitude_rule": "spectral_chord_direction"})
 spec("adam-polar-product-lora-coupled-exact-chord", _APP,
      fixed={**_E8, "exact_chord": True}, defaults={"picard_iters": 3})
 spec("adam-clip-product-lora", _APP,
-     fixed={**_E8, "operator_type": "clip"}, defaults={"picard_iters": 1})
+     fixed={**_E8, "operator_type": "clip"})
 spec("adam-clip-product-lora-coupled", _APP,
      fixed={**_E8, "operator_type": "clip"}, defaults={"picard_iters": 2})
 spec("adam-clip-product-lora-coupled-endrms", _APP,
      fixed={**_E8, "operator_type": "clip", "end_rms_align": True, "picard_iters": 2})
 
 spec("adam-soap-polar-product-lora", _optim.AdamSOAPPolarProductLoRA,
-     fixed=_E8, defaults={"picard_iters": 1})
+     fixed=_E8)
 spec("adafactor-polar-product-lora", _optim.AdaFactorPolarProductLoRA,
-     fixed=_E8, defaults={"picard_iters": 1})
+     fixed=_E8)
 spec("sign-momentum-polar-product-lora", _optim.SignMomentumPolarProductLoRA,
-     fixed=_E8, defaults={"picard_iters": 1})
+     fixed=_E8)
 
 # bare polar-product (no Adam EMA — PolarProductLoRA). `delta` is the SWEPT
 # precond_delta (legacy: delta=precond_delta) → ALIAS forwards it.
@@ -184,11 +209,11 @@ spec("polar-product-lora", _optim.PolarProductLoRA)
 # precond_method/higham_iters/precond_delta_relative auto-forward. The bare/
 # coupled pair differs ONLY in the per-optimizer picard_iters default (1 vs 2).
 spec("adam-polar-product-lora-gauge", _optim.AdamPolarProductLoRAGauge,
-     fixed=_E8, defaults={"picard_iters": 1})
+     fixed=_E8)
 spec("adam-polar-product-lora-gauge-coupled", _optim.AdamPolarProductLoRAGauge,
      fixed=_E8, defaults={"picard_iters": 2})
 spec("adam-polar-product-lora-clip-gauge", _optim.AdamPolarProductLoRAClipGauge,
-     fixed=_E8, defaults={"picard_iters": 1})
+     fixed=_E8)
 spec("adam-polar-product-lora-clip-gauge-coupled", _optim.AdamPolarProductLoRAClipGauge,
      fixed=_E8, defaults={"picard_iters": 2})
 
@@ -310,3 +335,40 @@ spec("svd-step-adamw", _optim.SVDStepAdamW,
      fixed={"eps": 1e-8}, alias={"rank": "svd_rank"}, takes_targets=True)
 spec("svd-cumulative-adamw", _optim.SVDCumulativeAdamW,
      fixed={"eps": 1e-8}, alias={"rank": "svd_rank"}, takes_targets=True)
+
+
+# ─── Custom-build optimizers ─────────────────────────────────────────────────
+# Not expressible as cls(model_or_targets, lr, **introspected_kwargs): a function
+# (adafactor), torch.optim.SGD over a filtered param list with a fixed momentum
+# (sgd), or the vendored iMuon reference with derived muon_params/lora_pairs and
+# bespoke Riemannian kwargs. Each carries an explicit `build=` callable.
+def _build_adafactor(model, config):
+    return _optim._build_lora_adafactor(
+        model, lr=config.lr, lora_plus_multiplier=config.lora_plus_multiplier,
+        weight_decay=config.weight_decay)
+
+
+def _sgd_builder(momentum):
+    def _build(model, config):
+        params = [p for p in model.parameters() if p.requires_grad]
+        return _torch.optim.SGD(params, lr=config.lr, momentum=momentum)
+    return _build
+
+
+def _build_imuon(model, config):
+    pairs = _collect_lora_pairs(model)
+    if not pairs:
+        raise ValueError("No LoRA (A,B) tensors found on model for imuon-lora.")
+    from .third_party.imuon_muon import Muon as _IMuonRef
+    muon_params = [p for A, B in pairs for p in (A, B)]
+    return _IMuonRef(
+        lr=config.lr, wd=0.0, muon_params=muon_params,
+        momentum=0.95, nesterov=True, ns_steps=5, lora_pairs=pairs,
+        lora_riemannian_muon=True, lora_riemannian_variant="v5_warmup",
+        lora_riemannian_adjust_lr=False)
+
+
+spec("adafactor", build=_build_adafactor)
+spec("sgd", build=_sgd_builder(0.0))
+spec("sgd-m", build=_sgd_builder(0.9))
+spec("imuon-lora", build=_build_imuon)
