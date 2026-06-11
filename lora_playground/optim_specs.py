@@ -174,3 +174,139 @@ spec("adafactor-polar-product-lora", _optim.AdaFactorPolarProductLoRA,
      fixed=_E8, defaults={"picard_iters": 1})
 spec("sign-momentum-polar-product-lora", _optim.SignMomentumPolarProductLoRA,
      fixed=_E8, defaults={"picard_iters": 1})
+
+# bare polar-product (no Adam EMA — PolarProductLoRA). `delta` is the SWEPT
+# precond_delta (legacy: delta=precond_delta) → ALIAS forwards it.
+spec("polar-product-lora", _optim.PolarProductLoRA)
+
+# gauge / clip-gauge variants (AdamPolarProductLoRAGauge / …ClipGauge). Same
+# AdamPolarProductLoRA contract: eps=1e-8 literal, delta=precond_delta (ALIAS),
+# precond_method/higham_iters/precond_delta_relative auto-forward. The bare/
+# coupled pair differs ONLY in the per-optimizer picard_iters default (1 vs 2).
+spec("adam-polar-product-lora-gauge", _optim.AdamPolarProductLoRAGauge,
+     fixed=_E8, defaults={"picard_iters": 1})
+spec("adam-polar-product-lora-gauge-coupled", _optim.AdamPolarProductLoRAGauge,
+     fixed=_E8, defaults={"picard_iters": 2})
+spec("adam-polar-product-lora-clip-gauge", _optim.AdamPolarProductLoRAClipGauge,
+     fixed=_E8, defaults={"picard_iters": 1})
+spec("adam-polar-product-lora-clip-gauge-coupled", _optim.AdamPolarProductLoRAClipGauge,
+     fixed=_E8, defaults={"picard_iters": 2})
+
+
+# ─── Polar-coupled-core family ───────────────────────────────────────────────
+# All PolarCoupledCoreLoRA (or the FactorAdam subclass), differing only in the
+# `gauge`/`pre_polar_normalize`/`state_rebalance` identity literals. `delta`=1e-6
+# is the class default but legacy HARDCODES it (does NOT forward precond_delta),
+# so it MUST be `fixed` — otherwise the swept precond_delta over-forwards via ALIAS.
+# `core_scale="squared_penalty"` is the class default and legacy passes it
+# explicitly (same value) — left to the class default, no need to pin.
+_PCC = _optim.PolarCoupledCoreLoRA
+_PCC_FA = _optim.PolarCoupledCoreFactorAdamLoRA
+_D6 = {"delta": 1e-6}
+
+spec("polar-coupled-core-lora", _PCC, fixed={**_D6})
+spec("polar-coupled-core-imbalance-scalar-lora", _PCC,
+     fixed={**_D6, "gauge": "imbalance-preserve-scalar"})
+spec("polar-coupled-core-imbalance-lora", _PCC,
+     fixed={**_D6, "gauge": "imbalance-preserve"})
+spec("polar-coupled-core-imbalance-restore-lora", _PCC,
+     fixed={**_D6, "gauge": "imbalance-restore"})
+spec("polar-coupled-core-balanced-scalar-lora", _PCC,
+     fixed={**_D6, "gauge": "balanced-scalar"})
+spec("polar-coupled-core-state-rebalanced-lora", _PCC,
+     fixed={**_D6, "state_rebalance": True, "rebalance_every": 1})
+spec("polar-coupled-core-sign-lora", _PCC,
+     fixed={**_D6, "pre_polar_normalize": "sign"})
+spec("polar-coupled-core-sign-rebalanced-lora", _PCC,
+     fixed={**_D6, "pre_polar_normalize": "sign",
+            "state_rebalance": True, "rebalance_every": 1})
+# FactorAdam subclass: Adam-EMA on factors (takes betas/eps) — betas special-cased,
+# eps=1e-8 is the class default (legacy passes it explicitly, same value).
+spec("polar-coupled-core-factor-adam-lora", _PCC_FA, fixed={**_D6})
+spec("polar-coupled-core-factor-adam-rebalanced-lora", _PCC_FA,
+     fixed={**_D6, "state_rebalance": True, "rebalance_every": 1})
+
+
+# ─── Muon-coupled-core family ────────────────────────────────────────────────
+# MuonCoupledCoreLoRA. Identical structure to polar-coupled-core but with a
+# Muon-canonical HARDCODED momentum: legacy passes literal beta1=0.95 (a
+# different momentum convention from config.beta1) → must be `fixed`, NOT the
+# auto-forwarded config.beta1. Same `delta=1e-6` HARDCODED → fixed.
+_MCC = _optim.MuonCoupledCoreLoRA
+_MCC_FIXED = {**_D6, "beta1": 0.95}
+
+spec("muon-coupled-core-lora", _MCC, fixed={**_MCC_FIXED})
+spec("muon-coupled-core-imbalance-scalar-lora", _MCC,
+     fixed={**_MCC_FIXED, "gauge": "imbalance-preserve-scalar"})
+spec("muon-coupled-core-imbalance-lora", _MCC,
+     fixed={**_MCC_FIXED, "gauge": "imbalance-preserve"})
+spec("muon-coupled-core-balanced-scalar-lora", _MCC,
+     fixed={**_MCC_FIXED, "gauge": "balanced-scalar"})
+spec("muon-coupled-core-state-rebalanced-lora", _MCC,
+     fixed={**_MCC_FIXED, "state_rebalance": True, "rebalance_every": 1})
+spec("muon-coupled-core-sign-lora", _MCC,
+     fixed={**_MCC_FIXED, "pre_polar_normalize": "sign"})
+spec("muon-coupled-core-sign-rebalanced-lora", _MCC,
+     fixed={**_MCC_FIXED, "pre_polar_normalize": "sign",
+            "state_rebalance": True, "rebalance_every": 1})
+
+
+# ─── Muon / AdaMuon / ProductMuon family ─────────────────────────────────────
+# `ns_steps`←muon_ns_steps and `lr_b_multiplier`←lora_plus_multiplier are global
+# ALIAS entries; `alpha`←muon_alpha, `rank`←muon_rank likewise. `beta`/`eps` are
+# class defaults (legacy passes the same literals). `delta` on the Product
+# variants is HARDCODED at the class default 1e-6 (legacy passes NO delta) →
+# must be `fixed` so the swept precond_delta doesn't over-forward via ALIAS.
+spec("muon-lora", _optim.MuonLoRA)
+spec("adamuon-lora", _optim.AdaMuonLoRA)          # beta=0.95 / eps=1e-8 class defaults
+spec("muon-adam-lora", _optim.MuonAdamLoRA)
+spec("adam-muon-lora", _optim.AdamMuonLoRA)
+spec("product-muon-lora", _optim.ProductMuonLoRA, fixed={**_D6})
+spec("adam-product-muon-lora", _optim.AdamProductMuonLoRA, fixed={**_D6})
+spec("adam-ucv-core-lora", _optim.AdamOrthogonalCoreLoRA)  # weight_decay auto-forwards
+# AdamuonPolarProductLoRA: sign_stabilize=True is the class default AND legacy
+# passes it explicitly (same value); delta=precond_delta (ALIAS), eps=1e-8 literal.
+spec("adamuon-polar-product-lora", _optim.AdamuonPolarProductLoRA, fixed=_E8)
+
+
+# ─── Baselines ───────────────────────────────────────────────────────────────
+# adamw: LoRAPlusAdamW. betas special-cased, eps=1e-8 / weight_decay class
+# defaults (legacy passes same), lora_plus_multiplier auto-forwards. NOTE: stores
+# betas in param_groups, not self.beta1 (see test's _effective_betas).
+spec("adamw", _optim.LoRAPlusAdamW)
+
+# lin/scaled family. `delta`=1e-6 is HARDCODED in legacy (NOT the swept
+# precond_delta) → must be `fixed`. eps=1e-8 is the class default. scaled_metric
+# / lora_plus_multiplier auto-forward where the class takes them (adam-scaled
+# does NOT take scaled_metric — auto-forward skips it).
+spec("lin-lora", _optim.LinLoRA, fixed={**_D6})
+spec("scaled-lora", _optim.ScaledLoRA, fixed={**_D6})
+spec("adam-scaled-lora", _optim.AdamScaledLoRA, fixed={**_D6})
+spec("adam-lin-lora", _optim.AdamLinLoRA, fixed={**_D6})
+spec("adam-lin-core-lora", _optim.AdamLinCoreLoRA, fixed={**_D6})
+spec("adam-scaled-lora-post", _optim.AdamScaledLoRAPost, fixed={**_D6})
+spec("adam-lin-lora-post", _optim.AdamLinLoRAPost, fixed={**_D6})
+spec("adam-scaled-lora-matrix", _optim.AdamScaledLoRAMatrix, fixed={**_D6})
+spec("adam-lin-lora-matrix", _optim.AdamLinLoRAMatrix, fixed={**_D6})
+
+# diag-scaled / kron-grad / psi: gamma←precond_gamma, ema_beta←precond_ema_beta,
+# delta←precond_delta are all SWEPT (legacy forwards them) → global ALIAS. psi's
+# momentum/inner_iters/proximal_rho/momentum_rank map to psi_* config fields.
+spec("diag-scaled-lora", _optim.DiagScaledLoRA)
+spec("kron-grad-lora", _optim.KronGradLoRA)
+spec("psi-lora", _optim.PSILoRA,
+     alias={"momentum": "psi_momentum", "inner_iters": "psi_inner_iters",
+            "proximal_rho": "psi_rho", "momentum_rank": "psi_momentum_rank"})
+
+
+# ─── Targets-based (dense-weight) optimizers ─────────────────────────────────
+# Built from `targets` (TargetWeight list), not a LoRA model → takes_targets=True.
+# `rank`←svd_rank (per-spec alias, NOT muon_rank). eps literals differ (galore
+# 1e-6, svd 1e-8) → fixed. galore update_proj_gap/scale are global ALIAS;
+# svd_niter / weight_decay auto-forward by name.
+spec("galore-adamw", _optim.GaLoreAdamW,
+     fixed={"eps": 1e-6}, alias={"rank": "svd_rank"}, takes_targets=True)
+spec("svd-step-adamw", _optim.SVDStepAdamW,
+     fixed={"eps": 1e-8}, alias={"rank": "svd_rank"}, takes_targets=True)
+spec("svd-cumulative-adamw", _optim.SVDCumulativeAdamW,
+     fixed={"eps": 1e-8}, alias={"rank": "svd_rank"}, takes_targets=True)

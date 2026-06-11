@@ -154,6 +154,234 @@ def test_polar_step_identical(name):
     _assert_step_identical(name, _COMMON)
 
 
+# ── Coupled-core family (polar / muon) ──────────────────────────────────────
+# All PolarCoupledCoreLoRA / MuonCoupledCoreLoRA, differing only in the gauge /
+# pre_polar_normalize / state_rebalance identity literals (+ muon's beta1=0.95).
+# `delta`=1e-6 is HARDCODED in legacy (not the swept precond_delta) → in fixed.
+_POLAR_COUPLED_CORE_FAMILY = [
+    "polar-coupled-core-lora",
+    "polar-coupled-core-imbalance-scalar-lora",
+    "polar-coupled-core-imbalance-lora",
+    "polar-coupled-core-imbalance-restore-lora",
+    "polar-coupled-core-balanced-scalar-lora",
+    "polar-coupled-core-state-rebalanced-lora",
+    "polar-coupled-core-sign-lora",
+    "polar-coupled-core-sign-rebalanced-lora",
+    "polar-coupled-core-factor-adam-lora",
+    "polar-coupled-core-factor-adam-rebalanced-lora",
+]
+_MUON_COUPLED_CORE_FAMILY = [
+    "muon-coupled-core-lora",
+    "muon-coupled-core-imbalance-scalar-lora",
+    "muon-coupled-core-imbalance-lora",
+    "muon-coupled-core-balanced-scalar-lora",
+    "muon-coupled-core-state-rebalanced-lora",
+    "muon-coupled-core-sign-lora",
+    "muon-coupled-core-sign-rebalanced-lora",
+]
+_COUPLED_CORE_FAMILY = _POLAR_COUPLED_CORE_FAMILY + _MUON_COUPLED_CORE_FAMILY
+
+
+@pytest.mark.parametrize("name", _COUPLED_CORE_FAMILY)
+def test_coupled_core_attr_identical(name):
+    old = _scalars(_old(_Model(), name, _COMMON))
+    new = _scalars(build_v2(_Model(), name, _COMMON))
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    assert not diff, f"{name}: attr divergence old/new -> {diff}"
+
+
+@pytest.mark.parametrize("name", _COUPLED_CORE_FAMILY)
+def test_coupled_core_step_identical(name):
+    _assert_step_identical(name, _COMMON)
+
+
+def test_muon_coupled_core_beta1_is_pinned_not_config():
+    """muon-coupled-core HARDCODES beta1=0.95 (Muon momentum convention), NOT the
+    auto-forwarded config.beta1 (0.93 in _COMMON). Pin must survive."""
+    for name in _MUON_COUPLED_CORE_FAMILY:
+        opt = build_v2(_Model(), name, _COMMON)
+        assert opt.beta1 == 0.95, f"{name}: beta1 should be the pinned 0.95, got {opt.beta1}"
+
+
+# ── Muon / AdaMuon / ProductMuon family ─────────────────────────────────────
+# `polar-product-lora` (bare) lives here too — same PolarProduct geometry, no Adam.
+_MUON_FAMILY = [
+    "polar-product-lora",
+    "muon-lora", "adamuon-lora", "muon-adam-lora", "adam-muon-lora",
+    "product-muon-lora", "adam-product-muon-lora",
+    "adamuon-polar-product-lora",
+    "adam-polar-product-lora-gauge", "adam-polar-product-lora-gauge-coupled",
+    "adam-polar-product-lora-clip-gauge", "adam-polar-product-lora-clip-gauge-coupled",
+]
+
+
+@pytest.mark.parametrize("name", _MUON_FAMILY)
+def test_muon_attr_identical(name):
+    old = _scalars(_old(_Model(), name, _COMMON))
+    new = _scalars(build_v2(_Model(), name, _COMMON))
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    assert not diff, f"{name}: attr divergence old/new -> {diff}"
+
+
+@pytest.mark.parametrize("name", _MUON_FAMILY)
+def test_muon_step_identical(name):
+    _assert_step_identical(name, _COMMON)
+
+
+# ── Baselines ────────────────────────────────────────────────────────────────
+# `adam-ucv-core-lora` needs a UCV-injected model (separate test below); `sgd`,
+# `sgd-m`, `adafactor`, `imuon-lora` are NOT migratable generically (see report).
+_BASELINE_FAMILY = [
+    "adamw",
+    "lin-lora", "scaled-lora", "adam-scaled-lora", "adam-lin-lora",
+    "adam-lin-core-lora", "adam-scaled-lora-post", "adam-lin-lora-post",
+    "adam-scaled-lora-matrix", "adam-lin-lora-matrix",
+    "diag-scaled-lora", "kron-grad-lora", "psi-lora",
+]
+
+
+@pytest.mark.parametrize("name", _BASELINE_FAMILY)
+def test_baseline_attr_identical(name):
+    old = _scalars(_old(_Model(), name, _COMMON))
+    new = _scalars(build_v2(_Model(), name, _COMMON))
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    assert not diff, f"{name}: attr divergence old/new -> {diff}"
+
+
+@pytest.mark.parametrize("name", _BASELINE_FAMILY)
+def test_baseline_step_identical(name):
+    _assert_step_identical(name, _COMMON)
+
+
+def test_adamw_betas_forwarded_via_param_groups():
+    """adamw (LoRAPlusAdamW) stores betas in param_groups, not self.beta1 — the
+    generic attr test can't see them. Pin the (beta1, beta2) forward explicitly."""
+    opt = build_v2(_Model(), "adamw", _COMMON)
+    assert tuple(opt.param_groups[0]["betas"]) == (_COMMON.beta1, _COMMON.beta2)
+
+
+def test_lin_scaled_delta_is_pinned_not_swept():
+    """The lin/scaled family HARDCODES delta=1e-6 (structural Tikhonov reg), NOT
+    the swept precond_delta (3.3e-4 in _COMMON). The pin must survive."""
+    for name in ["lin-lora", "scaled-lora", "adam-scaled-lora", "adam-lin-lora",
+                 "adam-lin-core-lora", "adam-scaled-lora-post", "adam-lin-lora-post",
+                 "adam-scaled-lora-matrix", "adam-lin-lora-matrix"]:
+        opt = build_v2(_Model(), name, _COMMON)
+        assert opt.delta == 1e-6, f"{name}: delta should be pinned 1e-6, got {opt.delta}"
+
+
+# ── UCV core (needs a UCV-injected model, not LoRA pairs) ────────────────────
+def _ucv_model(seed=4):
+    # inject_ucv_adapters' orthonormal U/V init draws from the GLOBAL torch RNG
+    # (no generator arg), so seed it identically for old/new to get the same init.
+    from lora_playground.ucv_layer import inject_ucv_adapters
+    torch.manual_seed(seed)
+
+    class _Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            g = torch.Generator().manual_seed(seed)
+            self.q_proj = nn.Linear(32, 32, bias=False)
+            self.v_proj = nn.Linear(32, 48, bias=False)
+            with torch.no_grad():
+                self.q_proj.weight.copy_(torch.randn(32, 32, generator=g) * 0.1)
+                self.v_proj.weight.copy_(torch.randn(48, 32, generator=g) * 0.1)
+
+    m = _Net()
+    torch.manual_seed(seed)  # re-seed: the orthonormal init consumes global RNG
+    inject_ucv_adapters(m, ["q_proj", "v_proj"], r=8, alpha=8)
+    return m
+
+
+def test_ucv_core_attr_and_step_identical():
+    """adam-ucv-core-lora needs a UCV-injected model (legacy fails on plain LoRA
+    pairs too). Build both old/new on a UCV fixture and compare attrs + steps."""
+    name = "adam-ucv-core-lora"
+    old = _scalars(_old(_ucv_model(), name, _COMMON))
+    new = _scalars(build_v2(_ucv_model(), name, _COMMON))
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    assert not diff, f"{name}: attr divergence old/new -> {diff}"
+    m_old = _ucv_model()
+    m_new = _ucv_model()
+    opt_old = _old(m_old, name, _COMMON)
+    opt_new = build_v2(m_new, name, _COMMON)
+    for step in range(3):
+        _inject_grads(m_old, 100 + step)
+        _inject_grads(m_new, 100 + step)
+        opt_old.step()
+        opt_new.step()
+    for (n1, p_old), (n2, p_new) in zip(m_old.named_parameters(), m_new.named_parameters()):
+        assert torch.allclose(p_old, p_new, atol=1e-6, rtol=1e-5), f"{name}: {n1} diverged"
+
+
+# ── Targets-based (dense-weight) optimizers ──────────────────────────────────
+# Built from `targets` (a TargetWeight list), not a LoRA model. The generic
+# step path (random-grad inject + compare params) works on the dense weights.
+_TARGETS_FAMILY = ["galore-adamw", "svd-step-adamw", "svd-cumulative-adamw"]
+# wd MUST be 0 (svd-* reject wd!=0) and svd_rank set (rank<=0 rejected).
+_TARGETS_CFG = replace(_COMMON, weight_decay=0.0, svd_rank=4, svd_niter=4,
+                       precond_delta=1e-6)
+
+
+def _targets(seed=7):
+    from lora_playground.utils import TargetWeight
+    g = torch.Generator().manual_seed(seed)
+    ts = []
+    for i, (do, di) in enumerate([(32, 32), (64, 32), (48, 40)]):
+        m = nn.Linear(di, do, bias=False)
+        with torch.no_grad():
+            m.weight.copy_(torch.randn(do, di, generator=g) * 0.1)
+        ts.append(TargetWeight(name=f"t{i}", module=m, weight=m.weight,
+                               base_weight=m.weight.detach().clone()))
+    return ts
+
+
+def _old_targets(targets, name, cfg):
+    kw = {k: v for k, v in asdict(cfg).items() if k in _BO_PARAMS and k != "lr"}
+    return build_optimizer(None, optimizer_type=name, targets=targets, lr=cfg.lr, **kw)
+
+
+@pytest.mark.parametrize("name", _TARGETS_FAMILY)
+def test_targets_attr_identical(name):
+    old = _scalars(_old_targets(_targets(), name, _TARGETS_CFG))
+    new = _scalars(build_v2(_targets(), name, _TARGETS_CFG))
+    diff = {k: (old.get(k), new.get(k)) for k in set(old) | set(new)
+            if old.get(k) != new.get(k)}
+    assert not diff, f"{name}: attr divergence old/new -> {diff}"
+    # rank + eps are the load-bearing identity values.
+    o = build_v2(_targets(), name, _TARGETS_CFG)
+    assert o.rank == _TARGETS_CFG.svd_rank
+    assert o.param_groups[0]["eps"] == (1e-6 if name == "galore-adamw" else 1e-8)
+
+
+@pytest.mark.parametrize("name", _TARGETS_FAMILY)
+def test_targets_step_identical(name):
+    t_old = _targets()
+    t_new = _targets()
+    opt_old = _old_targets(t_old, name, _TARGETS_CFG)
+    opt_new = build_v2(t_new, name, _TARGETS_CFG)
+    for step in range(3):
+        g = torch.Generator().manual_seed(200 + step)
+        grads = [torch.randn(tw.weight.shape, generator=g) for tw in t_old]
+        for tw_o, tw_n, grad in zip(t_old, t_new, grads):
+            tw_o.weight.grad = grad.clone()
+            tw_n.weight.grad = grad.clone()
+        # svd-* project the step via randomized SVD (torch.svd_lowrank draws from
+        # the GLOBAL RNG) — seed identically around each .step() so the two
+        # independent optimizers consume the same random projection.
+        torch.manual_seed(300 + step)
+        opt_old.step()
+        torch.manual_seed(300 + step)
+        opt_new.step()
+    for tw_o, tw_n in zip(t_old, t_new):
+        assert torch.allclose(tw_o.weight, tw_n.weight, atol=1e-6, rtol=1e-5), \
+            f"{name}: {tw_o.name} diverged"
+
+
 def test_registry_specs_have_valid_fixed_keys():
     """Every spec.fixed key is a real __init__ param of its class."""
     bad = {}
@@ -166,3 +394,18 @@ def test_registry_specs_have_valid_fixed_keys():
         if unknown:
             bad[name] = unknown
     assert not bad, f"specs with fixed keys not in __init__ (no **kwargs): {bad}"
+
+
+# These 4 are NOT migratable to a generic spec (see optimizer_factory_redesign
+# report): adafactor is a builder FUNCTION (no __init__ to introspect); sgd/sgd-m
+# take a filtered param LIST + a hardcoded momentum, not (model, lr, **kwargs);
+# imuon-lora is a vendored ref with a bespoke (muon_params/lora_pairs/...) sig.
+_UNMIGRATABLE = {"adafactor", "sgd", "sgd-m", "imuon-lora"}
+
+
+def test_every_choice_migrated_or_flagged():
+    """Every OPTIMIZER_CHOICES name is either in the REGISTRY or in the explicit
+    not-generically-migratable set — no silent gaps."""
+    from lora_playground.optim import OPTIMIZER_CHOICES
+    missing = set(OPTIMIZER_CHOICES) - set(REGISTRY) - _UNMIGRATABLE
+    assert not missing, f"unmigrated and unflagged optimizers: {sorted(missing)}"
