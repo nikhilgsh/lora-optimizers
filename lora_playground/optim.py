@@ -11465,6 +11465,10 @@ def build_optimizer(
             diag_metric=True,
             cw_picard_iters=cw_picard_iters,
             cw_nesterov=cw_nesterov,
+            cw_no_radius=cw_no_radius,
+            cw_no_diag_curv=cw_no_diag_curv,
+            cw_factor_a=cw_factor_a,
+            cw_factor_b=cw_factor_b,
         )
     if optimizer_type == "kl-diag-polar-flatout-lora":
         # Robustness probe: kl-diag-polar with the un-whiten REMOVED (flat_outer).

@@ -45,6 +45,11 @@ def _build(model, **kw):
                            curvature_beta=0.99, muon_ns_steps=8, precond_delta=1e-4, cw_nesterov=True, **kw)
 
 
+def _build_kl(model, **kw):
+    return build_optimizer(model, "kl-diag-polar-lora", lr=3e-2,
+                           curvature_beta=0.99, muon_ns_steps=8, precond_delta=1e-4, cw_nesterov=True, **kw)
+
+
 def _step_capture(opt, model, x, tgt):
     before = {id(p): p.detach().clone() for grp in opt.param_groups for p in grp["params"]}
     ((model(x) - tgt) ** 2).mean().backward()
@@ -149,6 +154,42 @@ def test_cw_nesterov_honored_by_kl_branches(opt_name):
         opt = build_optimizer(m, opt_name, lr=1e-2, curvature_beta=0.99,
                               muon_ns_steps=5, precond_delta=1e-4, cw_nesterov=want)
         assert opt.cw_nesterov is want, f"{opt_name} ignored cw_nesterov={want}"
+
+
+@pytest.mark.parametrize("flag", ["cw_no_radius", "cw_no_diag_curv"])
+def test_kl_diag_honors_ablation_flags(flag):
+    """Regression: the ablation flags (cw_no_radius / cw_no_diag_curv) were wired
+    into the diag-shampoo-polar-lora branch ONLY; the kl-diag-polar-lora branch
+    (the protagonist as of the kl-diag switch) silently DROPPED them, so an
+    ablation sweep on kl-diag would run the FULL protagonist while the config event
+    claimed the flag was set — the exact provenance bug class as cw_nesterov. The
+    kl-diag branch must honor both flags."""
+    from lora_playground.optim import build_optimizer
+    m, _, _ = _make()
+    opt = build_optimizer(m, "kl-diag-polar-lora", lr=1e-2, curvature_beta=0.99,
+                          muon_ns_steps=8, precond_delta=1e-4, cw_nesterov=True,
+                          **{flag: True})
+    assert getattr(opt, flag) is True, f"kl-diag-polar-lora dropped {flag}"
+
+
+def test_kl_diag_no_shampoo_matches_diag_shampoo_no_shampoo():
+    """The −Shampoo arm (cw_no_diag_curv) is base-independent: forcing the large-axis
+    diagonals to I (dinA=doutB=1) collapses both diag-shampoo and kl-diag to the same
+    iMuon+radius update — the kl_coupled D_in/D_out EMAs are still accumulated but never
+    read (overwritten to ones each step). So kl-diag −Shampoo must step IDENTICALLY to
+    diag-shampoo −Shampoo (justifies reusing the existing −Shampoo run for both bases)."""
+    m1, x, tgt = _make(seed=7)
+    m2, _, _ = _make(seed=7)
+    kl = _build_kl(m1, cw_no_diag_curv=True)
+    ds = _build(m2, cw_no_diag_curv=True)
+    for _ in range(5):  # let diagonals accumulate so the coupling path is exercised
+        for opt, m in ((kl, m1), (ds, m2)):
+            opt.zero_grad(set_to_none=False)
+            ((m(x) - tgt) ** 2).mean().backward()
+            opt.step()
+    diffs = [(p1.detach() - p2.detach()).abs().max().item()
+             for p1, p2 in zip(m1.parameters(), m2.parameters())]
+    assert all(df < 1e-6 for df in diffs), f"kl-diag −Shampoo != diag-shampoo −Shampoo: {diffs}"
 
 
 def test_curvature_whiten_does_not_apply_nesterov_and_logs_effective():
