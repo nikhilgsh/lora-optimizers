@@ -9,15 +9,19 @@
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir
 #   8: lora_r  9: cw_factor_a  10: cw_factor_b
 lr=${1:-3e-2}
-optimizer=${2:-diag-shampoo-polar-lora}
+optimizer=${2:-kl-diag-polar-lora}      # paper protagonist (was diag-shampoo-polar-lora; pivot 2026-06-11)
 seed=${3:-0}
 precond_delta=${4:-1e-4}
-beta1=${5:-0.95}
+beta1=${5:-0.9}                          # locked protagonist β₁ (was 0.95)
 model=${6:-allenai/OLMo-2-0425-1B}
 data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${8:-256}
 cw_factor_a=${9:-0.0}
 cw_factor_b=${10:-0.0}
+
+# precond_method via env (positionals 9/10 are cw_factor_a/b here). Default gram_ns (protagonist).
+precond_args=()
+[ -n "${PRECOND_METHOD:-gram_ns}" ] && precond_args=(--precond_method "${PRECOND_METHOD:-gram_ns}" --higham_iters "${HIGHAM_ITERS:-8}")
 
 compile_args=()
 [ "${COMPILE:-1}" = "1" ] && compile_args=(--compile)
@@ -63,6 +67,7 @@ python train_lora.py \
     --cw_nesterov \
     --cw_factor_a "$cw_factor_a" \
     --cw_factor_b "$cw_factor_b" \
+    "${precond_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}"

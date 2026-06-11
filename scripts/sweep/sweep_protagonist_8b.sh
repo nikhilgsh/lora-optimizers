@@ -9,14 +9,14 @@
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
 #   9: precond_method (OPTIONAL — empty=factory default eigh; "gram_ns"/"higham" override)
 lr=${1:-3e-2}
-optimizer=${2:-diag-shampoo-polar-lora}
+optimizer=${2:-kl-diag-polar-lora}      # paper protagonist (was diag-shampoo-polar-lora; pivot 2026-06-11)
 seed=${3:-0}
 precond_delta=${4:-1e-4}
-beta1=${5:-0.95}
+beta1=${5:-0.9}                          # locked protagonist β₁ (was 0.95)
 model=${6:-meta-llama/Meta-Llama-3-8B}
 data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048_llama32}
 lora_r=${8:-256}
-precond_method=${9:-}
+precond_method=${9:-gram_ns}            # protagonist inverse-sqrt: Polar-Express Gram NS (was eigh)
 
 # Optional inverse-sqrt method override. Empty (the 8-positional legacy case) passes
 # nothing -> train.py default None -> curvature-whiten family default eigh (unchanged).

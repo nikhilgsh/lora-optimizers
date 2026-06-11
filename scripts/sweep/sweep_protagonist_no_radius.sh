@@ -7,13 +7,17 @@
 # Positional args (must match params JSON key order):
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
 lr=${1:-3e-2}
-optimizer=${2:-diag-shampoo-polar-lora}
+optimizer=${2:-kl-diag-polar-lora}      # paper protagonist (was diag-shampoo-polar-lora; pivot 2026-06-11)
 seed=${3:-0}
 precond_delta=${4:-1e-4}
-beta1=${5:-0.95}
+beta1=${5:-0.9}                          # locked protagonist β₁ (was 0.95)
 model=${6:-allenai/OLMo-2-0425-1B}
 data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${8:-256}
+precond_method=${9:-gram_ns}            # protagonist inverse-sqrt: Polar-Express Gram NS (was eigh)
+
+precond_args=()
+[ -n "$precond_method" ] && precond_args=(--precond_method "$precond_method" --higham_iters "${HIGHAM_ITERS:-8}")
 
 # Per-task torch.compile cache dir: disBatch co-locates tasks on a node; a SHARED
 # inductor/AOTAutograd cache gets corrupted by concurrent compiles (JSONDecodeError
@@ -63,6 +67,7 @@ python train_lora.py \
     --cw_picard_iters 1 \
     --cw_nesterov \
     --cw_no_radius \
+    "${precond_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}"

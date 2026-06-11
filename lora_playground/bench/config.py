@@ -121,17 +121,17 @@ class BenchConfig:
 
 def protagonist_config(model_name: str, lora_r: int, **overrides) -> BenchConfig:
     """The paper protagonist `kl-diag-polar-lora`, exactly as
-    `scripts/sweep/sweep_protagonist_generic.sh` passes it:
+    `scripts/sweep/sweep_protagonist_generic.sh` passes it (post-2026-06-11 pivot):
       --polar_method polar_express --muon_ns_steps 8 --cw_picard_iters 1
       --curvature_beta 0.99 --precond_refresh_every 10 --precond_delta 1e-4
-      --cw_nesterov --beta1 0.95   (no --precond_method → QR eigenbasis today).
+      --cw_nesterov --beta1 0.9 --precond_method gram_ns --higham_iters 8.
     8B uses bs2/ga8 (sweep_protagonist_8b.sh); pass batch_size=2, grad_accum_steps=8.
     """
     cfg = dict(
         model_name=model_name, lora_r=lora_r, optimizer="kl-diag-polar-lora",
         muon_ns_steps=8, polar_method="polar_express", cw_picard_iters=1,
         curvature_beta=0.99, precond_refresh_every=10, precond_delta=1e-4,
-        cw_nesterov=True, beta1=0.95, precond_method="eigh",
+        cw_nesterov=True, beta1=0.9, precond_method="gram_ns", higham_iters=8,
     )
     cfg.update(overrides)
     return BenchConfig(**cfg)
