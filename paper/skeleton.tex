@@ -82,7 +82,8 @@
 %                  full polar via PolarExpress, operator-norm step radius.
 % (4) evidence:    14 (model,dataset,rank) settings, 4 base models, 4 corpora;
 %                  reaches AdamW's loss in \PLACEHOLDER{1.2--1.7}$\times$ fewer steps;
-%                  ablations isolate the polar cap; diagonal curvature suffices.
+%                  ablations show the expensive curvature flavor and inner refinement
+%                  are unnecessary -- cheap diagonal two-sided whitening suffices.
 % (5) number:      near-free -- $\le 6\%$ wall per step at production batch.
 \end{abstract}
 
@@ -130,8 +131,11 @@
         wall per step.
   \item \textbf{Operator-norm lr transfer (empirical).} Optimal rate stable across
         rank; AdamW's shrinks with rank; iMuon (no radius) does not transfer.
-  \item \textbf{What carries the gain.} Ablation isolates the polar cap; cheap
-        diagonal curvature suffices.
+  \item \textbf{What carries the gain.} Ablations show that more expensive
+        Kronecker-factored curvature (Shampoo/SOAP \cite{soap}, KL-Shampoo
+        \cite{klshampoo}) and inner-iteration refinement do not beat cheap diagonal
+        two-sided whitening at $k{=}1$; the polar cap follows the spectral-method
+        literature \cite{imuon, spectron, polarexpress}.
   \item \textbf{Benchmark.} A 14-setting LoRA-optimizer comparison under a
         speedup-to-AdamW metric over 4 base models and 4 corpora.
 \end{itemize}
@@ -240,6 +244,15 @@ where $P,Q\succ0$ are two diagonal curvatures --- per-coordinate gradient energy
 \end{equation*}
 and $\|\cdot\|_{P,Q}$ is the operator norm this inner product induces.
 
+\paragraph{What $P,Q$ are: factor-native curvature.} $P$ and $Q$ are the Adagrad/Adafactor recipe \cite{adagrad,adafactor} --- whiten by accumulated per-coordinate gradient energy --- applied to the \emph{factors} rather than to $W$. Each factor is whitened by its own gradient: $Q$ is the per-input-coordinate energy of $G_A$, $P$ the per-output-coordinate energy of $G_B$. The product structure $W=BA$ then determines what that means in weight space. Writing $G$ for the (dense) weight gradient and $g_i$ for its $i$-th row, the chain rule $G_B=GA^\top$ gives
+\begin{equation}
+  P_{ii}=\big\|(G_B)_{i,:}\big\|_2^2=\big\|g_i A^\top\big\|_2^2=g_i\,(A^\top\! A)\,g_i^\top,
+  \qquad
+  Q_{jj}=(G_{:,j})^\top (BB^\top)\,G_{:,j},
+  \label{eq:ours-bottleneck}
+\end{equation}
+the weight-gradient energy of row $i$ \emph{measured through} $A^\top\! A$, i.e.\ restricted to the $r$-dimensional input subspace $A$ spans. This is the right object, not an artifact: a change $\delta B$ moves the weight as $\delta B\,A$, whose rows lie in $\operatorname{row}(A)$, so the only gradient energy $B$ can act on is the part inside $\operatorname{row}(A)$; energy in unreachable directions is correctly given zero weight. The same bottleneck restricts $Q$ to $\operatorname{col}(B)$ via $BB^\top$. AdaPreLoRA \cite{adaprelora} instead forms the Adafactor diagonal Kronecker on the \emph{full} weight gradient and projects through the LoRA Jacobian; \eqref{eq:ours-bottleneck} computes the same energy natively in the reachable subspace, recovering the full-space statistic only in the dense limit $r=d$.
+
 \paragraph{Derivation.} Cap the product step in this inner product and maximize alignment with the gradient:
 \begin{equation}
   \max_{\dot A}\ \langle B\dot A,\,-G\rangle
@@ -281,7 +294,7 @@ so the learning rate transfers across rank.
 \Phase{Momentum} (Nesterov lookahead, bias-corrected)
 \State $M_A\gets\beta_1 M_A+(1-\beta_1)\,G_A$, \qquad $\hat M_A\gets\big(\beta_1 M_A+(1-\beta_1)G_A\big)/(1-\beta_1^{\,t})$
 \State $M_B\gets\beta_1 M_B+(1-\beta_1)\,G_B$, \qquad $\hat M_B\gets\big(\beta_1 M_B+(1-\beta_1)G_B\big)/(1-\beta_1^{\,t})$
-\Statex \hspace{1.2em}\emph{(EMA analog of Muon's $\hat g+\beta\,\mathrm{buf}$; plain $\hat M_A\!=\!M_A/(1-\beta_1^t)$ is the $-$Nesterov ablation.)}
+\Statex \hspace{1.2em}\emph{(Nesterov lookahead is the standard Muon momentum form \cite{muon}; plain $\hat M_A\!=\!M_A/(1-\beta_1^t)$ is the non-Nesterov variant.)}
 
 \Phase{Diagonal curvature} (per-coordinate gradient energy)
 \State $Q_{jj}\gets\beta_2\,Q_{jj}+(1-\beta_2)\,\|(G_A)_{:,j}\|_2^2$ \Comment{input side}
@@ -302,8 +315,8 @@ so the learning rate transfers across rank.
 
 \paragraph{Cost.} Beyond AdamW's two factor momenta:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item Extra memory $O(d_{\mathrm{in}}+d_{\mathrm{out}}+r^2)$: the two diagonals plus the two $r\times r$ eigenbases of $C_A,C_B$; no $O(d_{\mathrm{in}}d_{\mathrm{out}})$ dense state.
-  \item Extra compute per step $O\!\big((d_{\mathrm{in}}+d_{\mathrm{out}})\,r^2\big)$ (one full polar per factor --- PolarExpress \cite{polarexpress} in Gram form \cite{gram_ns}), plus an eigenbasis refresh (QR with power-subspace iteration \cite{soap}) every $K{=}10$ steps, amortizing to $O(r^3/K)$.
+  \item Extra memory $O(d_{\mathrm{in}}+d_{\mathrm{out}}+r^2)$: the two diagonals plus the two $r\times r$ curvature Grams $C_A,C_B$; eigh-free, so no eigenbasis state and no $O(d_{\mathrm{in}}d_{\mathrm{out}})$ dense state.
+  \item Extra compute per step $O\!\big((d_{\mathrm{in}}+d_{\mathrm{out}})\,r^2\big)$: one full polar per factor \emph{and} one small-side inverse-sqrt $C^{-1/2}$ per factor --- both PolarExpress \cite{polarexpress} in Gram--Newton--Schulz form \cite{gram_ns} with shared coefficients, eigh-free and computed fresh every step (no eigenbasis refresh; the inverse-sqrt is $O(r^3)$ on the $r\times r$ Gram, dominated by the $O((d_{\mathrm{in}}{+}d_{\mathrm{out}})r^2)$ polar at $r\!\ll\!d$).
   \item Measured wall overhead $1.01$--$1.06\times$ AdamW at production batch (\Cref{sec:exp-walltime}).
 \end{itemize}
 
@@ -325,12 +338,16 @@ so the learning rate transfers across rank.
   \label{fig:profile}
 \end{figure}
 
-\subsection{Ablations: what carries the speedup}
-% SKELETON -- keystone figure. Knobs at 2-3 anchor cells:
-%   (a) +polar vs -polar (curvature-only)        -> polar is essential
-%   (b) dense vs diagonal curvature              -> flavor doesn't matter
-%   (c) single-pass vs refined inner iteration   -> refinement doesn't matter
-% NOTE: the -polar arm is nearly unrun today (1/14) -- MUST run.
+\subsection{Ablations: which components carry the speedup}
+% SKELETON -- figure at 2 anchor cells (OLMo opc r256, Qwen bengali r256). Knobs:
+%   (a) dense/KL-Kronecker vs diagonal curvature -> flavor doesn't matter
+%       (fed by EXISTING kl_shampoo_polar_* logs at both anchors)
+%   (b) single-pass vs refined inner iteration   -> refinement doesn't matter
+%       (fed by EXISTING *picard_ablation* logs)
+%   (c) -Shampoo (-> iMuon + radius)             -> diagonal curvature IS needed
+%       (novelty-vs-iMuon arm; new e2_no_diag_curv runs)
+% Polar is NOT ablated: the non-polar variant is known-weak and removing polar is
+% not novel over iMuon; polar's necessity is cited \cite{imuon, spectron, polarexpress}.
 
 \subsection{From step speedup to wall-clock}
 \label{sec:exp-walltime}
@@ -377,6 +394,13 @@ amortizes with batch.}
 %   - Riemannian-preconditioned LoRA -- the product-norm precedent.
 %   - LoRA optimizer/init work (GaLore, LoRA+, nonzero-init).
 %   - rank-aware lr rules \cite{mua} -- cite as related work only; no prediction.
+%   - norm-scaled per-factor lr that bounds a bilinear product's change
+%     (QuacK \cite{quack}, concurrent) -- closest external precedent to our
+%     operator-norm radius / lr-transfer (C1); they pick Frobenius, we pick spectral.
+
+\paragraph{Curvature-whitened spectral updates.} The combination at the core of \methodname{} --- measure the spectral (Muon) cap in a Shampoo-curvature metric rather than the Euclidean one --- has a dense, full-rank precedent in pre-training. SOAP-Muon \cite{soapmuon} frames this as \emph{iterative whitening}: one-sided SOAP whitens the gradient on the small side and Muon orthogonalizes the other, the two preconditioners converging to a two-sided equilibrium. Mousse \cite{mousse} makes the geometry explicit and is the closest precedent to our update: with Shampoo factors $L=\mathrm{EMA}(GG^\top)$, $R=\mathrm{EMA}(G^\top G)$ and whiteners $P=L^{1/4},Q=R^{1/4}$, it solves $\min_{\Delta W}\operatorname{tr}(G^\top\Delta W)$ s.t.\ $\|P\,\Delta W\,Q\|_2\le1$, giving $\Delta W=-L^{-1/4}\,\mathrm{msign}(L^{-1/4}GR^{-1/4})R^{-1/4}$ --- exactly the whiten/polar/unwhiten sandwich of \eqref{eq:ours-lmo}, with the same operator-norm-in-curvature-metric LMO. \methodname{} differs on three axes that matter for adapter fine-tuning: (i) it acts in the LoRA \emph{factor} space, where the curvature reduces to the $r\times r$ cores $C_A=B^\top PB$, $C_B=AQA^\top$ and the bottleneck restricts each statistic to the reachable subspace \eqref{eq:ours-bottleneck}, rather than the dense $d\times d$ Kronecker factors of Mousse/SOAP-Muon; (ii) its curvatures $P,Q$ are \emph{diagonal} (Adafactor-form \cite{adafactor}), not full Shampoo eigenbases --- and our ablations show the dense flavor does not beat the diagonal at $k{=}1$; (iii) it is the LoRA-native member of this family, where the dense methods target full-parameter pre-training.
+
+\paragraph{Norm-scaled per-factor learning rates.} QuacK \cite{quack} (concurrent) bounds the change of the attention-logit product $W_QW_K^\top$ by scaling each factor's rate by the partner's inverse norm, $\eta_Q\propto\|W_K\|^{-1}$, $\eta_K\propto\|W_Q\|^{-1}$ --- the learning-rate analogue of our operator-norm radius $\rho=\eta/(\smax(A)+\smax(B))$ on $BA$ \eqref{eq:ours-prodcap}. It differs in object (attention logits, pre-training vs.\ adapter, fine-tuning), norm (Frobenius --- they find spectral adds little; ours is operator, which buys the rank transfer of \Cref{sec:exp-taskdep}), and mechanism (scalar per-tensor lr only, no polar).
 
 % ===========================================================================
 \section{Limitations}
