@@ -1,7 +1,10 @@
-"""Ablation flags on the protagonist (diag-shampoo-polar-lora), defined off skeleton Alg 1:
+"""Ablation flags on the curvature-whiten polar family (protagonist = kl-diag-polar-lora;
+diag-shampoo-polar-lora is now the −diag-curv-adjacent ablation base). Flags off skeleton Alg 1:
   --cw_no_radius     : ρ = lr  (drop the operator-norm radius ρ = lr/(σmax A + σmax B))
   --cw_no_diag_curv  : input/output diagonals → I  (C_A=BᵀB, C_B=AAᵀ; partner-Gram, iMuon-like)
-Both default off (= protagonist). Tests verify the intended math, not just "runs".
+Both default off (= full protagonist). The flags forward identically for the kl-diag and
+diag-shampoo branches, so the tests exercise both bases. Tests verify the intended math,
+not just "runs".
 """
 import math
 import pytest
