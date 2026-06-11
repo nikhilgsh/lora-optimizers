@@ -8,10 +8,9 @@
 #SBATCH --output=/mnt/home/nghosh/lora/slurm_logs/slurm_%j.out
 #SBATCH --error=/mnt/home/nghosh/lora/slurm_logs/slurm_%j.err
 
-# Blackwell RTX PRO 6000, 12h wall (vs sbatch_blackwell.sh's 8h) for the
-# 9000-step full-polar sweeps: 9000 × ~2.5 s/step × 1 task/gpu × 1.5 ≈ 9.4h,
-# over the 8h template. Blackwell nodes are under SLURM reservation `rocky9`
-# (per ~/.claude/CLAUDE.md); without it jobs sit PD with ReqNodeNotAvail.
+# Blackwell RTX PRO 6000 nodes are under SLURM reservation `rocky9`
+# (per ~/.claude/CLAUDE.md). Without --reservation=rocky9 jobs sit at PD with
+# ReqNodeNotAvail even though sinfo shows nodes idle.
 
 cd /mnt/home/nghosh/lora
 mkdir -p slurm_logs disbatch_logs
