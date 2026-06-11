@@ -17,25 +17,35 @@ members of its family (KL-Kronecker curvature coupling, Picard cross-coupling, A
 and — being strictly factor-space — keeps the per-step walltime overhead small enough that
 the step speedup survives into walltime.
 
-## Protagonist (the cheap variant) — LOCKED 2026-06-09
+## Protagonist (the cheap variant) — LOCKED 2026-06-11 (pivot: diag-Shampoo → KL-diag)
 
-diag-Shampoo + **full polar (PolarExpress, PE=8)**, k=1, **Nesterov momentum (β1=0.95)**.
+KL-diag (coupled Kronecker input diagonal) + **full polar (PolarExpress, PE=8)**, k=1,
+**Nesterov momentum (β1=0.9)**, inverse-sqrt by **Polar-Express Gram NS** (`gram_ns`).
 Per factor (A-side; B-side symmetric):
-1. Nesterov momentum `m_A ← β1 m_A + g_A`, lookahead `g̃_A ← g_A + β1 m_A` (β1=0.95)
+1. Nesterov momentum `m_A ← β1 m_A + g_A`, lookahead `g̃_A ← g_A + β1 m_A` (β1=0.9)
 2. two-sided whiten `z_A = S_curv,A^{-1/2} m̂_A D_in^{-1/2}` — partner-side dense `r×r` Gram
-   root **plus large-axis diagonal** curvature (the second Shampoo side; this is what
-   iMuon omits and what Adam was implicitly providing in chord-tight)
+   root **plus large-axis diagonal** curvature, where the diagonal is the **KL-coupled**
+   Kronecker diagonal `D_in[i] = EMA[g_A[:,i]ᵀ S_a^{-1} g_A[:,i]]` (each side whitened by the
+   OTHER's inverse before forming), NOT raw grad energy. This coupling is the only change vs the
+   old diag-Shampoo protagonist and the one that matters: at 8B/r256 the raw-energy diagonal
+   underperforms by ~9σ, and the gram_ns sanity confirmed that gap is the **diagonal rule**, not
+   a stale-eigenbasis artifact (fresh S_a^{-1/2} gives the raw-energy diag the same uniform ~1–2σ
+   edge it gives every cell, and does not close the gap).
 3. polar cap `z_A ← φ(z_A)` (**full polar, PE=8** — `--polar_method polar_express
    --muon_ns_steps 8`; sigma_max-guarded estimator)
 4. unwhiten `W_A = S_curv,A^{-1/2} φ(z_A) D_in^{-1/2}`
 5. operator-norm radius `ρ = η/(σ_max(A)+σ_max(B))`, `dA = −ρ W_A/σ_max(W_A)`
 
+The small-side `S_a^{-1/2}` is computed by **Polar-Express Gram Newton–Schulz** (`gram_ns`, 8
+iters, fp32): eigh-free, exact every step (no 10-step-stale eigenbasis), wall-parity with the
+amortized QR path. One Gram-NS framework with shared Polar-Express coefficients serves BOTH the
+inverse-sqrt and the matrix-sign/polar (`docs/notes/inverse_sqrt_variant_plan.md`).
+
 **Exact config string** (the one all coverage/ablation/walltime numbers must use):
-`--optimizer diag-shampoo-polar-lora --polar_method polar_express --muon_ns_steps 8
+`--optimizer kl-diag-polar-lora --polar_method polar_express --muon_ns_steps 8
 --cw_picard_iters 1 --curvature_beta 0.99 --precond_delta 1e-4 --precond_refresh_every 10
---cw_nesterov --beta1 0.95` (Nesterov momentum ON, β1=0.95). δ=1e-4 is locked — cross-family
-δ sweeps (chord-tight/curvature-whiten) show it's insensitive; no δ pilot needed. Existing
-OLMo cells ran at β1=0.9 (≤0.2σ ≡ 0.95, admissible — see below); new cells use 0.95.
+--cw_nesterov --beta1 0.9 --precond_method gram_ns --higham_iters 8`. δ=1e-4 is locked —
+cross-family δ sweeps (chord-tight/curvature-whiten) show it's insensitive; no δ pilot needed.
 
 **Protocol (LOCKED):** global batch 16 (`--batch_size 4 --grad_accum_steps 4`),
 `--max_seq_length 2048`, `--max_steps 9000`, `--eval_every 250`, `packed_v1.1`, bf16,
@@ -45,16 +55,16 @@ comparable — no re-run for consistency.
 **Nesterov decision:** IN the protagonist. Step-matched Δ vs plain-EMA
 (σ_AdamW = 0.0017): OLMo opc r64 +0.94σ, opc r256 **+1.33σ**, openmath r256 +0.24σ —
 consistently positive, and opc r256 exceeds the 1σ floor, so it is NOT "within noise": a
-small but real gain. The ±Nesterov ablation row *quantifies* this (it does not justify
-exclusion).
+small but real gain. The step-matched Δ above is the justification; no separate ±Nesterov
+ablation row.
 
-**β1 = 0.95 (switched from 0.9).** β1 sweep `diag_shampoo_polar_r256_opc_beta1_095`
-(OLMo opc r256, step-matched @5250): best-lr Δ(0.9−0.95) = **−0.18σ**, near-identical at
-every lr — β1 is a no-op for the protagonist. We adopt **0.95** because (a) it is the
-Muon/iMuon-canonical momentum, so **all** spectral methods (protagonist + iMuon) sit at one
-β with no β-asymmetry confound, and (b) it is free (≤0.2σ). The existing β1=0.9 OLMo runs
-stay admissible as protagonist data (within-noise equivalent — note it, don't re-run); new
-E1 cells run at 0.95. (Confirm the ≤0.2σ holds at the 9000 horizon when the sweep finishes.)
+**β1 = 0.9.** Scoped β1 sweep (`kl-diag-polar-lora`, OLMo opc r256, **full 9000 horizon**):
+best-lr β=0.9 → **0.7357** (lr=0.03) vs β=0.95 → **0.7377** (lr=0.01), Δ = **+0.0020 ≈ 1.2σ**
+in favor of 0.9; the lower-lr extension confirmed lr=0.01 IS β=0.95's interior optimum
+(lr ∈ {3e-3,1e-3,3e-4} all ≥ 0.754). We adopt **0.9** because (a) it is marginally best on the
+data and (b) it is consistent with the existing β=0.9 history, keeping the rerun comparable. (An
+earlier draft adopted 0.95 as the Muon-canonical value off a step-matched 5250 pilot; the
+full-horizon scoped sweep reversed that — at 9000, 0.9 wins, marginally.)
 
 Verify exact diagonal form against `lora_playground/optim.py` before writing the §Method
 equations. Derivation of record: `docs/notes/polar_product/kl_shampoo_polar_derivation.md`.
@@ -73,10 +83,14 @@ equations. Derivation of record: `docs/notes/polar_product/kl_shampoo_polar_deri
   whitening on momentum): add the **polar cap** and stay **strictly factor-space** (no
   O(d_in·d_out) compute term). vs chord-tight: drop Adam for plain momentum, replacing
   Adam's implicit diagonal preconditioner with explicit two-sided curvature.
-- **C3 (ablation — what carries the gain).** The polar cap is load-bearing; the curvature
-  *flavor* (KL-Kronecker coupling vs diagonal vs SOAP) and the Picard cross-coupling (k≥2)
-  are not. So the cheapest variant is the recommended one. (User's established premises;
-  the ablation grid is the evidence figure.)
+- **C3 (ablation — the expensive machinery is dead weight).** The curvature *flavor*
+  (KL-Kronecker coupling vs diagonal vs SOAP) and the Picard cross-coupling (k≥2) do not
+  beat the cheap diagonal k=1 protagonist, so the cheapest variant is the recommended one.
+  The ablation figure is fed by **existing** logs (`kl_shampoo_polar_*` for flavor,
+  `*picard_ablation*` for refinement) — no new ablation runs. The polar cap's necessity is
+  **cited from the spectral-method literature** (Muon/iMuon/Spectron), not re-tested by us:
+  the non-polar variant is known-weak and removing polar is not novel over iMuon. (User's
+  established premises.)
 - **C4 (step → walltime; task/rank dependence).** Report walltime speedup, not just step
   speedup; characterize how speedup grows with task OOD-ness and rank.
 
@@ -169,14 +183,18 @@ Each cell earns its place; this is the whole grid.
   `paper/e1_coverage_fill.md`. Gate for the headline performance profile.
 - **E2 — ablation (leave-one-out)** at **OLMo opc r256 + Qwen-bengali r256**. From the full
   method, remove exactly one component (order-independent — NOT a "peel weakest first" stack):
-  - **−radius** → (diag-Shampoo + polar, plain η). Score by the **transfer figure** (E3),
+  - **−radius** → (KL-diag + polar, plain η). Score by the **transfer figure** (E3),
     NOT best-lr loss — the radius is a reparameterization of step magnitude, so at per-cell
     best-lr it is ~neutral; its value is rank transfer.
   - **−Shampoo** (`P,Q→I` ⟹ `C_A = BᵀB = S_B`) → partner-Gram + polar + radius = iMuon +
-    radius. Predicted: tanks a lot.
-  - **−polar** (`φ→id` ⟹ `dA ∝ C_A^{-1} g_A Q^{-1}`) = AdaPreLoRA. **Keystone arm, nearly
-    unrun** — highest priority.
-  - plus **±Nesterov** and **PE8-vs-single-NS** rows.
+    radius. Predicted: tanks a lot. This is the novelty-vs-iMuon arm (the diagonal curvature
+    is what we add over iMuon).
+  - **No −polar arm.** Polar's necessity is cited from the spectral-method literature, not
+    ablated: the non-polar variant is known-weak and removing polar is not novel over iMuon.
+  - **No ±Nesterov / PE8-vs-NS rows.** Nesterov is a standard Muon trick (`~/Muon`), justified
+    by the step-matched Δ already recorded above; full polar (PE8) is the locked default.
+  - The C3 "expensive is dead weight" figure (flavor / Picard refinement) is fed by **existing**
+    logs, not these two arms — see C3.
   - **Control lr per arm** (curvature-ON-vs-OFF is confounded by an lr-basin shift —
     `soap_curvature_whitening.md:354`).
   - No separate "incremental ladder" experiment — its rungs (iMuon, −Shampoo arm,
@@ -213,12 +231,14 @@ Each cell earns its place; this is the whole grid.
    — don't claim more preconditioning is monotonically better.
 5. KL-Shampoo (no polar) beats SOAP/Shampoo in full-weight pretraining
    (`soap_curvature_whitening.md` Reading B) — i.e. good curvature *might* make polar
-   redundant. Our E2 −polar arm must directly refute this in the LoRA setting.
+   redundant. We do NOT run a −polar arm to refute this (non-polar is known-weak, and
+   removing polar is not novel over iMuon); polar's necessity rests on the spectral-method
+   literature (Muon/iMuon/Spectron). State this as a cited premise, not an empirical result.
 
 ## Decisions (resolved 2026-06-09)
 
-- **Protagonist:** PE8 full polar + diag-Shampoo + polar + radius, plain momentum, k=1.
-  Nesterov → ablation row.
+- **Protagonist:** PE8 full polar + KL-diag (coupled diagonal) + polar + radius, Nesterov
+  momentum, k=1, β1=0.9, gram_ns inverse-sqrt.
 - **Scope:** arXiv, single-seed (multi-seed held off — too expensive), σ_AdamW as Δ unit.
 - **Canonical rank:** r=256; rank varies only on the Llama-math ladder.
 - **iMuon:** run as the always-present spectral baseline (E0). **Spectron:** argument-only.

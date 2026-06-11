@@ -5,7 +5,7 @@ This file maps each to its implementation. Released alongside source; not cited 
 
 | Paper name | Source identifier | Where |
 |---|---|---|
-| `Polar-LoRA` (protagonist) | `diag-shampoo-polar-lora`, **full polar PE=8** (`--polar_method polar_express --muon_ns_steps 8`), `k=1` (`--cw_picard_iters 1`), Nesterov momentum `β1=0.95` (`--cw_nesterov --beta1 0.95`), `β_c=0.99`, `δ=1e-4`, `--precond_refresh_every 10` | `lora_playground/optim.py` (`OPTIMIZER_CHOICES`); leaderboard label `diag-Shampoo +polar (f=10, β_c=0.99, δ=1e-4)` |
+| `Polar-LoRA` (protagonist) | `kl-diag-polar-lora`, **full polar PE=8** (`--polar_method polar_express --muon_ns_steps 8`), `k=1` (`--cw_picard_iters 1`), Nesterov momentum `β1=0.9` (`--cw_nesterov --beta1 0.9`), `β_c=0.99`, `δ=1e-4`, `--precond_refresh_every 10`, inverse-sqrt `--precond_method gram_ns --higham_iters 8` (Polar-Express Gram NS, eigh-free) | `lora_playground/optim.py` (`OPTIMIZER_CHOICES`); leaderboard label `KL-diag +polar (f=10, β_c=0.99, δ=1e-4)` |
 | polar map φ | spectral-cap via Newton–Schulz | `lora_playground/spectral.py` |
 | spectral trust-region rescale | ρ = η/(σ_max(A)+σ_max(B)), guarded σ_max | `lora_playground/spectral.py` (`_smax_warm`) |
 | full KL-Shampoo+polar (ablation) | KL-Kronecker coupled curvature | label `KL-Shampoo +polar` |

@@ -8,9 +8,10 @@ truth for what runs, its status, and provenance. **Coverage numbers are loader-d
 
 Paper baselines are **AdamW + iMuon only** (see `paper/PLAN.md`). No other baseline.
 
-- **Protagonist** (`diag-shampoo-polar-lora`): `--polar_method polar_express --muon_ns_steps 8
+- **Protagonist** (`kl-diag-polar-lora`): `--polar_method polar_express --muon_ns_steps 8
   --cw_picard_iters 1 --curvature_beta 0.99 --precond_delta 1e-4 --precond_refresh_every 10
-  --cw_nesterov --beta1 0.95`. (Existing OLMo cells ran β1=0.9 — ≤0.2σ ≡ 0.95, admissible.)
+  --cw_nesterov --beta1 0.9 --precond_method gram_ns --higham_iters 8`. (Pivot 2026-06-11 from
+  diag-shampoo; β=0.9 marginally best at 9000; gram_ns is the eigh-free inverse-sqrt.)
 - **iMuon baseline** (`imuon-lora`): the authors' vendored **`v5_warmup`** (joint form),
   momentum=0.95 Nesterov, wd=0, ns=5, ε=1e-6, adjust_lr=False. The decoupled Cor 4.1 (Prop 2)
   is non-viable at B=0 init — see `paper/PLAN.md` E0. ~3.9 s/step (slow). **Only 2 demonstration
