@@ -1,0 +1,11 @@
+{
+  "lr": ["1e-3"],
+  "optimizer": ["kl-diag-polar-lora"],
+  "seed": ["0"],
+  "precond_delta": ["1e-4"],
+  "beta1": ["0.95"],
+  "model": ["meta-llama/Meta-Llama-3-8B"],
+  "data_dir": ["data/opc_sft_stage2_all_packed_seq2048_llama32"],
+  "lora_r": ["256"],
+  "precond_method": ["gram_ns"]
+}
