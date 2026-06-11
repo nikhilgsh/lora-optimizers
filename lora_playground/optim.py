@@ -1652,6 +1652,7 @@ class CurvatureWhitenLoRA(Optimizer):
             t = S[idxs[0]]['step']
             bc1 = 1.0 - b1 ** t
             bc2 = 1.0 - beta2 ** t
+            if timer: timer.start("op_gather")   # stack 112 pairs' grads/factors/state into 3 shape-group tensors + momentum EMA
             gA = torch.stack([pairs[i][0].grad.float() for i in idxs])
             gB = torch.stack([pairs[i][1].grad.float() for i in idxs])
             Aw = torch.stack([pairs[i][0].detach().float() for i in idxs])
@@ -1664,6 +1665,7 @@ class CurvatureWhitenLoRA(Optimizer):
             vB = torch.stack([S[i]['v_B'] for i in idxs])
             Din = torch.stack([S[i]['D_in'] for i in idxs])
             Dout = torch.stack([S[i]['D_out'] for i in idxs])
+            if timer: timer.stop()
             _eigh = (self.precond_method == "eigh")
             if _eigh:
                 QA = torch.stack([S[i]['Q_A'] for i in idxs])
@@ -1686,8 +1688,10 @@ class CurvatureWhitenLoRA(Optimizer):
                 # Rayleigh eigenvalues / QR refresh / whitening and the diagonal KL
                 # coupling are unchanged; the write-back of L_A/R_B below stores M so
                 # the eigenbasis refresh tracks it.
+                if timer: timer.start("op_curv_gram")   # small-side curvature Grams M_A=Bᵀdiag(D_out)B, M_B=A diag(D_in)Aᵀ
                 LA = Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bw)
                 RB = (Aw * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)
+                if timer: timer.stop()
             if timer: timer.start("cw_basis_proj")
             # Relative-damped inverse-sqrt factors (-1/2 power) for the small (λ)
             # and large (D) sides; needed by both the outer sandwich and the
@@ -1715,6 +1719,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 # the same to match. The per-pair λ_max scale `_rdinv` also carries
                 # washes out (polar is scale-invariant; the σ_max radius rescale
                 # removes it), leaving the damping the only thing that must agree.
+                if timer: timer.start("op_invsqrt")   # small-side S^{-1/2} via Gram NS (+ form S^{-1})
                 SAh = gram_ns_inv_sqrt(
                     self._sym(LA), nsteps=self.higham_iters, eps=self.delta,
                     eps_relative=True)
@@ -1725,6 +1730,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 def _whB(x): return x @ SBh
                 SAinv_full = SAh @ SAh
                 RBinv_full = SBh @ SBh
+                if timer: timer.stop()
             else:  # "higham" — coupled Iannazzo/Denman–Beavers (needs ≥16 iters;
                    # under-converged at the default 10. Kept for the A/B retiming).
                 from .utils import spd_inv_sqrt_higham_batched
@@ -1754,8 +1760,10 @@ class CurvatureWhitenLoRA(Optimizer):
             grp = [S[i] for i in idxs]
             # σ_max(A), σ_max(B) and ρ are loop-invariant (factors don't move until
             # the update is applied after the loop), so compute them once.
+            if timer: timer.start("op_sigmax_radius")   # σ_max(A),σ_max(B) for the operator-norm radius ρ
             sA = self._smax_warm(Aw, grp, 'v_sigma_A')
             sB = self._smax_warm(Bw, grp, 'v_sigma_B')
+            if timer: timer.stop()
             # c_A, c_B: per-factor shape scaling folded into ρ (shape-constant within
             # the group); merged cap ρ(c_A·σmax(B)+c_B·σmax(A))=η preserved.
             cA, cB = self._factor_scales(Aw.shape[-2], Aw.shape[-1], Bw.shape[-2])
@@ -1794,19 +1802,27 @@ class CurvatureWhitenLoRA(Optimizer):
                         cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
                         inA = mhatA + (1.0 / lr) * cross_A
                         inB = mhatB + (1.0 / lr) * cross_B
+                    if timer: timer.start("op_whiten")      # z = S^{-1/2} m̂ D^{-1/2}
                     zA = _whA(inA) * dinA.unsqueeze(1)
                     zB = _whB(inB) * doutB.unsqueeze(-1)
+                    if timer: timer.stop()
                 if self.use_polar:
+                    if timer: timer.start("op_polar")       # matrix-sign φ(z) via Gram NS (Frobenius pre-norm for PolarExpress + a cache-warming σ_max)
                     zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA')
                     zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB')
+                    if timer: timer.stop()
                 if self.flat_outer:
                     # See _cw_apply_per_pair: skip the un-whiten (flat-spectrum probe).
                     WA, WB = zA, zB
                 else:
+                    if timer: timer.start("op_unwhiten")    # W = S^{-1/2} φ(z) D^{-1/2}
                     WA = _whA(zA) * dinA.unsqueeze(1)
                     WB = _whB(zB) * doutB.unsqueeze(-1)
+                    if timer: timer.stop()
+                if timer: timer.start("op_sigmax_rescale")  # σ_max(W_A),σ_max(W_B) for the ρ/σ_max operator-norm rescale
                 sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
                 sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
+                if timer: timer.stop()
                 dA = -(cA * rho / (sWA + self.eps)).view(-1, 1, 1) * WA
                 dB = -self.lora_plus_multiplier * (cB * rho / (sWB + self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
