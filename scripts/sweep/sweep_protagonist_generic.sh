@@ -6,6 +6,7 @@
 #
 # Positional args (must match params JSON key order):
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
+#   9: precond_method (OPTIONAL — empty=factory default eigh; "gram_ns"/"higham" override)
 lr=${1:-3e-2}
 optimizer=${2:-diag-shampoo-polar-lora}
 seed=${3:-0}
@@ -14,6 +15,12 @@ beta1=${5:-0.95}
 model=${6:-allenai/OLMo-2-0425-1B}
 data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${8:-256}
+precond_method=${9:-}
+
+# Optional inverse-sqrt method override. Empty (the 8-positional legacy case) passes
+# nothing -> train.py default None -> curvature-whiten family default eigh (unchanged).
+precond_args=()
+[ -n "$precond_method" ] && precond_args=(--precond_method "$precond_method" --higham_iters "${HIGHAM_ITERS:-8}")
 
 # Per-task torch.compile cache dir: disBatch co-locates tasks on a node; a SHARED
 # inductor/AOTAutograd cache gets corrupted by concurrent compiles (JSONDecodeError
@@ -62,6 +69,7 @@ python train_lora.py \
     --muon_ns_steps 8 \
     --cw_picard_iters 1 \
     --cw_nesterov \
+    "${precond_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \
     "${ckpt_args[@]}"
