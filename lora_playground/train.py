@@ -1383,16 +1383,17 @@ def main():
             "profile_steps": args.profile_steps,
             "picard_alpha": args.picard_alpha,
             "picard_iters_override": args.picard_iters_override,
-            "cw_picard_iters": args.cw_picard_iters,
-            # EFFECTIVE value (not args.cw_nesterov): some CurvatureWhitenLoRA branches
-            # (curvature-whiten/soap_v=True) don't honor the flag, so logging the CLI arg
-            # misrepresents what ran and confounds kl-vs-diag analysis. Read it off the
-            # built optimizer; fall back to the CLI value for optimizers without the attr.
+            # EFFECTIVE values, read off the BUILT optimizer (not args.*): some
+            # branches drop a flag (a hardcoded literal or omitted kwarg), so logging
+            # the CLI arg records a value the optimizer never used — the beta1 lie
+            # class. getattr(optimizer, attr, args.*) makes the config event
+            # self-truthing; the args fallback covers optimizers without the attr.
+            "cw_picard_iters": getattr(optimizer, "cw_picard_iters", args.cw_picard_iters),
             "cw_nesterov": getattr(optimizer, "cw_nesterov", args.cw_nesterov),
-            "cw_no_radius": args.cw_no_radius,
-            "cw_no_diag_curv": args.cw_no_diag_curv,
-            "cw_factor_a": args.cw_factor_a,
-            "cw_factor_b": args.cw_factor_b,
+            "cw_no_radius": getattr(optimizer, "cw_no_radius", args.cw_no_radius),
+            "cw_no_diag_curv": getattr(optimizer, "cw_no_diag_curv", args.cw_no_diag_curv),
+            "cw_factor_a": getattr(optimizer, "cw_factor_a", args.cw_factor_a),
+            "cw_factor_b": getattr(optimizer, "cw_factor_b", args.cw_factor_b),
             "anderson_m": args.anderson_m,
             "anderson_reg": args.anderson_reg,
             "soap_beta": args.soap_beta,
@@ -1418,12 +1419,17 @@ def main():
             "log_non_finite_start_step": args.log_non_finite_start_step,
             "debug_optimizer_state_start_step": args.debug_optimizer_state_start_step,
             "polar_core_remix_alpha": args.polar_core_remix_alpha,
-            "beta1": args.beta1,
-            "beta2": args.beta2,
+            # EFFECTIVE (off the built optimizer) — see the cw_* note above. beta1
+            # was hardcoded 0.9 in the curvature-whiten branches and 0.95 in
+            # muon-coupled-core while args said otherwise; precond_delta is hardcoded
+            # 1e-6 in the lin/scaled/coupled-core families; curvature_whitening is
+            # dropped by every AdamPolarProductLoRA branch except chord-tight-clean.
+            "beta1": getattr(optimizer, "beta1", args.beta1),
+            "beta2": getattr(optimizer, "beta2", args.beta2),
             "lora_init_b": args.lora_init_b,
-            "precond_delta": args.precond_delta,
-            "precond_delta_relative": args.precond_delta_relative,
-            "curvature_whitening": args.curvature_whitening,
+            "precond_delta": getattr(optimizer, "delta", args.precond_delta),
+            "precond_delta_relative": getattr(optimizer, "precond_delta_relative", args.precond_delta_relative),
+            "curvature_whitening": getattr(optimizer, "curvature_whitening", args.curvature_whitening),
             "curvature_beta": args.curvature_beta,
             "optimizer_config": optimizer_config_dict(optimizer),
             # Short-circuit-resolved effective behavior, emitted by the

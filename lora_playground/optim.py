@@ -11316,7 +11316,7 @@ def build_optimizer(
             targets,
             rank=svd_rank,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             eps=1e-6,
             weight_decay=weight_decay,
             update_proj_gap=galore_update_proj_gap,
@@ -11333,7 +11333,7 @@ def build_optimizer(
             targets,
             rank=svd_rank,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             eps=1e-8,
             weight_decay=weight_decay,
             svd_niter=svd_niter,
@@ -11344,7 +11344,7 @@ def build_optimizer(
             model,
             lr=lr,
             lora_plus_multiplier=lora_plus_multiplier,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             eps=1e-8,
             weight_decay=weight_decay,
         )
@@ -11363,7 +11363,7 @@ def build_optimizer(
         return AdamScaledLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -11374,7 +11374,7 @@ def build_optimizer(
         return AdamLinLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
             scaled_metric=scaled_metric,
@@ -11391,7 +11391,7 @@ def build_optimizer(
         return CurvatureWhitenLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             curvature_beta=curvature_beta,
@@ -11418,7 +11418,7 @@ def build_optimizer(
         return CurvatureWhitenLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             curvature_beta=curvature_beta,
@@ -11447,7 +11447,7 @@ def build_optimizer(
         return CurvatureWhitenLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             curvature_beta=curvature_beta,
@@ -11478,7 +11478,7 @@ def build_optimizer(
         return CurvatureWhitenLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             curvature_beta=curvature_beta,
@@ -11507,7 +11507,7 @@ def build_optimizer(
         return CurvatureWhitenLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             curvature_beta=curvature_beta,
@@ -11536,7 +11536,7 @@ def build_optimizer(
         return AdamLinCoreLoRA(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
             scaled_metric=scaled_metric,
@@ -11549,7 +11549,7 @@ def build_optimizer(
         return AdamScaledLoRAPost(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -11559,7 +11559,7 @@ def build_optimizer(
         return AdamLinLoRAPost(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
             scaled_metric=scaled_metric,
@@ -11571,7 +11571,7 @@ def build_optimizer(
         return AdamScaledLoRAMatrix(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
         )
@@ -11579,7 +11579,7 @@ def build_optimizer(
         return AdamLinLoRAMatrix(
             model,
             lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=1e-6,
             eps=1e-8,
             scaled_metric=scaled_metric,
@@ -11618,7 +11618,7 @@ def build_optimizer(
     if optimizer_type == "adam-polar-product-lora-coupled":
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11646,7 +11646,7 @@ def build_optimizer(
     if optimizer_type == "adam-soap-polar-product-lora":
         return AdamSOAPPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11674,7 +11674,7 @@ def build_optimizer(
     if optimizer_type == "adafactor-polar-product-lora":
         return AdaFactorPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11726,7 +11726,7 @@ def build_optimizer(
     if optimizer_type == "adam-polar-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11755,7 +11755,7 @@ def build_optimizer(
         # on ΔW rather than a Frobenius-rate scale).
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11788,7 +11788,7 @@ def build_optimizer(
         # Same ‖ΔW‖_op ≤ lr guarantee, with no conservative substitution.
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11822,7 +11822,7 @@ def build_optimizer(
         # at k≥2 only; bit-identical at k=1 up to a <1.1% ρ-formula gap.
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11878,7 +11878,7 @@ def build_optimizer(
         # vanish at dA⁽⁰⁾=dB⁽⁰⁾=0); diverges at k≥2.
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11916,7 +11916,7 @@ def build_optimizer(
         # without ρ.
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11955,7 +11955,7 @@ def build_optimizer(
         # that J ≠ ΔW but the default iter still optimizes J).
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -11990,7 +11990,7 @@ def build_optimizer(
         # accuracy question is moot.
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12027,7 +12027,7 @@ def build_optimizer(
         # per-step improvement vs chord_tight at 2k canonical horizon.
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12061,7 +12061,7 @@ def build_optimizer(
         # would make the flag a no-op.
         return AdamPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12093,7 +12093,7 @@ def build_optimizer(
         # whether spectrum-preservation helps when cross-coupling is NOT
         # absorbed by a gauge constraint.
         return AdamPolarProductLoRA(
-            model, lr=lr, betas=(0.9, 0.999), delta=precond_delta, eps=1e-8,
+            model, lr=lr, betas=(beta1, beta2), delta=precond_delta, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -12112,7 +12112,7 @@ def build_optimizer(
         )
     if optimizer_type == "adam-clip-product-lora-coupled":
         return AdamPolarProductLoRA(
-            model, lr=lr, betas=(0.9, 0.999), delta=precond_delta, eps=1e-8,
+            model, lr=lr, betas=(beta1, beta2), delta=precond_delta, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -12132,7 +12132,7 @@ def build_optimizer(
         )
     if optimizer_type == "adam-clip-product-lora-coupled-endrms":
         return AdamPolarProductLoRA(
-            model, lr=lr, betas=(0.9, 0.999), delta=precond_delta, eps=1e-8,
+            model, lr=lr, betas=(beta1, beta2), delta=precond_delta, eps=1e-8,
             ns_steps=muon_ns_steps,
             lora_plus_multiplier=lora_plus_multiplier,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -12152,7 +12152,7 @@ def build_optimizer(
     if optimizer_type == "adam-polar-product-lora-gauge":
         return AdamPolarProductLoRAGauge(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12167,7 +12167,7 @@ def build_optimizer(
     if optimizer_type == "adam-polar-product-lora-gauge-coupled":
         return AdamPolarProductLoRAGauge(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12182,7 +12182,7 @@ def build_optimizer(
     if optimizer_type == "adam-polar-product-lora-clip-gauge":
         return AdamPolarProductLoRAClipGauge(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12197,7 +12197,7 @@ def build_optimizer(
     if optimizer_type == "adam-polar-product-lora-clip-gauge-coupled":
         return AdamPolarProductLoRAClipGauge(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12268,7 +12268,7 @@ def build_optimizer(
         # Direct theoretical comparison to Picard's adam-polar-product-lora-coupled.
         return PolarCoupledCoreFactorAdamLoRA(
             model, lr=lr, delta=1e-6,
-            betas=(0.9, 0.999), eps=1e-8,
+            betas=(beta1, beta2), eps=1e-8,
             core_scale="squared_penalty", gauge="min-frobenius",
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
             diagnostics_every=optim_diagnostics_every,
@@ -12276,7 +12276,7 @@ def build_optimizer(
     if optimizer_type == "polar-coupled-core-factor-adam-rebalanced-lora":
         return PolarCoupledCoreFactorAdamLoRA(
             model, lr=lr, delta=1e-6,
-            betas=(0.9, 0.999), eps=1e-8,
+            betas=(beta1, beta2), eps=1e-8,
             core_scale="squared_penalty", gauge="min-frobenius",
             state_rebalance=True, rebalance_every=1,
             log_basic_diagnostics=log_basic_diagnostics, log_heavy_diagnostics=log_heavy_diagnostics,
@@ -12351,7 +12351,7 @@ def build_optimizer(
     if optimizer_type == "adamuon-polar-product-lora":
         return AdamuonPolarProductLoRA(
             model, lr=lr,
-            betas=(0.9, 0.999),
+            betas=(beta1, beta2),
             delta=precond_delta,
             eps=1e-8,
             ns_steps=muon_ns_steps,
@@ -12410,12 +12410,12 @@ def build_optimizer(
         )
     if optimizer_type == "adam-muon-lora":
         return AdamMuonLoRA(
-            model, lr=lr, ns_steps=muon_ns_steps,
+            model, lr=lr, betas=(beta1, beta2), ns_steps=muon_ns_steps,
             lr_b_multiplier=lora_plus_multiplier,
         )
     if optimizer_type == "adam-product-muon-lora":
         return AdamProductMuonLoRA(
-            model, lr=lr, ns_steps=muon_ns_steps,
+            model, lr=lr, betas=(beta1, beta2), ns_steps=muon_ns_steps,
             alpha=muon_alpha, rank=muon_rank,
             lr_b_multiplier=lora_plus_multiplier,
         )
@@ -12428,7 +12428,7 @@ def build_optimizer(
         )
     if optimizer_type == "muon-adam-lora":
         return MuonAdamLoRA(
-            model, lr=lr, ns_steps=muon_ns_steps,
+            model, lr=lr, betas=(beta1, beta2), ns_steps=muon_ns_steps,
             lr_b_multiplier=lora_plus_multiplier,
         )
     if optimizer_type == "diag-scaled-lora":
