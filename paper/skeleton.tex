@@ -317,7 +317,7 @@ so the learning rate transfers across rank.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item Extra memory $O(d_{\mathrm{in}}+d_{\mathrm{out}}+r^2)$: the two diagonals plus the two $r\times r$ curvature Grams $C_A,C_B$; eigh-free, so no eigenbasis state and no $O(d_{\mathrm{in}}d_{\mathrm{out}})$ dense state.
   \item Extra compute per step $O\!\big((d_{\mathrm{in}}+d_{\mathrm{out}})\,r^2\big)$: one full polar per factor \emph{and} one small-side inverse-sqrt $C^{-1/2}$ per factor --- both PolarExpress \cite{polarexpress} in Gram--Newton--Schulz form \cite{gram_ns} with shared coefficients, eigh-free and computed fresh every step (no eigenbasis refresh; the inverse-sqrt is $O(r^3)$ on the $r\times r$ Gram, dominated by the $O((d_{\mathrm{in}}{+}d_{\mathrm{out}})r^2)$ polar at $r\!\ll\!d$).
-  \item Measured wall overhead $1.01$--$1.06\times$ AdamW at production batch (\Cref{sec:exp-walltime}).
+  \item Measured wall overhead $1.01$--$1.05\times$ AdamW at production batch (\Cref{sec:exp-walltime}); per-operation breakdown in \Cref{app:walltime}.
 \end{itemize}
 
 % ===========================================================================
@@ -354,20 +354,24 @@ so the learning rate transfers across rank.
 % MAIN POINT (author's): a step-count speedup only matters if it survives in
 % wall-clock. The optimizer.step is a fixed cost (batch-independent), so its share
 % shrinks as batch grows -> the overhead amortizes. Numbers below are MEASURED
-% (Blackwell, OLMo-2-1B, all-linear, seq=2048, full polar PE=8 vs AdamW) -- these
-% are final, not placeholders.
+% (Blackwell, OLMo-2-1B, all-linear, seq=2048, PE=8, gram_ns inverse-sqrt vs AdamW;
+% compiled fwd/bwd) -- these are final, not placeholders. Per-op decomposition in
+% \Cref{app:walltime}.
 \begin{table}[h]\centering\small
 \begin{tabular}{lccc}
 \toprule
 per-step wall $/$ AdamW & global batch 4 & 16 (production) & 64 \\
 \midrule
-$r=64$  & $1.12\times$ & $1.03\times$ & $1.01\times$ \\
-$r=256$ & $1.21\times$ & $1.06\times$ & $1.01\times$ \\
+$r=64$  & $1.13\times$ & $1.03\times$ & $1.01\times$ \\
+$r=256$ & $1.21\times$ & $1.05\times$ & $1.01\times$ \\
 \bottomrule
 \end{tabular}
-\caption{Measured per-step wall overhead of \methodname{} (full polar) over AdamW;
-8B/$r{=}256\approx 1.04\times$ at production batch. opt.step is fixed, so overhead
-amortizes with batch.}
+\caption{Measured per-step wall overhead of \methodname{} over AdamW (Blackwell,
+OLMo-2-1B; $\smax$ floor at 8 power-iters, \texttt{gram\_ns} inverse-sqrt);
+8B/$r{=}256\approx 1.04\times$ at production batch. The fixed-cost
+\texttt{optimizer.step} ($\approx123$\,ms at $r{=}256$, $\approx59$\,ms at $r{=}64$)
+amortizes against the batch-scaling forward/backward; its per-operation makeup is
+\Cref{app:walltime}.}
 \end{table}
 % TODO author: wall-clock speedup = (step speedup) / (per-step ratio); only the tiny
 % global-batch-4 regime, which we do not run, costs >10%.
@@ -503,6 +507,44 @@ The normalization and the floor each follow from the step's structure.
   \item \emph{Floor by $\delta$.} On that spectrum $\delta$ is one conditioning knob: it caps the metric's condition number at ${\sim}1/\delta$, so a near-null curvature direction cannot amplify the step without bound.
   \item \emph{Warmup.} A still-zero factor ($\lambda_{\max}=0$) maps to $I$, so steps before the EMAs warm up are plain momentum.
 \end{itemize}
+
+\section{Per-operation wall-clock decomposition}
+\label{app:walltime}
+\Cref{tab:walltime-ops} opens up the fixed \texttt{optimizer.step} of
+\Cref{sec:exp-walltime} with CUDA-event timers on each stage of \Cref{alg:ours}
+(Blackwell, OLMo-2-1B, all-linear $r{=}256$: $112$ pairs in three shape groups,
+$\delta{=}10^{-4}$, refresh $10$, fp32 spectral math, compiled). The step is
+$\approx123$\,ms ($\approx59$\,ms at $r{=}64$); AdamW's is $\approx11$\,ms.
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrr}
+\toprule
+operation & ms & \% of \texttt{step} \\
+\midrule
+matrix-sign $\polar(\cdot)$ (PolarExpress PE=8, 2 factors)       & 46.1 & 37 \\
+operator norm $\smax$ ($4$ evaluations, App.~\ref{app:smax})     & 30.8 & 25 \\
+inverse-sqrt $C^{-1/2}$ (Gram NS, 2 factors)                     & 14.0 & 11 \\
+momentum bias-correction $+$ damping $+$ apply                   & 12.3 & 10 \\
+whiten $+$ unwhiten ($C^{-1/2}\!\cdot\!D^{-1/2}$ applies)        &  6.9 &  5 \\
+gather (stack $112$ pairs into shape groups $+$ EMA)            &  6.7 &  5 \\
+diagonal curvature EMA ($D_{\mathrm{in}},D_{\mathrm{out}}$)      &  4.5 &  4 \\
+curvature Gram $C_A,C_B$ recompute                               &  4.2 &  3 \\
+\bottomrule
+\end{tabular}
+\caption{Per-operation makeup of \texttt{optimizer.step} (Blackwell, OLMo-2-1B,
+$r{=}256$). The spectral block --- one matrix-sign and the operator-norm radius/rescale
+--- is $62\%$ of the step; the curvature-metric block (inverse-sqrt, diagonal EMA,
+$r\times r$ Grams) is $18\%$.}
+\label{tab:walltime-ops}
+\end{table}
+
+One $\smax$ and one $C^{-1/2}$ cost the same ($\approx7$\,ms; both 8-iteration spectral
+iterations on the $r$-dimension); $\smax$'s larger total is its call count --- four
+(radius $\smax(A),\smax(B)$; rescale $\smax(W_A),\smax(W_B)$) against two inverse-sqrts.
+The $8$ iterations (\Cref{alg:smax}) are for safety: a $3$-iteration estimate
+under-estimates $\smax$ on the flat polar spectrum and diverges. Since $C^{-1/2}$ is
+only $11\%$, the eigh-vs.-Gram-NS choice moves $<\!0.5\%$ end-to-end ($1.054\times$
+vs.\ $1.058\times$ at $r{=}256$); the $62\%$ spectral block sets the floor.
 
 \printbibliography
 \end{document}
