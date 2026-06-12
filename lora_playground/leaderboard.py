@@ -4,10 +4,12 @@ For optimizer comparison we express a method's performance as the **fraction
 of the training horizon** it needs to reach the best AdamW baseline's final
 eval loss:
 
-    perf = (first step where eval_loss <= L*_adamw) / horizon
+    perf = (step where eval_loss first crosses L*_adamw) / horizon
 
 where ``L*_adamw`` is the lowest *final* eval loss over the AdamW lr sweep at
-the same (model, dataset, rank). 1.0 means "needed AdamW's whole run to match
+the same (model, dataset, rank). The crossing step is linearly interpolated
+between the bracketing evals (see ``reach_fraction``) so the metric does not
+inherit the eval grid's discretization. 1.0 means "needed AdamW's whole run to match
 AdamW's final loss"; 0.5 means "reached it in half the steps"; NaN means the
 method never reached it within the horizon. Lower is better.
 
@@ -54,14 +56,29 @@ def is_final(last_step, horizon: int,
 def reach_fraction(history: list[dict], target: float, horizon: int) -> float:
     """Fraction of ``horizon`` at which ``eval_loss`` first drops to ``target``.
 
+    The crossing is linearly interpolated between the last eval above the
+    target and the first eval at-or-below it. Reading the crossing off the
+    eval grid instead would always round it *up* to the next eval step,
+    understating speedups by up to one grid cell (e.g. a true crossing at
+    step 7319 on a 250-step grid reads as 7500 → 1.20× instead of 1.23×).
+    When the very first eval is already at-or-below the target there is no
+    bracketing point, so that eval's step is used as-is.
+
     Returns NaN if the target is never reached (or ``target`` is NaN).
     """
     if target is None or math.isnan(target):
         return math.nan
+    prev_step = prev_loss = None
     for ev in sorted(history, key=lambda e: e.get("step", 0)):
         loss = ev.get("eval_loss")
-        if loss is not None and loss <= target:
-            return ev["step"] / horizon
+        if loss is None or not math.isfinite(loss):
+            continue
+        if loss <= target:
+            if prev_loss is None:
+                return ev["step"] / horizon
+            frac = (prev_loss - target) / (prev_loss - loss)
+            return (prev_step + frac * (ev["step"] - prev_step)) / horizon
+        prev_step, prev_loss = ev["step"], loss
     return math.nan
 
 

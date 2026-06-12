@@ -11,12 +11,25 @@ def _hist(steps_losses):
     return [{"step": s, "eval_loss": l} for s, l in steps_losses]
 
 
-def test_reach_fraction_basic():
+def test_reach_fraction_exact_hit():
     h = _hist([(100, 1.0), (200, 0.5), (300, 0.4)])
-    # target 0.5 first met at step 200 → 200/400
+    # eval lands exactly on the target → interpolation degenerates to that step
     assert reach_fraction(h, 0.5, 400) == 200 / 400
-    # target 0.45 first met at step 300
-    assert reach_fraction(h, 0.45, 400) == 300 / 400
+    assert reach_fraction(h, 0.4, 400) == 300 / 400
+
+
+def test_reach_fraction_interpolates_between_evals():
+    h = _hist([(100, 1.0), (200, 0.5), (300, 0.4)])
+    # target 0.45 is crossed halfway between steps 200 (0.5) and 300 (0.4)
+    assert math.isclose(reach_fraction(h, 0.45, 400), 250 / 400)
+    # target 0.475 crossed a quarter of the way: step 225
+    assert math.isclose(reach_fraction(h, 0.475, 400), 225 / 400)
+
+
+def test_reach_fraction_first_eval_already_below():
+    h = _hist([(100, 0.3), (200, 0.2)])
+    # nothing to bracket against → first eval's step as-is
+    assert reach_fraction(h, 0.5, 400) == 100 / 400
 
 
 def test_reach_fraction_never():
@@ -28,6 +41,12 @@ def test_reach_fraction_never():
 def test_reach_fraction_unsorted_input():
     h = _hist([(300, 0.4), (100, 1.0), (200, 0.5)])
     assert reach_fraction(h, 0.5, 400) == 200 / 400
+
+
+def test_reach_fraction_skips_nonfinite_evals():
+    h = _hist([(100, 1.0), (200, float("nan")), (300, 0.4)])
+    # NaN eval is ignored; crossing interpolates between steps 100 and 300
+    assert math.isclose(reach_fraction(h, 0.7, 400), 200 / 400)
 
 
 def _cfg(opt, lr, **extra):

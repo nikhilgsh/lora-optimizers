@@ -137,7 +137,10 @@ def render_doc() -> str:
         "AdamW's training horizon a method saves to reach the best AdamW "
         "baseline's *final* eval loss at the same (model, dataset, rank) — i.e. "
         "`horizon / (steps the method needs)`, the reciprocal of the "
-        "fraction-of-horizon. `1.0×` ⇒ no speedup (needs AdamW's whole run to "
+        "fraction-of-horizon. The crossing step is linearly interpolated "
+        "between the bracketing evals (`leaderboard.reach_fraction`), so the "
+        "metric does not round the crossing up to the next point of the "
+        "250-step eval grid. `1.0×` ⇒ no speedup (needs AdamW's whole run to "
         "match its final loss); `2.0×` ⇒ reaches it in half the steps; `—` ⇒ "
         "never reached it within the horizon.",
         "",
