@@ -1,6 +1,8 @@
 {
   "lr": [
-    "1e-3"
+    "3e-4",
+    "1e-3",
+    "3e-3"
   ],
   "optimizer": [
     "kl-diag-polar-lora"
