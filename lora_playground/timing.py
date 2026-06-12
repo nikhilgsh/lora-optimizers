@@ -57,6 +57,10 @@ def optimizer_family(optimizer: Optional[str]) -> str:
     o = (optimizer or "").lower()
     if "polar-product" in o:
         return "polar-product"
+    if "imuon" in o:
+        # iMuon's vendored per-pair QR step costs ~2x the batched in-house muon
+        # families — never share a wall-budget key with them.
+        return "imuon"
     if "adamuon" in o or "ada-muon" in o:
         return "adamuon"
     if "muon" in o:
