@@ -14,6 +14,7 @@ model=${4:-allenai/OLMo-2-0425-1B}
 data_dir=${5:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${6:-256}
 
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/inductor_${USER:-u}_$$}"
 compile_args=()
 [ "${COMPILE:-1}" = "1" ] && compile_args=(--compile)
 
