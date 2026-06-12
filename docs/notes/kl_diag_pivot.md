@@ -45,6 +45,6 @@ the QR eigenbasis (`eigh`) and the coupled-Iannazzo NS (`spd_inv_sqrt_higham_bat
 ## 4. What this changes
 - Code/wrapper/bench defaults → kl-diag / β=0.9 / gram_ns (commit "Pivot protagonist defaults…").
 - Docs: `paper/{PLAN.md,code_map.md,e1_coverage_fill.md,HANDOFF.md,skeleton.tex}` flipped.
-- Notebook: `paper/paper_plots.ipynb` deprecated → `paper/kl_diag_paper_plots.ipynb` (fresh, library-based).
+- Notebook: the old diag-Shampoo notebook is frozen as `paper/paper_plots_diag_legacy.ipynb`; the current kl-diag notebook keeps the canonical name `paper/paper_plots.ipynb` (fresh, library-based).
 - Reruns: all E1/E2 protagonist cells re-run at the locked config (gated on explicit approval).
 - Unchanged: the leaderboard notebooks (`notebooks/leaderboard/*`) auto-filter on labels, no pivot needed.
