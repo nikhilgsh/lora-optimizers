@@ -237,14 +237,14 @@ $\|B\dot A\|_2=\eta$, independent of the factor norms --- so no runtime rescale 
   \|X\|_{P,Q}=\|P^{1/2}XQ^{1/2}\|_2,
   \label{eq:ours-metric}
 \end{equation}
-where $P,Q\succ0$ are two diagonal curvatures --- per-coordinate gradient energy on the output and input space (EMAs, decay $\beta_2$),
+where $P,Q\succ0$ are two diagonal curvatures (EMAs, decay $\beta_2$) --- the diagonals of the \emph{coupled} KL-Shampoo Kronecker factors \cite{klshampoo}, each per-coordinate gradient energy measured \emph{through the partner factor's inverse curvature},
 \begin{equation*}
-  P_{ii}=\mathrm{EMA}\,\big\|(G_B)_{i,:}\big\|_2^2,\qquad
-  Q_{jj}=\mathrm{EMA}\,\big\|(G_A)_{:,j}\big\|_2^2,
+  P_{ii}=\mathrm{EMA}\,\tfrac1r\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top,\qquad
+  Q_{jj}=\mathrm{EMA}\,\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j},\qquad C_A=B^\top PB,\ C_B=AQA^\top,
 \end{equation*}
-and $\|\cdot\|_{P,Q}$ is the operator norm this inner product induces.
+and $\|\cdot\|_{P,Q}$ is the operator norm this inner product induces. Setting the partner curvature to $I$ recovers raw per-coordinate energy $\|(G_A)_{:,j}\|_2^2$ (diagonal Adafactor \cite{adafactor}, up to the dimension normalizer the damping absorbs); the coupling is the KL-optimal, not method-of-moments, Kronecker fit (\Cref{par:coupling}).
 
-\paragraph{What $P,Q$ are: factor-native curvature.} $P$ and $Q$ are the Adagrad/Adafactor recipe \cite{adagrad,adafactor} --- whiten by accumulated per-coordinate gradient energy --- applied to the \emph{factors} rather than to $W$. Each factor is whitened by its own gradient: $Q$ is the per-input-coordinate energy of $G_A$, $P$ the per-output-coordinate energy of $G_B$. The product structure $W=BA$ then determines what that means in weight space. Writing $G$ for the (dense) weight gradient and $g_i$ for its $i$-th row, the chain rule $G_B=GA^\top$ gives
+\paragraph{What $P,Q$ are: factor-native curvature.} Each diagonal builds on the Adagrad/Adafactor recipe \cite{adagrad,adafactor} --- accumulated per-coordinate gradient energy --- applied to the \emph{factors} rather than to $W$ (the partner whitening that couples the two is the next paragraph). Each factor is whitened by its own gradient: $Q$ is the per-input-coordinate energy of $G_A$, $P$ the per-output-coordinate energy of $G_B$. The product structure $W=BA$ then determines what that means in weight space. Writing $G$ for the (dense) weight gradient and $g_i$ for its $i$-th row, the chain rule $G_B=GA^\top$ gives
 \begin{equation}
   P_{ii}=\big\|(G_B)_{i,:}\big\|_2^2=\big\|g_i A^\top\big\|_2^2=g_i\,(A^\top\! A)\,g_i^\top,
   \qquad
@@ -252,6 +252,16 @@ and $\|\cdot\|_{P,Q}$ is the operator norm this inner product induces.
   \label{eq:ours-bottleneck}
 \end{equation}
 the weight-gradient energy of row $i$ \emph{measured through} $A^\top\! A$, i.e.\ restricted to the $r$-dimensional input subspace $A$ spans. This is the right object, not an artifact: a change $\delta B$ moves the weight as $\delta B\,A$, whose rows lie in $\operatorname{row}(A)$, so the only gradient energy $B$ can act on is the part inside $\operatorname{row}(A)$; energy in unreachable directions is correctly given zero weight. The same bottleneck restricts $Q$ to $\operatorname{col}(B)$ via $BB^\top$. AdaPreLoRA \cite{adaprelora} instead forms the Adafactor diagonal Kronecker on the \emph{full} weight gradient and projects through the LoRA Jacobian; \eqref{eq:ours-bottleneck} computes the same energy natively in the reachable subspace, recovering the full-space statistic only in the dense limit $r=d$.
+
+\paragraph{Coupling: the KL-Shampoo diagonal.}
+\label{par:coupling}
+The two diagonals are not formed independently. Modeling the factor gradient as a zero-mean matrix-normal (Kronecker-factored) Gaussian, the Kronecker preconditioner $S_a\otimes S_b$ closest to its second moment in KL divergence is the \emph{maximum-likelihood} fit, whose stationarity conditions couple the factors --- each whitens the gradient by the \emph{other} factor's inverse before forming its own \cite{klshampoo}:
+\begin{equation}
+  C_A=\tfrac1{d_{\mathrm{in}}}\,\mathbb E\big[g_A\,Q^{-1}g_A^\top\big],\qquad
+  Q_{jj}=\tfrac1r\,\mathbb E\big[(g_A)_{:,j}^\top C_A^{-1}(g_A)_{:,j}\big]
+  \label{eq:ours-klcoupling}
+\end{equation}
+(mirror for $C_B,P$), with $g_A=B^\top G$. Plain Shampoo/Adafactor is the one-sided corner $C_A{=}I$ --- the method-of-moments estimate that ignores the conjugate factor and so double-counts the structure the two sides share. We run one flip-flop alternation per step as the $\beta_2$-EMA, not an inner solve: the target drifts as the factors move, so exact solution buys little. The coupling is what makes the diagonal $\delta$-robust: the uncoupled energy is contaminated by an ill-conditioned $C_A$ near the damping floor (the regime that appears at the larger model and rank), which the partner whitening removes --- our \Cref{sec:exp} ablation locks $\delta{=}10^{-4}$ on exactly this margin.
 
 \paragraph{Derivation.} Cap the product step in this inner product and maximize alignment with the gradient:
 \begin{equation}
@@ -296,12 +306,8 @@ so the learning rate transfers across rank.
 \State $M_B\gets\beta_1 M_B+(1-\beta_1)\,G_B$, \qquad $\hat M_B\gets\big(\beta_1 M_B+(1-\beta_1)G_B\big)/(1-\beta_1^{\,t})$
 \Statex \hspace{1.2em}\emph{(Nesterov lookahead is the standard Muon momentum form \cite{muon}; plain $\hat M_A\!=\!M_A/(1-\beta_1^t)$ is the non-Nesterov variant.)}
 
-\Phase{Diagonal curvature} (per-coordinate gradient energy)
-\State $Q_{jj}\gets\beta_2\,Q_{jj}+(1-\beta_2)\,\|(G_A)_{:,j}\|_2^2$ \Comment{input side}
-\State $P_{ii}\gets\beta_2\,P_{ii}+(1-\beta_2)\,\|(G_B)_{i,:}\|_2^2$ \Comment{output side}
-
 \Phase{Whiten, polar, unwhiten}
-\State $C_A\gets B^\top P B$, \qquad $C_B\gets A Q A^\top$ \Comment{small-side curvature, $r\times r$}
+\State $C_A\gets B^\top P B$, \qquad $C_B\gets A Q A^\top$ \Comment{small-side curvature from the running diagonals, $r\times r$}
 \State $W_A\gets C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,\hat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$
 \State $W_B\gets P^{-1/2}\,\polar\!\big(P^{-1/2}\,\hat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
 
@@ -309,6 +315,10 @@ so the learning rate transfers across rank.
 \State $\rho\gets\eta/(\smax(A)+\smax(B))$ \Comment{\Cref{eq:ours-prodcap}}
 \State $\dot A\gets-\rho\,W_A/\smax(W_A)$, \qquad $A\gets A+\dot A$
 \State $\dot B\gets-\rho\,W_B/\smax(W_B)$, \qquad $B\gets B+\dot B$
+
+\Phase{Coupled curvature update} (KL/matrix-normal flip-flop \cite{klshampoo}; one alternation per step)
+\State $Q_{jj}\gets\beta_2\,Q_{jj}+\tfrac{1-\beta_2}{r}\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}$ \Comment{input side, whitened by the $B$-curvature}
+\State $P_{ii}\gets\beta_2\,P_{ii}+\tfrac{1-\beta_2}{r}\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top$ \Comment{output side, whitened by the $A$-curvature}
 \end{algorithmic}
 \end{algorithm}
 \noindent Every $\smax(\cdot)$ is the guarded estimate of \Cref{alg:smax}, and every inverse-sqrt is relative-damped (\Cref{app:damping}).
@@ -402,7 +412,7 @@ amortizes against the batch-scaling forward/backward; its per-operation makeup i
 %     (QuacK \cite{quack}, concurrent) -- closest external precedent to our
 %     operator-norm radius / lr-transfer (C1); they pick Frobenius, we pick spectral.
 
-\paragraph{Curvature-whitened spectral updates.} The combination at the core of \methodname{} --- measure the spectral (Muon) cap in a Shampoo-curvature metric rather than the Euclidean one --- has a dense, full-rank precedent in pre-training. SOAP-Muon \cite{soapmuon} frames this as \emph{iterative whitening}: one-sided SOAP whitens the gradient on the small side and Muon orthogonalizes the other, the two preconditioners converging to a two-sided equilibrium. Mousse \cite{mousse} makes the geometry explicit and is the closest precedent to our update: with Shampoo factors $L=\mathrm{EMA}(GG^\top)$, $R=\mathrm{EMA}(G^\top G)$ and whiteners $P=L^{1/4},Q=R^{1/4}$, it solves $\min_{\Delta W}\operatorname{tr}(G^\top\Delta W)$ s.t.\ $\|P\,\Delta W\,Q\|_2\le1$, giving $\Delta W=-L^{-1/4}\,\mathrm{msign}(L^{-1/4}GR^{-1/4})R^{-1/4}$ --- exactly the whiten/polar/unwhiten sandwich of \eqref{eq:ours-lmo}, with the same operator-norm-in-curvature-metric LMO. \methodname{} differs on three axes that matter for adapter fine-tuning: (i) it acts in the LoRA \emph{factor} space, where the curvature reduces to the $r\times r$ cores $C_A=B^\top PB$, $C_B=AQA^\top$ and the bottleneck restricts each statistic to the reachable subspace \eqref{eq:ours-bottleneck}, rather than the dense $d\times d$ Kronecker factors of Mousse/SOAP-Muon; (ii) its curvatures $P,Q$ are \emph{diagonal} (Adafactor-form \cite{adafactor}), not full Shampoo eigenbases --- and our ablations show the dense flavor does not beat the diagonal at $k{=}1$; (iii) it is the LoRA-native member of this family, where the dense methods target full-parameter pre-training.
+\paragraph{Curvature-whitened spectral updates.} The combination at the core of \methodname{} --- measure the spectral (Muon) cap in a Shampoo-curvature metric rather than the Euclidean one --- has a dense, full-rank precedent in pre-training. SOAP-Muon \cite{soapmuon} frames this as \emph{iterative whitening}: one-sided SOAP whitens the gradient on the small side and Muon orthogonalizes the other, the two preconditioners converging to a two-sided equilibrium. Mousse \cite{mousse} makes the geometry explicit and is the closest precedent to our update: with Shampoo factors $L=\mathrm{EMA}(GG^\top)$, $R=\mathrm{EMA}(G^\top G)$ and whiteners $P=L^{1/4},Q=R^{1/4}$, it solves $\min_{\Delta W}\operatorname{tr}(G^\top\Delta W)$ s.t.\ $\|P\,\Delta W\,Q\|_2\le1$, giving $\Delta W=-L^{-1/4}\,\mathrm{msign}(L^{-1/4}GR^{-1/4})R^{-1/4}$ --- exactly the whiten/polar/unwhiten sandwich of \eqref{eq:ours-lmo}, with the same operator-norm-in-curvature-metric LMO. \methodname{} differs on three axes that matter for adapter fine-tuning: (i) it acts in the LoRA \emph{factor} space, where the curvature reduces to the $r\times r$ cores $C_A=B^\top PB$, $C_B=AQA^\top$ and the bottleneck restricts each statistic to the reachable subspace \eqref{eq:ours-bottleneck}, rather than the dense $d\times d$ Kronecker factors of Mousse/SOAP-Muon; (ii) its curvatures $P,Q$ are \emph{diagonal} (Adafactor-form \cite{adafactor}) but \emph{coupled} --- the KL-Shampoo maximum-likelihood Kronecker fit \cite{klshampoo}, not raw energy --- and not full Shampoo eigenbases; our ablations show the dense flavor does not beat the coupled diagonal at $k{=}1$; (iii) it is the LoRA-native member of this family, where the dense methods target full-parameter pre-training.
 
 \paragraph{Norm-scaled per-factor learning rates.} QuacK \cite{quack} (concurrent) bounds the change of the attention-logit product $W_QW_K^\top$ by scaling each factor's rate by the partner's inverse norm, $\eta_Q\propto\|W_K\|^{-1}$, $\eta_K\propto\|W_Q\|^{-1}$ --- the learning-rate analogue of our operator-norm radius $\rho=\eta/(\smax(A)+\smax(B))$ on $BA$ \eqref{eq:ours-prodcap}. It differs in object (attention logits, pre-training vs.\ adapter, fine-tuning), norm (Frobenius --- they find spectral adds little; ours is operator, which buys the rank transfer of \Cref{sec:exp-taskdep}), and mechanism (scalar per-tensor lr only, no polar).
 
