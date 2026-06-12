@@ -3881,16 +3881,19 @@ class MuonLoRA(Optimizer):
     recovers vanilla Muon.
     """
     def __init__(self, model, lr=3e-4, beta=0.95, ns_steps=5, adapter_name=None,
-                 lr_b_multiplier=1.0):
+                 lr_b_multiplier=1.0, polar_method="ns"):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
+        if polar_method not in ("ns", "polar_express"):
+            raise ValueError(f"MuonLoRA polar_method must be 'ns' or 'polar_express', got {polar_method!r}")
         params = [p for A, B in pairs for p in (A, B)]
         super().__init__([{"params": params, "lr": lr}], {})
         self.pairs = pairs
         self.beta = beta
         self.ns_steps = ns_steps
         self.lr_b_multiplier = lr_b_multiplier
+        self.polar_method = polar_method
         self.pair_state = {
             i: {
                 "m_A": torch.zeros_like(A, dtype=torch.float32),
@@ -3914,8 +3917,9 @@ class MuonLoRA(Optimizer):
             state["m_A"].mul_(self.beta).add_(gA, alpha=1 - self.beta)
             state["m_B"].mul_(self.beta).add_(gB, alpha=1 - self.beta)
             if self.ns_steps > 0:
-                dA = _newton_schulz(state["m_A"], self.ns_steps)
-                dB = _newton_schulz(state["m_B"], self.ns_steps)
+                ortho = _polar_express if self.polar_method == "polar_express" else _newton_schulz
+                dA = ortho(state["m_A"], self.ns_steps)
+                dB = ortho(state["m_B"], self.ns_steps)
             else:
                 dA = state["m_A"]
                 dB = state["m_B"]
