@@ -83,10 +83,13 @@ GRAM_PRECOND_OPTIMIZERS = [
     "kl-shampoo-lora",
     "kl-shampoo-polar-lora",
     # diag-Shampoo (non-KL ablation: textbook grad-energy diagonal metric, no
-    # coupled fixed point). diag-shampoo-polar-lora is the paper protagonist;
-    # same precond_refresh_every gate (production uses 10).
+    # coupled fixed point). The UNCOUPLED arm, NOT the protagonist.
     "diag-shampoo-lora",
     "diag-shampoo-polar-lora",
+    # KL-diag (coupled diagonal KL fixed point). kl-diag-polar-lora is the PAPER
+    # PROTAGONIST (paper_plots.ipynb PROTO: gram_ns, PE=8, K=10); same gate.
+    "kl-diag-lora",
+    "kl-diag-polar-lora",
 ]
 # Coupled-core solver variants (no precond_refresh; per-step QR + small SVDs).
 # Included in default bench list at K=1 only.
@@ -117,10 +120,11 @@ def parse_args():
                         help="K values to sweep. Only applied to Gram-preconditioned optimizers; "
                              "AdamW etc. are timed once at K=1.")
     parser.add_argument("--precond_method", nargs="+", default=["eigh"],
-                        choices=["eigh", "higham"],
-                        help="precond_method values to sweep over. Only applies to "
-                             "adam-polar-product-lora and adamuon-polar-product-lora. Pass "
-                             "'eigh higham' to compare both.")
+                        choices=["eigh", "higham", "gram_ns"],
+                        help="precond_method values to sweep over. Applies to the "
+                             "polar-product family AND the curvature-whiten / kl-shampoo / "
+                             "kl-diag / diag-shampoo family. The paper protagonist "
+                             "(kl-diag-polar-lora) runs 'gram_ns' (eigh-free).")
     parser.add_argument("--higham_iters", type=int, default=5,
                         help="Newton-Schulz iterations when precond_method=higham.")
     parser.add_argument("--higham_compute_dtype", type=str, default="fp32",
@@ -306,6 +310,15 @@ def main():
         "adam-polar-product-lora-coupled-spectral-chord-tight-clean",
         "adamuon-polar-product-lora",
     }
+    # Optimizers that accept a precond_method (inverse-sqrt backend). The
+    # curvature-whiten / kl-shampoo / kl-diag / diag-shampoo family all do;
+    # the paper protagonist (kl-diag-polar-lora) runs precond_method=gram_ns.
+    PRECOND_METHOD_OPTIMIZERS = POLAR_OPTIMIZERS | {
+        "curvature-whiten-lora", "curvature-whiten-polar-lora",
+        "kl-shampoo-lora", "kl-shampoo-polar-lora",
+        "kl-diag-lora", "kl-diag-polar-lora",
+        "diag-shampoo-lora", "diag-shampoo-polar-lora",
+    }
     if is_main():
         print(f"# {'optimizer':<32} {'method':>7} {'K':>4} {'fwd_ms':>8} {'bwd_ms':>8} "
               f"{'opt_ms':>8} {'zero_ms':>8} {'total_ms':>9} {'×AdamW':>8} "
@@ -326,7 +339,7 @@ def main():
                     print(f"# skip unknown optimizer: {opt_name}", flush=True)
                 continue
             ks = args.precond_refresh_every if opt_name in GRAM_PRECOND_OPTIMIZERS else [1]
-            methods = args.precond_method if opt_name in POLAR_OPTIMIZERS else ["eigh"]
+            methods = args.precond_method if opt_name in PRECOND_METHOD_OPTIMIZERS else ["eigh"]
             for method in methods:
                 for K in ks:
                     # Construct a fresh optimizer per cell so K-stale caches don't
