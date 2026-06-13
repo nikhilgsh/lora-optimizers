@@ -81,7 +81,7 @@ OPTIM_COLORS = {
     "product-muon-lora":           "#0d3d66",
     "adam-product-muon-lora":      "#9edae5",
     # K-FAC / per-coord / dropped families (plotted only in legacy cells)
-    "diag-scaled-lora":            "#17becf",
+    "diag-scaled-lora":            "#3a6ea8",
     "kron-grad-lora":              "#bcbd22",
     "psi-lora":                    "#7f7f7f",
     "galore-adamw":                "#a55194",

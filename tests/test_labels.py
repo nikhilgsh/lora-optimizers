@@ -73,3 +73,21 @@ def test_canonical_key_compact_form():
     # ns>=8 and polar_express both collapse to "full" in the aggregation key
     assert canonical_key(_cfg(OPT_CT, muon_ns_steps=8, polar_method="ns")) == "ct|full|k1|abs"
     assert canonical_key(_cfg(OPT_CT, polar_method="polar_express", muon_ns_steps=10)) == "ct|full|k1|abs"
+
+
+def test_pinned_labels_stable_across_label_sets():
+    # the protagonist (any "Polar-LoRA*" label) keeps one color no matter which
+    # other arms are present — this is what makes figure colors consistent
+    from lora_playground.plotting.labels import canonical_colors, PROTAGONIST_COLOR
+    sets = [
+        ["AdamW", "Polar-LoRA (kl-diag)", "iMuon"],
+        ["Polar-LoRA (kl-diag)", "w/o curvature control", "w/o magnitude control"],
+        ["AdamW", "Polar-LoRA (ours)"],
+        ["Polar-LoRA (kl-diag)"],
+    ]
+    for labels in sets:
+        colors = canonical_colors(labels)
+        proto = [l for l in labels if l.startswith("Polar-LoRA")][0]
+        assert colors[proto] == PROTAGONIST_COLOR
+        # pins never collide with palette-assigned labels in the same figure
+        assert len(set(colors.values())) == len(colors)

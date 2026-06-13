@@ -196,25 +196,55 @@ def order_labels(labels) -> list:
     return (["AdamW"] if "AdamW" in labels else []) + rest
 
 
+# Display-label pins: recurring figure labels that must keep the SAME color in
+# every figure regardless of which other labels are present (palette assignment
+# is positional, so without pins a label's color shifts with the arm set).
+# Any label starting with "Polar-LoRA" maps to the protagonist's optimizer
+# color, so panel-specific suffixes ("(kl-diag)", "(ours)") stay consistent.
+PINNED_LABEL_COLORS = {
+    "iMuon": OPTIM_COLORS["imuon-lora"],
+    "w/o curvature control": "#2a9d8f",
+    "w/o magnitude control": "#e76f51",
+    "w/o curvature+magnitude": "#8c510a",
+    "Muon (naive)": "#e377c2",
+}
+PROTAGONIST_LABEL_PREFIX = "Polar-LoRA"
+PROTAGONIST_COLOR = OPTIM_COLORS["kl-diag-polar-lora"]
+
+
+def pinned_label_color(label: str) -> str | None:
+    """Fixed color for a well-known display label, else None (palette-assigned)."""
+    if label.startswith(PROTAGONIST_LABEL_PREFIX):
+        return PROTAGONIST_COLOR
+    return PINNED_LABEL_COLORS.get(label)
+
+
 def canonical_colors(labels) -> dict:
-    """AdamW → reserved black; every other label → a distinct color kept clear
-    of black via `distinct_palette`. Deterministic given the label set."""
+    """AdamW → reserved black; pinned labels (protagonist, iMuon, E2 arms) →
+    their fixed colors; every other label → a distinct color kept clear of the
+    reserved set via `distinct_palette`. Deterministic given the label set."""
     from .colors import ColorCollisionError
     ordered = order_labels(labels)
-    non_adamw = [l for l in ordered if l != "AdamW"]
+    colors = {}
+    if "AdamW" in ordered:
+        colors["AdamW"] = OPTIM_COLORS["adamw"]
+    for l in ordered:
+        if l not in colors:
+            pin = pinned_label_color(l)
+            if pin is not None:
+                colors[l] = pin
+    rest = [l for l in ordered if l not in colors]
     palette = []
-    if non_adamw:
+    if rest:
+        reserved = ["#000000"] + sorted(set(colors.values()))
         for src in ("tab10", "tab20", "tab20b", "Set3"):
             try:
-                palette = distinct_palette(len(non_adamw), reserved=["#000000"], source=src)
+                palette = distinct_palette(len(rest), reserved=reserved, source=src)
                 break
             except ColorCollisionError:
                 continue
         else:  # exhausted sources at min_distance — relax it as a last resort
-            palette = distinct_palette(len(non_adamw), reserved=["#000000"],
+            palette = distinct_palette(len(rest), reserved=reserved,
                                        source="tab20", min_distance=0.12)
-    colors = {}
-    if "AdamW" in ordered:
-        colors["AdamW"] = OPTIM_COLORS["adamw"]
-    colors.update({l: palette[i] for i, l in enumerate(non_adamw)})
+    colors.update({l: palette[i] for i, l in enumerate(rest)})
     return colors

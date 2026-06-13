@@ -141,7 +141,9 @@ WORKLOADS: list[Workload] = [
     # ── Llama-3.2-1B ─────────────────────────────────────────────────────────
     Workload("meta-llama/Llama-3.2-1B", "opc", 64, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
     Workload("meta-llama/Llama-3.2-1B", "opc", 256, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 32, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     Workload("meta-llama/Llama-3.2-1B", "openmath", 64, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 128, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     Workload("meta-llama/Llama-3.2-1B", "openmath", 256, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     # ── Qwen2.5-1.5B ─────────────────────────────────────────────────────────
     Workload("Qwen/Qwen2.5-1.5B", "opc", 256, "Qwen2.5-1.5B", _OPC_DISPLAY, 9000, _SIGMA, True),
