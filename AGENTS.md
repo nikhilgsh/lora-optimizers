@@ -67,6 +67,41 @@ PEFT convention throughout — A: (r, d_in), B: (d_out, r), adapter output = `(a
 
 Terminology discipline: use **gauge** only for the exact LoRA reparameterization invariance / product-map kernel, e.g. transformations that leave `B @ A` unchanged or first-order factor updates in `ker(d(B @ A))`. Do not use "gauge" as a loose synonym for low-support, low-singular-value, weakly conditioned, or hard-to-interpret factor directions; name the measured quantity instead.
 
+When reasoning about LoRA factor-step scaling, do not reduce the objective to
+the product output alone. The model sees `(B + dB)(A + dA)`, but optimization
+happens in the factor coordinates: conditioning, row/column subspaces,
+factor norms, preconditioned directions, and reparameterization geometry can
+change training even when an output-feature balance metric looks good. Any
+recommendation for `c_A`/`c_B` must state which target it optimizes (factor
+update geometry, product-output balance, stability, or held-out loss) and must
+not treat one diagnostic as decisive unless it has been connected to training
+loss or a clearly stated optimizer mechanism.
+
+When asked why equal factor radii are chosen, do not merely restate the product
+operator-norm bound. State the extra design prior explicitly: equal radii are a
+no-preference / isotropic-factor-space allocation after whitening and polar
+normalization, not a theorem forced by the product map. If arguing for any
+non-equal split, name the additional sensitivity model or measurement that
+justifies preferring one factor coordinate over the other.
+
+Do not call a LoRA factor-scaling rule "best", "coherent", or "principled"
+unless the optimized objective is stated first. Separate algebraic facts
+from design axioms: whitening/polar identities are derivations; choosing an
+unweighted or weighted factor trust region is a regularizer choice that needs
+its own stated premise.
+
+When proposing static dimension-ratio shape factors for LoRA, define the
+ratio convention before naming exponents. Prefer `R_in = r / d_in` and
+`R_out = d_out / r` unless the user chooses otherwise. Write the rule as
+`c_A = R_in^a`, `c_B = R_out^b` and settle both `a` and `b`; `c_B = 1`
+means `b = 0`, not that the B-side question was answered implicitly.
+If the stated principle is MuA-style output feature learning, the
+load-bearing diagnostic is the direct branch decomposition
+`delta1 = B dA x`, `delta2 = dB A x`; isolated A-rowspace or B-expansion
+diagnostics are supporting evidence only and must not be promoted to the
+optimizer recommendation when they would worsen the measured `delta2/delta1`
+balance.
+
 Custom optimizers collect pairs via `collect_lora_pairs()` in `utils.py` and operate directly on `A.grad`/`B.grad` without going through PyTorch's standard parameter-group mechanics. They store per-pair state in `self.pair_state` (a plain dict) rather than `self.state` to avoid conflicts with `Optimizer.state`.
 
 ### Key Math Utilities (`utils.py`)
