@@ -1,5 +1,5 @@
 #!/bin/bash
-# DOUBLE-ABLATION lr-basin PILOT (1000 steps, ranking-only) = the iMuon/LoRA-Muon step:
+# DOUBLE-ABLATION lr-basin PILOT (1000 steps, ranking-only) = the LoRA-Muon step:
 # protagonist + --cw_no_diag_curv + --cw_unpinned + --lora_init_b symmetric. Bare partner-Gram
 # decoupled sandwich (true-scale roots, no pin); symmetric init REQUIRED (B=0-unstable).
 # Parameterized by model / data_dir / lora_r as trailing

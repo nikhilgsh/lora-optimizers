@@ -35,16 +35,16 @@ pillar has a dedicated ablation arm at the anchor cell:
 3. **Curvature control** — the KL-coupled diagonal. Evidence: −curvature arm (+4.8σ at
    the anchor), the 8B raw-vs-KL diagonal gap (~9σ).
 
-**The double = −curvature −pin = the iMuon/LoRA-Muon step.** `cw_unpinned` +
+**The double = −curvature −pin = the LoRA-Muon step.** `cw_unpinned` +
 `cw_no_diag_curv` + `--lora_init_b symmetric`: bare partner-Gram, no pin, no curvature = the
 decoupled sandwich (≡ LoRA-Muon Alg 1 ≡ simplified LoRA-RITE [LoRA-Muon Prop 6] ≡ iMuon
 Cor 4.1). This is the **family comparison** (figure label "LoRA-Muon step", not a pin-hybrid).
-The ablation is the incremental climb **iMuon-step → +pin → +curvature → ours**:
-iMuon-step→(−curvature arm) attributes the pin; (−curvature arm)→ours attributes curvature —
+The ablation is the incremental climb **LoRA-Muon-step → +pin → +curvature → ours**:
+LoRA-Muon-step→(−curvature arm) attributes the pin; (−curvature arm)→ours attributes curvature —
 so both controls are attributed WITHOUT a separate `−pin` cell. `−pin` (curvature on,
 `cw_unpinned`) is cheap anchor-only insurance for the interaction term; decide at writing
 time whether it earns a table row. The old `cw_no_radius` (−adaptive-radius) arm is
-**RETIRED** — it kept the pin, so it was never the iMuon step; the flag stays dormant in code,
+**RETIRED** — it kept the pin, so it was never the LoRA-Muon step; the flag stays dormant in code,
 redirect-commented to `cw_unpinned`.
 
 **Anchor cells.** PRIMARY hero = **Llama-3.2-1B openmath r256** (famous model; carries the
@@ -160,7 +160,7 @@ Citation discipline (from the related-work agents):
   partner-whitened invariant LoRA update (Oct 2024, predates iMuon by ${\sim}1.5$y) and the
   originator of transformation/gauge invariance (their Def 1; Thm 1: invariance ⟹ efficient
   feature learning). Full method = one-sided matrix-Adam in the invariant gauge (transported
-  2nd moments + escaped mass); its memoryless core ≡ our iMuon-step arm (the double; lineage
+  2nd moments + escaped mass); its memoryless core ≡ our LoRA-Muon-step arm (the double; lineage
   RITE → iMuon → LoRA-Muon). Real-scale wins (Gemma 2B/7B, r=16, beats Adam/LoRA+/Shampoo/Lamb),
   but no rank axis, no radius, no explicit polar cap. NOT run by us — deferred baseline
   (Limitations item 5). $B{=}0$-safe via pseudo-inverse ($R_B^\dagger{=}0$ ⟹ $\delta A{=}0$).
@@ -183,7 +183,7 @@ Scope: arXiv preprint. **Single-seed** (multi-seed held off as too expensive; σ
 0.0017 is the noise unit — report every Δ in σ-units, reserve "matches/within noise" for
 <1σ). Hardware: Blackwell RTX-PRO-6000 (canonical), `--reservation=rocky9`.
 
-### Cell set — minimal but diverse (8 protagonist cells, 1 already in hand)
+### Cell set — minimal but diverse (10 protagonist cells, r64/128/256 in hand)
 
 Design: **code = breadth (across model families + scale), math = depth (one rank ladder).**
 Each cell earns its place; this is the whole grid.
@@ -192,9 +192,13 @@ Each cell earns its place; this is the whole grid.
 |---|---|---|---|
 | **Code @ r256** (canonical rank) | OLMo-2-1B / Qwen2.5-1.5B / Llama-3.2-1B / **Llama-3-8B** — opc r256 | "we win" × 3 model families + 1 scale point | OLMo ✅ (7 lr PE8); 3 to run |
 | **OOD pair** (one rank) | Qwen2.5-1.5B opc r256 ↔ **Qwen2.5-1.5B bengali r256** | task-dependence C4 (only dataset changes) | bengali to run |
-| **Rank ladder** (math, popular model) | **Llama-3.2-1B openmath r64 / r128 / r256** | wins across r (C1) + rank coverage (C4) | all 3 to run |
+| **Rank ladder** (math, popular model) | **Llama-3.2-1B openmath r16 / r32 / r64 / r128 / r256** | wins across r (C1) + rank coverage (C4); r16/r32 cover the common low-rank regime | r64/128/256 ✅; **r16/r32 to run** |
 
-- **r=256 is the canonical rank**; the Llama-math ladder is the only place rank varies.
+- **r=256 is the canonical rank** (ablation home); the Llama-math ladder is the only place rank varies.
+- The ladder spans **r16→r256** (extended 2026-06-12 to r16/r32 — the common LoRA regime). Protagonist
+  best lr is **0.01 interior at r64/128/256** (loss 0.385→0.374→0.364 monotone in rank); the
+  {3e-3,1e-2,3e-2} grid brackets the low-rank end. Ladder = protagonist vs AdamW only (the
+  ablations stay at the r256 anchor).
 - Llama carries the across-rank coverage (popular model, has r64/r256 registry cells —
   Qwen has no r64 cell so can't ladder cheaply); Qwen carries the OOD headline; OLMo is the
   cheap ablation workhorse.
@@ -247,11 +251,11 @@ Each cell earns its place; this is the whole grid.
   `paper/e1_coverage_fill.md`. Gate for the headline performance profile.
 - **E2 — ablation (leave-one-out + the family double)** on the **Llama-3.2-1B openmath
   anchor** (follows `paper/paper_plots.ipynb`). The 2×2 of {curvature, pin} forms the
-  incremental climb **iMuon-step → +pin → +curvature → ours**:
+  incremental climb **LoRA-Muon-step → +pin → +curvature → ours**:
   - **−curvature** (`cw_no_diag_curv`: `P,Q→I` ⟹ `C_A = BᵀB = S_B`) → partner-Gram-only
     whitening + polar + **pin kept**. Our momentum (Nesterov β1=0.9), PE-8 polar, δ-damping;
     the novelty-vs-iMuon-family arm. (Already running: `e2_no_diag_curv_*`.)
-  - **double = −curvature −pin = the iMuon/LoRA-Muon step** (`cw_unpinned` + `cw_no_diag_curv`
+  - **double = −curvature −pin = the LoRA-Muon step** (`cw_unpinned` + `cw_no_diag_curv`
     + `--lora_init_b symmetric`): bare partner-Gram, **no pin** (true-scale roots, no σ_max(W)
     rescale), decoupled sandwich = Cor 4.1 / LoRA-Muon Alg 1. Needs the symmetric (PiSSA-style,
     step-0 = pretrained) init because the unpinned core blows up at B=0 — that requirement is
@@ -259,9 +263,9 @@ Each cell earns its place; this is the whole grid.
   - **−pin** (`cw_unpinned` + curvature on + `--lora_init_b symmetric`) → cheap insurance at
     the anchor only (the {curv on, pin off} cell; completes the 2×2). Decide at writing time
     whether it earns a table row.
-  - The decomposition (iMuon-step → −curvature → ours) attributes both controls **without**
+  - The decomposition (LoRA-Muon-step → −curvature → ours) attributes both controls **without**
     the `−pin` cell; `−pin` only adds the interaction term. The old **`cw_no_radius`
-    (−adaptive-radius)** arm is RETIRED (it kept the pin, so it was never the iMuon step; the
+    (−adaptive-radius)** arm is RETIRED (it kept the pin, so it was never the LoRA-Muon step; the
     flag stays dormant in code, redirect-commented to `cw_unpinned`).
   - **No −polar arm.** Polar's necessity is cited from the spectral-method literature, not
     ablated: the non-polar variant is known-weak and removing polar is not novel over iMuon.
@@ -271,7 +275,7 @@ Each cell earns its place; this is the whole grid.
     logs, not these two arms — see C3.
   - **Control lr per arm** (curvature-ON-vs-OFF is confounded by an lr-basin shift —
     `soap_curvature_whitening.md:354`).
-  - No separate "incremental ladder" experiment — its rungs (the iMuon step, the −curvature
+  - No separate "incremental ladder" experiment — its rungs (the LoRA-Muon step, the −curvature
     arm, the protagonist) are all already run for the baseline + LOO; if the LOO bars need a
     cumulative-climb narrative at writing time, re-plot the same arms (a matplotlib call, not
     an experiment).
@@ -329,7 +333,7 @@ Each cell earns its place; this is the whole grid.
 - **Canonical rank:** r=256; rank varies only on the Llama-math ladder.
 - **iMuon:** run as the always-present spectral baseline (E0). **Spectron:** argument-only.
 - **Ablation home (E2):** the Llama-3.2-1B openmath anchor (−curvature at r256; the double =
-  iMuon step via `cw_unpinned` + `--lora_init_b symmetric`); leave-one-out + the family double,
+  LoRA-Muon step via `cw_unpinned` + `--lora_init_b symmetric`); leave-one-out + the family double,
   not a peel stack.
 - **pass@1:** HumanEval on the 4 code-@-r256 cells (protagonist vs AdamW); math downstream
   deferred.
@@ -352,7 +356,7 @@ Each cell earns its place; this is the whole grid.
    (r64/128/256); the robust claim is the per-rank win, NOT "speedup grows with rank"
    (single-seed, fragile).
 5. **Deferred baseline: full LoRA-RITE** (the published rival a conference reviewer is most
-   likely to demand). Preprint coverage: our iMuon-step arm = its memoryless core
+   likely to demand). Preprint coverage: our LoRA-Muon-step arm = its memoryless core
    (LoRA-Muon Prop 6); the uncovered residual is RITE's transported one-sided second
    moments. Conference upgrade (with seeds): vendor `~/LoRA-RITE/lora_rite.py` (official
    PyTorch impl, already local), iMuon protocol — 2 demonstration cells, lr-tuned.

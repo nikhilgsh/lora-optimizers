@@ -1198,7 +1198,7 @@ class CurvatureWhitenLoRA(Optimizer):
         # LEGACY ABLATION (−adaptive-radius): ρ=lr (flat) instead of the adaptive
         # ρ=lr/(σmax(A)+σmax(B)). IMPORTANT: the σ_max(W) pin is KEPT, so this does NOT
         # remove magnitude control — the magnitude-rule ablation is `cw_unpinned` (true-scale
-        # roots + no σ_max(W) rescale = the iMuon/LoRA-Muon step). Retired from the paper
+        # roots + no σ_max(W) rescale = the LoRA-Muon step). Retired from the paper
         # (2026-06-12); kept dormant for back-compat. Default False = protagonist.
         self.cw_no_radius = bool(cw_no_radius)
         # ABLATION (−Shampoo / no diagonal curvature): force the relative-damped input/
@@ -1209,7 +1209,7 @@ class CurvatureWhitenLoRA(Optimizer):
         self.cw_no_diag_curv = bool(cw_no_diag_curv)
         if self.cw_no_diag_curv and not self.diag_metric:
             raise ValueError("cw_no_diag_curv requires diag_metric=True (the protagonist path).")
-        # ABLATION (−pin / the iMuon-LoRA-Muon step): remove the operator-norm magnitude rule
+        # ABLATION (−pin / the LoRA-Muon step): remove the operator-norm magnitude rule
         # entirely. Two coupled changes vs the protagonist: (1) TRUE-SCALE inverse-sqrt
         # (eps_relative=False) instead of the λ_max-relative damping — the relative damping is
         # justified BY the pin (the σ_max(W) rescale reabsorbs its √λ scale), so dropping the
@@ -1736,7 +1736,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 # washes out (polar is scale-invariant; the σ_max radius rescale
                 # removes it), leaving the damping the only thing that must agree.
                 if timer: timer.start("op_invsqrt")   # small-side S^{-1/2} via Gram NS (+ form S^{-1})
-                # cw_unpinned (−pin / iMuon step): TRUE-SCALE damping (eps_relative=False) so
+                # cw_unpinned (−pin / LoRA-Muon step): TRUE-SCALE damping (eps_relative=False) so
                 # the whitener carries the native (S+δI)^{-1/2} magnitude, not the λ_max-relative
                 # √λ scale the σ_max(W) pin would reabsorb. (With cw_no_diag_curv the curvature
                 # coupling that also reads SAinv_full=SAh² is off, so the only effect is the

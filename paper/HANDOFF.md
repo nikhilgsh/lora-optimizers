@@ -45,7 +45,7 @@ Fixed; regression tests added in `tests/test_cw_ablation_flags.py`.
 **base-independent**. Forcing the large-axis diagonals to $I$ collapses both diag-shampoo and kl-diag
 to the same partner-Gram-only update (the coupling's $D_{in}$ EMA is accumulated but never read), bit-identical. So the
 `−curvature` arm (`cw_no_diag_curv`) **reuses the existing run** and is *not* part of the rerun.
-The magnitude ablation is now the **double (iMuon step)** via `cw_unpinned` + `--lora_init_b symmetric`;
+The magnitude ablation is now the **double (LoRA-Muon step)** via `cw_unpinned` + `--lora_init_b symmetric`;
 the retired `−radius`/`cw_no_radius` arm kept the pin and is no longer used (dormant in code).
 
 ---

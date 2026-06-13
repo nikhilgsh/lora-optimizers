@@ -691,7 +691,7 @@ def make_parser():
                              "iMuon-like). Tests whether the two-sided diagonal Shampoo "
                              "curvature helps. Requires the diag_metric (protagonist) path.")
     parser.add_argument("--cw_unpinned", action="store_true",
-                        help="ABLATION (−pin / the iMuon-LoRA-Muon step): remove the "
+                        help="ABLATION (−pin / the LoRA-Muon step): remove the "
                              "operator-norm magnitude rule — true-scale inverse-sqrt + no "
                              "σ_max(W) rescale, apply dX=−η·W raw. With --cw_no_diag_curv this "
                              "is the bare partner-Gram decoupled sandwich (LoRA-Muon Alg 1). "

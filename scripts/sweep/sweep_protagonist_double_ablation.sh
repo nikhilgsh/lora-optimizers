@@ -1,5 +1,5 @@
 #!/bin/bash
-# DOUBLE-ABLATION wrapper (= the iMuon/LoRA-Muon step): protagonist + --cw_no_diag_curv
+# DOUBLE-ABLATION wrapper (= the LoRA-Muon step): protagonist + --cw_no_diag_curv
 # + --cw_unpinned + --lora_init_b symmetric. Removes BOTH controls — bare partner-Gram
 # decoupled sandwich (true-scale roots, no sigma_max(W) pin) = LoRA-Muon Alg 1 / iMuon
 # Cor 4.1. The unpinned core is UNSTABLE at B=0, so the symmetric (PiSSA-style, step-0 =
