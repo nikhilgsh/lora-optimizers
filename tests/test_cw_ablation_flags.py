@@ -178,7 +178,7 @@ def test_kl_diag_honors_ablation_flags(flag):
 def test_kl_diag_no_shampoo_matches_diag_shampoo_no_shampoo():
     """The −Shampoo arm (cw_no_diag_curv) is base-independent: forcing the large-axis
     diagonals to I (dinA=doutB=1) collapses both diag-shampoo and kl-diag to the same
-    iMuon+radius update — the kl_coupled D_in/D_out EMAs are still accumulated but never
+    partner-Gram-only update — the kl_coupled D_in/D_out EMAs are still accumulated but never
     read (overwritten to ones each step). So kl-diag −Shampoo must step IDENTICALLY to
     diag-shampoo −Shampoo (justifies reusing the existing −Shampoo run for both bases)."""
     m1, x, tgt = _make(seed=7)
@@ -193,6 +193,49 @@ def test_kl_diag_no_shampoo_matches_diag_shampoo_no_shampoo():
     diffs = [(p1.detach() - p2.detach()).abs().max().item()
              for p1, p2 in zip(m1.parameters(), m2.parameters())]
     assert all(df < 1e-6 for df in diffs), f"kl-diag −Shampoo != diag-shampoo −Shampoo: {diffs}"
+
+
+def _build_kl_gramns(model, **kw):
+    return build_optimizer(model, "kl-diag-polar-lora", lr=3e-2,
+                           curvature_beta=0.99, muon_ns_steps=8, precond_delta=1e-4,
+                           cw_nesterov=True, precond_method="gram_ns", **kw)
+
+
+def test_unpinned_requires_gram_ns():
+    """cw_unpinned (−pin) needs the TRUE-SCALE gram_ns inverse-sqrt; the eigh/higham paths
+    damp relatively, which only the σ_max(W) pin (now removed) would reabsorb — so they are
+    rejected at construction."""
+    m, _, _ = _make()
+    with pytest.raises(ValueError, match="gram_ns"):
+        _build_kl(m, cw_unpinned=True, precond_method="eigh")
+
+
+def test_unpinned_flag_forwards():
+    """The kl-diag protagonist must honor cw_unpinned (provenance-bug class)."""
+    m, _, _ = _make()
+    opt = _build_kl_gramns(m, cw_unpinned=True)
+    assert opt.cw_unpinned is True
+    assert _build_kl_gramns(_make()[0]).cw_unpinned is False
+
+
+def test_unpinned_removes_the_pin():
+    """−pin (cw_unpinned): dX = −η·W applied RAW (no σ_max(W) rescale), so σmax(Ȧ) is the
+    native family magnitude, NOT pinned to ρ=lr. Contrast cw_no_radius: same ρ=lr but the
+    σ_max(W) rescale pins σmax(Ȧ)=lr. Both on the gram_ns + partner-Gram (cw_no_diag_curv)
+    path, nonzero-B init (std=0.1) so the unpinned whitener is finite."""
+    lr = 3e-2
+    m1, x, tgt = _make(seed=11)
+    m2, _, _ = _make(seed=11)
+    pinned = _build_kl_gramns(m1, cw_no_radius=True, cw_no_diag_curv=True)   # ρ=lr, PINNED
+    unpin = _build_kl_gramns(m2, cw_unpinned=True, cw_no_diag_curv=True)      # ρ=lr, NO pin
+    dp = _step_capture(pinned, m1, x, tgt)
+    du = _step_capture(unpin, m2, x, tgt)
+    for d in list(dp.values()) + list(du.values()):
+        assert math.isfinite(d.norm().item())
+    # pinned: every factor rescaled to σmax = lr; unpinned: at least one factor (the A-side,
+    # whitened by the small B) far exceeds lr because nothing rescales it.
+    assert all(_smax(d) == pytest.approx(lr, rel=0.08) for d in dp.values()), "pinned arm not pinned"
+    assert any(_smax(d) > lr * 1.5 for d in du.values()), "unpinned arm still pinned to lr"
 
 
 def test_curvature_whiten_does_not_apply_nesterov_and_logs_effective():

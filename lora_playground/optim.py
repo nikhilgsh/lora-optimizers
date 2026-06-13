@@ -1101,7 +1101,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
-                 cw_factor_a=0.0, cw_factor_b=0.0):
+                 cw_unpinned=False, cw_factor_a=0.0, cw_factor_b=0.0):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1195,9 +1195,11 @@ class CurvatureWhitenLoRA(Optimizer):
         self.cw_nesterov = bool(cw_nesterov)
         if self.cw_nesterov and self.soap_v:
             raise ValueError("cw_nesterov is only defined for the soap_v=False (closed-form Shampoo) path.")
-        # ABLATION (−radius / Spectron): use ρ=lr (plain) instead of the operator-norm
-        # radius ρ=lr/(σmax(A)+σmax(B)). Tests whether the Spectron-style spectral
-        # trust-region scaling helps. Default False = protagonist (radius on).
+        # LEGACY ABLATION (−adaptive-radius): ρ=lr (flat) instead of the adaptive
+        # ρ=lr/(σmax(A)+σmax(B)). IMPORTANT: the σ_max(W) pin is KEPT, so this does NOT
+        # remove magnitude control — the magnitude-rule ablation is `cw_unpinned` (true-scale
+        # roots + no σ_max(W) rescale = the iMuon/LoRA-Muon step). Retired from the paper
+        # (2026-06-12); kept dormant for back-compat. Default False = protagonist.
         self.cw_no_radius = bool(cw_no_radius)
         # ABLATION (−Shampoo / no diagonal curvature): force the relative-damped input/
         # output diagonals to identity (dinA=doutB=1). On the diag_metric path this makes
@@ -1207,6 +1209,20 @@ class CurvatureWhitenLoRA(Optimizer):
         self.cw_no_diag_curv = bool(cw_no_diag_curv)
         if self.cw_no_diag_curv and not self.diag_metric:
             raise ValueError("cw_no_diag_curv requires diag_metric=True (the protagonist path).")
+        # ABLATION (−pin / the iMuon-LoRA-Muon step): remove the operator-norm magnitude rule
+        # entirely. Two coupled changes vs the protagonist: (1) TRUE-SCALE inverse-sqrt
+        # (eps_relative=False) instead of the λ_max-relative damping — the relative damping is
+        # justified BY the pin (the σ_max(W) rescale reabsorbs its √λ scale), so dropping the
+        # pin without restoring true scale gives a magnitude artifact; (2) skip the σ_max(W)
+        # rescale, applying dX = −η·W raw. With cw_no_diag_curv this is the bare partner-Gram
+        # decoupled sandwich = LoRA-Muon Alg 1 / iMuon Cor 4.1. UNSTABLE at B=0 (the whitener
+        # is singular there); run with --lora_init_b symmetric. Requires the true-scale-capable
+        # gram_ns path (the protagonist's inverse-sqrt).
+        self.cw_unpinned = bool(cw_unpinned)
+        if self.cw_unpinned and self.precond_method != "gram_ns":
+            raise ValueError(
+                "cw_unpinned requires precond_method='gram_ns' (the true-scale inverse-sqrt "
+                f"path); got {self.precond_method!r}.")
         # Per-factor shape scaling (sweep knob). c_A = (r/d_in)^a, c_B = (d_out/r)^b,
         # folded into the operator-norm radius so the merged product cap stays η:
         #   ρ = η / (c_A·σmax(B) + c_B·σmax(A)),  σmax(dA)=c_A·ρ,  σmax(dB)=c_B·ρ.
@@ -1720,12 +1736,18 @@ class CurvatureWhitenLoRA(Optimizer):
                 # washes out (polar is scale-invariant; the σ_max radius rescale
                 # removes it), leaving the damping the only thing that must agree.
                 if timer: timer.start("op_invsqrt")   # small-side S^{-1/2} via Gram NS (+ form S^{-1})
+                # cw_unpinned (−pin / iMuon step): TRUE-SCALE damping (eps_relative=False) so
+                # the whitener carries the native (S+δI)^{-1/2} magnitude, not the λ_max-relative
+                # √λ scale the σ_max(W) pin would reabsorb. (With cw_no_diag_curv the curvature
+                # coupling that also reads SAinv_full=SAh² is off, so the only effect is the
+                # whitener magnitude; with curvature on it shifts the coupling damping negligibly.)
+                _wh_rel = not self.cw_unpinned
                 SAh = gram_ns_inv_sqrt(
                     self._sym(LA), nsteps=self.higham_iters, eps=self.delta,
-                    eps_relative=True)
+                    eps_relative=_wh_rel)
                 SBh = gram_ns_inv_sqrt(
                     self._sym(RB), nsteps=self.higham_iters, eps=self.delta,
-                    eps_relative=True)
+                    eps_relative=_wh_rel)
                 def _whA(x): return SAh @ x
                 def _whB(x): return x @ SBh
                 SAinv_full = SAh @ SAh
@@ -1770,7 +1792,7 @@ class CurvatureWhitenLoRA(Optimizer):
             # cw_no_radius: plain η per group. Keep ρ a (ngroups,) tensor (not a
             # python float) so the per-group ρ[j] in the diagnostic record below and
             # the broadcast cA·ρ/σ rescale both stay shape-correct.
-            rho = (torch.full_like(sB, float(lr)) if self.cw_no_radius
+            rho = (torch.full_like(sB, float(lr)) if (self.cw_no_radius or self.cw_unpinned)
                    else lr / (cA * sB + cB * sA + self.eps))
             # No §2.5 pre-rescale: the σ_max momentum-normalization diluted the cross
             # by √(stable_rank) of the whitened momentum (σ_max=1 base has Frobenius
@@ -1823,8 +1845,14 @@ class CurvatureWhitenLoRA(Optimizer):
                 sWA = self._smax_warm(WA, grp, 'v_sigma_WA')
                 sWB = self._smax_warm(WB, grp, 'v_sigma_WB')
                 if timer: timer.stop()
-                dA = -(cA * rho / (sWA + self.eps)).view(-1, 1, 1) * WA
-                dB = -self.lora_plus_multiplier * (cB * rho / (sWB + self.eps)).view(-1, 1, 1) * WB
+                if self.cw_unpinned:
+                    # −pin: apply dX = −η·W RAW (no σ_max(W) rescale) = the family-core native
+                    # magnitude (‖Ȧ‖₂ ∝ 1/σ_min(B), unbounded at small B — needs symmetric init).
+                    dA = -(cA * rho).view(-1, 1, 1) * WA
+                    dB = -self.lora_plus_multiplier * (cB * rho).view(-1, 1, 1) * WB
+                else:
+                    dA = -(cA * rho / (sWA + self.eps)).view(-1, 1, 1) * WA
+                    dB = -self.lora_plus_multiplier * (cB * rho / (sWB + self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if timer: timer.start("cw_curv_grams")
             if self.kl_coupled:
@@ -11436,6 +11464,7 @@ def build_optimizer(
     cw_nesterov: bool = False,
     cw_no_radius: bool = False,
     cw_no_diag_curv: bool = False,
+    cw_unpinned: bool = False,
     cw_factor_a: float = 0.0,
     cw_factor_b: float = 0.0,
     anderson_m: int = 0,

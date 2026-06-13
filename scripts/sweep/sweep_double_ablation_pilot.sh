@@ -1,7 +1,8 @@
 #!/bin/bash
-# DOUBLE-ABLATION lr-basin PILOT (1000 steps, ranking-only): protagonist + --cw_no_diag_curv + --cw_no_radius =
-# partner-Gram-only whitening + polar + plain eta (decoupled iMuon-family geometry, no
-# controls). Parameterized by model / data_dir / lora_r as trailing
+# DOUBLE-ABLATION lr-basin PILOT (1000 steps, ranking-only) = the iMuon/LoRA-Muon step:
+# protagonist + --cw_no_diag_curv + --cw_unpinned + --lora_init_b symmetric. Bare partner-Gram
+# decoupled sandwich (true-scale roots, no pin); symmetric init REQUIRED (B=0-unstable).
+# Parameterized by model / data_dir / lora_r as trailing
 # positionals (encoded per-cell in the params JSON) so the cell is captured in the task
 # line — env vars do NOT propagate through submit.sh --emit-pending.
 #
@@ -68,7 +69,8 @@ python train_lora.py \
     --cw_picard_iters 1 \
     --cw_nesterov \
     --cw_no_diag_curv \
-    --cw_no_radius \
+    --cw_unpinned \
+    --lora_init_b symmetric \
     "${precond_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \

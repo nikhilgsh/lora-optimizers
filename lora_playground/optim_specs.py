@@ -144,8 +144,8 @@ _CW = _optim.CurvatureWhitenLoRA
 # the soap/ablation skip sets below, in case cw-only skips are needed later.
 _CW_PRECOND_SKIP: set = set()
 _CW_SOAP_SKIP = {"cw_nesterov", "cw_picard_iters", "cw_no_radius", "cw_no_diag_curv",
-                 "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP     # soap_v=True: all cw_* invalid
-_CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # kl-shampoo/flatout
+                 "cw_unpinned", "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # soap_v=True: all cw_* invalid
+_CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_unpinned", "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # kl-shampoo/flatout
 
 spec("curvature-whiten-lora", _CW, skip=_CW_SOAP_SKIP,
      fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": False})

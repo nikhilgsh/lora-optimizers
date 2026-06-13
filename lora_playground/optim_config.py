@@ -75,6 +75,7 @@ class OptimizerConfig:
     cw_nesterov: bool = False
     cw_no_radius: bool = False
     cw_no_diag_curv: bool = False
+    cw_unpinned: bool = False
     cw_factor_a: float = 0.0
     cw_factor_b: float = 0.0
 

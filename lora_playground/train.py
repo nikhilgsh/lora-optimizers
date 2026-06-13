@@ -681,14 +681,22 @@ def make_parser():
                              "diag-shampoo[-polar]-lora; the operator-norm rescale "
                              "makes this a direction-only change.")
     parser.add_argument("--cw_no_radius", action="store_true",
-                        help="ABLATION (−radius/Spectron): use ρ=lr instead of the "
-                             "operator-norm radius ρ=lr/(σmax(A)+σmax(B)). Tests whether "
-                             "the Spectron spectral trust-region scaling helps.")
+                        help="LEGACY ablation (−adaptive-radius): ρ=lr (flat) instead of "
+                             "ρ=lr/(σmax(A)+σmax(B)). The σ_max(W) pin is KEPT — this does NOT "
+                             "remove magnitude control; the magnitude-rule ablation is "
+                             "--cw_unpinned. Retired from the paper (2026-06-12), kept dormant.")
     parser.add_argument("--cw_no_diag_curv", action="store_true",
-                        help="ABLATION (−Shampoo): force the input/output diagonal "
+                        help="ABLATION (−curvature): force the input/output diagonal "
                              "curvatures to identity → C_A=BᵀB, C_B=AAᵀ (partner-Gram, "
                              "iMuon-like). Tests whether the two-sided diagonal Shampoo "
                              "curvature helps. Requires the diag_metric (protagonist) path.")
+    parser.add_argument("--cw_unpinned", action="store_true",
+                        help="ABLATION (−pin / the iMuon-LoRA-Muon step): remove the "
+                             "operator-norm magnitude rule — true-scale inverse-sqrt + no "
+                             "σ_max(W) rescale, apply dX=−η·W raw. With --cw_no_diag_curv this "
+                             "is the bare partner-Gram decoupled sandwich (LoRA-Muon Alg 1). "
+                             "UNSTABLE at B=0 — run with --lora_init_b symmetric. Requires "
+                             "--precond_method gram_ns.")
     parser.add_argument("--cw_factor_a", type=float, default=0.0,
                         help="Per-factor shape exponent for A: c_A=(r/d_in)^a, folded "
                              "into the operator-norm radius (product cap preserved). "
@@ -1249,6 +1257,7 @@ def main():
         cw_nesterov=args.cw_nesterov,
         cw_no_radius=args.cw_no_radius,
         cw_no_diag_curv=args.cw_no_diag_curv,
+        cw_unpinned=args.cw_unpinned,
         cw_factor_a=args.cw_factor_a,
         cw_factor_b=args.cw_factor_b,
         anderson_m=args.anderson_m,
@@ -1392,6 +1401,7 @@ def main():
             "cw_nesterov": getattr(optimizer, "cw_nesterov", args.cw_nesterov),
             "cw_no_radius": getattr(optimizer, "cw_no_radius", args.cw_no_radius),
             "cw_no_diag_curv": getattr(optimizer, "cw_no_diag_curv", args.cw_no_diag_curv),
+            "cw_unpinned": getattr(optimizer, "cw_unpinned", args.cw_unpinned),
             "cw_factor_a": getattr(optimizer, "cw_factor_a", args.cw_factor_a),
             "cw_factor_b": getattr(optimizer, "cw_factor_b", args.cw_factor_b),
             "anderson_m": args.anderson_m,
