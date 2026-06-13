@@ -25,7 +25,7 @@ FACTOR_DIAG_KEYS = (
     "norm_A", "norm_B",
     "nrank_A_1e3", "nrank_A_1e2", "nrank_B_1e3", "nrank_B_1e2",
     "stable_rank_A", "stable_rank_B",
-    "sigma_max_A", "sigma_max_B",
+    "sigma_max_A", "sigma_max_B", "sigma_ratio",
 )
 
 
@@ -81,6 +81,9 @@ def factor_diagnostics(A, B):
         rec["stable_rank_B"] = float(eigB.sum() / (smax_B + 1e-30))
         rec["sigma_max_A"] = float(smax_A ** 0.5)
         rec["sigma_max_B"] = float(smax_B ** 0.5)
+        # per-pair gauge coordinate σ_max(A)/σ_max(B); aggregate (min/median/max across
+        # pairs) is the RIGHT gauge-balance stat — ratio-of-medians ≠ median-of-ratios.
+        rec["sigma_ratio"] = float(smax_A ** 0.5 / (smax_B ** 0.5 + 1e-30))
     except torch._C._LinAlgError:
         for k in FACTOR_DIAG_KEYS:
             rec[k] = float("nan")
