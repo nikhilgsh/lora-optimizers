@@ -515,25 +515,13 @@ the whiten/polar/unwhiten sandwich of \eqref{eq:ours-lmo}. \methodname{} differs
 %     product-space momentum (their with-momentum appendix) + an undocumented ~50-step
 %     warmup to survive B=0. The proven equation is implemented in NO code variant.
 %   - Slow: ~3.9 s/step at OLMo r256 (our E0 baseline).
-% LoRA-Muon \cite{loramuon} (concurrent):
-%   - Scope: from-scratch TinyShakespeare (d=128, 2-layer, ~1M tok); NOT fine-tuning,
-%     NOT large scale (their Sec 7). Theory carries W_pre but experiments set it 0 --
-%     so say "their EXPERIMENTS are from-scratch", not "their theory is pretraining-only".
-%   - Algorithm 1 = the decoupled sandwich (EMA momentum, NO warmup); B=0-unstable by
-%     the same 1/sigma_min(B) mechanism (Rem b0). They never hit it: from-scratch
-%     low-rank needs nonzero factors. Untested at the standard B=0 adapter init
-%     (the default fine-tuning init; nonzero init is a studied departure, Li et al. 2505.23194).
-%   - No curvature (first-moment only); no operator-norm radius (eta/2 split instead).
-%   - Split weight decay: algebraic only, NOT ablated; a no-op at our lambda=0.
-%   - "Beats dense" is NARROW: rank-32 only on TinyShakespeare; rank-2 loss is WORSE
-%     than dense (2.156 vs 1.789) -- the low-rank claim is lr-TRANSFER, not loss.
-%   - FLOP counts only, NO wall-clock; we measure wall (Sec exp-walltime).
-%   - Their Prop 5 (radius gauge-sensitivity) is invariance-only -- no loss/stability
-%     result; evidenced by an adversarial x99 rescale, no natural occurrence shown.
+% LoRA-Muon \cite{loramuon}: full analysis in related_work_notes.md (Alg 1 = the method
+%   we reproduce; Alg 2 = optional no-op gauge rebalancing; B=0 instability; scope; their
+%   Prop 5 = our radius). Load-bearing notes live there, NOT in these comments.
 % ---------------------------------------------------------------------------
 \paragraph{Invariant partner-Gram updates on LoRA.} A lineage of LoRA optimizers enforces \emph{transformation invariance} --- the update to $\DW$ should not depend on the factorization $(NA,BN^{-1})$ --- via the partner-Gram polar of \Cref{prop:imuon}.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Lineage.} LoRA-RITE \cite{lorarite} introduced the invariance, stripping each factor gradient's partner magnitude (polar $B=U_BR_B$, precondition $G\,U_B$ on the $r$-side with basis-transported second moments); its memoryless core is \Cref{prop:imuon}, re-derived as iMuon's decoupled form \cite{imuon} and, concurrently, LoRA-Muon \cite{loramuon} (which proves the RITE-core equivalence and adds a split weight decay --- algebraic, not ablated, a no-op at our $\lambda{=}0$). Our both-controls-removed arm is exactly this shared core, so \Cref{sec:exp} measures what the two controls add over the whole family at once.
+  \item \textbf{Lineage.} LoRA-RITE \cite{lorarite} introduced the invariance, stripping each factor gradient's partner magnitude (polar $B=U_BR_B$, precondition $G\,U_B$ on the $r$-side with basis-transported second moments); its memoryless core is \Cref{prop:imuon}, re-derived as iMuon's decoupled form \cite{imuon} and, concurrently, LoRA-Muon \cite{loramuon} (which proves the RITE-core equivalence). LoRA-Muon's optimizer \emph{is} this core (their Alg.~1); the two pieces it adds --- a split weight decay (a no-op at our $\lambda{=}0$) and a scalar gauge rebalancing (their App.~B.1, a no-op because the core is gauge-invariant) --- are optional, and we omit both. Our both-controls-removed arm is this shared core, so \Cref{sec:exp} measures what the two controls add over the whole family at once.
   \item \textbf{The trade.} Invariance cuts against our radius: $\rho$ changes under $(A,B)\mapsto(cA,B/c)$ \cite{loramuon}. We accept this deliberately --- per-factor magnitude is itself gauge-dependent, so no gauge-invariant rule can control it, while our merged-step bound \eqref{eq:ours-prodcap} holds at every gauge (only the factor split varies).
   \item \textbf{Why it pays.} Gauge imbalance is shown only under adversarial rescaling \cite{loramuon}; the one extreme factor-scale fine-tuning actually hits is the $B{=}0$ init, where the gauge-invariant core has no stable step (needs warmup or nonzero init) but our rescale starts cleanly (\Cref{rem:b0}). Replacing the adaptive radius with a flat $\eta$ costs \PLACEHOLDER{+3.5--4.4$\sigma$} with a $3\times$ smaller usable learning-rate range.
 \end{itemize}
