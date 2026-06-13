@@ -1,0 +1,8 @@
+{
+  "lr": ["1.7e-4"],
+  "optimizer": ["adamw"],
+  "seed": ["0"],
+  "model": ["meta-llama/Llama-3.2-1B"],
+  "data_dir": ["data/openmath_instruct_2_2m_packed_seq2048_llama32"],
+  "lora_r": ["16"]
+}

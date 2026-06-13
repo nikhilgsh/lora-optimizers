@@ -1,14 +1,21 @@
 {
   "lr": [
-    "3e-4",
-    "1e-3",
-    "3e-3"
+    "3e-3",
+    "1e-2",
+    "3e-2",
+    "1e-1"
   ],
   "optimizer": [
-    "imuon-lora"
+    "diag-shampoo-polar-lora"
   ],
   "seed": [
     "0"
+  ],
+  "precond_delta": [
+    "1e-4"
+  ],
+  "beta1": [
+    "0.95"
   ],
   "model": [
     "allenai/OLMo-2-0425-1B"

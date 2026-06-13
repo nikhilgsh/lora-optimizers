@@ -1,11 +1,11 @@
 {
   "lr": [
+    "3e-4",
     "1e-3",
-    "3e-3",
-    "1e-2"
+    "3e-3"
   ],
   "optimizer": [
-    "kl-diag-polar-lora"
+    "diag-shampoo-polar-lora"
   ],
   "seed": [
     "0"
@@ -14,7 +14,7 @@
     "1e-4"
   ],
   "beta1": [
-    "0.9"
+    "0.95"
   ],
   "model": [
     "meta-llama/Llama-3.2-1B"
