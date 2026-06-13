@@ -81,3 +81,8 @@ encoding its model/data_dir/lora_r as single-value lists.)
   cell (NOT a wide sweep).
 - **Open before submit:** iMuon lr pilot (1 cell, short) → 3-lr grids; per-cell params JSONs;
   8B per-step timing before its `--time`.
+- 2026-06-12: all 8 protagonist cells + AdamW complete (loader-audited; best lr interior
+  everywhere). iMuon demonstration cells pivoted to OLMo opc r256 (grid in flight) +
+  Llama openmath r256 (the new primary anchor; pilot in flight); bengali iMuon dropped.
+  New pillar arms (per-factor polar, double-ablation) at the anchor cells — framing and
+  run matrix now live in `paper/PLAN.md` ("Three-pillar framing + anchor cells").
