@@ -50,7 +50,7 @@
 \newcommand{\smax}{\sigma_{\max}}
 \DeclarePairedDelimiter{\norm}{\lVert}{\rVert}
 \newcommand{\DW}{\Delta W}
-\newcommand{\polar}{\varphi}                 % polar map  U\Sigma V^T -> U V^T
+\DeclareMathOperator{\polar}{msign}          % matrix sign (orthogonal polar factor): U\Sigma V^T -> U V^T
 % Working method name -- rename in one place once finalized.
 \newcommand{\methodname}{\textsc{Polar-LoRA}\xspace}
 \usepackage{xspace}
@@ -112,15 +112,14 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
   \item \textbf{LoRA.} $\DW=(\alpha/r)\,BA$, $A\in\R^{r\times d_{\mathrm{in}}}$, $B\in\R^{d_{\mathrm{out}}\times r}$, $\alpha{=}r$, all linear modules, standard $B{=}0$ init.
   \item \textbf{Held fixed across optimizers.} model, dataset $+$ split, $r$/$\alpha$, targets, sequence length, batch, grad-accum, dtype, constant lr (no warmup/decay). Only the optimizer and its lr vary; lr is picked per (optimizer, setting) on held-out eval loss.
   \item \textbf{Speedup} (horizon $H$, AdamW best-lr final loss $\ell^\star$): $H/s$, with $s$ the first interpolated step the method's best-lr trajectory reaches $\ell^\star$. No crossing within $H \Rightarrow$ no speedup.
-  \item \textbf{Single seed} (\Cref{sec:limitations}).
 \end{itemize}
 
 % ===========================================================================
 \section{Method: \methodname}
 \label{sec:method}
 % MAIN STORY (outlined): the per-step DIRECTION of all three is the linear-minimization
-% oracle (LMO) of the gradient under a norm -- 3.1 spectral norm per factor, 3.2 partner-Gram
-% product norm, 3.3 learned two-sided diagonal-curvature metric. OURS IS NOT A PURE LMO:
+% oracle (LMO) of the gradient under a norm -- 3.1 spectral norm per factor, 3.2 the
+% decoupled half-split product step, 3.3 learned two-sided diagonal-curvature metric. OURS IS NOT A PURE LMO:
 % the metric P,Q is a coupled diagonal KL flip-flop (estimation, not an LMO), and the
 % MAGNITUDE is the operator-norm pin rho=eta/(smax A+smax B) (a separate rule, not the LMO
 % budget tau). Keep those three ingredients distinct in the prose.
@@ -136,9 +135,9 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
   \item LoRA factors $A\in\R^{r\times d_{\mathrm{in}}}$, $B\in\R^{d_{\mathrm{out}}\times r}$; adapter $\DW=(\alpha/r)\,BA$.
   \item $G\triangleq\partial L/\partial(BA)$: gradient of the loss w.r.t.\ the \emph{unscaled} product $BA$ (the $\alpha/r$ scale is absorbed into the learning rate $\eta>0$). Per-factor gradients $G_A=B^\top G$, $G_B=GA^\top$.
   \item $\dot A,\dot B$: the updates applied to the factors ($A\leftarrow A+\dot A$).
-  \item $\polar(M)=UV^\top$ for the SVD $M=U\Sigma V^\top$ (sets each nonzero singular value to $1$); spectral norm $\norm{M}_2=\smax(M)$; $\langle X,Y\rangle=\operatorname{tr}(X^\top Y)$; Gram matrices $S_A=AA^\top$, $S_B=B^\top B$.
+  \item $\polar(M)=UV^\top$ for the SVD $M=U\Sigma V^\top$ --- the \emph{matrix sign} of $M$ (it sets each nonzero singular value to $1$; the orthogonal polar factor); spectral norm $\norm{M}_2=\smax(M)$; $\langle X,Y\rangle=\operatorname{tr}(X^\top Y)$; Gram matrices $S_A=AA^\top$, $S_B=B^\top B$.
 \end{itemize}
-\textbf{Steepest descent under a norm} (the LMO), for a factor gradient $M$ and a norm $\norm{\cdot}$, is the update
+\textbf{Steepest descent under a norm} --- the linear minimization oracle (LMO) --- for a factor gradient $M$ and a norm $\norm{\cdot}$, is the update
 \begin{equation}
   \eta\,\argmin_{\norm{U}\le1}\langle M,U\rangle .
   \label{eq:lmo}
@@ -173,8 +172,8 @@ Two defects on a factored weight:
   \min_{\dot B}\ \langle G_B,\dot B\rangle \ \ \text{s.t.}\ \ \norm{\dot B A}_2\le\eta .
   \label{eq:imuon-lmo}
 \end{equation}
-\begin{proposition}[Partner-Gram step]\label{prop:imuon}
-The solution of \eqref{eq:imuon-lmo} whitens each factor by its partner's Gram root:
+\begin{proposition}[Decoupled factor step]\label{prop:imuon}
+The solution of \eqref{eq:imuon-lmo} whitens each factor gradient by the other factor's Gram root:
 \begin{equation*}
   \dot A=-\eta\,S_B^{-1/2}\,\polar\!\big(S_B^{-1/2}G_A\big),\qquad
   \dot B=-\eta\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2}.
@@ -218,7 +217,7 @@ Model the weight gradient as matrix-normal, $G\sim\mathcal{MN}(0,P,Q)$ with diag
 \end{aligned}
 \label{eq:ours-closure}
 \end{equation}
-$G_A$ resolves $Q$ and $G_B$ resolves $P$; each diagonal is the conditional MLE of its view with the partner-side matrix (an $r\times r$ matrix formed from the diagonals, never stored) held fixed --- the matrix-normal flip-flop \cite{klshampoo,dutilleul} (derived in \Cref{app:matnormal}):
+$G_A$ resolves $Q$ and $G_B$ resolves $P$; each diagonal is the conditional MLE of its view with the $r\times r$ partner matrix ($C_A$ for the $Q$ update, $C_B$ for the $P$ update; formed from the diagonals on the fly, never stored) held fixed --- the matrix-normal flip-flop \cite{klshampoo,dutilleul} (derived in \Cref{app:matnormal}):
 \begin{equation}
   q_j=\mathrm{EMA}\Big[\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
   p_i=\mathrm{EMA}\Big[\tfrac1r\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top\Big].
@@ -283,7 +282,7 @@ This is a second trust region, separate from (B): a Euclidean operator-norm cap 
 
 \begin{remark}[Why the operator-norm step is safe at the standard $B{=}0$ initialization]
 \label{rem:b0}
-LoRA starts at $B{=}0$, where the partner-Gram polar of \Cref{prop:imuon} has no stable learning rate but the operator-norm step does.
+LoRA starts at $B{=}0$, where the decoupled factor step of \Cref{prop:imuon} has no stable learning rate but the operator-norm step does.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{The failure.} $\polar(S_B^{-1/2}G_A)$ has unit spectral norm however small $G_A$ is, and the outer $S_B^{-1/2}$ scales it by up to $1/\sigma_{\min}(B)$, so $\norm{\dot A}_2\approx\eta/\sigma_{\min}(B)$ --- unbounded as $B\to0$, undefined at $B{=}0$. Renormalizing to a scale-free step removes the gradient's natural $\norm{G_A}\propto\sigma(B)$ protection; lowering $\eta$ does not help (it slows $B$'s escape by the same factor it shrinks the spurious step). So the decoupled spectral update --- iMuon's closed form (Cor.\ 4.1), re-derived by LoRA-Muon \cite{loramuon}, equivalent to simplified LoRA-RITE \cite{lorarite} --- has no stable rate from this init (\Cref{sec:exp}).
   \item \textbf{The family's workarounds.} iMuon applies the metric LMO to a \emph{joint} product-space momentum $M=\dot M_BA+B\dot M_A$ (a different update, not the decoupled solution) and prepends warmup to grow $B$ off zero; LoRA-Muon trains from nonzero random factors and never enters the regime.
@@ -294,7 +293,7 @@ LoRA starts at $B{=}0$, where the partner-Gram polar of \Cref{prop:imuon} has no
 \paragraph{Cost.} \methodname{} is \emph{lighter} than AdamW in memory and adds a small, batch-amortized compute overhead.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Memory.} Same first moment as AdamW, but AdamW's second moment is replaced by two curvature diagonals $P,Q$ --- a factor $r$ smaller. The $r\times r$ matrices $C_A=B^\top PB$, $C_B=AQA^\top$ are formed on the fly (\Cref{alg:ours}), not stored, and the inverse-sqrt is eigh-free (no eigenbasis, no $d\times d$ state). Net state ${\approx}\tfrac12$ AdamW's (\Cref{tab:optstate}).
-  \item \textbf{Compute.} Per pair: $8$ matmuls of cost ${\sim}r^2d$ (forming $C_A,C_B$, whiten/un-whiten, two curvature applies), two full polars (PolarExpress \cite{polarexpress}, PE${=}8$), two gram--Newton--Schulz inverse-sqrts \cite{gram_ns} (${\sim}r^3$). All $r\times r$ or $r\times d$, eigh-free; the polars dominate.
+  \item \textbf{Compute.} Per pair: $8$ matmuls of cost ${\sim}r^2d$ (forming $C_A,C_B$, whiten/un-whiten, two curvature applies), two full polars (PolarExpress \cite{polarexpress}, $K{=}8$ steps), two gram--Newton--Schulz inverse-sqrts \cite{gram_ns} (${\sim}r^3$). All $r\times r$ or $r\times d$, eigh-free; the polars dominate.
   \item \textbf{Wall.} Near-free at production batch: the fixed \texttt{optimizer.step} amortizes against the batch-scaling forward/backward (\Cref{sec:exp-walltime}).
 \end{itemize}
 \begin{table}[h]
@@ -322,7 +321,7 @@ settings (\Cref{fig:hero} showcase; \Cref{tab:breadth} across model families;
 per-setting learning curves in \Cref{app:curves}).
 \Cref{tab:breadth} fixes the task (code) and rank ($256$) and varies the model: the
 win holds across four base models and up to $8$B, and is smallest at $8$B (the
-largest model has the least room to move).
+largest base needs the smallest adapter update).
 
 \begin{figure}[t]
   \centering
@@ -344,18 +343,19 @@ largest model has the least room to move).
 
 \subsection{Ablations: which components carry the speedup}
 \label{sec:exp-ablation}
-\methodname{} adds three things to a per-factor spectral step: partner-Gram
-structure, an operator-norm magnitude pin, and two-sided curvature. Removing them one
-at a time from \methodname{} isolates each one's contribution (\Cref{fig:ablation}):
+\methodname{} adds three things to a per-factor spectral step (naive Muon, \eqref{eq:naive}):
+the factorization-invariant whitening of \Cref{prop:imuon} (each factor gradient whitened by
+the other factor's Gram root), an operator-norm magnitude pin, and two-sided curvature. Removing
+them one at a time from \methodname{} isolates each one's contribution (\Cref{fig:ablation}):
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item The pin and the curvature each carry a large increment: $1.01\times$ (w/o curvature $+$ magnitude) $\to 1.29\times$ (w/o curvature) $\to 1.63\times$ (\methodname{}).
-  \item Partner-Gram structure alone barely helps: the bare partner-Gram polar (w/o curvature $+$ magnitude) ties AdamW ($1.01\times$); so does naive Muon on the factors (\Cref{fig:hero}).
+  \item The whitening alone barely helps: the bare step of \Cref{prop:imuon} (w/o curvature $+$ magnitude) ties AdamW ($1.01\times$); so does naive Muon on the factors (\Cref{fig:hero}).
 \end{itemize}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig2_ablation.pdf}
-  \caption{\textit{[placeholder]} Component ablation (Llama-3.2-1B / OpenMathInstruct / $r{=}256$). Left: loss curves, w/o curvature $+$ magnitude $\to$ w/o curvature $\to$ \methodname{}. Right: speedup-over-AdamW bars. (Full caption: note the partner-Gram lineage --- iMuon \cite{imuon} / LoRA-RITE \cite{lorarite} / compositional Muon \cite{tilde_csd} / LoRA-Muon \cite{loramuon}.)}
+  \caption{\textit{[placeholder]} Component ablation (Llama-3.2-1B / OpenMathInstruct / $r{=}256$). Left: loss curves, w/o curvature $+$ magnitude $\to$ w/o curvature $\to$ \methodname{}. Right: speedup-over-AdamW bars. (Full caption: note the lineage of \Cref{prop:imuon} --- iMuon \cite{imuon} / LoRA-RITE \cite{lorarite} / compositional Muon \cite{tilde_csd} / LoRA-Muon \cite{loramuon}.)}
   \label{fig:ablation}
 \end{figure}
 
@@ -382,23 +382,23 @@ wall-clock nearly intact.
   \item \textbf{Architecture-only floor.} A hardware-independent FLOP count gives the same near-free result --- under $1\%$ at the production batch (\Cref{app:flops}).
 \end{itemize}
 
-\subsection{The speedup grows with room to move in weight space}
+\subsection{The speedup grows when the adapter must update more}
 \label{sec:exp-taskdep}
 Two controlled comparisons --- each varying one axis with everything else fixed ---
-point the same way: the more the adapter has to move (farther out-of-distribution,
+point the same way: the more the adapter must update (farther out-of-distribution,
 higher rank), the larger the advantage over AdamW.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
   \item \textbf{Task (only the data changes).} Qwen2.5-1.5B, $r{=}256$: the speedup rises from in-distribution code to out-of-distribution Bengali (\Cref{fig:ood}).
   \item \textbf{Rank (only $r$ changes).} Llama-3.2-1B, Math: the speedup is larger at higher rank (\Cref{tab:rank}).
 \end{itemize}
-\emph{Heuristic.} An out-of-distribution corpus and a higher rank both give the
-adapter more room to move in weight space, and \methodname{} converts that room into
-a larger step-count gain over AdamW (the rank trend is not strictly monotonic).
+\emph{Heuristic.} An out-of-distribution corpus and a higher rank both call for a larger
+adapter update --- a larger move from initialization --- and \methodname{} turns that
+larger update into a bigger step-count gain over AdamW (the rank trend is roughly monotonic).
 
 \begin{table}[h]
   \centering\small
   \input{figs/tab_rank.tex}
-  \caption{\textbf{Rank ladder} (Llama-3.2-1B, Math): larger speedup at higher
+  \caption{\textbf{Speedup vs.\ rank} (Llama-3.2-1B, Math): larger at higher
   rank.}
   \label{tab:rank}
 \end{table}
@@ -411,7 +411,7 @@ a larger step-count gain over AdamW (the rank trend is not strictly monotonic).
 \end{figure}
 
 \paragraph{Stable learning rate across rank.} A side effect of the operator-norm
-radius: on the same Math ladder, \methodname{}'s loss-minimizing lr stays at
+radius: across ranks on the same Math task, \methodname{}'s loss-minimizing lr stays at
 $10^{-2}$ for every $r$ while AdamW's drifts $3\times10^{-4}{\to}10^{-4}$
 (\Cref{fig:lr_transfer}) --- the radius (\Cref{eq:ours-prodcap}) caps the merged step
 at $\eta$ independent of $r$.
@@ -419,7 +419,7 @@ at $\eta$ independent of $r$.
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig3_lr_transfer.pdf}
-  \caption{\textit{[placeholder]} Final loss vs.\ lr across the rank ladder (Llama-3.2-1B / OpenMathInstruct, $r\in\{32,64,128,256\}$); \methodname{}'s loss-minimizing lr stays at $10^{-2}$, AdamW's drifts.}
+  \caption{\textit{[placeholder]} Final loss vs.\ lr at each rank (Llama-3.2-1B / OpenMathInstruct, $r\in\{32,64,128,256\}$); \methodname{}'s loss-minimizing lr stays at $10^{-2}$, AdamW's drifts.}
   \label{fig:lr_transfer}
 \end{figure}
 
@@ -439,8 +439,8 @@ at $\eta$ independent of $r$.
 %   - norm-scaled per-factor lr that bounds a bilinear product's change
 %     (QuacK \cite{quack}, concurrent) -- closest external precedent to our
 %     operator-norm radius; they pick Frobenius, we pick spectral.
-%   - invariant partner-Gram updates on LoRA (authored paragraph below): RITE -> iMuon ->
-%     LoRA-Muon lineage; their Alg 1 = the partner-Gram core we run as a baseline and beat,
+%   - invariant decoupled factor-step updates on LoRA (authored paragraph below): RITE -> iMuon ->
+%     LoRA-Muon lineage; their Alg 1 = the decoupled factor step (Prop. 2) we run as a baseline and beat,
 %     + the B=0 init-stability edge. NO gauge-invariance / Prop-5 engagement (cut: we don't
 %     compare across rank, our performance is better; gauge is a distraction from the
 %     stable-across-r>=32-vs-Adam headline).
@@ -482,24 +482,22 @@ so a larger $W_K$ slows $W_Q$ and vice versa. Our radius \eqref{eq:ours-prodcap}
 %     warmup to survive B=0. The proven equation is implemented in NO code variant.
 %   - Slow: ~3.9 s/step at OLMo r256 (our E0 baseline).
 % LoRA-Muon \cite{loramuon}: full analysis in related_work_notes.md (Alg 1 = the method
-%   we reproduce as the iMuon-core baseline and beat; Alg 2 = optional no-op gauge rebalancing;
+%   we reproduce as the iMuon baseline and beat; Alg 2 = optional no-op gauge rebalancing;
 %   B=0 instability; scope). We do NOT engage their across-rank gauge story or Prop 5 (cut for
 %   v1). Load-bearing notes live in related_work_notes.md, NOT in these comments.
 % ---------------------------------------------------------------------------
-\paragraph{Invariant partner-Gram updates on LoRA.} A lineage enforces \emph{transformation invariance} --- the update to $\DW$ should not depend on the factorization $(NA,BN^{-1})$ --- via the partner-Gram polar of \Cref{prop:imuon}.
+\paragraph{Factorization-invariant LoRA updates.} A lineage enforces \emph{transformation invariance} --- the update to $\DW$ should not depend on the factorization $(NA,BN^{-1})$ --- via the factor whitening of \Cref{prop:imuon}.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Lineage.} LoRA-RITE \cite{lorarite} introduced the invariance; its memoryless limit is \Cref{prop:imuon}, re-derived as iMuon's decoupled form \cite{imuon} and, concurrently, LoRA-Muon \cite{loramuon} (\Cref{app:memoryless}).
   \item \textbf{We run the shared update.} LoRA-Muon's optimizer \emph{is} this update (their Alg.~1); its two extras --- split weight decay (a no-op at $\lambda{=}0$) and scalar gauge rebalancing (a no-op when the update is already gauge-invariant) --- are optional, and we omit both. Our both-controls-removed arm is this update, so \Cref{sec:exp} measures what our two controls add over the family at once.
-  \item \textbf{Init stability.} At the standard $B{=}0$ init the partner-Gram update has no stable lr (its per-factor step $\propto 1/\sigma_{\min}(B)$, undefined at $B{=}0$), so it needs warmup or nonzero init; our radius pins $\norm{\dot A}_2=\rho$ and starts cleanly (\Cref{rem:b0}).
+  \item \textbf{Init stability.} At the standard $B{=}0$ init this update has no stable lr (its per-factor step $\propto 1/\sigma_{\min}(B)$, undefined at $B{=}0$), so it needs warmup or nonzero init; our radius pins $\norm{\dot A}_2=\rho$ and starts cleanly (\Cref{rem:b0}).
 \end{itemize}
 
 
 % ===========================================================================
 \section{Limitations}
 \label{sec:limitations}
-\PLACEHOLDER{Limitations --- single seed; loss-primary (no downstream pass@1);
-coverage asymmetry (one math ladder, one OOD point, one 8B cell); rank coverage not
-rank-growth; deferred LoRA-RITE baseline.}
+\PLACEHOLDER{Limitations.}
 
 % ===========================================================================
 \section{Conclusion}
@@ -515,6 +513,66 @@ LoRA adapters cheaply:
 
 % ===========================================================================
 \appendix
+\section{Experimental details}
+\label{app:exp}
+The setup of \Cref{sec:setup} in full. Everything but the optimizer and its learning rate
+is held fixed across the comparison; the learning rate is swept per (optimizer, cell) and
+selected on held-out eval loss.
+
+\paragraph{Models.} Four general pretrained bases, each adapted with LoRA: OLMo-2-1B \cite{olmo2}, Llama-3.2-1B \cite{llama3}, Qwen2.5-1.5B \cite{qwen25}, and Llama-3-8B \cite{llama3}.
+
+\paragraph{Datasets.} Three instruction corpora, each tokenized once with the target model's own tokenizer: code (OpenCoder \cite{opencoder}), math (OpenMathInstruct-2 \cite{openmathinstruct2}), and Bengali (Aya \cite{aya}).
+
+\paragraph{Data preparation.}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item A $1\%$ held-out split serves for all selection and reporting.
+  \item The train side is packed into fixed $2048$-token slots; the eval side is padded to $2048$.
+  \item Loss is computed on response tokens only (prompt and padding masked), so eval loss is not comparable to a full-sequence LM loss.
+\end{itemize}
+
+\paragraph{Fixed training configuration.} Identical across every optimizer and cell.
+\begin{table}[h]
+\centering\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+setting & value \\
+\midrule
+sequence length       & $2048$ \\
+batch size             & $16$ \\
+training steps         & $9000$ \\
+eval cadence           & every $250$ steps \\
+LoRA $\alpha$          & $r$ \\
+LoRA dropout           & $0$ \\
+LoRA $B$ init          & zeros \\
+target modules         & all linear except \texttt{lm\_head} \\
+precision              & bf16 \\
+\texttt{torch.compile} & on \\
+max gradient norm      & $1.0$ \\
+LR schedule            & constant (no warmup or decay) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Learning-rate sweep.}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Grid} (per optimizer): $\{3{\times}10^{-5},\ 10^{-4},\ 3{\times}10^{-4},\ 10^{-3},\ 3{\times}10^{-3},\ 10^{-2},\ 3{\times}10^{-2},\ 10^{-1}\}$.
+  \item \textbf{Selection}: best per (optimizer, cell) on held-out eval loss (never training loss).
+  \item \textbf{AdamW}: betas $(0.9,0.999)$, $\varepsilon{=}10^{-8}$, weight decay $0$.
+\end{itemize}
+
+\paragraph{\methodname{} configuration.} Fixed across every \methodname{} run (full step in \Cref{alg:ours}):
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item Nesterov momentum, $\beta_1{=}0.9$.
+  \item Curvature-EMA decay $0.99$ (the $\beta_2$ of \eqref{eq:ours-klcoupling}); one flip-flop alternation per step.
+  \item PolarExpress and the shared Gram--Newton--Schulz at $K{=}8$ iterations each.
+  \item Relative damping $\delta{=}10^{-4}$.
+\end{itemize}
+
+\paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime})
+are measured on an NVIDIA RTX PRO 6000 (Blackwell); eval-loss values are
+hardware-independent.
+
+% ===========================================================================
 \section{Proofs}
 \label{app:proofs}
 
@@ -568,7 +626,7 @@ The Frobenius ball $\norm{Y_A}_F\le\tau$ instead gives $\dot A\propto C_A^{-1}G_
 
 \section{Memoryless limits of LoRA-RITE and iMuon}
 \label{app:memoryless}
-LoRA-RITE \cite{lorarite} and iMuon \cite{imuon} both reduce to the partner-Gram polar of
+LoRA-RITE \cite{lorarite} and iMuon \cite{imuon} both reduce to the decoupled factor step of
 \Cref{prop:imuon} once their moment accumulation is removed. We show this below. The one
 caveat is iMuon: it is the \emph{momentum-free} algorithm that collapses, while the shipped
 momentum variant does not (last paragraph) --- the code-versus-theory gap of
@@ -597,7 +655,7 @@ which in our notation reads
   \dot B=-\eta\,\widehat G_B\,(\widehat G_B^\top\widehat G_B)^{-1/2}\,S_A^{-1/2},
   \qquad \widehat G_B:=G_B S_A^{-1/2}
 \end{equation*}
-($\widehat G_B$ is the factor gradient $G_B$ whitened on the right by the partner Gram root).
+($\widehat G_B$ is the factor gradient $G_B$ whitened on the right by the other factor's Gram root $S_A^{-1/2}$).
 With no accumulation the middle factor is a polar map by \eqref{eq:polar-id}, so
 \begin{equation*}
   \dot B=-\eta\,\polar(\widehat G_B)\,S_A^{-1/2}
@@ -633,7 +691,7 @@ Feeding $\widehat M$ through \eqref{eq:imuon-lmo-ambient} (using $G_A A^\top=B^\
   \quad\Longrightarrow\quad
   \dot B(\widehat M)=\polar\!\big(G_B S_A^{1/2}+(BB^\top)G_B S_A^{-1/2}\big)S_A^{-1/2},
 \end{equation*}
-which carries an extra term $(BB^\top)G_B$ that the partner-Gram polar
+which carries an extra term $(BB^\top)G_B$ that the decoupled factor step
 $\dot B=\polar(G_B S_A^{-1/2})S_A^{-1/2}$ of \Cref{prop:imuon} does not ($\dot A$ is symmetric).
 So switching momentum off does not recover \Cref{prop:imuon}; that needs the recombination
 dropped as well, leaving the momentum-free base algorithm. \Cref{prop:imuon} is the
@@ -667,7 +725,7 @@ linear maps, and each factor gradient is a linear image of $G$. For $G_A=B^\top 
 \end{equation*}
 Hence $G_A\sim\mathcal{MN}(0,C_A,Q)$, and symmetrically $G_B\sim\mathcal{MN}(0,P,C_B)$
 with $C_B=AQA^\top$ --- this is \eqref{eq:ours-closure}. Each factor gradient carries
-the side it resolves ($Q$ for $G_A$, $P$ for $G_B$) alongside the partner-side matrix as
+the side it resolves ($Q$ for $G_A$, $P$ for $G_B$) alongside the partner matrix ($C_A$ for $G_A$, $C_B$ for $G_B$) as
 a known nuisance covariance; that shared dependence is the coupling between the sides.
 
 \paragraph{Conditional MLE (flip-flop).} With the row covariance $C_A$ held fixed, the
@@ -690,8 +748,8 @@ iteration rather than iterating to convergence.
   \quad\Longrightarrow\quad
   \E\!\big[\tfrac1r\,G_A^\top C_A^{-1}G_A\big]=Q,
 \end{equation*}
-so the estimator is unbiased for $Q$, and likewise for $P$. Setting the partner-side
-matrices to the identity ($C_A,C_B\to I$) decouples the sides into two independent
+so the estimator is unbiased for $Q$, and likewise for $P$. Setting the partner matrices
+$C_A,C_B$ to the identity decouples the sides into two independent
 Adafactor diagonals.
 
 \section{Spectral-norm estimation}
@@ -699,7 +757,7 @@ Adafactor diagonals.
 \Cref{alg:smax} estimates every operator norm $\norm{\cdot}_2$ in \Cref{alg:ours}. The floor at the larger row/column $\ell_2$ norm (both lower-bound $\smax$) guards against under-estimation: a cold or stale power iteration can under-estimate $\smax$, and an under-estimate at the rescale $W/\norm{W}_2$ inflates the step past $\rho$ and can diverge.
 
 \begin{algorithm}[h]
-\caption{Guarded spectral-norm estimate $\smax(M)$}
+\caption{Guarded spectral-norm estimate of $\norm{M}_2$}
 \label{alg:smax}
 \begin{algorithmic}[1]
 \Require matrix $M$; warm-start vector $v$ (cached across steps); iterations $K$
@@ -720,10 +778,10 @@ Adafactor diagonals.
 
 \section{Matrix-sign and inverse-sqrt via Gram Newton--Schulz}
 \label{app:gramns}
-Both spectral primitives of \Cref{alg:ours} --- the polar map $\polar(\cdot)$ and the
-curvature inverse-sqrt $C^{-1/2}$ --- run as one degree-$5$ Newton--Schulz iteration on
-the $r\times r$ Gram matrix, sharing a single coefficient family and using no
-eigendecomposition (\Cref{alg:gramns}).
+Both spectral primitives of \Cref{alg:ours} --- the matrix sign $\polar(\cdot)$ (the
+orthogonal polar factor, \Cref{sec:method}) and the curvature inverse-sqrt $C^{-1/2}$ ---
+run as one degree-$5$ Newton--Schulz iteration on the $r\times r$ Gram matrix, sharing a
+single coefficient family and using no eigendecomposition (\Cref{alg:gramns}).
 
 \paragraph{Coefficients.} Each iteration applies the odd quintic
 $p_t(x)=a_t x+b_t x^3+c_t x^5$, the minimax polynomial that pushes the singular values
@@ -737,10 +795,12 @@ accumulator $Q$, each step applies
 \begin{equation*}
   M_t=a_t I+b_t R+c_t R^2,\qquad Q\gets M_t Q,\qquad R\gets M_t R\,M_t .
 \end{equation*}
-The two maps differ only in how $R$ is seeded and what is returned: the polar seeds
-$R$ from the Gram of the normalized input and returns $Q\tilde X$; the inverse-sqrt
-seeds $R$ from the normalized, damped curvature (\Cref{app:damping}) and returns a
-rescaled $Q$.
+Both maps run this same iteration, and the accumulator $Q$ is the product of the $M_t$;
+they differ only in the seed $R_0$ and what is returned:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Matrix sign} $\polar(X)$ --- seed $R$ from the Gram of the normalized input, return $Q\tilde X$.
+  \item \textbf{Inverse-sqrt} $C^{-1/2}$ --- seed $R$ from the normalized, damped curvature (\Cref{app:damping}), return a rescaled $Q$.
+\end{itemize}
 
 \paragraph{Stability and precision.} The coefficients grow quickly across iterations,
 so a spurious negative eigenvalue of $R$ can blow up; a restart at iteration $\tau$
@@ -821,22 +881,22 @@ FLOP-bound; the FLOP fraction is the floor the wall approaches as the batch grow
 \section{Per-setting learning curves}
 \label{app:curves}
 Loss-vs-step for the settings whose speedup the body reports only as a table number ---
-\Cref{tab:breadth} (model families, \Cref{fig:curves-breadth}) and \Cref{tab:rank} (rank
-ladder, \Cref{fig:curves-rank}); same annotation as \Cref{fig:hero}. Each panel is AdamW
+\Cref{tab:breadth} (model families, \Cref{fig:curves-breadth}) and \Cref{tab:rank} (across
+ranks, \Cref{fig:curves-rank}); same annotation as \Cref{fig:hero}. Each panel is AdamW
 vs.\ \methodname{} at its best lr. The cells already drawn as curves in the body
 (\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated here.
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{figA_breadth.pdf}
-  \caption{\textit{[placeholder]} Model breadth (code / $r{=}256$): OLMo-2-1B, Llama-3.2-1B, Llama-3-8B (Qwen/code is \Cref{fig:ood}). AdamW vs.\ \methodname{}.}
+  \caption{\textit{[placeholder]} Across models (code / $r{=}256$): OLMo-2-1B, Llama-3.2-1B, Llama-3-8B (Qwen/code is \Cref{fig:ood}). AdamW vs.\ \methodname{}.}
   \label{fig:curves-breadth}
 \end{figure}
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{figA_rank.pdf}
-  \caption{\textit{[placeholder]} Rank ladder (Llama-3.2-1B / Math): $r\in\{32,64,128\}$ ($r{=}256$ is \Cref{fig:hero}). AdamW vs.\ \methodname{}.}
+  \caption{\textit{[placeholder]} Across ranks (Llama-3.2-1B / Math): $r\in\{32,64,128\}$ ($r{=}256$ is \Cref{fig:hero}). AdamW vs.\ \methodname{}.}
   \label{fig:curves-rank}
 \end{figure}
 
