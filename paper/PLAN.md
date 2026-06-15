@@ -31,7 +31,9 @@ pillar has a dedicated ablation arm at the anchor cell:
    core at native magnitude). The unpinned core blows up at B=0 (Rem b0 / E0 measured); it
    runs only with `--lora_init_b symmetric` (PiSSA-style, step-0 = pretrained) — and that
    requirement IS the stability evidence (ours trains from standard B=0, the family core
-   cannot). **NO lr-transfer claim (CUT 2026-06-12).**
+   cannot). The radius also gives the EMPIRICAL r≥32 lr-stability of the transfer figure (E3:
+   our loss-min lr stays at 0.01 across rank, AdamW's drifts) — but NO muA-style theoretical
+   rank-invariance / r^{−1/2} prediction, and r16 stays out (exploratory).
 3. **Curvature control** — the KL-coupled diagonal. Evidence: −curvature arm (+4.8σ at
    the anchor), the 8B raw-vs-KL diagonal gap (~9σ).
 
@@ -113,8 +115,11 @@ equations. Derivation of record: `docs/notes/polar_product/kl_shampoo_polar_deri
   (Rem b0 / E0). iMuon deliberately removes this radius (its Gram root bounds the *product*
   step but leaves the raw factor step ∝ 1/σ_min(partner) uncontrolled; headline runs
   momentum-free at r≤16). The rank ladder shows the method **wins at each r** (r64/128/256) —
-  per-rank speedup-vs-AdamW. **lr-TRANSFER is CUT (2026-06-12):** do NOT reintroduce
-  "transfers across rank" / "rank-invariant lr" / r^{−1/2} / muA-as-prediction.
+  per-rank speedup-vs-AdamW. **lr-transfer = EMPIRICAL r≥32 only (reinstated 2026-06-13):** the
+  loss-min lr stays at 0.01 for r∈{32,64,128,256} while AdamW's drifts (E3 / fig:lr_transfer) —
+  stable lr across high-enough rank, unlike Adam. Still CUT: the THEORETICAL framing
+  ("rank-invariant lr" / r^{−1/2} / muA-as-prediction). r16 is exploratory (preasymptotic, its
+  loss-min lr shifts to ~0.017); excluded from the figure so the claim carries no small-rank caveat.
 - **C2 (two-sided curvature on momentum + polar).** vs iMuon: add the large-axis diagonal
   curvature (second Shampoo side). vs AdaPreLoRA (which already does two-sided diagonal
   whitening on momentum): add the **polar cap** and stay **strictly factor-space** (no
@@ -148,7 +153,8 @@ equations. Derivation of record: `docs/notes/polar_product/kl_shampoo_polar_deri
 
 Citation discipline (from the related-work agents):
 - **Spectron** = the operator-norm radius mechanism (their Eq. 16 == our ρ). Credit explicitly.
-- **muA** = rank-aware lr theory; cite as related work only — we make NO lr-transfer claim, so no muA-as-prediction.
+- **muA** = rank-aware lr theory; cite as related work only. Our r≥32 lr-stability is EMPIRICAL
+  (fig:lr_transfer), not a muA-style theoretical prediction — do NOT invoke muA / r^{−1/2} as predicting it.
 - **iMuon** = partner-Gram-whitened polar on the fixed-rank LoRA manifold; credit it for
   removing runtime rescale, GL(r)-invariance, and the factor-condition-independent rate.
 - **Tilde CM** = NOT a repackaging of iMuon — same atomic operator, different composition
@@ -169,7 +175,9 @@ Citation discipline (from the related-work agents):
   $\lambda{=}0$) + gauge-invariance analysis. TinyShakespeare-scale from-scratch, both factors
   random-init — never faces $B{=}0$. Does NOT cite iMuon or Gram-NS/Dao; msign = plain
   PolarExpress (not Gram form), inverse-sqrt = separate NS table. Their Prop 5 (Spectron radius
-  fails scalar gauge invariance) transfers to our linearized ρ — pre-empted in tension 6.
+  fails scalar gauge invariance) transfers to our linearized ρ — NOT engaged for v1 (tension 6):
+  the head-to-head is the iMuon-core baseline at r256 only (we beat it); NO across-rank LoRA-Muon
+  (transfer or op-norm ratio), NO gauge / self-balancing / BaLoRA figure.
 - **LoRA-α (2606.12883, concurrent)** = $\alpha^* \approx 256\sqrt{r}$ under AdamW —
   parameterization axis, no optimizer work. Effective adapter scale
   $\alpha/r \propto r^{-1/2}$ corroborates the muA family; cite in one clause alongside muA.
@@ -192,12 +200,13 @@ Each cell earns its place; this is the whole grid.
 |---|---|---|---|
 | **Code @ r256** (canonical rank) | OLMo-2-1B / Qwen2.5-1.5B / Llama-3.2-1B / **Llama-3-8B** — opc r256 | "we win" × 3 model families + 1 scale point | OLMo ✅ (7 lr PE8); 3 to run |
 | **OOD pair** (one rank) | Qwen2.5-1.5B opc r256 ↔ **Qwen2.5-1.5B bengali r256** | task-dependence C4 (only dataset changes) | bengali to run |
-| **Rank ladder** (math, popular model) | **Llama-3.2-1B openmath r16 / r32 / r64 / r128 / r256** | wins across r (C1) + rank coverage (C4); r16/r32 cover the common low-rank regime | r64/128/256 ✅; **r16/r32 to run** |
+| **Rank ladder** (math, popular model) | **Llama-3.2-1B openmath r32 / r64 / r128 / r256** (r16 run but EXPLORATORY, not in paper) | wins across r (C1) + empirical r≥32 lr-stability (E3) | r32/64/128/256 ✅ |
 
 - **r=256 is the canonical rank** (ablation home); the Llama-math ladder is the only place rank varies.
-- The ladder spans **r16→r256** (extended 2026-06-12 to r16/r32 — the common LoRA regime). Protagonist
-  best lr is **0.01 interior at r64/128/256** (loss 0.385→0.374→0.364 monotone in rank); the
-  {3e-3,1e-2,3e-2} grid brackets the low-rank end. Ladder = protagonist vs AdamW only (the
+- The paper ladder = **r32→r256** (transfer figure). r16 is run but EXPLORATORY — preasymptotic,
+  loss-min lr shifts to ~0.017 — excluded so the transfer claim carries no small-rank caveat.
+  Protagonist best lr is **0.01 interior at r32/64/128/256** (loss monotone in rank); the
+  {3e-3,1e-2,3e-2} grid brackets it; AdamW's drifts. Ladder = protagonist vs AdamW only (the
   ablations stay at the r256 anchor).
 - Llama carries the across-rank coverage (popular model, has r64/r256 registry cells —
   Qwen has no r64 cell so can't ladder cheaply); Qwen carries the OOD headline; OLMo is the
@@ -279,10 +288,12 @@ Each cell earns its place; this is the whole grid.
     arm, the protagonist) are all already run for the baseline + LOO; if the LOO bars need a
     cumulative-climb narrative at writing time, re-plot the same arms (a matplotlib call, not
     an experiment).
-- **E3 — speedup-across-rank figure.** Per-rank speedup-vs-AdamW across the Llama-math ladder
-  (r64/r128/r256): the protagonist wins at every rank (the ladder shows the method **works
-  across r**). NO lr-transfer / r^{−1/2} / rank-invariance overlay (CUT). Report the per-rank
-  speedup; do NOT headline "grows with rank" (single-seed, fragile).
+- **E3 — lr-across-rank (transfer) figure.** fig:lr_transfer: final loss vs lr per rank,
+  r∈{32,64,128,256}. EMPIRICAL claim: the protagonist's loss-min lr stays at 0.01 for every r
+  while AdamW's drifts (3e-4→1e-4) — stable lr across high-enough rank, unlike Adam. NO
+  THEORETICAL overlay (r^{−1/2} / rank-invariance / muA-as-prediction — CUT). r16 excluded
+  (exploratory). Also report per-rank speedup-vs-AdamW; do NOT headline "grows with rank"
+  (single-seed, fragile).
 - **E4 — walltime.** Profile the protagonist's per-step (fwd/bwd/opt split) vs AdamW at the
   headline cells, **global batch ∈ {16 (comparison horizon), 64 (timing-only bench)}**.
   Publish walltime speedup = step-speedup ÷ per-step-ratio. **Never profiled the
@@ -302,10 +313,12 @@ Each cell earns its place; this is the whole grid.
 ## Tensions to manage in the writing (pre-empt reviewers)
 
 1. C1 vs iMuon: iMuon *chose* to remove ρ. Argue raw-factor-step blowup (1/σ_min) + B=0
-   instability; the radius is magnitude control, NOT lr-transfer (cut).
+   instability; the radius is magnitude control, and gives EMPIRICAL r≥32 lr-stability (E3) —
+   NOT a muA-style theoretical rank-invariance claim.
 2. C2 vs AdaPreLoRA: prior art for two-sided-on-momentum. Lead with polar + factor-space cost.
-3. **lr-transfer CUT (2026-06-12)** — no "transfers across rank" / rank-invariant / r^{−1/2} /
-   muA-as-prediction claim remains to manage.
+3. **lr-transfer = EMPIRICAL r≥32 only (reinstated 2026-06-13).** Claim: loss-min lr stable
+   across r∈{32,64,128,256}, Adam's drifts (fig:lr_transfer). Keep OUT the theoretical framing
+   (rank-invariant / r^{−1/2} / muA-as-prediction) and r16 (exploratory; no small-rank caveat).
 4. Opposite-factor whitening *hurts* early-time at high rank (`chord_tight_whiten_lag_r256.md`)
    — don't claim more preconditioning is monotonically better.
 5. KL-Shampoo (no polar) beats SOAP/Shampoo in full-weight pretraining
@@ -313,17 +326,16 @@ Each cell earns its place; this is the whole grid.
    redundant. We do NOT run a −polar arm to refute this (non-polar is known-weak, and
    removing polar is not novel over iMuon); polar's necessity rests on the spectral-method
    literature (Muon/iMuon/Spectron). State this as a cited premise, not an empirical result.
-6. **Radius gauge-sensitivity** (LoRA-Muon Prop 5, on Spectron's quadratic radius; transfers
-   to our linearized ρ). Defense, stated as a deliberate trade: per-factor step magnitude is
-   itself gauge-dependent, so invariance and per-factor magnitude control are mutually
-   exclusive; our merged-step bound ρ(σ_max A + σ_max B) = η holds at every gauge (only the
-   factor split varies). Their evidence is an adversarial ×99 rescale with no natural
-   occurrence; ours is at the B=0 init fine-tuning actually uses, where the unpinned family
-   update leaves the factor step uncapped (‖Ȧ‖₂ ≈ η/σ_min(B); undefined at exactly B=0,
-   untested by them). Our stability is the pin: the σ_max(W) rescale makes ‖Ȧ‖₂ = η by
-   construction at every conditioning, so the protagonist trains from standard B=0 — E0
-   measures the unpinned core diverging there. Credit the invariance concept (RITE's Thm 1)
-   to RITE, not LoRA-Muon (RITE itself is B=0-graceful via pseudo-inverse: R_B^†=0 ⟹ δA=0).
+6. **Radius gauge-sensitivity (LoRA-Muon Prop 5) — NOT engaged for v1 (cut 2026-06-13).**
+   Their Prop 5 (Spectron's radius fails scalar gauge invariance) transfers to our ρ, but we do
+   NOT pre-empt it. Engaging it forces an across-rank LoRA-Muon comparison (transfer + op-norm
+   ratio) — the rabbit hole — and the self-balancing rebuttal is weak (it admits the r16 wobble)
+   and distracts from the stable-across-r≥32-vs-Adam headline. Performance is the argument: we
+   beat the LoRA-Muon core (iMuon) at r256. NO gauge / self-balancing / op-norm-ratio / BaLoRA
+   figure or comparison. The B=0 init-stability edge is a SEPARATE point and stays (tension 1 /
+   Rem b0): the σ_max(W) rescale makes ‖Ȧ‖₂ = η by construction, so the protagonist trains from
+   standard B=0 while the unpinned family core diverges there (E0). Credit the invariance concept
+   to RITE's Thm 1, not LoRA-Muon (RITE is B=0-graceful via pseudo-inverse: R_B^†=0 ⟹ δA=0).
 
 ## Decisions (resolved 2026-06-09)
 
