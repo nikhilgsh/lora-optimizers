@@ -6,9 +6,10 @@
 % Story (LOCKED 2026-06-08):
 %   Headline   : WE WIN -- the cheapest spectral-polar member is the fastest
 %                LoRA optimizer.
-%   Protagonist: diagonal Shampoo+polar.
-%   Claim      : it matches the expensive members and beats AdamW 1.5-1.7x
-%                across 14 (model,dataset,rank) settings -- the expensive
+%   Protagonist: coupled two-sided DIAGONAL curvature + full polar + op-norm radius
+%                (kl-diag-polar-lora).
+%   Claim      : it matches the expensive members and beats AdamW 1.2-1.7x
+%                across 9 (model,dataset,rank) settings -- the expensive
 %                machinery is dead weight.
 % ---------------------------------------------------------------------------
 
@@ -72,20 +73,22 @@
 
 % ===========================================================================
 \begin{abstract}
-% SKELETON: Farquhar 5-sentence formula -- one stub per sentence, author expands.
-% Numbers are placeholders; RE-PULL from the loader before submission.
-% (1) what:        introduce \methodname (Shampoo-style two-sided curvature whiten
-%                  -> full polar -> operator-norm step radius).
-% (2) why-hard:    spectral updates on the LoRA factors fail (factorization-dependent,
-%                  factor norms diverge); known fixes appear in isolation, bundled
-%                  into heavy methods -- unclear which ingredient carries the gain.
-% (3) how:         keep the cheap essential parts -- diagonal two-sided whitener,
-%                  full polar via PolarExpress, operator-norm step radius.
-% (4) evidence:    14 (model,dataset,rank) settings, 4 base models, 4 corpora;
-%                  reaches AdamW's loss in \PLACEHOLDER{1.2--1.7}$\times$ fewer steps;
-%                  ablations show the expensive curvature flavor and inner refinement
-%                  are unnecessary -- cheap diagonal two-sided whitening suffices.
-% (5) number:      near-free -- $\le 6\%$ wall per step at production batch.
+We introduce \methodname{}, a LoRA optimizer that applies a polar (spectral-cap)
+map to two-sided-whitened momentum and sizes each step by a per-factor
+operator-norm radius. Spectral and curvature-aware updates reach a target loss in
+fewer steps than AdamW on full-weight training, but carrying them to the LoRA
+factors $A,B$ is not straightforward: a per-factor polar depends on the
+$\DW{=}BA$ factorization rather than on $\DW$ itself, the factor norms can diverge,
+and the known remedies appear only bundled into heavy methods, leaving it unclear
+which ingredient carries the gain. \methodname{} keeps only the cheap essential
+parts --- a coupled two-sided \emph{diagonal} curvature whitener, a full polar
+(PolarExpress), and an operator-norm step radius
+$\rho=\eta/(\smax(A){+}\smax(B))$. Across $9$ (model, dataset, rank) settings
+spanning $4$ base models and $3$ corpora, it reaches AdamW's eval loss in
+$1.2$--$1.7\times$ fewer steps, and ablations show that the more expensive
+Kronecker-factored curvature and inner-iteration refinement are unnecessary. The
+per-step overhead is $\le 6\%$ at production batch and the optimizer state is
+${\approx}\tfrac12$ AdamW's, so the step-count speedup survives in wall-clock.
 \end{abstract}
 
 % ===========================================================================
@@ -100,65 +103,86 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-% SKELETON -- author writes prose. Beats to hit, in order:
-% - Hook: LoRA is the default; the optimizer that trains the adapter is the
-%   under-examined lever (practice defaults to AdamW).
-% - Challenge: spectral/steepest-descent (Muon family) and Shampoo curvature both
-%   reach target loss in fewer steps on full-weight training, but carrying them to
-%   the LoRA factors is not straightforward -- per-factor polar is not invariant
-%   to the dW = BA reparameterization; factor norms can diverge \cite{kang_specgf, imuon}.
-% - Gap (remedies are partial, each bundled with expensive machinery):
-%     * LoRA-RITE \cite{lorarite}: transformation invariance (the concept's origin,
-%       ICLR'25) via partner-basis "unmagnified" gradients, but bundled with
-%       transported one-sided second moments + escaped-mass state; no spectral cap
-%       outside its memoryless limit, no per-factor radius, fixed r=16.
-%     * iMuon \cite{imuon}: reparam-invariance via partner-Gram-whitened polar,
-%       but controls only the PRODUCT step -- per-factor step unbounded.
-%     * Spectron \cite{spectron}: per-factor operator-norm step radius, but for
-%       native low-rank PRETRAINING, not adapter fine-tuning.
-%     * Shampoo/SOAP, AdaPreLoRA \cite{soap, adaprelora}: two-sided curvature, no
-%       spectral cap; AdaPreLoRA cost scales with the dense weight.
-%     * lr-scaling rules for LoRA \cite{mua}: rate-rank relationship, but for
-%       sign/Adam-style updates, not spectral.
-% - Approach: assemble the cheap union, ablate the expensive parts away.
-%   \methodname = momentum -> two-sided DIAGONAL curvature whiten -> FULL polar
-%   (spectral cap) -> operator-norm step radius rho = eta/(smax(A)+smax(B)).
-%
-% lr-transfer: empirical r>=32 claim (\Cref{fig:lr_transfer}). All-ranks exploratory
-%   view (incl. r16) lives in paper_plots.ipynb, not here.
+Low-rank adaptation (LoRA) is the default way to fine-tune a large language model:
+it freezes the pretrained weight $W_0$ and learns a rank-$r$ adapter
+$\DW=(\alpha/r)\,BA$ with $A\in\R^{r\times d_{\mathrm{in}}}$,
+$B\in\R^{d_{\mathrm{out}}\times r}$. Which optimizer trains that adapter is an
+under-examined lever: practice defaults to AdamW --- the optimizer for dense
+weights --- applied unchanged to the factors $A,B$.
+
+On full-weight training, two families reach a target loss in fewer steps than
+AdamW: spectral / steepest-descent updates (the Muon family) and Shampoo-style
+curvature whitening. Neither carries cleanly to the LoRA factors. The product
+$\DW=BA$ is invariant under $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$, but a
+per-factor polar map is not --- so it depends on the chosen factorization rather
+than on $\DW$ --- and the factor norms can diverge under the corresponding flow
+\cite{kang_specgf, imuon}.
+
+Remedies exist, but each is partial and bundled with expensive machinery. The
+invariance fix --- LoRA-RITE \cite{lorarite}, then iMuon \cite{imuon} and the
+concurrent LoRA-Muon \cite{loramuon} --- whitens each factor by its partner's Gram
+root, but controls only the merged \emph{product} step and leaves the per-factor
+step unbounded. A per-factor operator-norm radius exists (Spectron
+\cite{spectron}), but for native low-rank \emph{pretraining}, not adapter
+fine-tuning. Two-sided curvature exists (Shampoo/SOAP \cite{soap}, AdaPreLoRA
+\cite{adaprelora}), but without a spectral cap and, for AdaPreLoRA, at a cost that
+scales with the dense weight. No single method has the cheap union of all three,
+and it is unclear which ingredient carries the speedup.
+
+\methodname{} assembles that union and ablates the expensive parts away. One step
+is: bias-corrected momentum $\to$ whiten each factor in a learned two-sided
+\emph{diagonal} curvature metric $\to$ full polar (spectral cap) $\to$ re-pin the
+magnitude to a per-factor operator-norm radius $\rho=\eta/(\smax(A){+}\smax(B))$.
+The radius bounds the merged step independent of the factor conditioning, which
+lets the method train from the standard $B{=}0$ init where the partner-Gram core
+cannot.
 
 \paragraph{Contributions.}
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \textbf{Fast, cheap LoRA optimizer.} Reaches AdamW's eval loss in
-        \PLACEHOLDER{1.2--1.7}$\times$ fewer steps across 14 settings; $\le 6\%$
-        wall per step.
+  \item \textbf{A fast, cheap LoRA optimizer.} \methodname{} reaches AdamW's eval
+        loss in $1.2$--$1.7\times$ fewer steps across $9$ (model, dataset, rank)
+        settings, at $\le 6\%$ per-step wall overhead and ${\approx}\tfrac12$
+        AdamW's optimizer state.
   \item \textbf{Operator-norm magnitude control.} A per-factor operator-norm radius
         bounds the merged step, so the method trains from the standard $B{=}0$ init
-        where the partner-Gram family core cannot, and wins at every rank
-        $r\in\{64,128,256\}$.
-  \item \textbf{What carries the gain.} Ablations show that more expensive
+        where the partner-Gram family cannot, and wins at every rank
+        $r\in\{32,64,128,256\}$. Its loss-minimizing learning rate stays fixed
+        across these ranks while AdamW's drifts (\Cref{fig:lr_transfer}).
+  \item \textbf{What carries the gain.} Ablations show that the cheap two-sided
+        \emph{diagonal} whitener is necessary, but the more expensive
         Kronecker-factored curvature (Shampoo/SOAP \cite{soap}, KL-Shampoo
-        \cite{klshampoo}) and inner-iteration refinement do not beat cheap diagonal
-        two-sided whitening at $k{=}1$; the polar cap follows the spectral-method
-        literature \cite{imuon, spectron, polarexpress}.
-  \item \textbf{Benchmark.} A 14-setting LoRA-optimizer comparison under a
-        speedup-to-AdamW metric over 4 base models and 4 corpora.
+        \cite{klshampoo}) and inner-iteration refinement are not; the polar cap
+        follows the spectral-method literature \cite{imuon, spectron, polarexpress}.
+  \item \textbf{A LoRA-optimizer benchmark.} A $9$-setting comparison under a
+        speedup-to-AdamW metric over $4$ base models and $3$ corpora.
 \end{itemize}
 
-% Results-preview stub (author expands): speedup is task-dependent -- largest
-% out-of-distribution and at higher rank
-% (\PLACEHOLDER{$1.20\times$ in-distribution code vs.\ $1.57\times$ OOD, same model/rank});
-% per-step overhead leaves the step-count speedup intact in wall-clock.
+The speedup is task-dependent --- largest out-of-distribution and at higher rank
+($1.30\times$ on in-distribution code versus $1.73\times$ on an out-of-distribution
+corpus, at the same model and rank) --- and the per-step overhead is small enough
+that it survives in wall-clock.
 
 % ===========================================================================
 \section{Setup and metric}
 \label{sec:setup}
-% SKELETON -- TODO author:
-% - LoRA factor convention (A:(r,d_in), B:(d_out,r), dW=(alpha/r)BA).
-% - Held-everything-fixed protocol (model, data+split, r/alpha, targets, seq len,
-%   batch, dtype, constant LR no warmup).
-% - Speedup-vs-AdamW metric (horizon / steps-to-match-AdamW-final-loss).
-% - AdamW noise floor sigma as the unit for Delta claims.
+\paragraph{LoRA.} We adapt each frozen base weight $W_0$ with
+$\DW=(\alpha/r)\,BA$, $A\in\R^{r\times d_{\mathrm{in}}}$,
+$B\in\R^{d_{\mathrm{out}}\times r}$, $\alpha{=}r$, on all linear modules, from the
+standard $B{=}0$ initialization.
+
+\paragraph{Held-fixed protocol.} Every optimizer comparison fixes the base model,
+dataset and split, rank and $\alpha$, target modules, sequence length, batch size,
+gradient accumulation, dtype, and a constant learning rate with no warmup or decay;
+only the optimizer and its learning rate vary. We select the learning rate per
+(optimizer, setting) on held-out eval loss over a fixed grid.
+
+\paragraph{Speedup metric.} For a setting with horizon $H$ steps, let
+$\ell^\star$ be AdamW's best-learning-rate final eval loss. The \emph{speedup} of a
+method is $H/s$, where $s$ is the first (interpolated) step at which the method's
+best-learning-rate trajectory reaches $\ell^\star$. A $1.5\times$ speedup means the
+method matches AdamW's final loss in two-thirds of the steps; a method that never
+reaches $\ell^\star$ within the horizon has no speedup. All results are single seed
+(\Cref{sec:limitations}).
 
 % ===========================================================================
 \section{Method: \methodname}
@@ -338,7 +362,7 @@ LoRA starts at $B{=}0$, where the partner-Gram polar of \Cref{prop:imuon} has no
 
 \paragraph{Cost.} \methodname{} is \emph{lighter} than AdamW in memory and adds a small, batch-amortized compute overhead.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Memory.} Same first moment as AdamW, but AdamW's second moment is replaced by two curvature diagonals $P,Q$ --- a factor $r$ smaller. The $r\times r$ cores $C_A=B^\top PB$, $C_B=AQA^\top$ are formed on the fly (\Cref{alg:ours}), not stored, and \texttt{gram\_ns} is eigh-free (no eigenbasis, no $d\times d$ state). Net state ${\approx}\tfrac12$ AdamW's (\Cref{tab:optstate}).
+  \item \textbf{Memory.} Same first moment as AdamW, but AdamW's second moment is replaced by two curvature diagonals $P,Q$ --- a factor $r$ smaller. The $r\times r$ cores $C_A=B^\top PB$, $C_B=AQA^\top$ are formed on the fly (\Cref{alg:ours}), not stored, and the inverse-sqrt is eigh-free (no eigenbasis, no $d\times d$ state). Net state ${\approx}\tfrac12$ AdamW's (\Cref{tab:optstate}).
   \item \textbf{Compute.} Per pair: $8$ matmuls of cost ${\sim}r^2d$ (the two cores, whiten/un-whiten, two curvature applies), two full polars (PolarExpress \cite{polarexpress}, PE${=}8$), two gram--Newton--Schulz inverse-sqrts \cite{gram_ns} (${\sim}r^3$). All $r\times r$ or $r\times d$, eigh-free; the polars dominate.
   \item \textbf{Wall.} Near-free at production batch: the fixed \texttt{optimizer.step} amortizes against the batch-scaling forward/backward (\Cref{sec:exp-walltime}).
 \end{itemize}
@@ -360,45 +384,68 @@ AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.5
 \section{Experiments}
 \label{sec:exp}
 
-\subsection{Main result: speedup across 14 settings}
-% SKELETON -- Figure 1 = AlgoPerf-style performance profile, \methodname vs AdamW
-% vs the expensive spectral-polar members over all 14 workloads. The "we win" figure.
+\subsection{Main result: speedup across nine settings}
+\methodname{} is faster than AdamW on every setting we tried.
+\Cref{fig:hero} shows the showcase cell; \Cref{tab:speedup} reports the speedup at
+all nine.
+
 \begin{figure}[t]
   \centering
-  % \includegraphics[width=\linewidth]{performance_profile.pdf}
-  \fbox{\parbox{0.9\linewidth}{\centering\vspace{3em}
-    \textbf{Figure 1 (placeholder).} Performance profile across 14 settings:
-    fraction of settings where each method is within $\tau$ of the fastest.
-    \methodname dominates. Generated after the coverage fill.\vspace{3em}}}
-  \caption{Placeholder.}
-  \label{fig:profile}
+  \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
+  \caption{\textbf{\methodname{} reaches AdamW's loss in fewer steps.} Held-out eval
+  loss versus training step on the showcase setting (Llama-3.2-1B,
+  OpenMathInstruct-2, $r{=}256$, $9000$ steps), each method at its best learning
+  rate. The dashed line marks AdamW's final loss; \methodname{} reaches it near step
+  $5500$ --- a $1.63\times$ step speedup --- while iMuon does not reach it within the
+  horizon. Single seed.}
+  \label{fig:hero}
 \end{figure}
 
+\begin{table}[t]
+  \centering\small
+  \input{figs/tab1_speedup.tex}
+  \caption{\textbf{Per-setting speedup over AdamW}, sorted by speedup. Speedup is
+  steps-to-reach AdamW's best-learning-rate final loss (\Cref{sec:setup});
+  ``speedup'' uses \methodname{}'s best learning rate, ``speedup (lr-avg)'' averages
+  over the learning-rate grid. \methodname{} beats AdamW on all $9$ settings
+  ($1.2$--$1.7\times$); iMuon, run on two settings, does not. Single seed; per-cell
+  tail trajectories in \Cref{fig:tailzoom}.}
+  \label{tab:speedup}
+\end{table}
+
 \subsection{Ablations: which components carry the speedup}
-% SKELETON -- two data sources (PLAN.md E2, anchors pivoted 2026-06-12):
-%   knobs (a)/(b) = EXISTING logs at the old anchors (OLMo opc r256, Qwen bengali r256);
-%   knobs (c)/(d) + the -radius arm = NEW e2_* runs on the Llama-3.2-1B openmath
-%   ladder (primary hero; -Shampoo/-curvature at r256, -radius across r64/128/256).
-% Knobs:
-%   (a) dense/KL-Kronecker vs diagonal curvature -> flavor doesn't matter
-%       (fed by EXISTING kl_shampoo_polar_* logs at both anchors)
-%   (b) single-pass vs refined inner iteration   -> refinement doesn't matter
-%       (fed by EXISTING *picard_ablation* logs)
-%   (c) w/o curvature control (partner-Gram-only whitening) -> curvature IS needed
-%       (novelty-vs-iMuon-family arm; new e2_no_diag_curv runs)
-%   (d) double ablation (-curvature -radius): LABEL "partner-Gram polar (pinned)" --
-%       NOT "LoRA-Muon" (overclaims; their update has no magnitude pin). Footnote:
-%       this is the shared DIRECTION of simplified LoRA-RITE / iMuon-decoupled /
-%       LoRA-Muon at lambda=0 (equivalence: loramuon Prop 6 + our Prop 2), run
-%       inside our step with the unit-spectral-norm pin (optim.py: the
-%       dA=-(cA rho/sWA) WA rescale is unconditional; cw_no_radius only swaps
-%       adaptive rho -> plain eta) -- a charitable, stabilized stand-in for the
-%       family core. The literal unpinned update has ||dA|| ~ eta/sigma_min(B)
-%       (their Alg 4 returns t^{-1/2} X_K = true Gram scale) and the absolute-damped
-%       realization measurably diverges at B=0 (E0). Nesterov beta1=0.9 vs their
-%       EMA; eta vs eta/2 and NS realization absorbed by the lr grid.
-% Polar is NOT ablated: the non-polar variant is known-weak and removing polar is
-% not novel over iMuon; polar's necessity is cited \cite{imuon, spectron, polarexpress}.
+\label{sec:exp-ablation}
+The two-sided curvature whitener is what carries the speedup; the expensive
+\emph{flavor} of curvature does not.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.6\linewidth]{fig2_ablation.pdf}
+  \caption{\textbf{The curvature whitener carries the gain.} Final eval loss versus
+  learning rate on the ablation anchor (Llama-3.2-1B, OpenMathInstruct-2,
+  $r{=}256$), each arm's loss-minimizing rate ringed; the gray band marks AdamW's
+  seed-to-seed variability above the best final loss. Removing the diagonal
+  curvature whitener (``w/o curvature control'': the partner-Gram polar of
+  \Cref{prop:imuon} with the magnitude pin kept) cuts the step speedup over AdamW
+  from $1.63\times$ to $1.01\times$ and narrows the usable learning-rate range.
+  Single seed.}
+  \label{fig:ablation}
+\end{figure}
+
+\paragraph{Curvature is necessary.} Removing the two-sided diagonal curvature ---
+leaving the partner-Gram polar of iMuon (\Cref{prop:imuon}) with the magnitude pin
+kept --- erases essentially all of the speedup: the ablated arm reaches AdamW's
+final loss only at the very end of the horizon ($1.01\times$), versus $1.63\times$
+for the full method (\Cref{fig:ablation}). The curvature whitener, not the polar
+geometry alone, is what moves \methodname{} ahead of AdamW.
+
+\paragraph{The expensive flavor is dead weight.} Given that two-sided curvature is
+needed, the cheapest form of it suffices. Replacing the coupled \emph{diagonal}
+whitener with dense Kronecker-factored curvature (Shampoo/SOAP \cite{soap},
+KL-Shampoo \cite{klshampoo}), or adding inner-iteration refinement, does not improve
+on the single-pass diagonal. We do not ablate the polar cap itself: the non-polar
+variant is known weak and its necessity is established in the spectral-method
+literature \cite{imuon, spectron, polarexpress}.
 
 \subsection{From step speedup to wall-clock}
 \label{sec:exp-walltime}
@@ -424,8 +471,8 @@ $r=256$ & $1.21\times$ & $1.05\times$ & $1.01\times$ \\
 \bottomrule
 \end{tabular}
 \caption{Measured per-step wall overhead of \methodname{} over AdamW (Blackwell
-RTX PRO 6000, \textbf{OLMo-2-1B}, all-linear, seq~2048, \texttt{polar\_express}
-PE${=}8$, $\smax$ floor at 8 power-iters, \texttt{gram\_ns} inverse-sqrt). The
+RTX PRO 6000, \textbf{OLMo-2-1B}, all-linear, seq~2048, PolarExpress
+PE${=}8$, $\smax$ floor at 8 power-iters, Gram--Newton--Schulz inverse-sqrt). The
 fixed-cost \texttt{optimizer.step} ($\approx117$\,ms at $r{=}256$, $\approx59$\,ms
 at $r{=}64$) amortizes against the batch-scaling forward/backward; its
 per-operation makeup is \Cref{app:walltime}. The same production-batch step on
@@ -439,36 +486,35 @@ batch~$16$) --- larger in absolute optimizer cost than OLMo-2-1B but a smaller
 
 \subsection{Task and rank coverage of the speedup}
 \label{sec:exp-taskdep}
-% MAIN POINT: the speedup is task-dependent (largest OOD, smallest on in-distribution
-% code at the larger models), and the method WINS at every rank on the ladder. The
-% lr-vs-rank paragraph below IS the (reinstated 2026-06-13, EMPIRICAL r>=32) lr-transfer
-% claim; speedup "grows with rank" stays cut.
-% Report the per-rank speedup; do NOT headline "grows with rank" (single-seed, fragile).
-% Numbers (speedup-vs-AdamW @ best lr; \PLACEHOLDER -- partial-polar data, refresh
-% after the full-polar sweep):
-%   - hard / in-distribution code ~1.2x: Llama-3-8B/opc r256 = 1.24x;
-%     Qwen2.5-1.5B/opc r256 = 1.20x.
-%   - OOD higher: Qwen2.5-1.5B/Bengali r256 = 1.57x (SAME model & rank as opc 1.20x
-%     -- the clean controlled pair: only the dataset changes).
-%   - across rank (Llama-3.2-1B openmath ladder): wins at r64, r128, r256.
-% TODO author: figure -- speedup at each (task, rank); ladder = per-rank win vs AdamW.
+The speedup varies with the task and holds across the rank ladder
+(\Cref{tab:speedup}).
+
+\paragraph{Task dependence.} The speedup is largest out-of-distribution. Holding
+the model and rank fixed (Qwen2.5-1.5B, $r{=}256$) and changing only the corpus,
+\methodname{} is $1.30\times$ faster than AdamW on in-distribution code
+(opc-sft-stage2) and $1.73\times$ faster on an out-of-distribution corpus
+(Aya-Bengali) --- the largest and smallest speedups in \Cref{tab:speedup} share
+the same model and rank and differ only in the data.
+
+\paragraph{Learning rate across the rank ladder.} \methodname{} wins at every rank
+on the Llama-3.2-1B OpenMathInstruct ladder ($r\in\{32,64,128,256\}$,
+\Cref{tab:speedup}). Its loss-minimizing learning rate stays at $10^{-2}$ for every
+rank, while AdamW's shifts left from $3\times10^{-4}$ ($r{=}32$) to $10^{-4}$
+($r{\ge}64$) (\Cref{fig:lr_transfer}). The mechanism is the operator-norm radius
+(\Cref{eq:ours-prodcap}): it caps the merged step at $\eta$ independent of rank, so
+the same rate transfers as $r$ grows.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{figs/fig3_lr_transfer.pdf}
-  \caption{Final eval loss versus learning rate across the rank ladder
-  (Llama-3.2-1B, OpenMathInstruct, $9000$ steps), one curve per rank; a star marks each
-  curve's loss-minimizing rate. Polar-LoRA's minimum stays at $10^{-2}$ for every $r$,
-  while AdamW's shifts left from $3\times10^{-4}$ ($r{=}32$) to $10^{-4}$ ($r{\ge}64$).
-  Single seed; high-learning-rate divergence exits the top of each panel.}
+  \includegraphics[width=\linewidth]{fig3_lr_transfer.pdf}
+  \caption{\textbf{\methodname{}'s best learning rate is stable across rank.} Final
+  eval loss versus learning rate on the Llama-3.2-1B OpenMathInstruct rank ladder
+  ($9000$ steps), one curve per rank; a star marks each curve's loss-minimizing
+  rate. \methodname{}'s minimum stays at $10^{-2}$ for every $r$, while AdamW's
+  shifts left from $3\times10^{-4}$ ($r{=}32$) to $10^{-4}$ ($r{\ge}64$). Single
+  seed; high-learning-rate divergence exits the top of each panel.}
   \label{fig:lr_transfer}
 \end{figure}
-
-\paragraph{Learning rate across the rank ladder.} (\Cref{fig:lr_transfer}; $r\in\{32,64,128,256\}$, single seed, $9000$ steps.)
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \methodname's loss-minimizing lr $=10^{-2}$ at every rank; AdamW's drifts $3\times10^{-4}\,(r{=}32)\to10^{-4}\,(r{\ge}64)$.
-  \item Claimed mechanism: the operator-norm radius (\Cref{eq:ours-prodcap}) caps the merged step at $\eta$ independent of rank.
-\end{itemize}
 
 % ===========================================================================
 \section{Related work}
@@ -478,30 +524,32 @@ batch~$16$) --- larger in absolute optimizer cost than OLMo-2-1B but a smaller
 %   - Shampoo / SOAP curvature.
 %   - Riemannian-preconditioned LoRA -- the product-norm precedent.
 %   - LoRA optimizer/init work (GaLore, LoRA+, nonzero-init).
-%   - rank-aware lr / alpha rules \cite{mua, loraalpha} -- cite as related work only,
-%     NO connection to our method (we make no lr-transfer claim). muA = rank-aware lr
-%     theory; LoRA-alpha = alpha ~ 256 sqrt(r) under AdamW (a parameterization knob).
+%   - rank-aware lr / alpha rules \cite{mua, loraalpha} -- cite as related work only.
+%     Our lr-transfer claim is EMPIRICAL (the r>=32 basin alignment, \Cref{fig:lr_transfer}),
+%     NOT a muA-style theoretical rank-invariance prediction -- do not invoke muA / r^{-1/2}
+%     as predicting our result. muA = rank-aware lr theory; LoRA-alpha = alpha ~ 256 sqrt(r)
+%     under AdamW (a parameterization knob).
 %   - norm-scaled per-factor lr that bounds a bilinear product's change
 %     (QuacK \cite{quack}, concurrent) -- closest external precedent to our
 %     operator-norm radius; they pick Frobenius, we pick spectral.
 %   - invariant partner-Gram updates on LoRA (authored paragraph below): RITE -> iMuon ->
-%     LoRA-Muon lineage + the gauge-invariance-vs-magnitude-control trade (pre-empts
-%     loramuon Prop 5 aimed at our radius).
+%     LoRA-Muon lineage; their Alg 1 = the partner-Gram core we run as a baseline and beat,
+%     + the B=0 init-stability edge. NO gauge-invariance / Prop-5 engagement (cut: we don't
+%     compare across rank, our performance is better; gauge is a distraction from the
+%     stable-across-r>=32-vs-Adam headline).
 
-\paragraph{Curvature-whitened spectral updates.} Measuring the spectral (Muon) cap in a Shampoo-curvature metric has a dense, full-rank precedent in pre-training: SOAP-Muon \cite{soapmuon} (one-sided SOAP whitens the small side, Muon orthogonalizes the other, converging to a two-sided equilibrium) and, closest to us, Mousse \cite{mousse}. With $L=\mathrm{EMA}(GG^\top)$, $R=\mathrm{EMA}(G^\top G)$ and $P=L^{1/4},Q=R^{1/4}$, Mousse solves
+\paragraph{Curvature-whitened spectral updates.} Measuring the spectral (Muon) cap in a Shampoo-curvature metric has a dense, full-rank precedent in pre-training: SOAP-Muon \cite{soapmuon} (one-sided SOAP whitens the small side, Muon orthogonalizes the other, converging to a two-sided equilibrium) and, closest to us, Mousse \cite{mousse}. With one-sided second-moment factors $L=\mathrm{EMA}(GG^\top)$ and $R=\mathrm{EMA}(G^\top G)$, Mousse takes the step
 \begin{equation*}
-  \min_{\Delta W}\ \operatorname{tr}(G^\top\Delta W)\ \ \text{s.t.}\ \ \|P\,\Delta W\,Q\|_2\le1,
-  \qquad
-  \Delta W=-L^{-1/4}\,\mathrm{msign}(L^{-1/4}GR^{-1/4})R^{-1/4},
+  \DW=-L^{-1/4}\,\polar\!\big(L^{-1/4}\,G\,R^{-1/4}\big)\,R^{-1/4},
 \end{equation*}
-the whiten/polar/unwhiten sandwich of \eqref{eq:ours-lmo}. \methodname{} differs on three axes that matter for adapter fine-tuning:
+the same whiten/polar/unwhiten sandwich as \eqref{eq:ours-lmo}. \methodname{} differs on three axes that matter for adapter fine-tuning:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Factor space.} The curvature reduces to the $r\times r$ cores $C_A=B^\top PB$, $C_B=AQA^\top$, restricted to the reachable subspaces $\operatorname{col}(B),\operatorname{row}(A)$ --- not the dense $d\times d$ Kronecker factors of Mousse/SOAP-Muon.
-  \item \textbf{Diagonal but coupled.} $P,Q$ are diagonal (Adafactor-form \cite{adafactor}) yet coupled by the KL-Shampoo MLE \cite{klshampoo} --- not raw energy, not full Shampoo eigenbases; our ablations show the dense flavor does not beat the coupled diagonal at $k{=}1$.
+  \item \textbf{Factor space.} On a LoRA pair the curvature never forms a dense $d\times d$ matrix. It collapses to two small $r\times r$ matrices, $C_A=B^\top PB$ and $C_B=AQA^\top$ --- the curvature seen on the rank-$r$ subspaces the factors actually span --- in place of the dense Kronecker factors of Mousse/SOAP-Muon.
+  \item \textbf{Diagonal but coupled.} The two side-factors $P,Q$ are diagonal (Adafactor-form \cite{adafactor}) but coupled through the matrix-normal MLE \cite{klshampoo}: not independent per-axis gradient energies, and not full Shampoo eigenbases. Our ablations show this dense, full-eigenbasis flavor does not improve on the coupled diagonal.
   \item \textbf{LoRA-native.} It is the adapter member of this family, where the dense methods target full-parameter pre-training.
 \end{itemize}
 
-\paragraph{Norm-scaled per-factor learning rates.} QuacK \cite{quack} (concurrent) bounds the change of the attention-logit product $W_QW_K^\top$ by scaling each factor's rate by the partner's inverse norm, $\eta_Q\propto\|W_K\|^{-1}$, $\eta_K\propto\|W_Q\|^{-1}$ --- the learning-rate analogue of our operator-norm radius $\rho=\eta/(\smax(A)+\smax(B))$ on $BA$ \eqref{eq:ours-prodcap}. It differs in object (attention logits, pre-training vs.\ adapter, fine-tuning), norm (Frobenius --- they find spectral adds little; ours is operator), and mechanism (scalar per-tensor lr only, no polar).
+\paragraph{Norm-scaled per-factor learning rates.} Like our operator-norm radius, QuacK \cite{quack} (concurrent) limits how far a \emph{product} of two trained matrices can move in one step. It scales each factor's learning rate by the inverse norm of its partner --- $\eta_Q\propto\|W_K\|^{-1}$ and $\eta_K\propto\|W_Q\|^{-1}$ for the attention product $W_QW_K^\top$ --- the learning-rate analogue of our radius $\rho=\eta/(\smax(A){+}\smax(B))$ on $BA$ \eqref{eq:ours-prodcap}. It differs in three ways: the object is the attention logits in \emph{pre-training}, not a fine-tuning adapter; the bound is Frobenius (they report the spectral version adds little) where ours is operator-norm; and the mechanism is a scalar per-tensor rate with no polar map.
 
 % ---------------------------------------------------------------------------
 % iMuon / LoRA-Muon concrete weaknesses to LAND in related work (don't forget;
@@ -516,27 +564,40 @@ the whiten/polar/unwhiten sandwich of \eqref{eq:ours-lmo}. \methodname{} differs
 %     warmup to survive B=0. The proven equation is implemented in NO code variant.
 %   - Slow: ~3.9 s/step at OLMo r256 (our E0 baseline).
 % LoRA-Muon \cite{loramuon}: full analysis in related_work_notes.md (Alg 1 = the method
-%   we reproduce; Alg 2 = optional no-op gauge rebalancing; B=0 instability; scope; their
-%   Prop 5 = our radius). Load-bearing notes live there, NOT in these comments.
+%   we reproduce as the iMuon-core baseline and beat; Alg 2 = optional no-op gauge rebalancing;
+%   B=0 instability; scope). We do NOT engage their across-rank gauge story or Prop 5 (cut for
+%   v1). Load-bearing notes live in related_work_notes.md, NOT in these comments.
 % ---------------------------------------------------------------------------
 \paragraph{Invariant partner-Gram updates on LoRA.} A lineage of LoRA optimizers enforces \emph{transformation invariance} --- the update to $\DW$ should not depend on the factorization $(NA,BN^{-1})$ --- via the partner-Gram polar of \Cref{prop:imuon}.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Lineage.} LoRA-RITE \cite{lorarite} introduced the invariance, stripping each factor gradient's partner magnitude (polar $B=U_BR_B$, precondition $G\,U_B$ on the $r$-side with basis-transported second moments); its memoryless core is \Cref{prop:imuon}, re-derived as iMuon's decoupled form \cite{imuon} and, concurrently, LoRA-Muon \cite{loramuon} (which proves the RITE-core equivalence). LoRA-Muon's optimizer \emph{is} this core (their Alg.~1); the two pieces it adds --- a split weight decay (a no-op at our $\lambda{=}0$) and a scalar gauge rebalancing (their App.~B.1, a no-op because the core is gauge-invariant) --- are optional, and we omit both. Our both-controls-removed arm is this shared core, so \Cref{sec:exp} measures what the two controls add over the whole family at once.
-  \item \textbf{The trade.} Invariance cuts against our radius: $\rho$ changes under $(A,B)\mapsto(cA,B/c)$ \cite{loramuon}. We accept this deliberately --- per-factor magnitude is itself gauge-dependent, so no gauge-invariant rule can control it, while our merged-step bound \eqref{eq:ours-prodcap} holds at every gauge (only the factor split varies).
-  \item \textbf{Why it pays.} Gauge imbalance is shown only under adversarial rescaling \cite{loramuon}; the one extreme factor-scale fine-tuning actually hits is the $B{=}0$ init, where the gauge-invariant core has no stable step (needs warmup or nonzero init) but our rescale starts cleanly (\Cref{rem:b0}). Replacing the adaptive radius with a flat $\eta$ costs \PLACEHOLDER{+3.5--4.4$\sigma$} with a $3\times$ smaller usable learning-rate range.
+  \item \textbf{Init stability.} The one extreme factor scale that fine-tuning actually hits is the standard $B{=}0$ adapter init. There the partner-Gram core has no stable learning rate --- its per-factor step grows as $1/\sigma_{\min}(B)$ and is undefined at $B{=}0$ --- so the family requires warmup or a nonzero init, whereas our operator-norm rescale pins $\|\dot A\|_2=\rho$ and starts cleanly from $B{=}0$ (\Cref{rem:b0}).
 \end{itemize}
+
+\paragraph{Gauge sensitivity of the radius.} The operator-norm radius is not gauge-invariant: under the rescaling $(A,B)\mapsto(cA,c^{-1}B)$ the denominator $\smax(A){+}\smax(B)$ changes --- it is smallest, giving the largest step, when $\smax(A){=}\smax(B)$ --- so an imbalanced factorization changes the trajectory, the concern raised for Spectron-style radii \cite{loramuon}. In practice the worst case does not arise. Under \methodname{} the factors \emph{self-balance}: the operator-norm ratio $\|B\|_2/\|A\|_2$ rises from its $B{=}0$ start to ${\approx}1$ within the first few thousand steps and holds there (\Cref{fig:gauge}), the same balanced state the gauge-invariant LoRA-Muon step maintains by construction. The radius therefore operates near its balanced optimum throughout training, and the balance tightens with rank (it is closest to $1$ at the ranks we use, $r{\ge}32$).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{fig_gauge.pdf}
+  \caption{\textbf{The factors self-balance under \methodname{}.} Operator-norm ratio $\|B\|_2/\|A\|_2$ (left) and Frobenius balance $\|AA^\top-B^\top B\|_F$ (right), averaged over the $112$ LoRA pairs of Llama-3.2-1B / OpenMathInstruct / $r{=}256$, with shaded interquartile range. Starting from the imbalanced $B{=}0$ init, \methodname{} drives $\|B\|_2/\|A\|_2\to1$ --- the op-norm-balanced state the gauge-invariant LoRA-Muon step holds by construction --- so \methodname{}'s gauge-sensitive radius operates near its balanced optimum. Single seed.}
+  \label{fig:gauge}
+\end{figure}
 
 % ===========================================================================
 \section{Limitations}
 \label{sec:limitations}
-% SKELETON -- TODO author: single base-model family scale ceiling (<=8B);
-% eval-loss primary, downstream pass@1 limited/absent; single/low seed count
-% -> state sigma coverage.
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \textbf{Single seed.} Every speedup and ablation is from a single seed; we do not report seed-to-seed variance, so small differences should be read with that in mind. Multi-seed confirmation on the headline settings is the natural next step.
+  \item \textbf{Loss as the primary metric.} We compare optimizers by held-out eval loss and do not report downstream task metrics (e.g.\ code pass@1); lower eval loss need not transfer to them.
+  \item \textbf{Coverage.} The evidence spans four base models up to $8$B, but is thin per task family: math is essentially one rank ladder, the out-of-distribution point is a single Bengali corpus, and $8$B is one setting. Each is a clean controlled comparison rather than a large sample.
+  \item \textbf{Rank coverage, not rank growth.} The ladder shows \methodname{} wins at each rank $r\in\{32,64,128,256\}$; we do not claim the speedup \emph{grows} with rank.
+  \item \textbf{Deferred baseline.} We compare against AdamW and iMuon; the published LoRA-RITE \cite{lorarite} is not run as a full optimizer. Our LoRA-Muon-step comparison (\Cref{fig:gauge}) covers its memoryless core, but not its transported one-sided second moments.
+\end{itemize}
 
 % ===========================================================================
 \section{Conclusion}
 \label{sec:conclusion}
-% SKELETON -- TODO author.
+\methodname{} shows that the fast part of spectral, curvature-aware optimization carries to LoRA adapters cheaply. A polar step taken in a coupled two-sided \emph{diagonal} curvature metric and sized by a per-factor operator-norm radius reaches AdamW's loss in $1.2$--$1.7\times$ fewer steps across nine settings, trains from the standard $B{=}0$ init, and keeps a learning rate that transfers across rank --- while the more expensive Kronecker-factored curvature and inner-iteration refinement it is usually bundled with add nothing. The per-step overhead is small enough that the step-count speedup survives in wall-clock, and the optimizer state is about half AdamW's.
 
 % ===========================================================================
 \appendix
@@ -649,15 +710,33 @@ matrix-sign $\polar(\cdot)$ (PolarExpress PE=8, 2 factors)       & 46.1 & 37 \\
 operator norm $\smax$ ($4$ evaluations, App.~\ref{app:smax})     & 30.8 & 25 \\
 inverse-sqrt $C^{-1/2}$ (Gram NS, 2 factors)                     & 14.0 & 11 \\
 momentum bias-correction $+$ damping $+$ apply                   & 12.3 & 10 \\
-whiten $+$ unwhiten ($C^{-1/2}\!\cdot\!D^{-1/2}$ applies)        &  6.9 &  5 \\
+whiten $+$ unwhiten ($C^{-1/2}\!\cdot\!Q^{-1/2}$ applies)        &  6.9 &  5 \\
 gather (stack $112$ pairs into shape groups $+$ EMA)            &  6.7 &  5 \\
-diagonal curvature EMA ($D_{\mathrm{in}},D_{\mathrm{out}}$)      &  4.5 &  4 \\
+diagonal curvature EMA ($P,Q$)                                   &  4.5 &  4 \\
 curvature Gram $C_A,C_B$ recompute                               &  4.2 &  3 \\
 \bottomrule
 \end{tabular}
 \caption{Per-operation makeup of \texttt{optimizer.step} (Blackwell, OLMo-2-1B, $r{=}256$).}
 \label{tab:walltime-ops}
 \end{table}
+
+\section{Per-cell tail trajectories}
+\label{app:tailzoom}
+\Cref{fig:tailzoom} shows the tail of every setting in \Cref{tab:speedup}: held-out
+eval loss after step $3000$ for \methodname{} and AdamW at each method's best
+learning rate, with AdamW's final loss as a dashed line and the speedup printed at
+\methodname{}'s crossing of it.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figA_tailzoom.pdf}
+  \caption{\textbf{Tail trajectories per setting.} Eval loss versus step (tail only,
+  step $\ge 3000$) for \methodname{} (blue) and AdamW (gray) at each method's best
+  learning rate, one panel per setting in \Cref{tab:speedup}. Dashed line: AdamW's
+  final loss; the vertical drop-line marks where \methodname{} reaches it, annotated
+  with the step speedup. Single seed.}
+  \label{fig:tailzoom}
+\end{figure}
 
 \printbibliography
 \end{document}

@@ -37,8 +37,8 @@ from lora_playground.leaderboard import (
 )
 from lora_playground.workloads import find_workload, iter_workloads, workload_runs
 
-FIGS = ROOT / "paper" / "figs"
-FIGS.mkdir(exist_ok=True)
+FIGS = ROOT / "paper" / "manuscript" / "figs"
+FIGS.mkdir(parents=True, exist_ok=True)
 
 plt.rcParams.update({
     # Professional, paper-matching look (STIX ~ Times; unified text+math) at readable sizes.
@@ -337,69 +337,10 @@ def fig3(star_ms=11, figsize=(7.2, 3.0)):
     return fig
 
 
-def _gauge_traj(group):
-    """Per-pair gauge stats (sigma_ratio, balance_resid: median/min/max over the 112 LoRA
-    pairs = all layers) vs step, read from a diagnostic run's optim_step events (load_runs
-    returns eval events, not per-step diagnostics)."""
-    import glob
-    import json
-    import numpy as np
-    for f in sorted(glob.glob(str(ROOT / "logs" / group / "run_info" / "logs" / "log_*.out"))):
-        rows = []
-        for line in open(f):
-            if '"balance_resid_median"' in line:
-                try:
-                    e = json.loads(line)
-                    if e.get("event") == "optim_step":
-                        rows.append(e)
-                except Exception:
-                    pass
-        if rows:
-            g = lambda k: np.array([r.get(k, np.nan) for r in rows], float)
-            return dict(step=g("step"),
-                        SRm=g("sigma_ratio_median"), SRlo=g("sigma_ratio_min"), SRhi=g("sigma_ratio_max"),
-                        BRm=g("balance_resid_median"), BRlo=g("balance_resid_min"), BRhi=g("balance_resid_max"))
-    return None
-
-
-def fig_gauge(proto_group="gauge_kldiag_r256_bw", muon_group="gauge_loramuon_r256_bw",
-              figsize=(9.6, 3.6)):
-    """Gauge balance during training (Llama-3.2-1B / OpenMathInstruct r256, per-pair over
-    the 112 LoRA pairs = all layers). (A) radius gauge coordinate sigma_max(A)/sigma_max(B):
-    our run self-balances toward 1. (B) normalized factor-Gram gap ||AAt - BtB|| / max(.):
-    how far the factors sit from AAt = BtB. Reads the diagnostic runs' logs; returns the figure."""
-    arms = [("Polar-LoRA (ours)", proto_group, "#2166ac"),
-            ("LoRA-Muon step", muon_group, "#d6604d")]
-    data = [(lab, _gauge_traj(grp), c) for lab, grp, c in arms]
-    fig, ax = plt.subplots(1, 2, figsize=figsize)
-    ax[0].axhline(1.0, color="gray", ls="--", lw=1)
-    for lab, D, c in data:
-        if D is None:
-            continue
-        # Plot ||B||_2/||A||_2 (well-behaved: 0 at B=0 init -> 1 balanced); the field logs
-        # ||A||_2/||B||_2 per pair, so invert (median & band endpoints commute with 1/x).
-        ax[0].fill_between(D["step"], 1.0 / D["SRhi"], 1.0 / D["SRlo"], color=c, alpha=0.15)
-        ax[0].plot(D["step"], 1.0 / D["SRm"], color=c, lw=2, label=lab)
-        ax[1].fill_between(D["step"], D["BRlo"], D["BRhi"], color=c, alpha=0.13)
-        ax[1].plot(D["step"], D["BRm"], color=c, lw=2, label=lab)
-    ax[0].set_xlabel("Step"); ax[0].set_ylabel(r"$\|B\|_2 / \|A\|_2$")
-    ax[0].set_title("Operator Norm")
-    ax[0].legend(frameon=False)
-    ax[1].set_ylim(0, 1.05); ax[1].set_xlabel("Step")
-    ax[1].set_ylabel(r"$\|AA^\top - B^\top B\|_F$ (normalized)")
-    ax[1].set_title("Frobenius Norm")
-    ax[1].legend(frameon=False, loc="lower right")
-    fig.tight_layout()
-    fig.savefig(FIGS / "fig_gauge.pdf", bbox_inches="tight")
-    fig.savefig(FIGS / "fig_gauge.png", dpi=150, bbox_inches="tight")
-    return fig
-
-
 if __name__ == "__main__":
     fig1()
     table1()
     figA()
     fig2()
     fig3()
-    fig_gauge()
     print(f"figures written to {FIGS}")

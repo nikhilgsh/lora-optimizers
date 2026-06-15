@@ -195,7 +195,7 @@ AdamW speed target (best-lr final loss): **0.3823**  ·  horizon 9000 steps
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
 | AdamW | 1e-04 | 0.3823 | 1.00× | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 1e-02 | 0.3643 | 1.63× | 1.30× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 1e-02 | 0.3644 | 1.63× | 1.30× |
 | chord-tight ns=8 k=1 (abs=1e-6) | 3e-03 | 0.3710 | 1.36× | 1.20× |
 | diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.3723 | 1.30× | 1.09× |
 

@@ -10,4 +10,5 @@
 *.run.xml
 *.synctex.gz
 *-blx.bib
-*.pdf
+# Compiled manuscript PDF (figure PDFs under figs/ are tracked)
+skeleton.pdf

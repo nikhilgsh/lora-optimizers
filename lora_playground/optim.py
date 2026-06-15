@@ -1080,7 +1080,7 @@ class CurvatureWhitenLoRA(Optimizer):
     ablation. ``precond_delta_relative`` is accepted for factory compatibility
     (damping here is always relative).
 
-    ── CANONICAL SPEC: paper/skeleton.tex Algorithm 1 (`alg:ours`). ─────────────
+    ── CANONICAL SPEC: paper/manuscript/skeleton.tex Algorithm 1 (`alg:ours`). ──
     That algorithm is the source of truth for the protagonist's update math
     (whiten → polar → unwhiten + operator-norm radius ρ=η/(σmax(A)+σmax(B))).
     THIS class is the IMPLEMENTATION; it realizes that math via an EIGENBASIS
