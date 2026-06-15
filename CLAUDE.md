@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 - **Math discussion is equation-first.** Define every symbol on first use (shape + meaning), then write the actual update/derivation as equations. Do NOT describe an update in prose or gesture at "metrics"/"powers of D̄" without the algebra. Show the substitution and the resulting expression — formal results, not hand-waving.
 - Don't oscillate: name where a claim is grounded (paper/code/derivation) before asserting it; if you contradict an earlier claim, say which was wrong and why.
 - **Accept the user's evidence and premises.** If the user says the experiments show X (e.g. "k2 is a no-op"), treat X as established. Do NOT re-litigate it, re-label it "confounded"/"unproven", or keep demanding your own re-run to "prove" it. Work forward from their premise.
+- **No undefined jargon nouns in paper/notes prose — name the symbol or the plain object.** Banned as standalone nouns: **"core"** (do NOT write "the $r\times r$ cores", "partner-Gram core", "the shared/memoryless core") — say the defined symbol ($C_A$, $C_B$, "the $r\times r$ matrices") or the plain update ("the partner-Gram update", "the family's base update"). Same treatment for any evocative-but-undefined noun ("the bulk", "the head/tail", "mass", "scope"): bind it to a symbol/formula at first use or use the plain phrase. If a noun names a thing you can point to with a symbol, use the symbol.
+- **Paper LaTeX: spectral/operator norm is `\norm{X}_2`, never `\sigma_max(X)`/`\smax(X)`.** A matrix's spectral norm in `paper/manuscript/` uses the `\norm` macro (`\DeclarePairedDelimiter{\norm}{\lVert}{\rVert}`) — e.g. `\norm{A}_2`, `\norm{B\dot A+\dot B A}_2`. Reserve `\smax` **only** for the appendix estimator, where it literally names the top singular value the power iteration estimates. Notation anchor in the symbol list: `\norm{M}_2=\smax(M)`.
 
 ## Project Overview
 
@@ -41,6 +43,15 @@ python train_lora.py \
 ```
 
 Default local conda environment: `ffcv-pl`. Always set `WANDB_MODE=offline` for W&B runs. Do not install or mutate environments — report missing dependencies.
+
+## Paper manuscript (Overleaf subtree)
+
+The paper lives in `paper/manuscript/` (main file `main.tex`), which is a **git subtree** mirrored to the `paper` remote (`git@github.com:nikhilgsh/lora-paper.git`, which Overleaf syncs). A normal `git push` to `origin` does **NOT** update Overleaf.
+
+- After committing manuscript changes, also push the subtree: **`./paper/sync.sh push`** (it `module load`s a git with `git-subtree`, then `git subtree push --prefix=paper/manuscript paper main`).
+- Subtree operates on **committed** history — commit first, then push.
+- If the manuscript was also edited on Overleaf, **`./paper/sync.sh pull`** before `push` (a push is rejected when `lora-paper` has commits you don't have).
+- Compile from `paper/manuscript/` with `conda run -n texlive tectonic --keep-intermediates --synctex main.tex`. Figure PDFs under `figs/` are tracked (Overleaf needs them); `main.pdf` and LaTeX build artifacts are gitignored.
 
 ## Architecture
 
@@ -151,6 +162,8 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
   SVD/`eigh` for when you genuinely need the full spectrum (e.g. the one-time eigenbasis
   seed in a periodic refresh), never for a single top singular/eigen value.
 - **Notebook analysis cells: check `lora_playground/plotting/` first.** Before writing a custom aggregation+plot function for a new comparison cell, grep the plotting package for a primitive that already does it: `compare_variants_figure` (label→extra_where dict, final-vs-lr + best-lr trajectory + summary table with Δσ), `standard_sweep_figure`, `sweep_figure_with_auto_ylim`, `distinct_palette`, `filter_baseline`, `filter_variants`. New comparisons are usually one call into the library plus a small variants dict — not a 100+-line cell that duplicates loader/aggregation/plotting bookkeeping. Add to the library before forking that pattern across multiple cells.
+- **Mark the optimal learning rate with a same-color filled star, never a ring/circle.** Match `fig3`/the transfer figure in `lora_playground/plotting/paper_figs.py` (`ax.plot([b],[y],"*", ms=star_ms, color=<series color>, mec="white", mew=0.5, zorder=5)`). The star takes the series' own color. Do not use a hollow `marker="o"` ring (this is distinct from the crossing-point dot that marks where a curve reaches AdamW's loss — that stays a small filled `o`).
+- **No plot text may overlap another element — fix it by PLACEMENT, never a masking box, and verify by rendering.** Every text element (annotation, callout, legend, inline label, title) must sit in genuinely empty space, clear of curves, markers, error bands, other text, and the axes frame. A white/semi-opaque `bbox` or `framealpha` legend box is NOT an acceptable fix — it admits the text is over a curve and hides the collision; do not use one to "solve" overlap. Resolve it by moving the text instead: (1) **put it in clear space** — pick the legend `loc`/`bbox_to_anchor` (place it fully OUTSIDE the axes when the panel interior is busy, e.g. `loc="center left", bbox_to_anchor=(1.02, 0.5)` — `fig3`'s rank legend) or the annotation anchor to land in an empty region; (2) **lift it clear of the curves under its own x-footprint** — scan the lines already on the axis and place the label just above the highest one in that x-window, so it clears every curve by construction (`_annotate_speedup` in `lora_playground/plotting/paper_figs.py` does exactly this for the "N× fewer steps" label; `fig1`/`fig_ood` route through it). After writing/editing ANY plotting code you MUST render the figure and `Read` the saved `.png` to confirm nothing collides — you cannot judge overlap from the code. Never hand-place a bare `ax.text`/`ax.annotate` over the plotting area, and never declare a figure done without viewing the rendered image.
 
 ## Experiment Rules
 

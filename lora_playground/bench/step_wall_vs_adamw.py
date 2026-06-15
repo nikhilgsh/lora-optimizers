@@ -1,6 +1,6 @@
 """Full-step wall ×AdamW for the protagonist, sweeping precond_method and global
 batch — the analog of `docs/notes/timing_benchmarks_r256_blackwell.md` §3a and the
-paper's per-step-overhead table (skeleton.tex §sec:exp-walltime), now including the
+paper's per-step-overhead table (main.tex §sec:exp-walltime), now including the
 `gram_ns` (Polar-Express Gram NS inverse-sqrt) upgrade alongside the eigh/QR default.
 
 AdamW is the optimizer-invariant fwd+bwd baseline; the cw cells reuse the SAME

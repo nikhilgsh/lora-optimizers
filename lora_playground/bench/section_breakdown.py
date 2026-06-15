@@ -1,5 +1,5 @@
 """Semantic per-operation breakdown of the protagonist `optimizer.step()` —
-the appendix table behind the ×AdamW wall numbers (skeleton.tex §sec:exp-walltime).
+the appendix table behind the ×AdamW wall numbers (main.tex §sec:exp-walltime).
 
 Attaches a `CudaTimer` so the `cw_*` scopes in `_cw_apply_grouped` emit per-section
 CUDA time, swept over precond_method ∈ {eigh, gram_ns}. The step cost is batch/seq-

@@ -11,4 +11,4 @@
 *.synctex.gz
 *-blx.bib
 # Compiled manuscript PDF (figure PDFs under figs/ ARE tracked — Overleaf needs them)
-skeleton.pdf
+main.pdf
