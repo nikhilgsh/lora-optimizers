@@ -1,0 +1,14 @@
+# LaTeX build artifacts (this dir is the Overleaf-synced repo root)
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*-blx.bib
+# Compiled manuscript PDF (figure PDFs under figs/ ARE tracked — Overleaf needs them)
+skeleton.pdf
