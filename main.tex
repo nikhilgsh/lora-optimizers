@@ -52,7 +52,7 @@
 \newcommand{\DW}{\Delta W}
 \DeclareMathOperator{\polar}{msign}          % matrix sign (orthogonal polar factor): U\Sigma V^T -> U V^T
 % Working method name -- rename in one place once finalized.
-\newcommand{\methodname}{\textsc{Polar-LoRA}\xspace}
+\newcommand{\methodname}{\textsc{Polora}\xspace}
 \usepackage{xspace}
 % Visible marker for numbers pending the full-polar confirm/negate sweep.
 \newcommand{\PLACEHOLDER}[1]{\textcolor{red}{[#1]}}
@@ -66,7 +66,14 @@
 \theoremstyle{remark}
 \newtheorem{remark}{Remark}
 
-\title{\methodname}  % working title -- revisit before submission
+\usepackage[colorinlistoftodos,bordercolor=orange,backgroundcolor=orange!20,linecolor=orange]{todonotes}
+
+\newcommand{\nikhil}[1]{\todo[inline]{\textbf{Nikhil: }#1}}
+\newcommand{\rob}[1]{\todo[inline]{\textbf{Robert: }#1}}
+\newcommand{\tanya}[1]{\todo[inline]{\textbf{Tanya: }#1}}
+
+
+\title{\methodname: Preconditioned Orthogonalized LoRa}  % working title -- revisit before submission
 \author{}
 \date{}
 
@@ -105,14 +112,41 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
   \item \PLACEHOLDER{A LoRA-optimizer speedup benchmark.}
 \end{itemize}
 
+
 % ===========================================================================
-\section{Setup and metric}
+\section{Using Spectral Geometry with Lora}
 \label{sec:setup}
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{LoRA.} $\DW=(\alpha/r)\,BA$, $A\in\R^{r\times d_{\mathrm{in}}}$, $B\in\R^{d_{\mathrm{out}}\times r}$, $\alpha{=}r$, all linear modules, standard $B{=}0$ init.
-  \item \textbf{Held fixed across optimizers.} model, dataset $+$ split, $r$/$\alpha$, targets, sequence length, batch, grad-accum, dtype, constant lr (no warmup/decay). Only the optimizer and its lr vary; lr is picked per (optimizer, setting) on held-out eval loss.
-  \item \textbf{Speedup} (horizon $H$, AdamW best-lr final loss $\ell^\star$): $H/s$, with $s$ the first interpolated step the method's best-lr trajectory reaches $\ell^\star$. No crossing within $H \Rightarrow$ no speedup.
-\end{itemize}
+
+
+Consider a single linear layer, where $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ is the frozen pre-trained weights of this layer. Our objectives is to fine-tune a given model (with frozen weights) for a given task by adding a low rank matrix to these weights. We will represent this fine-tuning task as
+\begin{equation}
+    \min_{A\in\R^{r\times d_{\mathrm{in}}},
+B\in\R^{d_{\mathrm{out}}\times r}} \ell(W_0 + BA)
+\end{equation}
+where $\ell$ is a loss that captures this task.  The resulting linear layers of our model are now encoded by
+\[ x \mapsto W_0 \,x + BA \,x.\]
+Using this viewpoint as a linear operator, we will derive a type of spectral descent method~\cite{}, that is, a variant of Muon~\cite{} specialized to low rank matrices.
+
+The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
+\[ \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2\]
+where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
+The spectral norm 
+
+That is, given a gradient matrix $G \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ for this layer, we derive the update
+
+$$W_{t+1} = \argmin_{W\in  \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}} \langle G,W-W_t\rangle \quad \mbox{subject to } \| W-W_t\|_2 \leq \eta$$
+
+
+
+A naive way to combine Muon with a Lora is simply to update the factors $A$ and $B$ separately using the 
+
+where $G_A...$ 
+
+
+But this ignores the product structure, and introduces undesired dependencies on otherwise ignored symmetries...
+
+
+
 
 % ===========================================================================
 \section{Method: \methodname}
@@ -314,6 +348,15 @@ AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.5
 \section{Experiments}
 \label{sec:exp}
 
+
+\rob{Some left over pieces describing experimental setup:}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \textbf{LoRA.} $\DW=(\alpha/r)\,BA$, $A\in\R^{r\times d_{\mathrm{in}}}$, $B\in\R^{d_{\mathrm{out}}\times r}$, $\alpha{=}r$, all linear modules, standard $B{=}0$ init.
+  \item \textbf{Held fixed across optimizers.} model, dataset $+$ split, $r$/$\alpha$, targets, sequence length, batch, grad-accum, dtype, constant lr (no warmup/decay). Only the optimizer and its lr vary; lr is picked per (optimizer, setting) on held-out eval loss.
+  \item \textbf{Speedup} (horizon $H$, AdamW best-lr final loss $\ell^\star$): $H/s$, with $s$ the first interpolated step the method's best-lr trajectory reaches $\ell^\star$. No crossing within $H \Rightarrow$ no speedup.
+\end{itemize}
+
+
 \subsection{Main result: \methodname{} beats AdamW on every setting}
 \methodname{} reaches AdamW's loss in $1.2$--$1.7\times$ fewer steps on all $9$
 settings (\Cref{fig:hero} showcase; \Cref{tab:breadth} across model families;
@@ -422,6 +465,134 @@ at $\eta$ independent of $r$.
   \caption{\textit{[placeholder]} Final loss vs.\ lr at each rank (Llama-3.2-1B / OpenMathInstruct, $r\in\{32,64,128,256\}$); \methodname{}'s loss-minimizing lr stays at $10^{-2}$, AdamW's drifts.}
   \label{fig:lr_transfer}
 \end{figure}
+
+
+
+% ===========================================================================
+\section{Prior work}
+\paragraph{LoRa and optimization of low rank factors.}
+LoRA finetuning freezes the pretrained weight matrix and trains a low-rank update
+$\DW=(\alpha/r)BA$ through the factors $A$ and $B$ \cite{lora}.
+AdamW is a standard optimizer choice applied independently to the two
+factors \cite{adamw}.  
+This is a simple and memory efficient strategy, however it introduces a problem since it
+optimizes the parameterization rather than the product.
+Specifically, the same update
+$\DW$ can be represented by $(A,B)$ or by $(NA,BN^{-1})$, while a
+factor-wise adaptive optimizer need not give the same update to $\DW$.
+Several prior work address this issue indirectly by changing
+the parameterization, initialization, or scalar learning rates.  
+LoRA+
+uses different learning rates for $A$ and $B$ \cite{loraplus};
+rank-stabilized LoRA changes the $\alpha/r$ scaling to improve
+high-rank behavior \cite{rslora}; $\mu$A and recent LoRA scaling rules
+study how learning rates and $\alpha$ should transfer across rank
+\cite{mua,loraalpha}.  These works change the scale at which the
+factor-based optimizer operates, while \methodname{} keeps the usual
+LoRA parameterization and changes the update direction and radius.
+
+
+\paragraph{Orthogonalized updates.}
+Muon~\cite{muon} update is derived as a steepest descent over the spectral norm
+ball, in other words spectral descent.  
+The spectral descent direction gave rise to a line of work on
+spectrally controlled training.  
+When Muon is applied separately to LoRa factors, spectral gradient flow exhibits a distinctive spectral phenomenon, 
+``equal-rate'' growth of singular values, explaining why factor-wise
+orthogonalization can behave very differently from ordinary gradient
+flow \cite{kang_specgf}.  Spectron instead uses orthogonalization and
+adaptive renormalization to stabilize native low-rank pretraining by
+controlling the spectral norm of the induced weight update
+\cite{spectron}.  These methods motivate spectral update, but they do
+not by themselves provide a product-aware optimizer.  \methodname{} uses the same polar
+primitive, but applies it inside a LoRA-aware curvature metric and
+then rescales the resulting factor step by a product-level operator-norm
+radius.
+
+
+\paragraph{Curvature and second-moment preconditioning.}
+AdamW and Adafactor use diagonal or factored second moments
+\cite{adamw,adafactor}.  Shampoo extends this idea to matrix and tensor
+parameters by approximating full matrix Adagrad with Kronecker-factored
+matrix
+\cite{shampoo}; SOAP improves Shampoo by applying Adam in the
+Shampoo preconditioner eigenbasis \cite{soap}.  
+Further, a recent KL perspective
+interprets Shampoo and SOAP as structured covariance-estimation
+procedures and motivates KL-Shampoo/KL-SOAP \cite{klshampoo}, which is
+related to our metric estimator.
+
+Curvature-aware spectral optimizers combine this second-moment geometry
+with Muon-style orthogonalization.  SOAP-Muon first whitens with a SOAP
+preconditioner and then applies Muon \cite{soapmuon}.  Mousse~ \cite{mousse} formulates
+a dense full-rank update as a spectral steepest descent step in a
+Shampoo-induced anisotropic trust region,
+\[
+    \Delta W
+    =
+    -L^{-1/4}
+      \polar\left(L^{-1/4} G R^{-1/4}\right)
+      R^{-1/4},
+\]
+where $L$ and $R$ are Kronecker second-moment factors.
+\methodname{} is the LoRA member of this family.  Its whiten-polar-
+unwhiten step has the same form, but the curvature seen by a LoRA pair
+collapses to the small matrices
+\[
+    C_A=B^\top P B,\qquad C_B=AQA^\top ,
+\]
+together with coupled diagonal side factors $P$ and $Q$.  Thus it keeps the
+spectral-curvature direction, while avoiding dense $d\times d$
+preconditioners and their eigenbases.
+
+
+
+
+\paragraph{Product-space and invariant LoRA optimizers.}
+A LoRA adapter is invariant to the change of coordinates
+\[
+    BA=(BN^{-1})(NA),
+\]
+for any invertible matrix $N\in \mathbb{R}^{r\times r}$,
+so an optimizer should ideally act on the product $BA$, not on the
+individual factors.  
+LoRA-RITE \cite{lorarite} is prior work that preconditions only the
+shared rank-$r$ coordinate of the LoRA factors, rather than the full
+input/output dimensions.  This rank-side preconditioning cancels the
+change of basis $(A,B)\mapsto(NA,BN^{-1})$, making the induced update to
+$BA$ transformation-invariant.
+Riemannion/RiemannLoRA \cite{riemannion} is also prior work
+that optimizes the adapter directly on the fixed-rank manifold.  The
+recent concurrent works iMuon \cite{imuon} and LoRA-Muon
+\cite{loramuon} derive the spectral steepest descent version: iMuon as a
+general intrinsic LMO framework for matrix manifolds, and LoRA-Muon as
+the LoRA-specialized form.
+
+In the memoryless spectral limit, these methods reduce to the same update
+\[
+  \dot A
+  =
+  -\eta\,S_B^{-1/2}\,
+  \polar\!\left(S_B^{-1/2}G_A\right),
+  \qquad
+  \dot B
+  =
+  -\eta\,
+  \polar\!\left(G_BS_A^{-1/2}\right)S_A^{-1/2},
+\]
+with $S_A=AA^\top$, $S_B=B^\top B$, $G_A=B^\top G$, and
+$G_B=GA^\top$.  This update is invariant at the product level and caps
+the two half-product steps.  It does not, however, cap the raw factor
+steps, which scale as $1/\sigma_{\min}$ of the partner factor and are
+therefore singular at the standard $B=0$ LoRA initialization.
+\methodname{} uses this shared spectral core as the invariant baseline,
+then adds a coupled two-sided curvature metric for the direction and a
+separate operator-norm radius for the merged adapter step.
+
+{\color{blue} The paragraph above is about concurrent work.
+It needs to clarify more about concurrent work etc.
+}
+
 
 % ===========================================================================
 \section{Related work}
