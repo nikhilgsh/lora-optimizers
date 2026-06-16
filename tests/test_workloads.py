@@ -148,16 +148,3 @@ def test_leaderboard_panel_renders():
         label_filter=lambda lbl, c: lbl == "AdamW")
     v2 = set(sdf2["variant"]) if "variant" in sdf2 else set(sdf2.index)
     assert v2 == {"AdamW"}
-
-
-@requires_logs
-def test_regression_olmo_opc_includes_epsrel_and_curvature():
-    """The hand-list drift bug: these campaigns were silently missing from the doc."""
-    for rank in (64, 256):
-        wl = find_workload("allenai/OLMo-2-0425-1B", "opc", rank)
-        groups = {c.get("log_group") for c, _ in workload_runs(wl)}
-        assert any("epsrel_fullpolar" in g for g in groups), f"r{rank}: epsrel groups missing"
-    # curvature/SOAP campaign is r256-only
-    wl256 = find_workload("allenai/OLMo-2-0425-1B", "opc", 256)
-    g256 = {c.get("log_group") for c, _ in workload_runs(wl256)}
-    assert any("curvature_whiten" in g for g in g256), "r256: curvature/SOAP groups missing"

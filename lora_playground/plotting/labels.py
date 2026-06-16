@@ -243,8 +243,14 @@ def canonical_colors(labels) -> dict:
                 break
             except ColorCollisionError:
                 continue
-        else:  # exhausted sources at min_distance — relax it as a last resort
-            palette = distinct_palette(len(rest), reserved=reserved,
-                                       source="tab20", min_distance=0.12)
+        else:  # >20 series: combine several qualitative maps into a larger pool
+            import matplotlib.pyplot as plt
+            big = [c for cm in ("tab20", "tab20b", "tab20c")
+                   for c in plt.get_cmap(cm).colors]
+            try:
+                palette = distinct_palette(len(rest), reserved=reserved, source=big)
+            except ColorCollisionError:  # still too tight — relax the spacing
+                palette = distinct_palette(len(rest), reserved=reserved,
+                                           source=big, min_distance=0.08)
     colors.update({l: palette[i] for i, l in enumerate(rest)})
     return colors

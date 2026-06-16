@@ -270,14 +270,18 @@ def _derive_effective_inner_polar(cfg: dict, opt_cfg: dict) -> str | None:
     psp = _coerce(psp_raw, float) if psp_raw not in (None, "None") else None
     if psp is not None:
         return "svd_exact" if psp == 0.0 else f"sigma_power(p={psp})"
+    optimizer = cfg.get("optimizer", "") or ""
     pm = opt_cfg.get("polar_method")
+    if pm is None and "polar" in optimizer:
+        # Older polar runs recorded polar_method only at the CLI/cfg level, not in
+        # the optimizer sub-config; fall back to it so two kl-diag-polar-lora groups
+        # that both ran polar_method=ns don't split on a missing-field artifact.
+        pm = cfg.get("polar_method")
     if pm in {"ns", "ns_hybrid", "polar_express"}:
         return pm
-    # Fallback for runs from before the polar_method param existed: any
-    # optimizer whose name contains "polar-product" used ``_newton_schulz``
-    # unconditionally inside ``_polar_pipeline``. The CLI flag wasn't
-    # plumbed yet, so neither the cfg nor the command line carries it.
-    optimizer = cfg.get("optimizer", "") or ""
+    # Fallback for runs from before the polar_method param existed: any optimizer
+    # whose name contains "polar-product" used ``_newton_schulz`` unconditionally
+    # inside ``_polar_pipeline``; the CLI flag wasn't plumbed, so nothing carries it.
     if "polar-product" in optimizer:
         return "ns"
     return None
