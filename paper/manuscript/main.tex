@@ -564,11 +564,13 @@ input/output dimensions.  This rank-side preconditioning cancels the
 change of basis $(A,B)\mapsto(NA,BN^{-1})$, making the induced update to
 $BA$ transformation-invariant.
 Riemannion/RiemannLoRA \cite{riemannion} is also prior work
-that optimizes the adapter directly on the fixed-rank manifold.  The
-recent concurrent works iMuon \cite{imuon} and LoRA-Muon
-\cite{loramuon} derive the spectral steepest descent version: iMuon as a
-general intrinsic LMO framework for matrix manifolds, and LoRA-Muon as
-the LoRA-specialized form.
+that optimizes the adapter directly on the fixed-rank manifold.
+Casting this invariant update as a \emph{spectral steepest-descent} (LMO)
+step is a concurrent, mid-2026 development --- iMuon \cite{imuon} as a
+general intrinsic-LMO framework for matrix manifolds, LoRA-Muon
+\cite{loramuon} as its LoRA-specialized form, and this work.  The update
+itself is not new: it is the moment-free core of LoRA-RITE \cite{lorarite}
+(the spectral limit below), a point \cite{loramuon} also makes.
 
 In the memoryless spectral limit, these methods reduce to the same update
 \[
@@ -590,10 +592,6 @@ therefore singular at the standard $B=0$ LoRA initialization.
 \methodname{} uses this shared spectral core as the invariant baseline,
 then adds a coupled two-sided curvature metric for the direction and a
 separate operator-norm radius for the merged adapter step.
-
-{\color{blue} The paragraph above is about concurrent work.
-It needs to clarify more about concurrent work etc.
-}
 
 
 % ===========================================================================
