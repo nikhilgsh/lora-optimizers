@@ -4,7 +4,7 @@ Design (locked with the user, conventions from Mousse/SPlus/LoRA+ in docs/papers
   fig1_hero.pdf          — Figure 1: loss-vs-steps showcase at OLMo opc r256 (AdamW vs
                            PoLoRA vs iMuon when present), dashed line at AdamW's final
                            loss, drop-line at the interpolated crossing, speedup printed.
-  tab1_speedup.tex       — Table 1: per-cell speedup-to-AdamW (best-lr + lr-avg), iMuon
+  tab1_speedup.tex       — Table 1: per-cell speedup-to-AdamW (best-lr), iMuon
                            rows where run. SPlus-style numeric companion to fig 1.
   figA_breadth.pdf       — appendix: per-setting loss curves behind tab_breadth (model
   figA_rank.pdf            families, code r256) and tab_rank (Llama Math rank ladder),
@@ -299,22 +299,22 @@ def table1():
          ["OLMo-2-1B", "Qwen2.5-1.5B", "Llama-3.2-1B", "Llama-3-8B"] if (m, "Code", 256) in sp],
         key=lambda t: -t[1][0])
     _write_tabular(
-        "tab_breadth.tex", r"model & speedup & speedup (lr-avg)",
-        [f"{m} & {_x(b)} & {_x(a)}" for m, (b, a) in breadth])
+        "tab_breadth.tex", r"model (code, $r{=}256$) & speedup",
+        [f"{m} & {_x(b)}" for m, (b, _a) in breadth])
 
     # Rank ladder: Llama-3.2-1B Math, ascending rank.
     rank_rows = [(r, sp[("Llama-3.2-1B", "Math", r)]) for r in (32, 64, 128, 256)
                  if ("Llama-3.2-1B", "Math", r) in sp]
     _write_tabular(
-        "tab_rank.tex", r"$r$ & speedup & speedup (lr-avg)",
-        [f"{r} & {_x(b)} & {_x(a)}" for r, (b, a) in rank_rows])
+        "tab_rank.tex", r"$r$ (Llama-3.2-1B, Math) & speedup",
+        [f"{r} & {_x(b)}" for r, (b, _a) in rank_rows])
 
     # OOD pair: Qwen2.5-1.5B r256, in-distribution code vs out-of-distribution Bengali.
     ood = [("Code (in-dist.)", ("Qwen2.5-1.5B", "Code", 256)),
            ("Bengali (OOD)", ("Qwen2.5-1.5B", "Bengali", 256))]
     _write_tabular(
-        "tab_ood.tex", r"corpus & speedup & speedup (lr-avg)",
-        [f"{label} & {_x(sp[k][0])} & {_x(sp[k][1])}" for label, k in ood if k in sp])
+        "tab_ood.tex", r"corpus (Qwen2.5-1.5B, $r{=}256$) & speedup",
+        [f"{label} & {_x(sp[k][0])}" for label, k in ood if k in sp])
 
 
 # ─────────────────── Task-pair showcase: loss-vs-steps (OOD) ───────────────────
