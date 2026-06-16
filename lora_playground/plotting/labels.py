@@ -84,6 +84,27 @@ def _axes(cfg: dict) -> dict | None:
     }
 
 
+def _shared_knobs(cfg: dict) -> str:
+    """Suffix for cross-optimizer axes that canonical_label must discriminate
+    but that aren't in any per-optimizer template. Only non-default values
+    appear, so default runs keep their bare label."""
+    s = ""
+    if cfg.get("cw_no_diag_curv"):
+        s += " w/o-curv"
+    if cfg.get("cw_unpinned"):
+        s += " unpinned"
+    hi = cfg.get("higham_iters")
+    if hi not in (None, 10):
+        s += f" H={hi}"
+    b1 = cfg.get("beta1")
+    if b1 not in (None, 0.9):
+        s += f" β1={b1:g}"
+    ib = cfg.get("lora_init_b")
+    if ib not in (None, "zero"):
+        s += f" initB={ib}"
+    return s
+
+
 def canonical_label(cfg: dict) -> str | None:
     """Human-readable, fully-discriminating variant label (or None to exclude).
 
@@ -97,7 +118,7 @@ def canonical_label(cfg: dict) -> str | None:
       chord-tight-clean ns=8 k=2 (κ_sr=0.75)
     """
     if cfg.get("optimizer") == OPT_ADAMW:
-        return "AdamW"
+        return "AdamW" + _shared_knobs(cfg)
     opt = cfg.get("optimizer")
     if opt in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
         is_polar = opt == "curvature-whiten-polar-lora"
@@ -107,7 +128,7 @@ def canonical_label(cfg: dict) -> str | None:
         bc = f", β_c={cb:g}" if cb is not None else ""
         dl = cfg.get("precond_delta")
         dd = f", δ={_eps(dl)}" if dl is not None else ""
-        return f"SOAP-curv{polar} (f={f}{bc}{dd})"
+        return f"SOAP-curv{polar} (f={f}{bc}{dd})" + _shared_knobs(cfg)
     if opt in ("kl-shampoo-lora", "kl-shampoo-polar-lora"):
         polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "kl-shampoo-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
@@ -117,7 +138,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"KL-Shampoo{polar}{ks} (f={f}{bc}{dd})"
+        return f"KL-Shampoo{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
     if opt == "kl-diag-polar-flatout-lora":
         pq = _polar_quality_tag(cfg)
         f = cfg.get("precond_refresh_every")
@@ -127,7 +148,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"KL-diag-flatout +polar{pq}{ks} (f={f}{bc}{dd})"
+        return f"KL-diag-flatout +polar{pq}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
     if opt in ("kl-diag-lora", "kl-diag-polar-lora"):
         polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "kl-diag-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
@@ -137,7 +158,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"KL-diag{polar}{ks} (f={f}{bc}{dd})"
+        return f"KL-diag{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
     if opt in ("diag-shampoo-lora", "diag-shampoo-polar-lora"):
         polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "diag-shampoo-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
@@ -148,7 +169,7 @@ def canonical_label(cfg: dict) -> str | None:
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
         nes = " +nesterov" if cfg.get("cw_nesterov") else ""
-        return f"diag-Shampoo{polar}{nes}{ks} (f={f}{bc}{dd})"
+        return f"diag-Shampoo{polar}{nes}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
     a = _axes(cfg)
     if a is None:
         return None
@@ -163,7 +184,7 @@ def canonical_label(cfg: dict) -> str | None:
     else:
         damp = f"abs={_eps(a['damp_val'])}" if a["damp_val"] is not None else "abs"
     curv = " +curv" if a["curv"] else ""
-    return f"{fam} {polar} k={a['k']} ({damp}){curv}"
+    return f"{fam} {polar} k={a['k']} ({damp}){curv}" + _shared_knobs(cfg)
 
 
 def canonical_key(cfg: dict) -> str | None:
