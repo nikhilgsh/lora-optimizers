@@ -2,14 +2,14 @@
 
 Design (locked with the user, conventions from Mousse/SPlus/LoRA+ in docs/papers/):
   fig1_hero.pdf          — Figure 1: loss-vs-steps showcase at OLMo opc r256 (AdamW vs
-                           Polar-LoRA vs iMuon when present), dashed line at AdamW's final
+                           PoLoRA vs iMuon when present), dashed line at AdamW's final
                            loss, drop-line at the interpolated crossing, speedup printed.
   tab1_speedup.tex       — Table 1: per-cell speedup-to-AdamW (best-lr + lr-avg), iMuon
                            rows where run. SPlus-style numeric companion to fig 1.
   figA_breadth.pdf       — appendix: per-setting loss curves behind tab_breadth (model
   figA_rank.pdf            families, code r256) and tab_rank (Llama Math rank ladder),
                            each excluding the cells already drawn as curves in the body.
-  fig2_ablation.pdf      — E2 basins at Llama openmath r256: Polar-LoRA vs
+  fig2_ablation.pdf      — E2 basins at Llama openmath r256: PoLoRA vs
                            "w/o curvature control" vs "w/o magnitude control"; ringed minima.
   fig3_lr_transfer.pdf   — E3 basins across the openmath rank ladder, shared log-x so
                            minima alignment across rank is comparable; diverged points
@@ -63,13 +63,13 @@ NAME_MAGN = "w/o magnitude"
 NAME_NAIVE = "Muon"            # raw per-factor polar = Muon on the factors (sec 3.1)
 # Both-controls-removed ablation arm = the bare partner-Gram polar direction (iMuon's
 # explicit decoupled update; the memoryless limit of LoRA-RITE; the compositional-Muon
-# half-split). Named subtractively, NOT "LoRA-Muon step": (a) it reads as Polar-LoRA
+# half-split). Named subtractively, NOT "LoRA-Muon step": (a) it reads as PoLoRA
 # minus two controls, and (b) it does not over-credit the concurrent LoRA-Muon for an
 # update that pre-dates it. The lineage citation lives in the fig2 caption.
 NAME_LM = "w/o curvature + magnitude"
 STYLE = {
     "AdamW":      dict(color="#666666", marker="o", ls="-",  lw=1.9),
-    "Polar-LoRA": dict(color="#0072B2", marker="s", ls="-",  lw=2.2),
+    "PoLoRA": dict(color="#0072B2", marker="s", ls="-",  lw=2.2),
     NAME_NAIVE:   dict(color="#D55E00", marker="v", ls="--", lw=1.6),
     "iMuon":      dict(color="#E69F00", marker="^", ls="--", lw=1.6),
     NAME_LM:      dict(color="#CC79A7", marker="P", ls="--", lw=1.6),
@@ -95,7 +95,7 @@ def paper_variant_key(cfg: dict) -> str | None:
     if cfg.get("optimizer") == "imuon-lora":
         return "iMuon"
     if _is_proto(cfg) and cfg.get("cw_no_radius") is False and cfg.get("cw_no_diag_curv") is False:
-        return "Polar-LoRA"
+        return "PoLoRA"
     return None
 
 
@@ -107,14 +107,14 @@ def ablation_variant_key(cfg: dict) -> str | None:
     if cfg.get("cw_no_radius") is True:
         return NAME_MAGN
     if cfg.get("cw_no_radius") is False and cfg.get("cw_no_diag_curv") is False:
-        return "Polar-LoRA"
+        return "PoLoRA"
     return None
 
 
 def arm_key(cfg: dict) -> str | None:
     """Full comparison/ablation labeling for the hero (fig1) and the all-ablations
     basin figure (fig2): the incremental climb naive -> bare partner-Gram polar
-    (w/o curvature + magnitude) -> +pin (w/o curvature) -> Polar-LoRA, plus the
+    (w/o curvature + magnitude) -> +pin (w/o curvature) -> PoLoRA, plus the
     AdamW/iMuon references."""
     o = cfg.get("optimizer")
     if o == "adamw":
@@ -127,7 +127,7 @@ def arm_key(cfg: dict) -> str | None:
         nc = cfg.get("cw_no_diag_curv") is True
         up = cfg.get("cw_unpinned") is True
         if not nc and not up:
-            return "Polar-LoRA"
+            return "PoLoRA"
         if nc and not up:
             return NAME_CURV          # partner-Gram polar + pin, no curvature
         if nc and up:
@@ -150,22 +150,22 @@ def _cell_label(wl) -> str:
 
 
 def _paper_cells():
-    """(workload, rows-by-variant, target) for every cell with Polar-LoRA + AdamW."""
+    """(workload, rows-by-variant, target) for every cell with PoLoRA + AdamW."""
     out = []
     for wl in iter_workloads():
         labeled = labeled_completed_runs(
             workload_runs(wl), paper_variant_key, horizon=wl.horizon)
         rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
         rows = {r["variant"]: r for r in rows}
-        if "Polar-LoRA" in rows and "AdamW" in rows:
+        if "PoLoRA" in rows and "AdamW" in rows:
             out.append((wl, labeled, rows, target))
-    out.sort(key=lambda c: -speedup_from_frac(c[2]["Polar-LoRA"]["frac_best_lr"]))
+    out.sort(key=lambda c: -speedup_from_frac(c[2]["PoLoRA"]["frac_best_lr"]))
     return out
 
 
 def _annotate_speedup(ax, cross, horizon, target, speed, color, drop_from):
     """Draw the step-speedup annotation on a loss-vs-step axis: the crossing dot, the
-    drop-line down to Polar-LoRA's loss, the horizontal <-> arrow along the AdamW-final
+    drop-line down to PoLoRA's loss, the horizontal <-> arrow along the AdamW-final
     line, and the 'N x fewer steps' label.
 
     DURABLE RULE (no text overlap, no masking box): the label sits just above the
@@ -211,7 +211,7 @@ def fig1():
     # ours. Muon ties AdamW but its dashed warm hue reads distinctly from the gray
     # AdamW line. (The bare partner-Gram polar -- which would overlap Muon -- stays in
     # the fig2 ablation, not here.)
-    for v in ("AdamW", "iMuon", NAME_NAIVE, "Polar-LoRA"):
+    for v in ("AdamW", "iMuon", NAME_NAIVE, "PoLoRA"):
         if v not in rows:
             continue
         lr = rows[v]["best_lr"]
@@ -221,11 +221,11 @@ def fig1():
         finals[v] = ys[-1]
 
     ax.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
-    frac = rows["Polar-LoRA"]["frac_best_lr"]
+    frac = rows["PoLoRA"]["frac_best_lr"]
     cross = frac * wl.horizon
     speed = speedup_from_frac(frac)
     _annotate_speedup(ax, cross, wl.horizon, target, speed,
-                      STYLE["Polar-LoRA"]["color"], finals["Polar-LoRA"])
+                      STYLE["PoLoRA"]["color"], finals["PoLoRA"])
 
     ax.set_xlabel("Training Step")
     ax.set_ylabel("Eval Loss")
@@ -263,7 +263,7 @@ def _speedup_lookup():
     out = {}
     print("── speedup table data ──")
     for wl, _labeled, rows, _target in _paper_cells():
-        p = rows["Polar-LoRA"]
+        p = rows["PoLoRA"]
         key = (_model_short(wl.model_display), _data_short(wl.dataset_display), wl.rank)
         out[key] = (speedup_from_frac(p["frac_best_lr"]), speedup_from_frac(p["frac_lr_avg"]))
         print(f"  {key}  x{out[key][0]:.2f} / x{out[key][1]:.2f}")
@@ -320,7 +320,7 @@ def table1():
 # ─────────────────── Task-pair showcase: loss-vs-steps (OOD) ───────────────────
 def fig_ood(figsize=(7.4, 3.3)):
     """Task-pair showcase (visual companion to tab_ood): loss-vs-steps for
-    Qwen2.5-1.5B r256, AdamW vs Polar-LoRA, on in-distribution code and
+    Qwen2.5-1.5B r256, AdamW vs PoLoRA, on in-distribution code and
     out-of-distribution Bengali. Same annotation as the hero (fig1): AdamW's
     final loss dashed, the interpolated crossing dotted, the step-speedup arrow
     printed. The OOD panel's gap is wider -> the speedup grows with room to move.
@@ -336,7 +336,7 @@ def fig_ood(figsize=(7.4, 3.3)):
         rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
         rows = {r["variant"]: r for r in rows}
         finals = {}
-        for v in ("AdamW", "Polar-LoRA"):
+        for v in ("AdamW", "PoLoRA"):
             if v not in rows:
                 continue
             lr = rows[v]["best_lr"]
@@ -345,11 +345,11 @@ def fig_ood(figsize=(7.4, 3.3)):
                     lw=STYLE[v].get("lw", 1.6), label=v)
             finals[v] = ys[-1]
         ax.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
-        frac = rows["Polar-LoRA"]["frac_best_lr"]
+        frac = rows["PoLoRA"]["frac_best_lr"]
         cross = frac * wl.horizon
         speed = speedup_from_frac(frac)
         _annotate_speedup(ax, cross, wl.horizon, target, speed,
-                          STYLE["Polar-LoRA"]["color"], finals["Polar-LoRA"])
+                          STYLE["PoLoRA"]["color"], finals["PoLoRA"])
         ax.set_title(title)
         ax.set_xlabel("Training Step")
         ax.set_xlim(0, wl.horizon * 1.03)
@@ -380,7 +380,7 @@ def _appendix_curves(specs, outname, figsize):
         rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
         rows = {r["variant"]: r for r in rows}
         finals = {}
-        for v in ("AdamW", "Polar-LoRA"):
+        for v in ("AdamW", "PoLoRA"):
             if v not in rows:
                 continue
             lr = rows[v]["best_lr"]
@@ -389,11 +389,11 @@ def _appendix_curves(specs, outname, figsize):
                     lw=STYLE[v].get("lw", 1.6), label=v)
             finals[v] = ys[-1]
         ax.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
-        frac = rows["Polar-LoRA"]["frac_best_lr"]
+        frac = rows["PoLoRA"]["frac_best_lr"]
         cross = frac * wl.horizon
         speed = speedup_from_frac(frac)
         _annotate_speedup(ax, cross, wl.horizon, target, speed,
-                          STYLE["Polar-LoRA"]["color"], finals["Polar-LoRA"])
+                          STYLE["PoLoRA"]["color"], finals["PoLoRA"])
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("Training Step")
         ax.set_xlim(0, wl.horizon * 1.03)
@@ -448,10 +448,10 @@ def _basin(ax, labeled, variants, star_minima=True, star_ms=12):
 
 def fig2():
     """Two-panel component ablation at the anchor (Llama openmath r256), subtractive
-    from Polar-LoRA.
+    from PoLoRA.
       (left)  loss curves for the three arms that separate as trajectories --
               -curvature+magnitude (bare partner-Gram polar) -> -curvature ->
-              Polar-LoRA -- each at its best lr, AdamW's final loss as the dashed
+              PoLoRA -- each at its best lr, AdamW's final loss as the dashed
               target (curve crossings = the speedups).
       (right) speedup-over-AdamW bars for ALL arms, including naive Muon, which ties
               AdamW (reads cleanly as a bar where it would overlap as a curve). Bar
@@ -463,7 +463,7 @@ def fig2():
     rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
     rows = {r["variant"]: r for r in rows}
     labels = {NAME_NAIVE: "Muon", NAME_LM: "w/o curvature\n+ magnitude",
-              NAME_CURV: "w/o curvature", "Polar-LoRA": "Polar-LoRA (ours)"}
+              NAME_CURV: "w/o curvature", "PoLoRA": "PoLoRA (ours)"}
 
     fig, (axL, axR) = plt.subplots(
         1, 2, figsize=(9.4, 3.4), gridspec_kw={"width_ratios": [1.45, 1.0]})
@@ -471,7 +471,7 @@ def fig2():
     # ── left: loss curves of the three arms that separate (Muon ties AdamW and
     #    coincides with the bare partner-Gram polar -> moved to the appendix) ──
     print("── fig2 (left) ablation curves (openmath r256) ──")
-    for v in (NAME_LM, NAME_CURV, "Polar-LoRA"):
+    for v in (NAME_LM, NAME_CURV, "PoLoRA"):
         if v not in rows:
             continue
         lr = rows[v]["best_lr"]
@@ -489,7 +489,7 @@ def fig2():
 
     # ── right: speedup bars for the same three arms ──
     print("── fig2 (right) ablation speedup bars ──")
-    arms = [NAME_LM, NAME_CURV, "Polar-LoRA"]   # ascending climb (bottom->top)
+    arms = [NAME_LM, NAME_CURV, "PoLoRA"]   # ascending climb (bottom->top)
     for y, v in enumerate(arms):
         if v not in rows:
             continue
@@ -519,17 +519,17 @@ def fig2():
 
 
 def fig3(star_ms=11, figsize=(7.2, 3.0)):
-    """lr basins on the openmath r>=32 ladder, two panels (Polar-LoRA | AdamW),
+    """lr basins on the openmath r>=32 ladder, two panels (PoLoRA | AdamW),
     one curve per rank (color = rank, reversed viridis), shared y windowed to the
     converged band. A star marks each curve's minimum, making the per-optimizer
-    minimum-lr shift across rank directly readable: Polar-LoRA's holds at one lr,
+    minimum-lr shift across rank directly readable: PoLoRA's holds at one lr,
     AdamW's drifts. Returns the figure (displays inline in a notebook); tweak
     `star_ms`/`figsize` from the cell, or edit here and re-run (autoreload)."""
     import numpy as np
     import matplotlib.cm as cm
     ranks = [32, 64, 128, 256]   # r16 excluded (flat/under-resolved basin top)
     rcol = {r: c for r, c in zip(ranks, cm.viridis_r(np.linspace(0.12, 0.92, len(ranks))))}
-    arms = ["Polar-LoRA", "AdamW"]
+    arms = ["PoLoRA", "AdamW"]
     data = {a: {} for a in arms}                 # arm -> rank -> {lr: final_loss}
     allv = []
     print("── fig3 lr transfer (openmath r>=32 ladder) ──")
@@ -581,7 +581,7 @@ _GAUGE_GROUPS = {   # rank -> log group carrying the per-step op-norm gauge fiel
 
 def fig_gauge(figsize=(5.2, 3.4), lr_want=0.01):
     """Operator-norm ratio sigma_max(B)/sigma_max(A) over training for the
-    protagonist (Polar-LoRA) at each rank on the Llama openmath ladder (best lr,
+    protagonist (PoLoRA) at each rank on the Llama openmath ladder (best lr,
     0.01). The factors self-balance (ratio -> 1) and the balance tightens with rank.
     Reads the per-step gauge diagnostic (optim_step events) from the run logs."""
     import json

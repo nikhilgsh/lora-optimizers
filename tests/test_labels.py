@@ -76,18 +76,18 @@ def test_canonical_key_compact_form():
 
 
 def test_pinned_labels_stable_across_label_sets():
-    # the protagonist (any "Polar-LoRA*" label) keeps one color no matter which
+    # the protagonist (any "PoLoRA*" label) keeps one color no matter which
     # other arms are present — this is what makes figure colors consistent
     from lora_playground.plotting.labels import canonical_colors, PROTAGONIST_COLOR
     sets = [
-        ["AdamW", "Polar-LoRA (kl-diag)", "iMuon"],
-        ["Polar-LoRA (kl-diag)", "w/o curvature control", "w/o magnitude control"],
-        ["AdamW", "Polar-LoRA (ours)"],
-        ["Polar-LoRA (kl-diag)"],
+        ["AdamW", "PoLoRA (kl-diag)", "iMuon"],
+        ["PoLoRA (kl-diag)", "w/o curvature control", "w/o magnitude control"],
+        ["AdamW", "PoLoRA (ours)"],
+        ["PoLoRA (kl-diag)"],
     ]
     for labels in sets:
         colors = canonical_colors(labels)
-        proto = [l for l in labels if l.startswith("Polar-LoRA")][0]
+        proto = [l for l in labels if l.startswith("PoLoRA")][0]
         assert colors[proto] == PROTAGONIST_COLOR
         # pins never collide with palette-assigned labels in the same figure
         assert len(set(colors.values())) == len(colors)

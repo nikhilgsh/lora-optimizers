@@ -199,7 +199,7 @@ def order_labels(labels) -> list:
 # Display-label pins: recurring figure labels that must keep the SAME color in
 # every figure regardless of which other labels are present (palette assignment
 # is positional, so without pins a label's color shifts with the arm set).
-# Any label starting with "Polar-LoRA" maps to the protagonist's optimizer
+# Any label starting with "PoLoRA" maps to the protagonist's optimizer
 # color, so panel-specific suffixes ("(kl-diag)", "(ours)") stay consistent.
 PINNED_LABEL_COLORS = {
     "iMuon": OPTIM_COLORS["imuon-lora"],
@@ -208,7 +208,7 @@ PINNED_LABEL_COLORS = {
     "w/o curvature+magnitude": "#8c510a",
     "Muon (naive)": "#e377c2",
 }
-PROTAGONIST_LABEL_PREFIX = "Polar-LoRA"
+PROTAGONIST_LABEL_PREFIX = "PoLoRA"
 PROTAGONIST_COLOR = OPTIM_COLORS["kl-diag-polar-lora"]
 
 
