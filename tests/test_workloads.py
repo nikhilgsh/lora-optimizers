@@ -61,9 +61,10 @@ def test_deny_pattern():
 
 
 def test_registry_shape():
-    assert len(WORKLOADS) == 13
-    # the 10 OLMo/Llama-3.2 cells + two Qwen cells (opc, bengali) + one
-    # Meta-Llama-3-8B cell, all unique
+    assert len(WORKLOADS) == 16
+    # 6 OLMo-2-1B (opc/openmath/tulu3 × r{64,256}) + 6 Llama-3.2-1B (opc r{64,256};
+    # openmath r{32,64,128,256}) + 2 Qwen2.5-1.5B (opc, bengali) + 1 Meta-Llama-3-8B
+    # + 1 Qwen3-0.6B (openwebmath), all unique.
     keys = {(w.model_name, w.dataset, w.rank) for w in WORKLOADS}
     assert len(keys) == len(WORKLOADS)
     assert ("Qwen/Qwen2.5-1.5B", "opc", 256) in keys
@@ -72,7 +73,7 @@ def test_registry_shape():
     for w in WORKLOADS:
         assert isinstance(w, Workload)
         assert w.horizon >= w.min_completed_steps
-        assert w.dataset in {"opc", "openmath", "tulu3", "bengali"}
+        assert w.dataset in {"opc", "openmath", "tulu3", "bengali", "openwebmath"}
 
 
 def test_find_workload_roundtrip_and_miss():

@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 This is a lean LoRA optimizer comparison playground in the style of `modded-nanogpt`. The goal is **optimizer comparison**, not best-model production: hold everything else fixed and measure how LoRA optimizer choices affect held-out loss, throughput, and memory when adapting a general LLM to code.
 
-Default course: base model `allenai/OLMo-2-0425-1B`, dataset `ise-uiuc/Magicoder-OSS-Instruct-75K-Instruction-Response`, entry point `train_lora.py`. Use general base models only; do not default to code-specialized bases.
+Default course (paper-aligned): base model `meta-llama/Llama-3.2-1B`, code dataset OpenCoder `opc-sft-stage2`, entry point `train_lora.py`. The paper spans four bases (OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, Llama-3-8B) × three corpora (OpenCoder code, OpenMathInstruct-2 math, Aya Bengali); the hero setting is Llama-3.2-1B / OpenMathInstruct-2 / r=256. Use general base models only; do not default to code-specialized bases. (`train_lora.py`'s bare argparse defaults remain the legacy `allenai/OLMo-2-0425-1B` + Magicoder, overridden by `--model_name`/`--data_dir` in every sweep and in the paper; the loader resolves the dataset from `--data_dir` and ignores the stale `--dataset_name` default.)
 
 Read `docs/experimental_protocol.md` and `docs/model_dataset_selection.md` before changing model, data, metrics, or smoke-test settings.
 

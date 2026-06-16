@@ -16,7 +16,7 @@ Design (locked with the user, conventions from Mousse/SPlus/LoRA+ in docs/papers
                            exit the frame top (no arrows).
 
 All numbers flow through lora_playground.{workloads,leaderboard} — same source as
-docs/leaderboard.md. PNG previews written next to each PDF.
+docs/notes/leaderboard.md. PNG previews written next to each PDF.
 """
 from __future__ import annotations
 
