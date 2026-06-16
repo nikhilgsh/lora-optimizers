@@ -86,7 +86,7 @@ def test_find_workload_roundtrip_and_miss():
 def test_label_and_title():
     wl = find_workload("allenai/OLMo-2-0425-1B", "opc", 64)
     assert wl.label == "OLMo/opc/r64"
-    assert wl.title == "OLMo-2-1B × opc-sft-stage2 (Magicoder) × r=64"
+    assert wl.title == "OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=64"
 
 
 # ── data-backed (skip on empty logs/) ────────────────────────────────────────

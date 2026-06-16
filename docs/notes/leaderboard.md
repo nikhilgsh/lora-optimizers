@@ -21,7 +21,7 @@ AlgoPerf-style performance profile across the 16 (model, dataset, rank) workload
 
 _Coverage-starved (<5/16, not ranked — see the per-section tables): `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3)` (4/16); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (4/16); `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/16); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/16); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/16); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (3/16); `diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4)` (3/16); `diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (3/16); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/16); `KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4)` (2/16); `KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (2/16); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3)` (2/16); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/16); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/16); `chord-tight PE=10 k=1 (abs=1e-6)` (2/16); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/16); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/16); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/16); `KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (2/16); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/16); `KL-diag +polar ns=5 (f=10, β_c=0.9, δ=1e-4)` (1/16); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-3)` (1/16); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-3)` (1/16); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4)` (1/16); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-3)` (1/16); `chord-tight-clean ns=8 k=1 (abs=1e-6)` (1/16); `KL-diag +polar ns=5 (f=10, β_c=0.999, δ=1e-4)` (1/16); `SOAP-curv +polar ns=5 (f=10, β_c=0.99, δ=1e-3)` (1/16); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=3e-5)` (1/16); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/16); `KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-4)` (1/16); `KL-Shampoo (f=10, β_c=0.99, δ=1e-3)` (1/16); `SOAP-curv (f=10, β_c=0.99, δ=1e-3)` (1/16); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/16); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-2)` (1/16); `KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-6)` (1/16)._
 
-### OLMo-2-1B × opc-sft-stage2 (Magicoder) × r=64
+### OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=64
 
 AdamW speed target (best-lr final loss): **0.7702**  ·  horizon 9000 steps
 
@@ -50,7 +50,7 @@ AdamW speed target (best-lr final loss): **0.7702**  ·  horizon 9000 steps
 | chord-tight-clean ns=5 k=2 (abs=1e-6) | 1e-01 | 0.7631 | 1.31× | 1.19× |
 | KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.7631 | 1.26× | 1.16× |
 
-### OLMo-2-1B × opc-sft-stage2 (Magicoder) × r=256
+### OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=256
 
 AdamW speed target (best-lr final loss): **0.7524**  ·  horizon 9000 steps
 
@@ -125,7 +125,7 @@ AdamW speed target (best-lr final loss): **0.7802**  ·  horizon 9000 steps
 | AdamW | 1e-04 | 0.7802 | 1.00× | 1.00× |
 | chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.7704 | 1.35× | 1.22× |
 
-### Llama-3.2-1B × opc-sft-stage2 (Magicoder) × r=64
+### Llama-3.2-1B × opc-sft-stage2 (OpenCoder) × r=64
 
 AdamW speed target (best-lr final loss): **0.7003**  ·  horizon 9000 steps
 
@@ -141,7 +141,7 @@ AdamW speed target (best-lr final loss): **0.7003**  ·  horizon 9000 steps
 | chord-tight-clean ns=8 k=2 (ε_rel=1e-2) | 3e-03 | 0.6988 | 1.07× | 1.02× |
 | chord-tight ns=3 k=1 (abs=1e-6) | 1e-02 | 0.7003 | — | 1.00× |
 
-### Llama-3.2-1B × opc-sft-stage2 (Magicoder) × r=256
+### Llama-3.2-1B × opc-sft-stage2 (OpenCoder) × r=256
 
 AdamW speed target (best-lr final loss): **0.6948**  ·  horizon 9000 steps
 
@@ -199,7 +199,7 @@ AdamW speed target (best-lr final loss): **0.3823**  ·  horizon 9000 steps
 | chord-tight ns=8 k=1 (abs=1e-6) | 3e-03 | 0.3710 | 1.36× | 1.20× |
 | diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.3723 | 1.30× | 1.09× |
 
-### Qwen2.5-1.5B × opc-sft-stage2 (Magicoder) × r=256
+### Qwen2.5-1.5B × opc-sft-stage2 (OpenCoder) × r=256
 
 AdamW speed target (best-lr final loss): **0.6023**  ·  horizon 9000 steps
 
@@ -227,7 +227,7 @@ AdamW speed target (best-lr final loss): **0.4979**  ·  horizon 9000 steps
 | KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.4820 | 1.43× | 1.23× |
 | KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-2) | 1e-02 | 0.4838 | 1.43× | 1.18× |
 
-### Meta-Llama-3-8B × opc-sft-stage2 (Magicoder) × r=256
+### Meta-Llama-3-8B × opc-sft-stage2 (OpenCoder) × r=256
 
 AdamW speed target (best-lr final loss): **0.5553**  ·  horizon 9000 steps
 

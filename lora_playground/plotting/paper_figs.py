@@ -1,7 +1,7 @@
 """Generate the paper's experiment figures + speedup table from the workload registry.
 
 Design (locked with the user, conventions from Mousse/SPlus/LoRA+ in docs/papers/):
-  fig1_hero.pdf          — Figure 1: loss-vs-steps showcase at OLMo opc r256 (AdamW vs
+  fig1_hero.pdf          — Figure 1: loss-vs-steps showcase at Llama-3.2-1B openmath r256 (AdamW vs
                            PoLoRA vs iMuon when present), dashed line at AdamW's final
                            loss, drop-line at the interpolated crossing, speedup printed.
   tab1_speedup.tex       — Table 1: per-cell speedup-to-AdamW (best-lr), iMuon

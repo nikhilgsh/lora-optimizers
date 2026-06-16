@@ -102,7 +102,7 @@ class Workload:
     dataset: str             # resolve_dataset() output: opc / openmath / tulu3
     rank: int                # cfg["lora_r"] — a load predicate
     model_display: str       # e.g. "OLMo-2-1B"
-    dataset_display: str     # e.g. "opc-sft-stage2 (Magicoder)"
+    dataset_display: str     # e.g. "opc-sft-stage2 (OpenCoder)"
     horizon: int             # speed-to-target horizon (9000; slack absorbs tulu3's 8970)
     sigma_ref: float         # AdamW noise-floor proxy for Δ/σ reporting
     sigma_is_proxy: bool     # True unless a same-cell multiseed σ at this horizon exists
@@ -115,11 +115,11 @@ class Workload:
 
     @property
     def title(self) -> str:
-        """Per-section doc heading, e.g. 'OLMo-2-1B × opc-sft-stage2 (Magicoder) × r=256'."""
+        """Per-section doc heading, e.g. 'OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=256'."""
         return f"{self.model_display} × {self.dataset_display} × r={self.rank}"
 
 
-_OPC_DISPLAY = "opc-sft-stage2 (Magicoder)"
+_OPC_DISPLAY = "opc-sft-stage2 (OpenCoder)"
 _OPENMATH_DISPLAY = "OpenMathInstruct-2"
 _OPENWEBMATH_DISPLAY = "OpenWebMath"
 _TULU3_DISPLAY = "Tulu-3 SFT mixture"
