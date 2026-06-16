@@ -193,37 +193,39 @@ $\norm{B\dot A}_2=\eta$, independent of the factor norms --- so no runtime resca
 \label{sec:method-ours}
 \paragraph{Motivation.} Naive Muon (\Cref{lem:lmo}) and iMuon (\Cref{prop:imuon}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item[(A)] \emph{Metric.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (matrix-normal MLE \cite{klshampoo}; \Cref{par:coupling}).
+  \item[(A)] \emph{Metric.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \Cref{par:coupling}).
   \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step (\Cref{prop:ours}).
   \item[(C)] \emph{Magnitude.} Discard the LMO budget; re-pin to the operator-norm radius (\Cref{eq:ours-prodcap}).
 \end{itemize}
 Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
 
-\paragraph{(A) The metric.} Equip weight space with the two-sided diagonal inner product
+\paragraph{(A) The metric.} Model the gradient second moment as diagonal--Kronecker:
 \begin{equation}
-  \langle X,Y\rangle_{P,Q}=\operatorname{tr}(X^\top P\,Y\,Q),\qquad
+  \Sigma:=\E[\mathrm{vec}(G)\,\mathrm{vec}(G)^\top]\approx Q\otimes P,\qquad
+  P=\diag(p)\succ0\ (d_{\mathrm{out}}),\quad Q=\diag(q)\succ0\ (d_{\mathrm{in}}),
+  \label{eq:ours-sigma}
+\end{equation}
+the Shampoo Kronecker factorization \cite{soap} under an Adafactor diagonal restriction \cite{adafactor}. Whitening by $\Sigma^{-1/2}=Q^{-1/2}\otimes P^{-1/2}$ sends $\mathrm{vec}(G)\mapsto\mathrm{vec}(P^{-1/2}GQ^{-1/2})$ --- the matrix analogue of Adam's $1/\!\sqrt{v}$, one square root per Kronecker side. We take the spectral (operator-norm) cap in this whitened geometry, measuring the product step in
+\begin{equation}
   \norm{X}_{P,Q}=\norm{P^{1/2}XQ^{1/2}}_2,
   \label{eq:ours-metric}
 \end{equation}
-with $P=\diag(p)\succ0$ on the output side ($d_{\mathrm{out}}$) and $Q=\diag(q)\succ0$ on the input side ($d_{\mathrm{in}}$). $P,Q$ are diagonal Kronecker factors of the gradient \emph{second moment}, estimated online (decay $\beta_2$) by \eqref{eq:ours-klcoupling}; $P=Q=I$ recovers the Euclidean spectral case of \Cref{sec:method-naive,sec:method-imuon}. The spectral cap in this metric whitens by $P^{-1/2},Q^{-1/2}$ (\Cref{prop:ours}).
+the operator norm of $X$ after the $\Sigma^{1/2}=Q^{1/2}\otimes P^{1/2}$ change of variables ($P^{1/2}XQ^{1/2}$ is $\Sigma^{1/2}$ applied to $X$). $P=Q=I$ recovers the Euclidean spectral case of \Cref{sec:method-naive,sec:method-imuon}; the diagonals are estimated online (decay $\beta_2$) by \eqref{eq:ours-klcoupling}.
 
 \paragraph{Estimating the metric.}
 \label{par:coupling}
-Model the weight gradient as matrix-normal, $G\sim\mathcal{MN}(0,P,Q)$ with diagonal $P,Q$ --- the Kronecker second-moment fit of \cite{klshampoo,soap}. We never form $G$, but $\mathcal{MN}$ is closed under the factor maps, so the per-factor gradients are two views of the same $(P,Q)$:
+We never form $G$. The factor gradients $G_A=B^\top G$ and $G_B=GA^\top$ are linear images of it, so their row second moments are $P,Q$ conjugated by the partner factor (\Cref{app:matnormal}):
 \begin{equation}
-\begin{aligned}
-  G_A=B^\top G &\sim\mathcal{MN}(0,\,C_A,\,Q), &\quad C_A&=B^\top P B,\\
-  G_B=GA^\top  &\sim\mathcal{MN}(0,\,P,\,C_B), &\quad C_B&=A\,Q\,A^\top .
-\end{aligned}
-\label{eq:ours-closure}
+  C_A=B^\top P B,\qquad C_B=A\,Q\,A^\top
+  \label{eq:ours-closure}
 \end{equation}
-$G_A$ resolves $Q$ and $G_B$ resolves $P$; each diagonal is the conditional MLE of its view with the $r\times r$ partner matrix ($C_A$ for the $Q$ update, $C_B$ for the $P$ update; formed from the diagonals on the fly, never stored) held fixed --- the matrix-normal flip-flop \cite{klshampoo,dutilleul} (derived in \Cref{app:matnormal}):
+($r\times r$, formed from the diagonals on the fly, never stored). Matching the diagonal of each factor gradient's second moment to the model \eqref{eq:ours-sigma} ($G_A$ resolves $Q$, $G_B$ resolves $P$) gives the per-coordinate estimator:
 \begin{equation}
   q_j=\mathrm{EMA}\Big[\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
   p_i=\mathrm{EMA}\Big[\tfrac1r\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top\Big].
   \label{eq:ours-klcoupling}
 \end{equation}
-It is unbiased ($\E[G_A^\top C_A^{-1}G_A]=rQ$) and couples the sides through $C_A,C_B$ ($C_A$ injects $P$, $C_B$ injects $Q$); $C_A=C_B=I$ would drop to two independent Adafactor diagonals. We run one $\beta_2$-EMA alternation per step.
+It is unbiased ($\E[\tfrac1r\,G_A^\top C_A^{-1}G_A]=Q$, \Cref{app:matnormal}) and couples the sides through $C_A,C_B$ ($C_A$ injects $P$, $C_B$ injects $Q$); $C_A=C_B=I$ drops to two independent Adafactor diagonals \cite{adafactor}. This is the coupled diagonal second-moment matching of \cite{klshampoo}, specialised to the LoRA factor gradients; we run one $\beta_2$-EMA alternation per step.
 
 \paragraph{(B) The step: spectral LMO in the frozen metric.} With $P,Q$ \emph{frozen} at their current estimate, cap the product step in the metric \eqref{eq:ours-metric} and maximize alignment with the gradient:
 \begin{equation}
@@ -452,7 +454,7 @@ at $\eta$ independent of $r$.
 the same whiten/polar/unwhiten sandwich as \eqref{eq:ours-lmo}. \methodname{} differs on three axes that matter for adapter fine-tuning:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Factor space.} On a LoRA pair the curvature never forms a dense $d\times d$ matrix. It collapses to two small $r\times r$ matrices, $C_A=B^\top PB$ and $C_B=AQA^\top$ --- the curvature seen on the rank-$r$ subspaces the factors actually span --- in place of the dense Kronecker factors of Mousse/SOAP-Muon.
-  \item \textbf{Diagonal but coupled.} The two side-factors $P,Q$ are diagonal (Adafactor-form \cite{adafactor}) but coupled through the matrix-normal MLE \cite{klshampoo}: not independent per-axis gradient energies, and not full Shampoo eigenbases. Our ablations show this dense, full-eigenbasis flavor does not improve on the coupled diagonal.
+  \item \textbf{Diagonal but coupled.} The two side-factors $P,Q$ are diagonal (Adafactor-form \cite{adafactor}) but coupled through the second-moment matching of \cite{klshampoo}: not independent per-axis gradient energies, and not full Shampoo eigenbases. Our ablations show this dense, full-eigenbasis flavor does not improve on the coupled diagonal.
   \item \textbf{LoRA-native.} It is the adapter member of this family, where the dense methods target full-parameter pre-training.
 \end{itemize}
 
@@ -697,60 +699,53 @@ So switching momentum off does not recover \Cref{prop:imuon}; that needs the rec
 dropped as well, leaving the momentum-free base algorithm. \Cref{prop:imuon} is the
 memoryless limit of iMuon's \emph{theory} (Cor.~4.1), not of its shipped optimizer.
 
-\section{Matrix-normal MLE for the curvature diagonals}
+\section{Diagonal--Kronecker second-moment estimator for the curvature diagonals}
 \label{app:matnormal}
-This derives the flip-flop estimator \eqref{eq:ours-klcoupling}: the model, its closure
-under the factor maps \eqref{eq:ours-closure}, and the conditional MLE that gives each
-diagonal.
+This derives the estimator \eqref{eq:ours-klcoupling} and its coupling
+\eqref{eq:ours-closure} from the second-moment model \eqref{eq:ours-sigma} alone --- no
+distributional assumption on $G$.
 
-\paragraph{Model.} Treat the weight gradient as matrix-normal:
-\begin{equation*}
-  G\sim\mathcal{MN}(0,P,Q)
-  \quad\Longleftrightarrow\quad
-  G=P^{1/2}ZQ^{1/2},\ \ Z_{ij}\overset{\text{iid}}{\sim}\mathcal{N}(0,1)
-  \quad\Longleftrightarrow\quad
-  \mathrm{vec}(G)\sim\mathcal{N}(0,\,Q\otimes P).
-\end{equation*}
-The row and column covariances $P,Q$ are the Kronecker factors of the gradient second
-moment \cite{soap,klshampoo}. They are fixed only up to scale,
-$(P,Q)\mapsto(cP,c^{-1}Q)$, which the metric \eqref{eq:ours-metric} and the
-operator-norm rescale absorb.
+\paragraph{Model and moment identities.} Posit that the gradient second moment is
+diagonal--Kronecker, $\Sigma=\E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]\approx Q\otimes P$,
+equivalently $\E[G_{ij}G_{kl}]=P_{ik}Q_{jl}$. The only consequence we use is the pair of
+moment identities, obtained by contracting that entrywise form: for any
+$M\in\mathbb{R}^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ and
+$N\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
+\begin{equation}
+  \E[G\,M\,G^\top]=\operatorname{tr}(MQ)\,P,\qquad
+  \E[G^\top N\,G]=\operatorname{tr}(NP)\,Q.
+  \label{eq:moment-id}
+\end{equation}
+$P,Q$ are fixed only up to scale, $(P,Q)\mapsto(cP,c^{-1}Q)$, which the norm
+\eqref{eq:ours-metric} and the operator-norm rescale absorb.
 
-\paragraph{Closure under the factor maps.} The matrix-normal family is closed under
-linear maps, and each factor gradient is a linear image of $G$. For $G_A=B^\top G$,
+\paragraph{Coupling: covariance of a linear image.} Each factor gradient is a linear
+image of $G$, so its row second moment is the partner side conjugated by the factor:
 \begin{equation*}
-  \mathrm{vec}(G_A)=(I\otimes B^\top)\,\mathrm{vec}(G),\qquad
   \mathrm{Cov}\,\mathrm{vec}(G_A)=(I\otimes B^\top)(Q\otimes P)(I\otimes B)
-  =Q\otimes\underbrace{B^\top P B}_{C_A}.
+  =Q\otimes\underbrace{B^\top P B}_{C_A},\qquad C_B=A\,Q\,A^\top,
 \end{equation*}
-Hence $G_A\sim\mathcal{MN}(0,C_A,Q)$, and symmetrically $G_B\sim\mathcal{MN}(0,P,C_B)$
-with $C_B=AQA^\top$ --- this is \eqref{eq:ours-closure}. Each factor gradient carries
-the side it resolves ($Q$ for $G_A$, $P$ for $G_B$) alongside the partner matrix ($C_A$ for $G_A$, $C_B$ for $G_B$) as
-a known nuisance covariance; that shared dependence is the coupling between the sides.
+which is \eqref{eq:ours-closure}. The partner $C_A$ carries the current $P$ and $C_B$ the
+current $Q$; that shared dependence is the coupling between the sides.
 
-\paragraph{Conditional MLE (flip-flop).} With the row covariance $C_A$ held fixed, the
-column-covariance MLE of $G_A$ is closed-form \cite{dutilleul}:
+\paragraph{Estimator: method of moments.} Put $N=B\,C_A^{-1}B^\top$ in the second
+identity of \eqref{eq:moment-id} and use the trace collapse
+$\operatorname{tr}(B C_A^{-1}B^\top P)=\operatorname{tr}(C_A^{-1}B^\top P B)=\operatorname{tr}(C_A^{-1}C_A)=r$:
 \begin{equation*}
-  \hat Q=\tfrac1r\,G_A^\top C_A^{-1}G_A,
-  \qquad\text{on the diagonal}\quad
-  \hat q_j=\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j},
+  \E\!\big[\tfrac1r\,G_A^\top C_A^{-1}G_A\big]
+  =\E\!\big[\tfrac1r\,G^\top(B C_A^{-1}B^\top)G\big]
+  =\tfrac1r\operatorname{tr}(B C_A^{-1}B^\top P)\,Q=Q,
 \end{equation*}
-the per-coordinate update of \eqref{eq:ours-klcoupling}; $\hat P$ is the mirror with
-$C_B$. Alternating the two updates --- each side under the partner's current estimate
---- is the matrix-normal flip-flop \cite{dutilleul}, which \cite{klshampoo} recovers as
-coordinate descent on a Kullback--Leibler objective. We take one EMA step of each per
-iteration rather than iterating to convergence.
+so $\tfrac1r\,G_A^\top C_A^{-1}G_A$ is unbiased for $Q$, and its diagonal is the $q_j$ of
+\eqref{eq:ours-klcoupling}. The mirror with $M=A^\top C_B^{-1}A$ and
+$\operatorname{tr}(A^\top C_B^{-1}A\,Q)=\operatorname{tr}(C_B^{-1}C_B)=r$ gives
+$\E[\tfrac1r\,G_B C_B^{-1}G_B^\top]=P$. Setting $C_A=C_B=I$ decouples the sides into two
+independent Adafactor diagonals \cite{adafactor}.
 
-\paragraph{Unbiasedness.} Substituting $G_A=C_A^{1/2}ZQ^{1/2}$,
-\begin{equation*}
-  G_A^\top C_A^{-1}G_A=Q^{1/2}\,Z^\top Z\,Q^{1/2},\qquad
-  \E[Z^\top Z]=r\,I
-  \quad\Longrightarrow\quad
-  \E\!\big[\tfrac1r\,G_A^\top C_A^{-1}G_A\big]=Q,
-\end{equation*}
-so the estimator is unbiased for $Q$, and likewise for $P$. Setting the partner matrices
-$C_A,C_B$ to the identity decouples the sides into two independent
-Adafactor diagonals.
+\paragraph{Relation to KL-Shampoo.} The alternation --- each diagonal estimated under the
+partner's current value, one EMA step per iteration --- is the coupled two-sided
+estimator of \cite{klshampoo}, run on the factor gradients $G_A,G_B$ rather than the
+dense gradient (their Table~2 lists this diagonal--Kronecker form as moment matching).
 
 \section{Spectral-norm estimation}
 \label{app:smax}
