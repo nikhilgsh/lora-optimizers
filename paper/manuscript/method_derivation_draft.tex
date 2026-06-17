@@ -35,9 +35,8 @@ This note derives the optimiser update from a single principle. The update has a
 \emph{magnitude} and a \emph{direction}; the magnitude is forced by symmetry (no free knob),
 and the direction is the one place a modelling choice (the curvature metric) enters. Both
 reduce to one linear-minimisation oracle --- the curvature-metric cap, with its budget chosen so
-the step's operator norm is exactly the radius $\rho$ --- whose closed-form solution is the update
-(\S\ref{sec:joint}). Unlike Aurora~\cite{aurora}, whose two constraints conflict and need
-iteration, ours is a single cap with a closed form.
+the step's operator norm is exactly the radius $\rho$ --- whose exact closed-form solution is the
+update (\S\ref{sec:joint}).
 
 \paragraph{Setup.}
 A LoRA layer adds $W=BA$ to the frozen weight, with
@@ -109,8 +108,7 @@ $\rho\,b+\rho\,a=\eta\Rightarrow\rho=\eta/(a+b)$. \qedhere
 \end{proof}
 \noindent No factor preference is hard-coded: any $A$/$B$ asymmetry enters only through the
 state $a,b$ (the per-factor contributions to $\DW$ are $b\rho:a\rho$). The magnitude is thus
-not a tunable knob. Empirically the factors self-balance toward $a\!\approx\!b$, so the two
-contributions equalise over training; this is an observation, not part of the derivation.
+not a tunable knob.
 
 \section{The direction: curvature-adapted steepest descent}
 
@@ -283,7 +281,7 @@ the standard initialisation $B=0$ safe.
 \begin{itemize}
   \item At $B=0$, $\rho=\eta/\norm{A}_2$ by \eqref{eq:rho} --- finite, an ordinary step. ($\Delta A=0$ there, since $G_A=B^\top G=0$, so $B$ moves first.)
   \item The metric LMO's \emph{own} magnitude is scale-free: $\norm{\Delta A}_2\propto1/\sigma_{\min}(B)\to\infty$ as $B\to0$ --- the decoupled / iMuon failure.
-  \item A magnitude invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$ could depend only on gauge invariants ($\norm{A}_2\norm{B}_2$ or $\norm{BA}_2$), both zero at $B=0$. Pinning $\rho$ to $\norm{A}_2+\norm{B}_2$ trades that invariance for $B=0$ stability; the leftover scaling freedom is resolved dynamically by self-balancing.
+  \item A magnitude invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$ could depend only on gauge invariants ($\norm{A}_2\norm{B}_2$ or $\norm{BA}_2$), both zero at $B=0$. Pinning $\rho$ to $\norm{A}_2+\norm{B}_2$ trades that invariance for $B=0$ stability.
 \end{itemize}
 
 \paragraph{Summary.}
