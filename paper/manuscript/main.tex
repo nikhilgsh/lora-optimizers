@@ -286,15 +286,15 @@ Finally, to balance
 
 \subsection{iMuon / compositional Muon}
 \label{sec:method-imuon}
-\paragraph{LMO (half-split).} Budget each factor's contribution to the product step separately --- the tractable surrogate \cite{tilde_csd} for the harder joint constraint $\norm{\dot B A+B\dot A}_2\le\eta$:
+\paragraph{LMO (half-split).} Budget each factor's contribution to the product step separately --- the tractable surrogate \cite{tilde_csd} for the harder joint constraint $\norm{\Delta B A+B\Delta A}_2\le\eta$:
 
 \begin{corollary}[Product-step invariance]\label{cor:imuon}
-$\norm{B\dot A}_2=\eta$, independent of the factor norms --- so no runtime rescale is needed. \emph{(\Cref{app:proofs}.)}
+$\norm{B\Delta A}_2=\eta$, independent of the factor norms --- so no runtime rescale is needed. \emph{(\Cref{app:proofs}.)}
 \end{corollary}
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
   \item \emph{Same operator, three independent incarnations.} The memoryless limit of LoRA-RITE \cite{lorarite} (moment accumulation stripped), iMuon's decoupled form \cite{imuon}, and the concurrent LoRA-Muon \cite{loramuon} all realize \Cref{prop:imuon} (\Cref{app:memoryless}); \cite{loramuon} proves this equivalence. Our ablation runs this shared update's \emph{direction} as the both-controls-removed arm, with the step magnitude pinned by the unit-spectral-norm rescale of \Cref{alg:ours} (\Cref{sec:exp}); the unpinned update's factor step is uncapped ($\propto1/\sigma_{\min}$ of the partner).
-  \item \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\dot A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor operator-norm radius to bound it.
+  \item \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\Delta A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor operator-norm radius to bound it.
 \end{itemize}
 
 \subsection{Ours: \methodname}
@@ -337,16 +337,16 @@ It is unbiased ($\E[\tfrac1r\,G_A^\top C_A^{-1}G_A]=Q$, \Cref{app:matnormal}) an
 
 \paragraph{(B) The step: spectral LMO in the frozen metric.} With $P,Q$ \emph{frozen} at their current estimate, cap the product step in the metric \eqref{eq:ours-metric} and maximize alignment with the gradient:
 \begin{equation}
-  \max_{\dot A}\ \langle B\dot A,\,-G\rangle
+  \max_{\Delta A}\ \langle B\Delta A,\,-G\rangle
   \quad\text{s.t.}\quad
-  \norm{B\dot A}_{P,Q}\le\tau .
+  \norm{B\Delta A}_{P,Q}\le\tau .
   \label{eq:ours-opt}
 \end{equation}
 This is the spectral LMO of \Cref{lem:lmo} in the $P,Q$ metric, with $P,Q$ from (A) held fixed. Whitening both sides by $P^{-1/2},Q^{-1/2}$ reduces it to the Euclidean spectral case, giving a closed form.
 \begin{proposition}[Metric LMO]\label{prop:ours}
 For $B$ of full column rank, the solution of \eqref{eq:ours-opt} is
 \begin{equation*}
-  \dot A = -\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,G_A\,Q^{-1/2}\big)\,Q^{-1/2},
+  \Delta A = -\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,G_A\,Q^{-1/2}\big)\,Q^{-1/2},
   \qquad C_A=B^\top P B .
 \end{equation*}
 \end{proposition}
@@ -358,15 +358,15 @@ For $B$ of full column rank, the solution of \eqref{eq:ours-opt} is
 \end{equation}
 with $W_B$ the mirror ($C_B=AQA^\top$).
 
-\paragraph{(C) The magnitude: operator-norm radius.} Since $\polar(\cdot)$ has unit spectral norm, the magnitude of $W_A$ is an artifact of the whitening, not the LMO budget $\tau$ --- stage (B) fixes only the \emph{direction}. \Cref{alg:ours} \emph{discards} it and re-pins the step to the operator-norm radius $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ via $\dot A=-\rho\,W_A/\norm{W_A}_2$, which caps the merged step independent of conditioning:
+\paragraph{(C) The magnitude: operator-norm radius.} Since $\polar(\cdot)$ has unit spectral norm, the magnitude of $W_A$ is an artifact of the whitening, not the LMO budget $\tau$ --- stage (B) fixes only the \emph{direction}. \Cref{alg:ours} \emph{discards} it and re-pins the step to the operator-norm radius $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ via $\Delta A=-\rho\,W_A/\norm{W_A}_2$, which caps the merged step independent of conditioning:
 \begin{equation}
-  \norm{B\dot A+\dot B A}_2\le\rho\big(\norm{A}_2+\norm{B}_2\big)=\eta .
+  \norm{B\Delta A+\Delta B A}_2\le\rho\big(\norm{A}_2+\norm{B}_2\big)=\eta .
   \label{eq:ours-prodcap}
 \end{equation}
 This is a second trust region, separate from (B): a Euclidean operator-norm cap on the merged step, not the $P,Q$ cap of \eqref{eq:ours-opt} (whose budget $\tau$ is discarded). It makes the method stable from the standard $B{=}0$ init (\Cref{rem:b0}).
 
 \begin{remark}[Relation to AdaPreLoRA]
-\Cref{prop:ours} caps the whitened step in operator norm, giving the polar; a Frobenius cap instead gives the linear solve $\dot A\propto C_A^{-1}G_A Q^{-1}$ --- AdaPreLoRA \cite{adaprelora}, the same projection without the spectral cap.
+\Cref{prop:ours} caps the whitened step in operator norm, giving the polar; a Frobenius cap instead gives the linear solve $\Delta A\propto C_A^{-1}G_A Q^{-1}$ --- AdaPreLoRA \cite{adaprelora}, the same projection without the spectral cap.
 \end{remark}
 
 \begin{algorithm}[t]
@@ -394,9 +394,9 @@ This is a second trust region, separate from (B): a Euclidean operator-norm cap 
 \label{rem:b0}
 LoRA starts at $B{=}0$, where the decoupled factor step of \Cref{prop:imuon} has no stable learning rate but the operator-norm step does.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{The failure.} $\polar(S_B^{-1/2}G_A)$ has unit spectral norm however small $G_A$ is, and the outer $S_B^{-1/2}$ scales it by up to $1/\sigma_{\min}(B)$, so $\norm{\dot A}_2\approx\eta/\sigma_{\min}(B)$ --- unbounded as $B\to0$, undefined at $B{=}0$. Renormalizing to a scale-free step removes the gradient's natural $\norm{G_A}\propto\sigma(B)$ protection; lowering $\eta$ does not help (it slows $B$'s escape by the same factor it shrinks the spurious step). So the decoupled spectral update --- iMuon's closed form (Cor.\ 4.1), re-derived by LoRA-Muon \cite{loramuon}, equivalent to simplified LoRA-RITE \cite{lorarite} --- has no stable rate from this init (\Cref{sec:exp}).
-  \item \textbf{The family's workarounds.} iMuon applies the metric LMO to a \emph{joint} product-space momentum $M=\dot M_BA+B\dot M_A$ (a different update, not the decoupled solution) and prepends warmup to grow $B$ off zero; LoRA-Muon trains from nonzero random factors and never enters the regime.
-  \item \textbf{Ours needs neither.} The operator-norm step $\dot A=-\rho\,W_A/\norm{W_A}_2$ pins $\norm{\dot A}_2=\rho$ at every conditioning; at $B{=}0$, $\rho=\eta/(\norm{A}_2+\norm{B}_2)=\eta/\norm{A}_2$ with $A$ a full-scale random factor --- an ordinary step. The polar discards the gradient's magnitude and the rescale re-imposes the radius, so the step size is a property of the method, not the factor conditioning.
+  \item \textbf{The failure.} $\polar(S_B^{-1/2}G_A)$ has unit spectral norm however small $G_A$ is, and the outer $S_B^{-1/2}$ scales it by up to $1/\sigma_{\min}(B)$, so $\norm{\Delta A}_2\approx\eta/\sigma_{\min}(B)$ --- unbounded as $B\to0$, undefined at $B{=}0$. Renormalizing to a scale-free step removes the gradient's natural $\norm{G_A}\propto\sigma(B)$ protection; lowering $\eta$ does not help (it slows $B$'s escape by the same factor it shrinks the spurious step). So the decoupled spectral update --- iMuon's closed form (Cor.\ 4.1), re-derived by LoRA-Muon \cite{loramuon}, equivalent to simplified LoRA-RITE \cite{lorarite} --- has no stable rate from this init (\Cref{sec:exp}).
+  \item \textbf{The family's workarounds.} iMuon applies the metric LMO to a \emph{joint} product-space momentum $M=\Delta M_BA+B\Delta M_A$ (a different update, not the decoupled solution) and prepends warmup to grow $B$ off zero; LoRA-Muon trains from nonzero random factors and never enters the regime.
+  \item \textbf{Ours needs neither.} The operator-norm step $\Delta A=-\rho\,W_A/\norm{W_A}_2$ pins $\norm{\Delta A}_2=\rho$ at every conditioning; at $B{=}0$, $\rho=\eta/(\norm{A}_2+\norm{B}_2)=\eta/\norm{A}_2$ with $A$ a full-scale random factor --- an ordinary step. The polar discards the gradient's magnitude and the rescale re-imposes the radius, so the step size is a property of the method, not the factor conditioning.
 \end{itemize}
 \end{remark}
 
@@ -690,12 +690,12 @@ with these works; the underlying moment-free update is not new.
 
 In the memoryless spectral limit, LoRA-RITE, iMuon and LoRA-Muon reduce to the same update
 \[
-  \dot A
+  \Delta A
   =
   -\eta\,S_B^{-1/2}\,
   \polar\!\left(S_B^{-1/2}G_A\right),
   \qquad
-  \dot B
+  \Delta B
   =
   -\eta\,
   \polar\!\left(G_BS_A^{-1/2}\right)S_A^{-1/2},
@@ -714,15 +714,15 @@ $G_B=GA^\top$.  Equivalently, this is the solution of the two half-product subpr
 
 
 This shared update controls the two linearized product contributions,
-$\|B\dot A\|_2\le \eta$ and $\|\dot B A\|_2\le \eta$,
+$\|B\Delta A\|_2\le \eta$ and $\|\Delta B A\|_2\le \eta$,
 and is invariant at the product level.  It does not, however, control
 the raw factor steps:
 \[
-    \|\dot A\|_2
+    \|\Delta A\|_2
     \sim
     \frac{\eta}{\sigma_{\min}(B)},
     \qquad
-    \|\dot B\|_2
+    \|\Delta B\|_2
     \sim
     \frac{\eta}{\sigma_{\min}(A)} .
 \]
@@ -739,7 +739,7 @@ for the merged adapter step,
 \begin{equation} \label{e-rho-eta-adapter-stepsize}
     \rho=\frac{\eta}{\|A\|_2+\|B\|_2},
     \qquad
-    \|B\dot A+\dot B A\|_2\le \eta .
+    \|B\Delta A+\Delta B A\|_2\le \eta .
 \end{equation}
 The first control changes the geometry of the direction; the second
 stabilizes the factor step from the standard $B=0$ initialization.
@@ -865,15 +865,15 @@ since $|u_i^\top U' v_i|\le\norm{U'}_2\le1$. Equality holds at $U'=-\polar(M)$, 
 \begin{proof}[Proof of \Cref{prop:imuon}]
 The objective separates over the two factors:
 \[
-  \langle G,\ \dot B A+B\dot A\rangle=\langle G_A,\dot A\rangle+\langle G_B,\dot B\rangle .
+  \langle G,\ \Delta B A+B\Delta A\rangle=\langle G_A,\Delta A\rangle+\langle G_B,\Delta B\rangle .
 \]
-Take the $A$-block under its budget $\norm{B\dot A}_2\le\eta$. Write $B=U_B S_B^{1/2}$ with $U_B^\top U_B=I$, so that $\norm{B\dot A}_2=\norm{S_B^{1/2}\dot A}_2$. The substitution $Z=S_B^{1/2}\dot A$ turns the block into
+Take the $A$-block under its budget $\norm{B\Delta A}_2\le\eta$. Write $B=U_B S_B^{1/2}$ with $U_B^\top U_B=I$, so that $\norm{B\Delta A}_2=\norm{S_B^{1/2}\Delta A}_2$. The substitution $Z=S_B^{1/2}\Delta A$ turns the block into
 \[
   \min_{\norm{Z}_2\le\eta}\ \langle S_B^{-1/2}G_A,\,Z\rangle,
 \]
 which \Cref{lem:lmo} solves at $Z=-\eta\,\polar(S_B^{-1/2}G_A)$. Undoing the substitution gives
 \[
-  \dot A=S_B^{-1/2}Z=-\eta\,S_B^{-1/2}\polar\!\big(S_B^{-1/2}G_A\big),
+  \Delta A=S_B^{-1/2}Z=-\eta\,S_B^{-1/2}\polar\!\big(S_B^{-1/2}G_A\big),
 \]
 and the $B$-block is symmetric. This recovers iMuon's idealized (decoupled) update \cite{imuon}, the per-factor split of compositional Muon \cite{tilde_csd}.
 \end{proof}
@@ -881,25 +881,25 @@ and the $B$-block is symmetric. This recovers iMuon's idealized (decoupled) upda
 \begin{proof}[Proof of \Cref{cor:imuon}]
 With $U_B=BS_B^{-1/2}$ (orthonormal columns),
 \[
-  B\dot A=-\eta\,U_B\,\polar(S_B^{-1/2}G_A).
+  B\Delta A=-\eta\,U_B\,\polar(S_B^{-1/2}G_A).
 \]
-Left-multiplication by $U_B$ preserves the spectral norm, and $\polar(\cdot)$ has unit nonzero singular values, so $\norm{B\dot A}_2=\eta$.
+Left-multiplication by $U_B$ preserves the spectral norm, and $\polar(\cdot)$ has unit nonzero singular values, so $\norm{B\Delta A}_2=\eta$.
 \end{proof}
 
 \begin{proof}[Proof of \Cref{prop:ours}]
-Write $C_A=B^\top P B$ and substitute $Y_A=C_A^{1/2}\dot A\,Q^{1/2}$, so $\dot A=C_A^{-1/2}Y_A Q^{-1/2}$. Since $P^{1/2}B\,C_A^{-1/2}$ has orthonormal columns (its Gram is $I$), left-multiplication preserves singular values:
+Write $C_A=B^\top P B$ and substitute $Y_A=C_A^{1/2}\Delta A\,Q^{1/2}$, so $\Delta A=C_A^{-1/2}Y_A Q^{-1/2}$. Since $P^{1/2}B\,C_A^{-1/2}$ has orthonormal columns (its Gram is $I$), left-multiplication preserves singular values:
 \[
-  \norm{B\dot A}_{P,Q}=\norm{P^{1/2}B\dot A\,Q^{1/2}}_2=\norm{Y_A}_2 .
+  \norm{B\Delta A}_{P,Q}=\norm{P^{1/2}B\Delta A\,Q^{1/2}}_2=\norm{Y_A}_2 .
 \]
 The objective is plain in $Y_A$ as well: with $G_A=B^\top G$ and trace cyclicity,
 \[
-  \langle B\dot A,-G\rangle=\langle\dot A,-G_A\rangle=\langle Y_A,-H_A\rangle,\qquad H_A=C_A^{-1/2}G_A Q^{-1/2}.
+  \langle B\Delta A,-G\rangle=\langle\Delta A,-G_A\rangle=\langle Y_A,-H_A\rangle,\qquad H_A=C_A^{-1/2}G_A Q^{-1/2}.
 \]
 So the problem reduces to $\max_{\norm{Y_A}_2\le\tau}\langle Y_A,-H_A\rangle$, solved by $Y_A=-\tau\,\polar(H_A)$ (\Cref{lem:lmo}); unwhitening,
 \[
-  \dot A=-\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}G_A Q^{-1/2}\big)\,Q^{-1/2}.
+  \Delta A=-\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}G_A Q^{-1/2}\big)\,Q^{-1/2}.
 \]
-The Frobenius ball $\norm{Y_A}_F\le\tau$ instead gives $\dot A\propto C_A^{-1}G_A Q^{-1}$, recovering AdaPreLoRA.
+The Frobenius ball $\norm{Y_A}_F\le\tau$ instead gives $\Delta A\propto C_A^{-1}G_A Q^{-1}$, recovering AdaPreLoRA.
 \end{proof}
 
 \section{Memoryless limits of LoRA-RITE and iMuon}
@@ -930,13 +930,13 @@ Dropping all three --- $\beta_1{=}0$, and the second moment taken as the single-
 with no transport and no floor --- is the authors' momentum-free update (their Eq.~(14)),
 which in our notation reads
 \begin{equation*}
-  \dot B=-\eta\,\widehat G_B\,(\widehat G_B^\top\widehat G_B)^{-1/2}\,S_A^{-1/2},
+  \Delta B=-\eta\,\widehat G_B\,(\widehat G_B^\top\widehat G_B)^{-1/2}\,S_A^{-1/2},
   \qquad \widehat G_B:=G_B S_A^{-1/2}
 \end{equation*}
 ($\widehat G_B$ is the factor gradient $G_B$ whitened on the right by the other factor's Gram root $S_A^{-1/2}$).
 With no accumulation the middle factor is a polar map by \eqref{eq:polar-id}, so
 \begin{equation*}
-  \dot B=-\eta\,\polar(\widehat G_B)\,S_A^{-1/2}
+  \Delta B=-\eta\,\polar(\widehat G_B)\,S_A^{-1/2}
   =-\eta\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2},
 \end{equation*}
 the $B$-update of \Cref{prop:imuon}; the $A$-update is the mirror.
@@ -945,8 +945,8 @@ the $B$-update of \Cref{prop:imuon}; the $A$-update is the mirror.
 intrinsic spectral LMO (their Cor.~4.1) maps any ambient matrix
 $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to the factor update
 \begin{equation}
-  \dot B(H)=\polar\!\big(HA^\top S_A^{-1/2}\big)S_A^{-1/2},\qquad
-  \dot A(H)=S_B^{-1/2}\polar\!\big(S_B^{-1/2}B^\top H\big).
+  \Delta B(H)=\polar\!\big(HA^\top S_A^{-1/2}\big)S_A^{-1/2},\qquad
+  \Delta A(H)=S_B^{-1/2}\polar\!\big(S_B^{-1/2}B^\top H\big).
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 The base algorithm (Alg.~1, no momentum) feeds the raw gradient $H=G$, so $HA^\top=G_B$ and
@@ -967,10 +967,10 @@ Feeding $\widehat M$ through \eqref{eq:imuon-lmo-ambient} (using $G_A A^\top=B^\
 \begin{equation*}
   \widehat M A^\top=G_B S_A+(BB^\top)G_B
   \quad\Longrightarrow\quad
-  \dot B(\widehat M)=\polar\!\big(G_B S_A^{1/2}+(BB^\top)G_B S_A^{-1/2}\big)S_A^{-1/2},
+  \Delta B(\widehat M)=\polar\!\big(G_B S_A^{1/2}+(BB^\top)G_B S_A^{-1/2}\big)S_A^{-1/2},
 \end{equation*}
 which carries an extra term $(BB^\top)G_B$ that the decoupled factor step
-$\dot B=\polar(G_B S_A^{-1/2})S_A^{-1/2}$ of \Cref{prop:imuon} does not ($\dot A$ is symmetric).
+$\Delta B=\polar(G_B S_A^{-1/2})S_A^{-1/2}$ of \Cref{prop:imuon} does not ($\Delta A$ is symmetric).
 So switching momentum off does not recover \Cref{prop:imuon}; that needs the recombination
 dropped as well, leaving the momentum-free base algorithm. \Cref{prop:imuon} is the
 memoryless limit of iMuon's \emph{theory} (Cor.~4.1), not of its shipped optimizer.
