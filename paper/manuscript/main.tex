@@ -22,6 +22,7 @@
 \usepackage{booktabs}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{thmtools,thm-restate}
 % Looser line spacing inside algorithm blocks for readability.
 \makeatletter
 \newcommand{\algspacing}{\setlength{\@tempdima}{0pt}\renewcommand{\baselinestretch}{1.25}\selectfont}
@@ -261,10 +262,13 @@ Therefore, it is sufficient to impose separate budgets
 \end{equation}
 This bound was also explored in  \cite{tilde_csd}.
 Finally using~\eqref{eq:obj-lin},~\eqref{eq:twobudget} and~\eqref{eq:constraint-lin-bnd} in~\eqref{eq:muon-quad} we arrive at the following two tractable programs and their solution.
-\begin{proposition}[Decoupled factor step]\label{prop:imuon}
+
+\begin{restatable}[Decoupled factor step]{proposition}{DecoupledFactorStep}\label{prop:imuon}
 Assume that \(B_t\) has full column rank and \(A_t\) has full row rank. 
 Let $S_A=A_tA_t^\top \in \R^{r \times r}$, $S_B=B_t^\top B_t \in \R^{r \times r}$.
-Using the linearization~\eqref{eq:BA-lin} and the bound~\eqref{eq:constraint-lin-bnd} we arrive at the two programs
+Using the linearization~\eqref{eq:BA-lin} and the bound~\eqref{eq:constraint-lin-bnd}
+in~\eqref{eq:muon-quad},
+we arrive at the two programs
 \begin{align}
   A_{t+1}& =   \argmin_{ 
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}}}~ \langle G_A, A-A_t\rangle \quad \textnormal{subject to}\quad  \norm{B(A-A_t)}_2\le\eta_A \nonumber \\
@@ -280,7 +284,8 @@ Furthermore we have that
 \begin{equation} \label{cor:imuon}
     \norm{B(A_{t+1}-A_t)}_2 = \eta_A, \quad \mbox{and} \quad   \norm{(B_{t+1}-B_t) A}_2 = \eta_B.
 \end{equation}
-\end{proposition}
+\end{restatable}
+
 For the proof see 
 (\Cref{app:proofs}, iMuon \cite{imuon}, or the half-split of compositional Muon \cite{tilde_csd}.
 
@@ -288,7 +293,11 @@ For the proof see
 The resulting update~\eqref{eq:imuon-lmo} whitens each factor gradient by the inverse Gram root of the opposite factor. This makes the step depend on the local geometry of the product \(BA\), rather than on the arbitrary scaling of the individual factors.
 
 \rob{This far}
-Finally, we have the freedom to choose $\eta_A$ and $\eta_B$. We will do so to incentivize ...
+Finally, we have the freedom to choose $\eta_A$ and $\eta_B$.We will choose $\eta_A$ and $\eta_B$ so that the update in $A$ and $B$ have equal size in the operator norm. That is, we move equally far in either factor. Furthermore, we want to enforce that~\eqref{eq:constraint-lin-bnd} is less than $\eta$, which will be our one user selected hyper-parameter. 
+
+Let $\rho = \|A_{t+1}-A_t\|_2 = \|B_{t+1}-B_t\|$ be the size of this update. Note that from~\eqref{eq:constraint-lin-bnd} 
+
+\[ ... \]
 
 
 % ===========================================================================
@@ -349,13 +358,14 @@ It is unbiased ($\E[\tfrac1r\,G_A^\top C_A^{-1}G_A]=Q$, \Cref{app:matnormal}) an
   \label{eq:ours-opt}
 \end{equation}
 This is the spectral LMO of \Cref{lem:lmo} in the $P,Q$ metric, with $P,Q$ from (A) held fixed. Whitening both sides by $P^{-1/2},Q^{-1/2}$ reduces it to the Euclidean spectral case, giving a closed form.
-\begin{proposition}[Metric LMO]\label{prop:ours}
+
+\begin{restatable}[Metric LMO]{proposition}{MetricLMO}\label{prop:ours}
 For $B$ of full column rank, the solution of \eqref{eq:ours-opt} is
 \begin{equation*}
   \Delta A = -\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,G_A\,Q^{-1/2}\big)\,Q^{-1/2},
   \qquad C_A=B^\top P B .
 \end{equation*}
-\end{proposition}
+\end{restatable}
 \medskip
 \noindent \methodname{} uses \Cref{prop:ours} for the step \emph{direction} only, on the bias-corrected Nesterov momentum $\hat M_A$ in place of the gradient:
 \begin{equation}
@@ -866,12 +876,11 @@ Let $M=U\Sigma V^\top$. For any $U'$ with $\norm{U'}_2\le1$,
 since $|u_i^\top U' v_i|\le\norm{U'}_2\le1$. Equality holds at $U'=-\polar(M)$, uniquely when $M$ has full rank with distinct singular values; the zero and repeated singular directions otherwise leave $U'$ free.
 \end{proof}
 
+
+\DecoupledFactorStep*
 \begin{proof}[Proof of \Cref{prop:imuon}]
-The objective separates over the two factors:
-\[
-  \langle G,\ \Delta B A+B\Delta A\rangle=\langle G_A,\Delta A\rangle+\langle G_B,\Delta B\rangle .
-\]
-Take the $A$-block under its budget $\norm{B\Delta A}_2\le\eta$. Write $B=U_B S_B^{1/2}$ with $U_B^\top U_B=I$, so that $\norm{B\Delta A}_2=\norm{S_B^{1/2}\Delta A}_2$. The substitution $Z=S_B^{1/2}\Delta A$ turns the block into
+Consider the problem w.r.t. the $A$-block, and define $\Delta A := A - A_t$.
+Consider the $A$-block under its constraint $\norm{B\Delta A}_2\le\eta$. Write $B=U_B S_B^{1/2}$ with $U_B^\top U_B=I$, so that $\norm{B\Delta A}_2=\norm{S_B^{1/2}\Delta A}_2$. The substitution $Z=S_B^{1/2}\Delta A$ turns the block into
 \[
   \min_{\norm{Z}_2\le\eta}\ \langle S_B^{-1/2}G_A,\,Z\rangle,
 \]
@@ -890,6 +899,7 @@ With $U_B=BS_B^{-1/2}$ (orthonormal columns),
 Left-multiplication by $U_B$ preserves the spectral norm, and $\polar(\cdot)$ has unit nonzero singular values, so $\norm{B\Delta A}_2=\eta$.
 \end{proof}
 
+\MetricLMO*
 \begin{proof}[Proof of \Cref{prop:ours}]
 Write $C_A=B^\top P B$ and substitute $Y_A=C_A^{1/2}\Delta A\,Q^{1/2}$, so $\Delta A=C_A^{-1/2}Y_A Q^{-1/2}$. Since $P^{1/2}B\,C_A^{-1/2}$ has orthonormal columns (its Gram is $I$), left-multiplication preserves singular values:
 \[
