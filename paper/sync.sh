@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Sync paper/manuscript/ <-> the lora-paper GitHub repo that Overleaf mirrors.
+# Sync paper/manuscript/ <-> the Overleaf project's native git bridge
+# (https://git.overleaf.com/<project-id>), no GitHub middleman: a push lands
+# directly in the Overleaf project, a pull grabs the editor's edits. There is
+# no manual sync step on the Overleaf side.
 #
-#   ./paper/sync.sh push ["commit message"]   # local paper/manuscript -> GitHub -> Overleaf
-#   ./paper/sync.sh pull                       # Overleaf/GitHub edits  -> local paper/manuscript
+#   ./paper/sync.sh push ["commit message"]   # local paper/manuscript -> Overleaf (direct)
+#   ./paper/sync.sh pull                       # Overleaf editor edits   -> local paper/manuscript
 #
 # WHY NOT `git subtree`:
 #   lora-paper's history was created by Overleaf's GitHub bridge, not by
@@ -29,7 +32,7 @@ module load git/2.48.1
 cd "$(git rev-parse --show-toplevel)"
 
 PREFIX="paper/manuscript"
-REMOTE="paper"
+REMOTE="overleaf"
 BRANCH="main"
 SYNC_REF="refs/sync/${REMOTE}-${BRANCH}"   # local-only: last-synced remote commit
 
