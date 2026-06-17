@@ -133,7 +133,7 @@ Stages (A) and (B) are separate problems --- estimation, then a step under the \
  \rob{end pieces of contributions}
 % ===========================================================================
 
-\section{Spectral Geometry with Lora}
+\section{Spectral Geometry with LoRA}
 \label{sec:setup}
 
 
@@ -439,7 +439,7 @@ AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.5
 \end{itemize}
 
 
-\subsection{Main result: \methodname{} beats AdamW on every setting}
+\subsection{Main Result: \methodname{} Beats AdamW on Every Setting}
 \methodname{} reaches AdamW's loss in $1.2$--$1.7\times$ fewer steps on all $9$
 settings (\Cref{fig:hero} showcase; \Cref{tab:breadth} across model families;
 \Cref{tab:rank,fig:ood} the rank and task comparisons in \S\ref{sec:exp-taskdep};
@@ -466,7 +466,7 @@ largest base needs the smallest adapter update).
   \label{tab:breadth}
 \end{table}
 
-\subsection{Ablations: which components carry the speedup}
+\subsection{Ablations: Which Components Carry the Speedup}
 \label{sec:exp-ablation}
 \methodname{} adds three things to a per-factor spectral step (naive Muon, \eqref{eq:naive}):
 the factorization-invariant whitening of \Cref{prop:imuon} (each factor gradient whitened by
@@ -484,7 +484,7 @@ them one at a time from \methodname{} isolates each one's contribution (\Cref{fi
   \label{fig:ablation}
 \end{figure}
 
-\subsection{From step speedup to wall-clock}
+\subsection{From Step Speedup to Wall-Clock}
 \label{sec:exp-walltime}
 % MAIN POINT (author's): a step-count speedup only matters if it survives in
 % wall-clock. The optimizer.step is a fixed cost (batch-independent), so its share
@@ -528,7 +528,7 @@ Llama-3-8B   & $1.03\times$ & $1.05\times$ \\
 \label{tab:walltime}
 \end{table}
 
-\subsection{The speedup grows when the adapter must update more}
+\subsection{The Speedup Grows When the Adapter Must Update More}
 \label{sec:exp-taskdep}
 Two controlled comparisons --- each varying one axis with everything else fixed ---
 point the same way: the more the adapter must update (farther out-of-distribution,
@@ -572,7 +572,7 @@ at $\eta$ independent of $r$.
 
 
 % ===========================================================================
-\section{Prior work}
+\section{Prior Work}
 
 \rob{Some pieces of prior work mixed in with experimental setup?}
 \emph{Same operator, three independent incarnations.} The memoryless limit of LoRA-RITE \cite{lorarite} (moment accumulation stripped), iMuon's decoupled form \cite{imuon}, and the concurrent LoRA-Muon \cite{loramuon} all realize \Cref{prop:imuon} (\Cref{app:memoryless}); \cite{loramuon} proves this equivalence. Our ablation runs this shared update's \emph{direction} as the both-controls-removed arm, with the step magnitude pinned by the unit-spectral-norm rescale of \Cref{alg:ours} (\Cref{sec:exp}); the unpinned update's factor step is uncapped ($\propto1/\sigma_{\min}$ of the partner).
@@ -796,7 +796,7 @@ LoRA adapters cheaply:
 % ===========================================================================
 \clearpage
 \appendix
-\section{Experimental details}
+\section{Experimental Details}
 \label{app:exp}
 The setup of \Cref{sec:setup} in full. Everything but the optimizer and its learning rate
 is held fixed across the comparison; the learning rate is swept per (optimizer, cell) and
@@ -907,7 +907,7 @@ So the problem reduces to $\max_{\norm{Y_A}_2\le\tau}\langle Y_A,-H_A\rangle$, s
 The Frobenius ball $\norm{Y_A}_F\le\tau$ instead gives $\Delta A\propto C_A^{-1}G_A Q^{-1}$, recovering AdaPreLoRA.
 \end{proof}
 
-\section{Memoryless limits of LoRA-RITE and iMuon}
+\section{Memoryless Limits of LoRA-RITE and iMuon}
 \label{app:memoryless}
 LoRA-RITE \cite{lorarite} and iMuon \cite{imuon} both reduce to the decoupled factor step of
 \Cref{prop:imuon} once their moment accumulation is removed. We show this below. The one
@@ -980,7 +980,7 @@ So switching momentum off does not recover \Cref{prop:imuon}; that needs the rec
 dropped as well, leaving the momentum-free base algorithm. \Cref{prop:imuon} is the
 memoryless limit of iMuon's \emph{theory} (Cor.~4.1), not of its shipped optimizer.
 
-\section{Diagonal--Kronecker second-moment estimator for the curvature diagonals}
+\section{Diagonal--Kronecker Second-Moment Estimator for the Curvature Diagonals}
 \label{app:matnormal}
 This derives the estimator \eqref{eq:ours-klcoupling} and its coupling
 \eqref{eq:ours-closure} from the second-moment model \eqref{eq:ours-sigma} alone --- no
@@ -1028,7 +1028,7 @@ partner's current value, one EMA step per iteration --- is the coupled two-sided
 estimator of \cite{klshampoo}, run on the factor gradients $G_A,G_B$ rather than the
 dense gradient (their Table~2 lists this diagonal--Kronecker form as moment matching).
 
-\section{Spectral-norm estimation}
+\section{Spectral-Norm Estimation}
 \label{app:smax}
 \Cref{alg:smax} estimates every operator norm $\norm{\cdot}_2$ in \Cref{alg:ours}. The floor at the larger row/column $\ell_2$ norm (both lower-bound $\smax$) guards against under-estimation: a cold or stale power iteration can under-estimate $\smax$, and an under-estimate at the rescale $W/\norm{W}_2$ inflates the step past $\rho$ and can diverge.
 
@@ -1052,7 +1052,7 @@ dense gradient (their Table~2 lists this diagonal--Kronecker form as moment matc
 \end{algorithmic}
 \end{algorithm}
 
-\section{Matrix-sign and inverse-sqrt via Gram Newton--Schulz}
+\section{Matrix-Sign and Inverse-Sqrt via Gram Newton--Schulz}
 \label{app:gramns}
 Both spectral primitives of \Cref{alg:ours} --- the matrix sign $\polar(\cdot)$ (the
 orthogonal polar factor, \Cref{sec:method}) and the curvature inverse-sqrt $C^{-1/2}$ ---
@@ -1099,7 +1099,7 @@ Production uses $K{=}8$ iterations.
 \end{algorithmic}
 \end{algorithm}
 
-\section{Relative damping}
+\section{Relative Damping}
 \label{app:damping}
 Each curvature inverse-sqrt in \Cref{alg:ours} is relative-damped: for a curvature factor $X$ with top eigenvalue $\lambda_{\max}$,
 \begin{equation*}
@@ -1112,7 +1112,7 @@ The normalization and the floor each follow from the step's structure.
   \item \emph{Warmup.} A still-zero factor ($\lambda_{\max}=0$) maps to $I$, so steps before the EMAs warm up are plain momentum.
 \end{itemize}
 
-\section{FLOP overhead of the optimizer}
+\section{FLOP Overhead of the Optimizer}
 \label{app:flops}
 The wall measurement (\Cref{sec:exp-walltime}) is hardware-specific; the FLOP count is
 its architecture-only counterpart, and shows the same near-free result.
@@ -1154,7 +1154,7 @@ FLOP-bound; the FLOP fraction is the floor the wall approaches as the batch grow
 %   Qwen2.5-1.5B C_opt 1.8e12 / C_fb 2.4e14 = 0.73%
 %   Llama-3-8B   C_opt 3.0e12 / C_fb 1.1e15 = 0.27%
 
-\section{Per-setting learning curves}
+\section{Per-Setting Learning Curves}
 \label{app:curves}
 Loss-vs-step for the settings whose speedup the body reports only as a table number ---
 \Cref{tab:breadth} (model families, \Cref{fig:curves-breadth}) and \Cref{tab:rank} (across
@@ -1176,7 +1176,7 @@ vs.\ \methodname{} at its best lr. The cells already drawn as curves in the body
   \label{fig:curves-rank}
 \end{figure}
 
-\section{Gauge sensitivity and factor self-balancing}
+\section{Gauge Sensitivity and Factor Self-Balancing}
 \label{app:gauge}
 The radius is not gauge-invariant: under $(A,B)\mapsto(cA,c^{-1}B)$, $\norm{A}_2{+}\norm{B}_2$ is minimized (largest step) at $\norm{A}_2{=}\norm{B}_2$, so an imbalanced factorization changes the trajectory --- the concern raised for Spectron-style radii \cite{loramuon}.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
