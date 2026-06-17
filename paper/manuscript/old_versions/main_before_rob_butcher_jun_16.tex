@@ -114,55 +114,30 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
 
 
 % ===========================================================================
-
-\section{Spectral Geometry with Lora}
+\section{Using Spectral Geometry with Lora}
 \label{sec:setup}
 
 
+Consider a single linear layer, where $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ is the frozen pre-trained weights of this layer. Our objectives is to fine-tune a given model (with frozen weights) for a given task by adding a low rank matrix to these weights. We will represent this fine-tuning task as
+\begin{equation}
+    \min_{A\in\R^{r\times d_{\mathrm{in}}},
+B\in\R^{d_{\mathrm{out}}\times r}} \ell(W_0 + BA)
+\end{equation}
+where $\ell$ is a loss that captures this task.  
 
-Consider a single linear layer with frozen pretrained weight
-$
-W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
-$
-Following LoRA~\cite{lora}, we fine-tune this layer by learning a rank-\(r\) update $BA$ where 
-$
-B \in \mathbb{R}^{d_{\mathrm{out}} \times r},
-\,
-A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
-$
-and solve
-\[
-\begin{array}{ll}
-\underset{A, B}{\mbox{minimize}}&
-\ell(W_0 + BA),
-\end{array}
-\]
-where \(\ell\) is the task loss. We omit the usual LoRA scaling factor, since it can be absorbed into \(A\) or \(B\).
-
-
-
-Here we will derive a type of spectral descent method~\cite{carlson2015preconditioned, carlson2015stochastic}, that is, a variant of Muon~\cite{muon} specialized to low rank matrices.
+Here we will derive a type of spectral descent method~\cite{Volkanpaper1, Volkcanpaper2}, that is, a variant of Muon~\cite{muon} specialized to low rank matrices.
 
 The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
-\[ 
-\|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
-\]
+\[ \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2\]
 where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
-The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the operator norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
+The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the operator norm, can lead to more stable training and feature learning~\cite{Bernstein,Modular}.
 That is, for a given weight $W_t = W_0 + B_tA_t$ and corresponding  gradient matrix $G \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ for this layer, we minimize the local linearization of our loss, subject to a spectral ball constraint:
 \begin{align} \label{eq:muon}
-    W_{t+1} &= \argmin_{W\in  \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}} \langle G,W-W_t\rangle \quad \mbox{subject to}\quad  \| W-W_t\|_2 \leq \eta \\
+    W_{t+1} &= \argmin_{W\in  \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}} \langle G,W-W_t\rangle \quad \mbox{subject to } \| W-W_t\|_2 \leq \eta \\
     &= W_t - \eta \polar(G),
 \end{align} 
-where  $\polar(G_t) := U V^\top$ and 
-\[
-G_t = U \Sigma V^\top
-\]
-is the reduced singular value decomposition.
+where $\polar(G):= G(G^\top G)^{-1/2}$ is the matrix sign~\cite{muon} or polar factor~\cite{polarexpress} of $G$.
 
-This polar factor is the matrix sign used in Muon and can be computed efficiently by Newton--Schulz-type iterations~\cite{muon,polarexpress}.
-
-\paragraph{Naive Muon.}
 A naive way to combine Muon with a Lora is simply to update the factors $A$ and $B$ separately using  
 \begin{equation}
    A_{t+1} = A_t-\eta\,\polar(G_A),\qquad  B_{t+1}= B_t-\eta\,\polar(G_B),
@@ -171,102 +146,21 @@ A naive way to combine Muon with a Lora is simply to update the factors $A$ and 
 where $G_A \in  \R^{r\times d_{\mathrm{in}}}$ and $G_B
 \in\R^{d_{\mathrm{out}}\times r}$ are the gradients of $A$ and $B$, respectively. 
 
-
 This naive update~\eqref{eq:naive} ignores the product structure, and introduces undesired dependencies on otherwise ignored symmetries. Indeed
-the product $BA$ is invariant under $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$. However, the factor gradients transform as
-\[
-G_{A} \mapsto N^{-\top}G_{A},
-\qquad
-G_{B} \mapsto G_{B}N^\top.
-\]
-Since $\polar$ is not equivariant, the update \eqref{eq:naive} depends on the factorization, even though the product $BA$ does not~\cite{imuon}.
+the product $BA$ is invariant under $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$, but the factor gradient transforms as $G_A\mapsto N^{-\top}G_A$. Since $\polar$ is not equivariant, the update \eqref{eq:naive} depends on the factorization, even though the product $BA$ does not~\cite{imuon}.
 
-
-\paragraph{Ideal Muon.}
 The issue with the above naive approach, is that $A$ and $B$ alone do not encode the linear layer, but rather the product $BA$. 
 Indeed, the resulting linear layer of our model is now encoded by
 \begin{equation} \label{eq:lin-op}
     x \mapsto W_0 \,x + BA \,x.
 \end{equation} 
-Let $W = W_0 + BA $ for shorthand.
-Applying exactly the Muon update~\eqref{eq:muon} and substituting in $W$ and $W_t$ gives
-\begin{equation}\label{eq:muon-quad}
-    \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r},
-A \in \mathbb{R}^{r \times d_{\mathrm{in}}}} \langle G,BA-B_t A_t\rangle  \quad \mbox{subject to}\quad  \| BA-B_tA_t\|_2 \leq \eta,
-\end{equation} 
-  This update~\eqref{eq:muon-quad} would be the ideal spectral descent for Lora, but it is not practical, because of the difficult nonlinear constraint. To make this practical, we will admit one approximation, and one upper bound.
+Consequently, if we want to control the 
 
-\paragraph{Compositional Muon/ iMuon.}
-Our  approximation will be to linearize the map \((B,A) \mapsto BA\) around the current iterate \((B_t,A_t)\), that is we will use the first-order approximation 
-\begin{equation} \label{eq:BA-lin}
-BA
-\approx
-B_tA_t
-+
-B_t(A-A_t)
-+
-(B-B_t)A_t.
-\end{equation}
-Using this linearization we have that the objective in~\eqref{eq:muon-quad} becomes
-\begin{equation}\label{eq:obj-lin}
-    \langle G, BA -B_tA_t\rangle \approx 
-\langle G, B_t(A-A_t)
-+
-(B-B_t)A_t\rangle \; =\;  
-\langle G_A,A-A_t \rangle
-+
-\langle G_B, B-B_t\rangle,
-\end{equation} 
-where for the equality we used  the chain-rule giving
-  \[
-  \nabla_B \ell(W_0+BA) = G A^\top,
-  \qquad
-  \nabla_A \ell(W_0+BA) = B^\top G .
-  \]
-Finally to make the constraint tractable, we will use the linearization~\eqref{eq:BA-lin} and an upper bound as follows
-\begin{align} \label{eq:constraint-lin-bnd}
-    \|BA - B_tA_t\|_2 & \approx 
-    \|B_t(A-A_t)
-+
-(B-B_t)A_t\|_2 \leq     \|B_t(A-A_t)\|_2
-+
-\|(B-B_t)A_t\|_2,
-\end{align}
-where we used subadditivity of the spectral norm. 
-Therefore, it is sufficient to impose separate budgets
-\begin{equation} \label{eq:twobudget} 
-\|B_t(A-A_t)\|_2 \leq \eta_A,
-\qquad
-\|(B-B_t)A_t\|_2 \leq \eta_B,
-\qquad
-\eta_A+\eta_B \leq \eta.
-\end{equation}
-Finally using~\eqref{eq:obj-lin},~\eqref{eq:twobudget} and~\eqref{eq:constraint-lin-bnd} in~\eqref{eq:muon-quad} we arrive at the following two tractable programs and their solution.
-\begin{proposition}[Decoupled factor step]\label{prop:imuon}
-Assume that \(B_t\) has full column rank and \(A_t\) has full row rank. 
-Let $S_A=A_tA_t^\top \in \R^{r \times r}$, $S_B=B_t^\top B_t \in \R^{r \times r}$.
-Using the linearization~\eqref{eq:BA-lin} and the bound~\eqref{eq:constraint-lin-bnd} we arrive at the two programs
-\begin{align}
-  &\underset{A}{\textnormal{minimize}}~ \langle G_A, A-A_t\rangle \quad \textnormal{subject to}\quad  \norm{B(A-A_t)}_2\le\eta_A \nonumber \\
- & \underset{B}{\textnormal{minimize}}~ \langle G_B,  B -B_t\rangle \quad \textnormal{subject to}\quad  \norm{(B-B_t) A}_2\le\eta_B,
-  \label{eq:imuon-lmo}
-\end{align}
-to which their solutions are  given by 
-\begin{equation*}
- A= A_t-\eta_A\,S_B^{-1/2}\,\polar\!\big(S_B^{-1/2}G_A\big),\qquad
-B= B_t-\eta_B\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2}.
-\end{equation*}
-\end{proposition}
-For the proof see 
-(\Cref{app:proofs}, iMuon \cite{imuon}, or the half-split of compositional Muon \cite{tilde_csd}.
-
-
-The resulting update~\eqref{eq:imuon-lmo} whitens each factor gradient by the inverse Gram root of the opposite factor. This makes the step depend on the local geometry of the product \(BA\), rather than on the arbitrary scaling of the individual factors.
-
-\rob{This far}
-Finally, to balance
-
-
+to constrain the update to the linear layer in the spectral norm, we need to constrain
+\begin{align*}
+    \| W-W_t\|_2 &= 
+\end{align*}
+~\eqref{eq:muon}
 % ===========================================================================
 \section{Method: \methodname}
 \label{sec:method}
@@ -283,11 +177,56 @@ Finally, to balance
 % --- setup + the steepest-descent (LMO) view (MAIN STORY) ---------------------
 % All three updates are the same step (steepest descent under a norm) under
 % different norms. Statements in body; proofs in \Cref{app:proofs}.
+\paragraph{Setup.}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item LoRA factors $A\in\R^{r\times d_{\mathrm{in}}}$, $B\in\R^{d_{\mathrm{out}}\times r}$; adapter $\DW=(\alpha/r)\,BA$.
+  \item $G\triangleq\partial L/\partial(BA)$: gradient of the loss w.r.t.\ the \emph{unscaled} product $BA$ (the $\alpha/r$ scale is absorbed into the learning rate $\eta>0$). Per-factor gradients $G_A=B^\top G$, $G_B=GA^\top$.
+  \item $\dot A,\dot B$: the updates applied to the factors ($A\leftarrow A+\dot A$).
+  \item $\polar(M)=UV^\top$ for the SVD $M=U\Sigma V^\top$ --- the \emph{matrix sign} of $M$ (it sets each nonzero singular value to $1$; the orthogonal polar factor); spectral norm $\norm{M}_2=\smax(M)$; $\langle X,Y\rangle=\operatorname{tr}(X^\top Y)$; Gram matrices $S_A=AA^\top$, $S_B=B^\top B$.
+\end{itemize}
+\textbf{Steepest descent under a norm} --- the linear minimization oracle (LMO) --- for a factor gradient $M$ and a norm $\norm{\cdot}$, is the update
+\begin{equation}
+  \eta\,\argmin_{\norm{U}\le1}\langle M,U\rangle .
+  \label{eq:lmo}
+\end{equation}
+The three variants specialize $\norm{\cdot}$ to three different norms; \Cref{lem:lmo} is the case of the spectral norm $\norm{\cdot}_2$.
+
+\subsection{Naive Muon on the factors}
+\label{sec:method-naive}
+\paragraph{Norm.} The spectral norm $\norm{\cdot}_2$, applied to each factor separately.
+\begin{lemma}[Spectral-norm LMO]\label{lem:lmo}
+$-\polar(M)\in\argmin_{\norm{U}_2\le1}\langle M,U\rangle$ for any matrix $M$ (uniquely so when $M$ has full rank with distinct singular values). \emph{(\Cref{app:proofs}.)}
+\end{lemma}
+\noindent Applying \Cref{lem:lmo} to each factor gradient:
+\begin{equation}
+  \dot A=-\eta\,\polar(G_A),\qquad \dot B=-\eta\,\polar(G_B).
+  \label{eq:naive}
+\end{equation}
+Two defects on a factored weight:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \emph{Factorization-dependent.} The product $\DW=BA$ is invariant under $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$, but the factor gradient transforms as $G_A\mapsto N^{-\top}G_A$. Since $\polar$ is not equivariant, \eqref{eq:naive} depends on the factorization, not on $\DW$ alone \cite{imuon}.
+  \item \emph{Unbounded merged step.} The merged step
+        $\norm{B\dot A+\dot B A}_2\le\eta\big(\norm{A}_2+\norm{B}_2\big)$
+        grows with the factor norms, which can diverge under the corresponding flow \cite{kang_specgf}.
+\end{itemize}
 
 \subsection{iMuon / compositional Muon}
 \label{sec:method-imuon}
 \paragraph{LMO (half-split).} Budget each factor's contribution to the product step separately --- the tractable surrogate \cite{tilde_csd} for the harder joint constraint $\norm{\dot B A+B\dot A}_2\le\eta$:
-
+\begin{equation}
+  \min_{\dot A}\ \langle G_A,\dot A\rangle \ \ \text{s.t.}\ \ \norm{B\dot A}_2\le\eta,
+  \qquad
+  \min_{\dot B}\ \langle G_B,\dot B\rangle \ \ \text{s.t.}\ \ \norm{\dot B A}_2\le\eta .
+  \label{eq:imuon-lmo}
+\end{equation}
+\begin{proposition}[Decoupled factor step]\label{prop:imuon}
+The solution of \eqref{eq:imuon-lmo} whitens each factor gradient by the other factor's Gram root:
+\begin{equation*}
+  \dot A=-\eta\,S_B^{-1/2}\,\polar\!\big(S_B^{-1/2}G_A\big),\qquad
+  \dot B=-\eta\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2}.
+\end{equation*}
+\emph{(\Cref{app:proofs}; iMuon \cite{imuon}, and the half-split of compositional Muon \cite{tilde_csd}.)}
+\end{proposition}
 \begin{corollary}[Product-step invariance]\label{cor:imuon}
 $\norm{B\dot A}_2=\eta$, independent of the factor norms --- so no runtime rescale is needed. \emph{(\Cref{app:proofs}.)}
 \end{corollary}
@@ -402,7 +341,7 @@ LoRA starts at $B{=}0$, where the decoupled factor step of \Cref{prop:imuon} has
 
 \paragraph{Cost.} \methodname{} is \emph{lighter} than AdamW in memory and adds a small, batch-amortized compute overhead.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Memory.} Same first moment as AdamW, but AdamW's second moment is replaced by two curvature diagonals $P,Q$ --- a factor $r$ smaller. The $r\times r$ matrices $C_A=B^\top PB$, $C_B=AQA^\top$ are formed on the fly (\Cref{alg:ours}), not stored, and the inverse-sqrt is eigh-free (no eigenbasis, no $d\times d$ state). Net state ${\approx}\tfrac12$ AdamW's (\Cref{tab:optstate}). The four operator-norm estimates (\Cref{alg:smax}) each cache one warm-start vector across steps, adding $4r$ floats/pair --- negligible against the $(r{+}1)(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ state and omitted from \Cref{tab:optstate}.
+  \item \textbf{Memory.} Same first moment as AdamW, but AdamW's second moment is replaced by two curvature diagonals $P,Q$ --- a factor $r$ smaller. The $r\times r$ matrices $C_A=B^\top PB$, $C_B=AQA^\top$ are formed on the fly (\Cref{alg:ours}), not stored, and the inverse-sqrt is eigh-free (no eigenbasis, no $d\times d$ state). Net state ${\approx}\tfrac12$ AdamW's (\Cref{tab:optstate}).
   \item \textbf{Compute.} Per pair: $8$ matmuls of cost ${\sim}r^2d$ (forming $C_A,C_B$, whiten/un-whiten, two curvature applies), two full polars (PolarExpress \cite{polarexpress}, $K{=}8$ steps), two gram--Newton--Schulz inverse-sqrts \cite{gram_ns} (${\sim}r^3$). All $r\times r$ or $r\times d$, eigh-free; the polars dominate.
   \item \textbf{Wall.} Near-free at production batch: the fixed \texttt{optimizer.step} amortizes against the batch-scaling forward/backward (\Cref{sec:exp-walltime}).
 \end{itemize}
@@ -483,44 +422,23 @@ them one at a time from \methodname{} isolates each one's contribution (\Cref{fi
 % MAIN POINT (author's): a step-count speedup only matters if it survives in
 % wall-clock. The optimizer.step is a fixed cost (batch-independent), so its share
 % shrinks as batch grows -> the overhead amortizes. Numbers below are MEASURED
-% (Blackwell RTX PRO 6000, r256, all-linear, seq=2048, PE=8, gram_ns K=10;
-% COMPILED leaves+fwd/bwd = the production train.py --compile path) -- final, not
-% placeholders. Per-op decomposition in \Cref{app:walltime}.
-% MEASURED on the released polora package (Polora(compile=True) == enable_kernel_compile),
-% global batch 16, prod = gram polar vs rect = rectangular Newton-Schulz polar:
-%   Llama-3.2-1B r256 (bs4 ga4): opt  86ms / fwd+bwd 1736ms -> prod 1.043x  rect 1.069x
-%   OLMo-2-1B    r256 (bs4 ga4): opt  93ms / fwd+bwd 2046ms -> prod 1.039x  rect 1.064x
-%   Qwen2.5-1.5B r256 (bs4 ga4): opt 146ms / fwd+bwd 2935ms -> prod 1.044x  rect 1.072x
-%   Llama-3-8B   r256 (bs2 ga8): opt 294ms / fwd+bwd 8124ms -> prod 1.031x  rect 1.054x
-% NB: prod COMPILES the spectral leaves (train.py --compile -> enable_kernel_compile,
-% ~14% off opt at r256). The earlier EAGER-leaf bench gave OLMo 1.05x / 8B 1.04x;
-% the compiled-leaf numbers here are what production actually runs (slightly better).
-% Provenance: ~/polora/_faithfulness/bench_e2e_gram_vs_rect.py (released package; gitignored author bench).
+% (Blackwell, OLMo-2-1B, all-linear, seq=2048, PE=8, gram_ns inverse-sqrt vs AdamW;
+% compiled fwd/bwd) -- these are final, not placeholders. Per-op decomposition in
+% \Cref{app:walltime}.
+% MEASURED on the PROTAGONIST kl-diag-polar-lora (gram_ns, polar_express PE=8, K=10,
+% seq2048 compiled bf16, Blackwell RTX PRO 6000), global batch 16:
+%   Llama-3-8B  r256 (bs2 ga8): opt 356ms / fwd+bwd 8223ms -> 1.0386x (=1.04x)
+%   OLMo-2-1B   r256 (bs4 ga4): opt 117ms / fwd+bwd 2073ms -> 1.0503x (=1.05x)
+% Provenance: logs/bench/e2e_{8b,olmo1b}_r256_prod_kldiag_gramns.jsonl,
+% bench_polar_out/e2e_prod_kldiag_gramns.log, scripts/bench/bench_optimizer_step.py.
 \methodname{}'s \texttt{optimizer.step} is a fixed, batch-independent cost, so its share
 of the step shrinks as the batch grows and the step-count speedup carries over to
 wall-clock nearly intact.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Measured overhead ${\le}4\%$.} Full-step ratio against AdamW at production batch is $1.03$--$1.04\times$ across four bases (\Cref{tab:walltime}), smallest at $8$B (the largest base amortizes the fixed step over the most fwd/bwd); $r{=}256$, all-linear, seq~$2048$, Blackwell RTX PRO 6000, compiled.
+  \item \textbf{Measured overhead ${\le}5\%$.} Full-step ratio against AdamW at production batch: $1.05\times$ (OLMo-2-1B) and $1.04\times$ (Llama-3-8B), both $r{=}256$; Blackwell RTX PRO 6000, all-linear, seq~$2048$, compiled.
   \item \textbf{Within the step.} The two matrix-sign polars and the operator-norm estimation dominate (${\approx}60\%$); the curvature-metric block (inverse-sqrt, diagonal EMA, $r{\times}r$ Grams) is ${\approx}18\%$.
-  \item \textbf{The gram-form polar carries the saving.} The same polar run as a rectangular Newton--Schulz iteration on the $d{\times}r$ factor --- a ${\sim}r^2d$ matrix product at every step --- raises the overhead to $1.05$--$1.07\times$ (\Cref{tab:walltime}); the gram form runs the iteration on the $r{\times}r$ Gram (${\sim}r^3$) and pays the ${\sim}r^2d$ cost only to form the Gram and reconstruct the factor. At $r{\ll}d$ that gap is what keeps the dominant polar near-free.
   \item \textbf{Architecture-only floor.} A hardware-independent FLOP count gives the same near-free result --- under $1\%$ at the production batch (\Cref{app:flops}).
 \end{itemize}
-
-\begin{table}[h]
-\centering\small
-\begin{tabular}{lcc}
-\toprule
-base ($r{=}256$, all-linear, seq~$2048$) & \methodname{} & rect-polar \\
-\midrule
-Llama-3.2-1B & $1.04\times$ & $1.07\times$ \\
-OLMo-2-1B    & $1.04\times$ & $1.06\times$ \\
-Qwen2.5-1.5B & $1.04\times$ & $1.07\times$ \\
-Llama-3-8B   & $1.03\times$ & $1.05\times$ \\
-\bottomrule
-\end{tabular}
-\caption{Full-step wall-clock ratio vs.\ AdamW at production batch (Blackwell RTX PRO 6000, global batch $16$, \texttt{torch.compile} enabled). \methodname{} (gram-form matrix-sign) adds ${\le}4\%$; the \emph{rect-polar} column runs the same polar on the $d{\times}r$ factor instead of the $r{\times}r$ Gram (${\approx}1.5\times$ costlier in the optimizer step), raising the overhead to $5$--$7\%$.}
-\label{tab:walltime}
-\end{table}
 
 \subsection{The speedup grows when the adapter must update more}
 \label{sec:exp-taskdep}
@@ -591,17 +509,9 @@ LoRA parameterization and changes the update direction and radius.
 
 \paragraph{Orthogonalized updates.}
 Muon~\cite{muon} update is derived as a steepest descent over the spectral norm
-ball, in other words spectral descent,
-\[
-    \Delta W
-    =
-    \eta\argmin_{\|U\|_2\le 1}\langle G,U\rangle
-    =
-    -\eta \polar(G),
-\]
-where $\polar(G)$ is the orthogonal polar factor of $G$ \cite{muon,polarexpress}.
-This spectral step controls the worst-case change of the linear operator and
-has motivated several spectrally controlled optimizers. 
+ball, in other words spectral descent.  
+The spectral descent direction gave rise to a line of work on
+spectrally controlled training.  
 When Muon is applied separately to LoRa factors, spectral gradient flow exhibits a distinctive spectral phenomenon, 
 ``equal-rate'' growth of singular values, explaining why factor-wise
 orthogonalization can behave very differently from ordinary gradient
@@ -629,7 +539,7 @@ related to our metric estimator.
 
 Curvature-aware spectral optimizers combine this second-moment geometry
 with Muon-style orthogonalization.  SOAP-Muon first whitens with a SOAP
-preconditioner and then applies Muon~\cite{soapmuon}.  Mousse~\cite{mousse} formulates
+preconditioner and then applies Muon \cite{soapmuon}.  Mousse~ \cite{mousse} formulates
 a dense full-rank update as a spectral steepest descent step in a
 Shampoo-induced anisotropic trust region,
 \[
@@ -783,13 +693,7 @@ LoRA adapters cheaply:
   \item $\le 5\%$ per-step wall, ${\approx}\tfrac12$ AdamW's state --- the step speedup survives in wall-clock.
 \end{itemize}
 
-
-
-\printbibliography
-
-
 % ===========================================================================
-\clearpage
 \appendix
 \section{Experimental details}
 \label{app:exp}
@@ -1186,5 +1090,5 @@ The radius is not gauge-invariant: under $(A,B)\mapsto(cA,c^{-1}B)$, $\norm{A}_2
   \label{fig:gauge}
 \end{figure}
 
-
+\printbibliography
 \end{document}
