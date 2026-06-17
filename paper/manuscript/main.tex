@@ -85,6 +85,7 @@
 \PLACEHOLDER{Abstract.}
 \end{abstract}
 
+\tableofcontents
 % ===========================================================================
 \section{Introduction}
 \label{sec:intro}
@@ -104,6 +105,17 @@ under-examined lever; practice defaults to AdamW on the factors $A,B$. We introd
 \methodname{}, a spectral-polar LoRA optimizer that reaches AdamW's eval loss in
 $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
 
+\rob{Pieces of introduction I found, mostly ilegible}
+\paragraph{Motivation.} Naive Muon (\Cref{lem:lmo}) and iMuon (\Cref{prop:imuon}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
+\begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
+  \item[(A)] \emph{Metric.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \Cref{par:coupling}).
+  \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step (\Cref{prop:ours}).
+  \item[(C)] \emph{Magnitude.} Discard the LMO budget; re-pin to the operator-norm radius (\Cref{eq:ours-prodcap}).
+\end{itemize}
+Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
+\rob{end pieces of introduction}
+
+
 \paragraph{Contributions.}
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
   \item \PLACEHOLDER{A fast, cheap LoRA optimizer.}
@@ -113,6 +125,12 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
 \end{itemize}
 
 
+\rob{Pieces of contributions I found}
+\emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
+
+ \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\Delta A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor operator-norm radius to bound it.
+
+ \rob{end pieces of contributions}
 % ===========================================================================
 
 \section{Spectral Geometry with Lora}
@@ -140,8 +158,8 @@ and solve
 where \(\ell\) is the task loss. We omit the usual LoRA scaling factor, since it can be absorbed into \(A\) or \(B\).
 
 
-
-Here we will derive a type of spectral descent method~\cite{carlson2015preconditioned, carlson2015stochastic}, that is, a variant of Muon~\cite{muon} specialized to low rank matrices.
+Here we will derive a type of spectral descent method~\cite{carlson2015preconditioned, carlson2015stochastic}, that is, a variant of Muon~\cite{muon} specialized to low rank matrices. 
+For clarity, we first write the method without momentum; in practice, \(G_t\) may be replaced by a momentum buffer before applying the polar map.
 
 The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
 \[ 
@@ -151,14 +169,14 @@ where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in
 The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the operator norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
 That is, for a given weight $W_t = W_0 + B_tA_t$ and corresponding  gradient matrix $G \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ for this layer, we minimize the local linearization of our loss, subject to a spectral ball constraint:
 \begin{align} \label{eq:muon}
-    W_{t+1} &= \argmin_{W\in  \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}} \langle G,W-W_t\rangle \quad \mbox{subject to}\quad  \| W-W_t\|_2 \leq \eta \\
-    &= W_t - \eta \polar(G),
+    W_{t+1} &= \argmin_{W\in  \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}} \langle G_t,W-W_t\rangle \quad \mbox{subject to}\quad  \| W-W_t\|_2 \leq \eta \\
+    &= W_t - \eta \polar(G), \label{lem:lmo} 
 \end{align} 
 where  $\polar(G_t) := U V^\top$ and 
-\[
+$
 G_t = U \Sigma V^\top
-\]
-is the reduced singular value decomposition.
+$
+is the reduced or thin singular value decomposition.
 
 This polar factor is the matrix sign used in Muon and can be computed efficiently by Newton--Schulz-type iterations~\cite{muon,polarexpress}.
 
@@ -182,7 +200,7 @@ G_{B} \mapsto G_{B}N^\top.
 Since $\polar$ is not equivariant, the update \eqref{eq:naive} depends on the factorization, even though the product $BA$ does not~\cite{imuon}.
 
 
-\paragraph{Ideal Muon.}
+\paragraph{Ideal Low Rank Muon.}
 The issue with the above naive approach, is that $A$ and $B$ alone do not encode the linear layer, but rather the product $BA$. 
 Indeed, the resulting linear layer of our model is now encoded by
 \begin{equation} \label{eq:lin-op}
@@ -192,11 +210,11 @@ Let $W = W_0 + BA $ for shorthand.
 Applying exactly the Muon update~\eqref{eq:muon} and substituting in $W$ and $W_t$ gives
 \begin{equation}\label{eq:muon-quad}
     \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r},
-A \in \mathbb{R}^{r \times d_{\mathrm{in}}}} \langle G,BA-B_t A_t\rangle  \quad \mbox{subject to}\quad  \| BA-B_tA_t\|_2 \leq \eta,
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}}} \langle G_t,BA-B_t A_t\rangle  \quad \mbox{subject to}\quad  \| BA-B_tA_t\|_2 \leq \eta,
 \end{equation} 
   This update~\eqref{eq:muon-quad} would be the ideal spectral descent for Lora, but it is not practical, because of the difficult nonlinear constraint. To make this practical, we will admit one approximation, and one upper bound.
 
-\paragraph{Compositional Muon/ iMuon.}
+\paragraph{Practical Low Rank Muon.}
 Our  approximation will be to linearize the map \((B,A) \mapsto BA\) around the current iterate \((B_t,A_t)\), that is we will use the first-order approximation 
 \begin{equation} \label{eq:BA-lin}
 BA
@@ -219,9 +237,9 @@ Using this linearization we have that the objective in~\eqref{eq:muon-quad} beco
 \end{equation} 
 where for the equality we used  the chain-rule giving
   \[
-  \nabla_B \ell(W_0+BA) = G A^\top,
+  \nabla_B \ell(W_0+B_tA_t) = G_B = G_t A^\top,
   \qquad
-  \nabla_A \ell(W_0+BA) = B^\top G .
+  \nabla_A \ell(W_0+B_tA_t) = G_A = B_t^\top G .
   \]
 Finally to make the constraint tractable, we will use the linearization~\eqref{eq:BA-lin} and an upper bound as follows
 \begin{align} \label{eq:constraint-lin-bnd}
@@ -233,7 +251,7 @@ Finally to make the constraint tractable, we will use the linearization~\eqref{e
 \|(B-B_t)A_t\|_2,
 \end{align}
 where we used subadditivity of the spectral norm. 
-Therefore, it is sufficient to impose separate budgets
+Therefore, it is sufficient to impose separate budgets 
 \begin{equation} \label{eq:twobudget} 
 \|B_t(A-A_t)\|_2 \leq \eta_A,
 \qquad
@@ -241,21 +259,27 @@ Therefore, it is sufficient to impose separate budgets
 \qquad
 \eta_A+\eta_B \leq \eta.
 \end{equation}
+This bound was also explored in  \cite{tilde_csd}.
 Finally using~\eqref{eq:obj-lin},~\eqref{eq:twobudget} and~\eqref{eq:constraint-lin-bnd} in~\eqref{eq:muon-quad} we arrive at the following two tractable programs and their solution.
 \begin{proposition}[Decoupled factor step]\label{prop:imuon}
 Assume that \(B_t\) has full column rank and \(A_t\) has full row rank. 
 Let $S_A=A_tA_t^\top \in \R^{r \times r}$, $S_B=B_t^\top B_t \in \R^{r \times r}$.
 Using the linearization~\eqref{eq:BA-lin} and the bound~\eqref{eq:constraint-lin-bnd} we arrive at the two programs
 \begin{align}
-  &\underset{A}{\textnormal{minimize}}~ \langle G_A, A-A_t\rangle \quad \textnormal{subject to}\quad  \norm{B(A-A_t)}_2\le\eta_A \nonumber \\
- & \underset{B}{\textnormal{minimize}}~ \langle G_B,  B -B_t\rangle \quad \textnormal{subject to}\quad  \norm{(B-B_t) A}_2\le\eta_B,
+  A_{t+1}& =   \argmin_{ 
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}}}~ \langle G_A, A-A_t\rangle \quad \textnormal{subject to}\quad  \norm{B(A-A_t)}_2\le\eta_A \nonumber \\
+ B_{t+1} &=   \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r}}~ \langle G_B,  B -B_t\rangle \quad \textnormal{subject to}\quad  \norm{(B-B_t) A}_2\le\eta_B,
   \label{eq:imuon-lmo}
 \end{align}
 to which their solutions are  given by 
 \begin{equation*}
- A= A_t-\eta_A\,S_B^{-1/2}\,\polar\!\big(S_B^{-1/2}G_A\big),\qquad
-B= B_t-\eta_B\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2}.
+ A_{t+1}= A_t-\eta_A\,S_B^{-1/2}\,\polar\!\big(S_B^{-1/2}G_A\big),\qquad
+B_{t+1}= B_t-\eta_B\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2}.
 \end{equation*}
+Furthermore we have that 
+\begin{equation} \label{cor:imuon}
+    \norm{B(A_{t+1}-A_t)}_2 = \eta_A, \quad \mbox{and} \quad   \norm{(B_{t+1}-B_t) A}_2 = \eta_B.
+\end{equation}
 \end{proposition}
 For the proof see 
 (\Cref{app:proofs}, iMuon \cite{imuon}, or the half-split of compositional Muon \cite{tilde_csd}.
@@ -264,7 +288,7 @@ For the proof see
 The resulting update~\eqref{eq:imuon-lmo} whitens each factor gradient by the inverse Gram root of the opposite factor. This makes the step depend on the local geometry of the product \(BA\), rather than on the arbitrary scaling of the individual factors.
 
 \rob{This far}
-Finally, to balance
+Finally, we have the freedom to choose $\eta_A$ and $\eta_B$. We will do so to incentivize ...
 
 
 % ===========================================================================
@@ -284,28 +308,10 @@ Finally, to balance
 % All three updates are the same step (steepest descent under a norm) under
 % different norms. Statements in body; proofs in \Cref{app:proofs}.
 
-\subsection{iMuon / compositional Muon}
-\label{sec:method-imuon}
-\paragraph{LMO (half-split).} Budget each factor's contribution to the product step separately --- the tractable surrogate \cite{tilde_csd} for the harder joint constraint $\norm{\Delta B A+B\Delta A}_2\le\eta$:
 
-\begin{corollary}[Product-step invariance]\label{cor:imuon}
-$\norm{B\Delta A}_2=\eta$, independent of the factor norms --- so no runtime rescale is needed. \emph{(\Cref{app:proofs}.)}
-\end{corollary}
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
-  \item \emph{Same operator, three independent incarnations.} The memoryless limit of LoRA-RITE \cite{lorarite} (moment accumulation stripped), iMuon's decoupled form \cite{imuon}, and the concurrent LoRA-Muon \cite{loramuon} all realize \Cref{prop:imuon} (\Cref{app:memoryless}); \cite{loramuon} proves this equivalence. Our ablation runs this shared update's \emph{direction} as the both-controls-removed arm, with the step magnitude pinned by the unit-spectral-norm rescale of \Cref{alg:ours} (\Cref{sec:exp}); the unpinned update's factor step is uncapped ($\propto1/\sigma_{\min}$ of the partner).
-  \item \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\Delta A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor operator-norm radius to bound it.
-\end{itemize}
 
-\subsection{Ours: \methodname}
 \label{sec:method-ours}
-\paragraph{Motivation.} Naive Muon (\Cref{lem:lmo}) and iMuon (\Cref{prop:imuon}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
-\begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item[(A)] \emph{Metric.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \Cref{par:coupling}).
-  \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step (\Cref{prop:ours}).
-  \item[(C)] \emph{Magnitude.} Discard the LMO budget; re-pin to the operator-norm radius (\Cref{eq:ours-prodcap}).
-\end{itemize}
-Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
+
 
 \paragraph{(A) The metric.} Model the gradient second moment as diagonal--Kronecker:
 \begin{equation}
@@ -567,6 +573,13 @@ at $\eta$ independent of $r$.
 
 % ===========================================================================
 \section{Prior work}
+
+\rob{Some pieces of prior work mixed in with experimental setup?}
+\emph{Same operator, three independent incarnations.} The memoryless limit of LoRA-RITE \cite{lorarite} (moment accumulation stripped), iMuon's decoupled form \cite{imuon}, and the concurrent LoRA-Muon \cite{loramuon} all realize \Cref{prop:imuon} (\Cref{app:memoryless}); \cite{loramuon} proves this equivalence. Our ablation runs this shared update's \emph{direction} as the both-controls-removed arm, with the step magnitude pinned by the unit-spectral-norm rescale of \Cref{alg:ours} (\Cref{sec:exp}); the unpinned update's factor step is uncapped ($\propto1/\sigma_{\min}$ of the partner).
+\rob{end pieces}
+
+
+  
 \paragraph{LoRa and optimization of low rank factors.}
 LoRA finetuning freezes the pretrained weight matrix and trains a low-rank update
 $\DW=(\alpha/r)BA$ through the factors $A$ and $B$ \cite{lora}.
@@ -702,15 +715,7 @@ In the memoryless spectral limit, LoRA-RITE, iMuon and LoRA-Muon reduce to the s
 \]
 with $S_A=AA^\top$, $S_B=B^\top B$, $G_A=B^\top G$, and
 $G_B=GA^\top$.  Equivalently, this is the solution of the two half-product subproblems
-\eqref{}.
-
-
-% It does not, however, cap the raw factor
-% steps, which scale as $1/\sigma_{\min}$ of the partner factor and are
-% therefore singular at the standard $B=0$ LoRA initialization.
-% \methodname{} uses this shared spectral core as the invariant baseline,
-% then adds a coupled two-sided curvature metric for the direction and a
-% separate operator-norm radius for the merged adapter step.
+\eqref{eq:imuon-lmo}.
 
 
 This shared update controls the two linearized product contributions,
@@ -876,9 +881,9 @@ which \Cref{lem:lmo} solves at $Z=-\eta\,\polar(S_B^{-1/2}G_A)$. Undoing the sub
   \Delta A=S_B^{-1/2}Z=-\eta\,S_B^{-1/2}\polar\!\big(S_B^{-1/2}G_A\big),
 \]
 and the $B$-block is symmetric. This recovers iMuon's idealized (decoupled) update \cite{imuon}, the per-factor split of compositional Muon \cite{tilde_csd}.
-\end{proof}
 
-\begin{proof}[Proof of \Cref{cor:imuon}]
+
+Finally for the proof of~\eqref{cor:imuon}. 
 With $U_B=BS_B^{-1/2}$ (orthonormal columns),
 \[
   B\Delta A=-\eta\,U_B\,\polar(S_B^{-1/2}G_A).
