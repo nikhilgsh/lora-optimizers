@@ -431,7 +431,8 @@ AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.5
 \label{sec:exp}
 
 
-\rob{Some left over pieces describing experimental setup:}
+\subsection{Setup}
+\label{sec:exp-setup}
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{LoRA.} $\DW=(\alpha/r)\,BA$, $A\in\R^{r\times d_{\mathrm{in}}}$, $B\in\R^{d_{\mathrm{out}}\times r}$, $\alpha{=}r$, all linear modules, standard $B{=}0$ init.
   \item \textbf{Held fixed across optimizers.} model, dataset $+$ split, $r$/$\alpha$, targets, sequence length, batch, grad-accum, dtype, constant lr (no warmup/decay). Only the optimizer and its lr vary; lr is picked per (optimizer, setting) on held-out eval loss.
@@ -439,7 +440,8 @@ AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.5
 \end{itemize}
 
 
-\subsection{Main Result: \methodname{} Beats AdamW on Every Setting}
+\subsection{Measuring Efficiency Benefits}
+\label{sec:exp-main}
 \methodname{} reaches AdamW's loss in $1.2$--$1.7\times$ fewer steps on all $9$
 settings (\Cref{fig:hero} showcase; \Cref{tab:breadth} across model families;
 \Cref{tab:rank,fig:ood} the rank and task comparisons in \S\ref{sec:exp-taskdep};
@@ -459,14 +461,22 @@ largest base needs the smallest adapter update).
   \centering\small
   \input{figs/tab_breadth.tex}
   \caption{\textbf{Speedup over AdamW across model families} (code task, $r{=}256$).
-  Speedup is steps-to-reach AdamW's best-lr final loss (\Cref{sec:setup}).
+  Speedup is steps-to-reach AdamW's best-lr final loss (\Cref{sec:exp-setup}).
   \methodname{} wins on all four; the speedup is smallest at $8$B. iMuon, run on two
   settings, does not beat AdamW ($1.01\times$ on OLMo/Code; no crossing on
   Llama/Math).}
   \label{tab:breadth}
 \end{table}
 
-\subsection{Ablations: Which Components Carry the Speedup}
+\paragraph{Wall-clock.} The step-count speedup carries to wall-clock nearly intact:
+\methodname{}'s \texttt{optimizer.step} is a fixed, batch-independent cost, so its share of
+the step shrinks as the batch grows, and at production batch the full-step overhead over
+AdamW is ${\le}4\%$ across all four bases (\Cref{tab:walltime}) --- an $N\times$ step-count
+speedup is then a ${\approx}N\times$ wall-clock speedup. The gram-form matrix-sign keeps this
+near-free (the rectangular polar would cost $5$--$7\%$, \Cref{tab:walltime}); a
+hardware-independent FLOP floor is under $1\%$ (\Cref{app:flops}).
+
+\subsection{Component Ablation}
 \label{sec:exp-ablation}
 \methodname{} adds three things to a per-factor spectral step (naive Muon, \eqref{eq:naive}):
 the factorization-invariant whitening of \Cref{prop:imuon} (each factor gradient whitened by
@@ -484,8 +494,6 @@ them one at a time from \methodname{} isolates each one's contribution (\Cref{fi
   \label{fig:ablation}
 \end{figure}
 
-\subsection{From Step Speedup to Wall-Clock}
-\label{sec:exp-walltime}
 % MAIN POINT (author's): a step-count speedup only matters if it survives in
 % wall-clock. The optimizer.step is a fixed cost (batch-independent), so its share
 % shrinks as batch grows -> the overhead amortizes. Numbers below are MEASURED
@@ -502,15 +510,6 @@ them one at a time from \methodname{} isolates each one's contribution (\Cref{fi
 % ~14% off opt at r256). The earlier EAGER-leaf bench gave OLMo 1.05x / 8B 1.04x;
 % the compiled-leaf numbers here are what production actually runs (slightly better).
 % Provenance: ~/polora/_faithfulness/bench_e2e_gram_vs_rect.py (released package; gitignored author bench).
-\methodname{}'s \texttt{optimizer.step} is a fixed, batch-independent cost, so its share
-of the step shrinks as the batch grows and the step-count speedup carries over to
-wall-clock nearly intact.
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Measured overhead ${\le}4\%$.} Full-step ratio against AdamW at production batch is $1.03$--$1.04\times$ across four bases (\Cref{tab:walltime}), smallest at $8$B (the largest base amortizes the fixed step over the most fwd/bwd); $r{=}256$, all-linear, seq~$2048$, Blackwell RTX PRO 6000, compiled.
-  \item \textbf{Within the step.} The two matrix-sign polars and the operator-norm estimation dominate (${\approx}60\%$); the curvature-metric block (inverse-sqrt, diagonal EMA, $r{\times}r$ Grams) is ${\approx}18\%$.
-  \item \textbf{The gram-form polar carries the saving.} The same polar run as a rectangular Newton--Schulz iteration on the $d{\times}r$ factor --- a ${\sim}r^2d$ matrix product at every step --- raises the overhead to $1.05$--$1.07\times$ (\Cref{tab:walltime}); the gram form runs the iteration on the $r{\times}r$ Gram (${\sim}r^3$) and pays the ${\sim}r^2d$ cost only to form the Gram and reconstruct the factor. At $r{\ll}d$ that gap is what keeps the dominant polar near-free.
-  \item \textbf{Architecture-only floor.} A hardware-independent FLOP count gives the same near-free result --- under $1\%$ at the production batch (\Cref{app:flops}).
-\end{itemize}
 
 \begin{table}[h]
 \centering\small
@@ -528,18 +527,16 @@ Llama-3-8B   & $1.03\times$ & $1.05\times$ \\
 \label{tab:walltime}
 \end{table}
 
-\subsection{The Speedup Grows When the Adapter Must Update More}
+\subsection{Effect of Rank and Distribution Shift}
 \label{sec:exp-taskdep}
 Two controlled comparisons --- each varying one axis with everything else fixed ---
-point the same way: the more the adapter must update (farther out-of-distribution,
-higher rank), the larger the advantage over AdamW.
+point the same way: the speedup over AdamW is larger out-of-distribution and at
+higher rank.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
   \item \textbf{Task (only the data changes).} Qwen2.5-1.5B, $r{=}256$: the speedup rises from in-distribution code to out-of-distribution Bengali (\Cref{fig:ood}).
   \item \textbf{Rank (only $r$ changes).} Llama-3.2-1B, Math: the speedup is larger at higher rank (\Cref{tab:rank}).
 \end{itemize}
-\emph{Heuristic.} An out-of-distribution corpus and a higher rank both call for a larger
-adapter update --- a larger move from initialization --- and \methodname{} turns that
-larger update into a bigger step-count gain over AdamW (the rank trend is roughly monotonic).
+The rank trend is roughly monotonic.
 
 \begin{table}[h]
   \centering\small
@@ -556,7 +553,9 @@ larger update into a bigger step-count gain over AdamW (the rank trend is roughl
   \label{fig:ood}
 \end{figure}
 
-\paragraph{Stable learning rate across rank.} A side effect of the operator-norm
+\subsection{Learning-Rate Transfer across Rank}
+\label{sec:exp-lrtransfer}
+A side effect of the operator-norm
 radius: across ranks on the same Math task, \methodname{}'s loss-minimizing lr stays at
 $10^{-2}$ for every $r$ while AdamW's drifts $3\times10^{-4}{\to}10^{-4}$
 (\Cref{fig:lr_transfer}) --- the radius (\Cref{eq:ours-prodcap}) caps the merged step
