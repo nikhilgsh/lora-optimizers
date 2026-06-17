@@ -181,7 +181,7 @@ is the reduced or thin singular value decomposition.
 This polar factor is the matrix sign used in Muon and can be computed efficiently by Newton--Schulz-type iterations~\cite{muon,polarexpress}.
 
 \paragraph{Naive Muon.}
-A naive way to combine Muon with a Lora is simply to update the factors $A$ and $B$ separately using  
+A naive way to combine Muon with a LoRA is simply to update the factors $A$ and $B$ separately using  
 \begin{equation}
    A_{t+1} = A_t-\eta\,\polar(G_A),\qquad  B_{t+1}= B_t-\eta\,\polar(G_B),
   \label{eq:naive}
@@ -212,7 +212,7 @@ Applying exactly the Muon update~\eqref{eq:muon} and substituting in $W$ and $W_
     \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r},
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}}} \langle G_t,BA-B_t A_t\rangle  \quad \mbox{subject to}\quad  \| BA-B_tA_t\|_2 \leq \eta,
 \end{equation} 
-  This update~\eqref{eq:muon-quad} would be the ideal spectral descent for Lora, but it is not practical, because of the difficult nonlinear constraint. To make this practical, we will admit one approximation, and one upper bound.
+  This update~\eqref{eq:muon-quad} would be the ideal spectral descent for LoRA, but it is not practical, because of the difficult nonlinear constraint. To make this practical, we will admit one approximation, and one upper bound.
 
 \paragraph{Practical Low Rank Muon.}
 Our  approximation will be to linearize the map \((B,A) \mapsto BA\) around the current iterate \((B_t,A_t)\), that is we will use the first-order approximation 
