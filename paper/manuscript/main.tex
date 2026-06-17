@@ -486,6 +486,22 @@ speedup is then a ${\approx}N\times$ wall-clock speedup. The gram-form matrix-si
 near-free (the rectangular polar would cost $5$--$7\%$, \Cref{tab:walltime}); a
 hardware-independent FLOP floor is under $1\%$ (\Cref{app:flops}).
 
+\begin{table}[t]
+\centering\small
+\begin{tabular}{lcc}
+\toprule
+base ($r{=}256$, all-linear, seq~$2048$) & \methodname{} & rect-polar \\
+\midrule
+Llama-3.2-1B & $1.04\times$ & $1.07\times$ \\
+OLMo-2-1B & $1.04\times$ & $1.06\times$ \\
+Qwen2.5-1.5B & $1.04\times$ & $1.07\times$ \\
+Llama-3-8B & $1.03\times$ & $1.05\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Full-step wall-clock ratio vs.\ AdamW at production batch (Blackwell RTX PRO 6000, global batch $16$, \texttt{torch.compile} enabled). \methodname{} (gram-form matrix-sign) adds ${\le}4\%$; the \emph{rect-polar} column runs the same polar on the $d{\times}r$ factor instead of the $r{\times}r$ Gram (${\approx}1.5\times$ costlier in the optimizer step), raising the overhead to $5$--$7\%$.}
+\label{tab:walltime}
+\end{table}
+
 \subsection{Component Ablation}
 \label{sec:exp-ablation}
 \methodname{} adds three things to a per-factor spectral step (naive Muon, \eqref{eq:naive}):
@@ -504,38 +520,6 @@ them one at a time from \methodname{} isolates each one's contribution (\Cref{fi
   \label{fig:ablation}
 \end{figure}
 
-% MAIN POINT (author's): a step-count speedup only matters if it survives in
-% wall-clock. The optimizer.step is a fixed cost (batch-independent), so its share
-% shrinks as batch grows -> the overhead amortizes. Numbers below are MEASURED
-% (Blackwell RTX PRO 6000, r256, all-linear, seq=2048, PE=8, gram_ns K=10;
-% COMPILED leaves+fwd/bwd = the production train.py --compile path) -- final, not
-% placeholders. Per-op decomposition in \Cref{app:walltime}.
-% MEASURED on the released polora package (Polora(compile=True) == enable_kernel_compile),
-% global batch 16, prod = gram polar vs rect = rectangular Newton-Schulz polar:
-%   Llama-3.2-1B r256 (bs4 ga4): opt  86ms / fwd+bwd 1736ms -> prod 1.043x  rect 1.069x
-%   OLMo-2-1B    r256 (bs4 ga4): opt  93ms / fwd+bwd 2046ms -> prod 1.039x  rect 1.064x
-%   Qwen2.5-1.5B r256 (bs4 ga4): opt 146ms / fwd+bwd 2935ms -> prod 1.044x  rect 1.072x
-%   Llama-3-8B   r256 (bs2 ga8): opt 294ms / fwd+bwd 8124ms -> prod 1.031x  rect 1.054x
-% NB: prod COMPILES the spectral leaves (train.py --compile -> enable_kernel_compile,
-% ~14% off opt at r256). The earlier EAGER-leaf bench gave OLMo 1.05x / 8B 1.04x;
-% the compiled-leaf numbers here are what production actually runs (slightly better).
-% Provenance: ~/polora/_faithfulness/bench_e2e_gram_vs_rect.py (released package; gitignored author bench).
-
-\begin{table}[h]
-\centering\small
-\begin{tabular}{lcc}
-\toprule
-base ($r{=}256$, all-linear, seq~$2048$) & \methodname{} & rect-polar \\
-\midrule
-Llama-3.2-1B & $1.04\times$ & $1.07\times$ \\
-OLMo-2-1B    & $1.04\times$ & $1.06\times$ \\
-Qwen2.5-1.5B & $1.04\times$ & $1.07\times$ \\
-Llama-3-8B   & $1.03\times$ & $1.05\times$ \\
-\bottomrule
-\end{tabular}
-\caption{Full-step wall-clock ratio vs.\ AdamW at production batch (Blackwell RTX PRO 6000, global batch $16$, \texttt{torch.compile} enabled). \methodname{} (gram-form matrix-sign) adds ${\le}4\%$; the \emph{rect-polar} column runs the same polar on the $d{\times}r$ factor instead of the $r{\times}r$ Gram (${\approx}1.5\times$ costlier in the optimizer step), raising the overhead to $5$--$7\%$.}
-\label{tab:walltime}
-\end{table}
 
 \subsection{Effect of Rank and Distribution Shift}
 \label{sec:exp-taskdep}
