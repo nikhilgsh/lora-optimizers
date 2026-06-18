@@ -1,7 +1,7 @@
 % =====================================================================
 % DRAFT -- standalone derivation sketch. NOT main.tex.
 % Purpose: derive the PoLoRA direction from a per-factor empirical-gradient
-%          (gradient-covariance) metric; predictive KL is an interpretation.
+%          (gradient-covariance) metric and rank-one layer tests.
 % =====================================================================
 \documentclass[11pt]{article}
 \usepackage{amsmath,amssymb,amsthm,mathtools}
@@ -12,10 +12,9 @@
 \newcommand{\DW}{\Delta W}
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\E}{\mathbb{E}}
-\newcommand{\T}{\mathcal T}
-\newcommand{\F}{\mathcal F}
 \DeclareMathOperator{\tr}{tr}
 \DeclareMathOperator{\vecop}{vec}
+\DeclareMathOperator{\range}{range}
 \DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator{\diag}{diag}
 
@@ -32,24 +31,24 @@
 \begin{document}
 \maketitle
 
-This note derives the PoLoRA update in LoRA factor coordinates $(A,B)$ from a
-\emph{linearized trust-region} step on the observed per-example gradients---the
-object PoLoRA actually estimates. The chain is
-\[
-  \begin{aligned}
-  &\text{mean per-example linearized loss change}
-   +\text{RMS per-example penalty}\\
-  &\qquad\to\;\text{empirical Fisher}
-   \;\to\;\text{Kronecker fit}
-   \;\to\;\text{LoRA pullback}
-   \;\to\;\text{spectral polar step}.
-  \end{aligned}
-\]
-Predictive KL enters only as an interpretation (\S\ref{sec:interp},
-Appendix~\ref{app:kl}): the second-moment metric here is the empirical Fisher,
-which equals the predictive-KL (true Fisher) curvature only for model-sampled
-score gradients. The full-inverse (average) counterpart of the step---ordinary
-metric preconditioning---is in Appendix~\ref{app:frob}.
+This note derives the PoLoRA direction from a dense linearized trust-region
+problem and then pulls the result back to the LoRA factors. For a dense update
+$U$ and the gradient $G_i$ on example $i$, the first-order change in that
+example's loss is $\delta_i(U)=\langle G_i,U\rangle$. The trust region bounds the
+root-mean-square (RMS) effect $\E_i[\delta_i(U)^2]$---equivalently, it bounds the
+response to every unit-RMS weighted average of the observed per-example
+gradients. PoLoRA replaces that full dual ball by the rank-one layer tests
+$r=\vecop(bx^\top)$, fits the empirical gradient covariance by $Q\otimes P$, and
+thereby obtains the spectral constraint $\norm{P^{1/2}UQ^{1/2}}_2$. The remaining
+steps are algebra: apply this constraint to the LoRA tangent
+$B\Delta A+\Delta B A$, split the two factor blocks, and solve the resulting
+spectral linear subproblems by whitening, applying the polar map, and
+unwhitening.
+
+Throughout, the metric is built from observed per-example gradients only.
+Appendix~\ref{app:frob} repeats the same path but stops short of the rank-one
+restriction, recovering a Frobenius (full-inverse) step in place of the polar
+one.
 
 \section{Setup: the LoRA tangent split}
 \label{sec:setup}
@@ -86,185 +85,251 @@ bias-corrected momentum buffers before the polar map.
 \label{sec:metric}
 
 Let $G_i\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be the dense adapter
-gradient on example or token $i$, and for a dense update $U$ write the first-order
-change in example $i$'s loss as
+gradient on example or token $i$, let $g_i:=\vecop(G_i)$, and write
+$u:=\vecop(U)$ for a dense update. The first-order change in example $i$'s loss
+is
 \begin{equation}
   \delta_i(U):=\langle G_i,U\rangle .
   \label{eq:delta}
 \end{equation}
 The per-example gradients average to the batch gradient of \S\ref{sec:setup},
 $G=\E_i[G_i]$, so the mean first-order change is
-$\E_i[\delta_i(U)]=\langle G,U\rangle$. PoLoRA's update solves the variational
-problem
+$\E_i[\delta_i(U)]=\langle G,U\rangle$. The starting point is the constrained
+linearized step
 \begin{equation}
-  \min_U\;\E_i[\delta_i(U)]+\frac{\lambda}{2}\,\E_i[\delta_i(U)^2]
-  \label{eq:variational}
+  \min_U\;\E_i[\delta_i(U)]
+  \qquad\mathrm{s.t.}\qquad
+  \E_i[\delta_i(U)^2]\le \eta^2 .
+  \label{eq:rms-trust-region}
 \end{equation}
----decrease the average loss, but penalize the RMS size of the per-example
-linearized effects (equivalently, minimize $\E_i[\delta_i(U)]$ subject to a fixed
-bound on $\E_i[\delta_i(U)^2]$).
+It asks for a descent step whose per-example linearized effects have bounded RMS
+size.
 
-The penalty is the second moment of the per-example linearized changes,
+The RMS constraint is the empirical gradient second moment:
 \begin{equation}
   \E_i[\delta_i(U)^2]
-  =\E_i\!\big[\langle G_i,U\rangle^2\big]
-  =\vecop(U)^\top \Sigma_{\mathrm{EF}}\,\vecop(U),
+  =\E_i[(g_i^\top u)^2]
+  =u^\top \Sigma u,
   \qquad
-  \Sigma_{\mathrm{EF}}:=\E_i\!\big[\vecop(G_i)\vecop(G_i)^\top\big],
+  \Sigma:=\E_i[g_i g_i^\top].
   \label{eq:ef-penalty}
 \end{equation}
-so the metric is the empirical Fisher---not a curvature proxy, but exactly the
-quadratic form that penalizes the RMS first-order effect of $U$ across examples.
-(Newton--Muon instead Taylor-expands the task loss to the Hessian.)
+This is the empirical Fisher: the covariance of the observed per-example
+gradients, used here because it is exactly the quadratic form that penalizes the
+RMS first-order effect of $U$ across examples.
 
-Writing $u=\vecop(U)$, the penalty is a squared whitened length,
-$\E_i[\delta_i(U)^2]=\norm{\Sigma_{\mathrm{EF}}^{1/2}u}_2^2$. A worst case taken
-\emph{here}, over parameter-space probes $\xi$, is vacuous---
-$\sup_{\norm{\xi}_2\le1}(\xi^\top\Sigma_{\mathrm{EF}}^{1/2}u)^2
-=\norm{\Sigma_{\mathrm{EF}}^{1/2}u}_2^2$ returns the same length---so a matrix
-spectral norm can appear only after the metric is reshaped (\S\ref{sec:worst-input}).
-
-PoLoRA never forms $\Sigma_{\mathrm{EF}}$; it fits the covariance by a
-diagonal--Kronecker matrix
+\begin{lemma}[Dual view of the RMS constraint]
+\label{lem:rms-dual}
+Define the full dual unit ball
 \begin{equation}
-  \Sigma_{\mathrm{EF}}\approx Q\otimes P,
+  \mathcal D_{\Sigma}:=
+  \{\,r\in\range(\Sigma): r^\top\Sigma^+r\le1\,\}.
+  \label{eq:test-set}
+\end{equation}
+Equivalently, $\mathcal D_{\Sigma}$ is the set of gradients
+$r=\E_i[\alpha_i g_i]$ that can be synthesized by weights with
+$\E_i[\alpha_i^2]\le1$. Then
+\begin{equation}
+  \sqrt{\E_i[\delta_i(U)^2]}
+  =\sup_{r\in\mathcal D_{\Sigma}} |r^\top u| .
+  \label{eq:rms-dual}
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+The identity \eqref{eq:ef-penalty} gives
+$\sqrt{\E_i[\delta_i(U)^2]}=\sqrt{u^\top\Sigma u}$. Generalized
+Cauchy--Schwarz gives
+$|r^\top u|\le (r^\top\Sigma^+r)^{1/2}(u^\top\Sigma u)^{1/2}$ for
+$r\in\range(\Sigma)$, and equality is attained by $r=\Sigma u$ after
+normalizing when $\Sigma u\ne0$. For the weighting interpretation, consider the
+linear map $\alpha\mapsto\E_i[\alpha_i g_i]$ from the example-weight Hilbert
+space with norm $(\E_i[\alpha_i^2])^{1/2}$ into parameter space. Its range
+covariance is $\Sigma$, so the minimum weight norm required to synthesize $r$ is
+$(r^\top\Sigma^+r)^{1/2}$.
+\end{proof}
+
+Thus the RMS constraint in \eqref{eq:rms-trust-region} has a dual reading: every
+unit-RMS weighted average of per-example gradients has response at most $\eta$.
+The full dual ball $\mathcal D_\Sigma$ is large; it contains arbitrary weighted
+combinations of observed example gradients. PoLoRA's spectral step comes from
+replacing this full set by a structured subset.
+
+\section{Rank-one layer tests and the spectral norm}
+\label{sec:rank-one}
+
+A layerwise first-order increment has a special bilinear probe form. For a
+backward vector $b\in\R^{d_{\mathrm{out}}}$ and an input vector
+$x\in\R^{d_{\mathrm{in}}}$, the test gradient is $r=\vecop(bx^\top)$ and its
+response is
+\begin{equation}
+  r^\top u=b^\top Ux .
+  \label{eq:rank-one-response}
+\end{equation}
+Define the rank-one slice of the dual ball by restricting to these
+layer-structured directions:
+\begin{equation}
+  \mathcal R_{\Sigma}:=
+  \{\,\vecop(bx^\top)\in\mathcal D_\Sigma:
+        b\in\R^{d_{\mathrm{out}}},\ x\in\R^{d_{\mathrm{in}}}\,\}.
+  \label{eq:rank-one-slice}
+\end{equation}
+The associated rank-one response of $U$ is
+\begin{equation}
+  \Gamma_{\Sigma}(U)
+  :=\sup_{r\in\mathcal R_{\Sigma}} |r^\top u|
+  =\sup_{\vecop(bx^\top)\in\mathcal D_\Sigma}|b^\top Ux| .
+  \label{eq:rank-one-bound-def}
+\end{equation}
+Because $\mathcal R_{\Sigma}\subseteq\mathcal D_\Sigma$,
+\begin{equation}
+  \Gamma_{\Sigma}(U)
+  \le \sqrt{u^\top\Sigma u}.
+  \label{eq:rank-one-bound}
+\end{equation}
+This rank-one restriction is therefore not the full RMS constraint. It keeps only
+the largest response generated by one backward direction paired with one forward
+direction.
+
+PoLoRA never forms $\Sigma$; it fits the covariance by a diagonal--Kronecker
+matrix
+\begin{equation}
+  \Sigma\approx Q\otimes P,
   \label{eq:PQ-approx}
 \end{equation}
 with $P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ the output-side factor and
-$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ the input-side factor, both
-symmetric positive definite (estimator in \S\ref{sec:est}). Then
-$\Sigma_{\mathrm{EF}}^{1/2}\approx Q^{1/2}\otimes P^{1/2}$, so the whitened vector
-reshapes into a whitened matrix,
+$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ the input-side factor. In the
+ideal SPD case, the rank-one normalization becomes
 \begin{equation}
-  \E_i[\delta_i(U)^2]
-  \approx\norm{(Q^{1/2}\otimes P^{1/2})\,u}_2^2
-  =\norm{P^{1/2}UQ^{1/2}}_F^2
-  =:\norm{Y}_F^2,
-  \qquad Y:=P^{1/2}UQ^{1/2}.
-  \label{eq:ef-frob}
+  \vecop(bx^\top)^\top (Q^{-1}\otimes P^{-1}) \vecop(bx^\top)
+  =(b^\top P^{-1}b)(x^\top Q^{-1}x).
+  \label{eq:kron-rank-one}
 \end{equation}
-The half-power factors $P^{1/2},Q^{1/2}$ are the square root of the
-gradient-covariance metric.
+Hence
+\begin{equation}
+  \Gamma_{P,Q}(U)
+  =\sup_{(b^\top P^{-1}b)(x^\top Q^{-1}x)\le1}|b^\top Ux|
+  =\norm{P^{1/2}UQ^{1/2}}_2 .
+  \label{eq:kron-spectral}
+\end{equation}
+The last equality follows by substituting $b=P^{1/2}a$ and $x=Q^{1/2}z$; the
+product constraint is equivalent to $\norm{a}_2\le1$ and $\norm{z}_2\le1$ because
+the response is bilinear. Thus the rank-one response bound is exactly the
+spectral norm of the whitened matrix.
+
+Combining the pieces, the dense trust-region problem evolves in three steps. The
+original RMS program \eqref{eq:rms-trust-region} is equivalently
+\begin{equation}
+  \min_U\;\langle G,U\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \sup_{r\in\mathcal D_\Sigma}|r^\top\vecop(U)|\le\eta .
+  \label{eq:dual-trust-region}
+\end{equation}
+Restricting the tests to the rank-one slice gives
+\begin{equation}
+  \min_U\;\langle G,U\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \Gamma_{\Sigma}(U)\le\eta .
+  \label{eq:rank-one-trust-region}
+\end{equation}
+Finally, the Kronecker fit $\Sigma\approx Q\otimes P$ turns
+\eqref{eq:rank-one-trust-region} into the spectral program
+\begin{equation}
+  \min_U\;\langle G,U\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \norm{P^{1/2}UQ^{1/2}}_2\le\eta .
+  \label{eq:kron-trust-region}
+\end{equation}
 
 \section{Pullback to the LoRA factors}
 \label{sec:pullback}
 
-For LoRA the dense update is the tangent $T=B\Delta A+\Delta B A$
-\eqref{eq:tangent}, so the variational problem \eqref{eq:variational} becomes,
-using the linear split \eqref{eq:split-linear},
+For LoRA the dense update in \eqref{eq:kron-trust-region} is the tangent
+$T=B\Delta A+\Delta B A$ from \eqref{eq:tangent}. Substituting this tangent and
+using the split \eqref{eq:split-linear} gives the joint problem
 \begin{equation}
   \min_{\Delta A,\Delta B}\;
   \langle G_A,\Delta A\rangle+\langle G_B,\Delta B\rangle
-  +\frac{\lambda}{2}\,\E_i[\delta_i(T)^2].
-  \label{eq:variational-lora}
+  \qquad\mathrm{s.t.}\qquad
+  \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2\le\eta .
+  \label{eq:rank-one-lora}
 \end{equation}
-Under the Kronecker fit the penalty is
-$\E_i[\delta_i(T)^2]\approx\norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_F^2$, which
-carries a cross term between the two factors. PoLoRA makes a block-diagonal factor
-approximation, dropping it:
-\[
-  \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_F^2
-  \approx
-  \norm{P^{1/2}B\Delta A\,Q^{1/2}}_F^2
-  +\norm{P^{1/2}\Delta B\,A\,Q^{1/2}}_F^2 .
-\]
-Each block reduces by a trace identity:
+The constraint couples the two factor increments. PoLoRA uses a block split,
+treating the two tangent
+contributions separately:
 \begin{equation}
-  \norm{P^{1/2}B\Delta A\,Q^{1/2}}_F^2
-  =\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_F^2,
+  \norm{P^{1/2}B\Delta A\,Q^{1/2}}_2
+  =\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_2,
   \qquad C_A:=B^\top P B\in\R^{r\times r},
-  \label{eq:A-average-fit}
+  \label{eq:A-rank-one-fit}
 \end{equation}
 \begin{equation}
-  \norm{P^{1/2}\Delta B\,A\,Q^{1/2}}_F^2
-  =\norm{P^{1/2}\Delta B\,C_B^{1/2}}_F^2,
-  \qquad C_B:=AQA^\top\in\R^{r\times r}
-  \label{eq:B-average-fit}
+  \norm{P^{1/2}\Delta B\,A\,Q^{1/2}}_2
+  =\norm{P^{1/2}\Delta B\,C_B^{1/2}}_2,
+  \qquad C_B:=AQA^\top\in\R^{r\times r},
+  \label{eq:B-rank-one-fit}
 \end{equation}
-(e.g.\ $\tr(PB\Delta A\,Q\,\Delta A^\top B^\top)=\tr(C_A\Delta A\,Q\,\Delta
-A^\top)$). Here $C_A,C_B$ are the sensitivity metrics induced on the LoRA factor
-directions by the per-example gradient metric; equivalently $Q\otimes C_A$ and
-$C_B\otimes P$ are the Kronecker fits to the per-factor gradient covariances
+assuming the partner factor has full rank in the corresponding metric. For
+example, if $P^{1/2}B=V C_A^{1/2}$ with $V^\top V=I$, left multiplication by $V$
+does not change the operator norm. Here $C_A,C_B$ are the sensitivity metrics
+induced on the LoRA factor directions by the per-example gradient metric;
+equivalently $Q\otimes C_A$ and $C_B\otimes P$ are the Kronecker fits to the
+per-factor gradient covariances
 $\E_i[\vecop(G_{A,i})\vecop(G_{A,i})^\top]$ and
 $\E_i[\vecop(G_{B,i})\vecop(G_{B,i})^\top]$.
-
-\section{Worst-input (spectral) replacement}
-\label{sec:worst-input}
-
-The per-factor penalties \eqref{eq:A-average-fit}--\eqref{eq:B-average-fit} are
-squared whitened matrices $\norm{Y}_F^2$---with $Y=C_A^{1/2}\Delta A\,Q^{1/2}$ for
-the $A$ factor and $Y=P^{1/2}\Delta B\,C_B^{1/2}$ for the $B$ factor, the dense
-case $Y=P^{1/2}UQ^{1/2}$ of \eqref{eq:ef-frob} being identical. For any such
-whitened matrix the Frobenius norm is the \emph{average} squared response over
-unit input probes,
-\begin{equation}
-  \norm{Y}_F^2=\tr(Y^\top Y)\;\propto\;\E_{\norm{x}_2=1}\norm{Yx}_2^2 ,
-  \label{eq:probe}
-\end{equation}
-the constant ($d_{\mathrm{in}}$) folding into the damping. As a further design
-choice, PoLoRA replaces the average probe by the \emph{worst} input probe,
-\begin{equation}
-  \E_{\norm{x}_2=1}\norm{Yx}_2^2
-  \;\leadsto\;
-  \sup_{\norm{x}_2\le1}\norm{Yx}_2^2=\norm{Y}_2^2 ,
-  \label{eq:RA}
-\end{equation}
-turning each Frobenius penalty into the spectral
-$\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_2^2$ and $\norm{P^{1/2}\Delta B\,C_B^{1/2}}_2^2$.
-The block-diagonal split made the two factors independent, so each carries its own
-multiplier $\lambda_A,\lambda_B$ (fixed by the radius calibration of
-\S\ref{sec:radius}). The two per-factor subproblems are then
-\begin{equation}
-  \mathcal J_A(\Delta A)
-  =\langle G_A,\Delta A\rangle
-  +\frac{\lambda_A}{2}\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_2^2,
-  \label{eq:A-block}
-\end{equation}
-\begin{equation}
-  \mathcal J_B(\Delta B)
-  =\langle G_B,\Delta B\rangle
-  +\frac{\lambda_B}{2}\norm{P^{1/2}\Delta B\,C_B^{1/2}}_2^2 .
-  \label{eq:B-block}
-\end{equation}
 
 \section{Solving by whitening and polar projection}
 \label{sec:solve}
 
-\begin{proposition}[Per-factor proximal solutions]\label{prop:channels}
+The block split makes the two factor linear minimization problems independent:
+\begin{equation}
+  \min_{\Delta A}\;\langle G_A,\Delta A\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \norm{C_A^{1/2}\Delta A\,Q^{1/2}}_2\le\tau_A,
+  \label{eq:A-spectral-block}
+\end{equation}
+\begin{equation}
+  \min_{\Delta B}\;\langle G_B,\Delta B\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \norm{P^{1/2}\Delta B\,C_B^{1/2}}_2\le\tau_B .
+  \label{eq:B-spectral-block}
+\end{equation}
+
+\begin{proposition}[Per-factor spectral subproblems]\label{prop:channels}
 Assume $P,Q,C_A,C_B$ positive definite, and set
 \[
   H_A:=C_A^{-1/2}G_AQ^{-1/2},
   \qquad
   H_B:=P^{-1/2}G_BC_B^{-1/2}.
 \]
-If $H_A\ne0$ and $H_B\ne0$, canonical minimizers of
-\eqref{eq:A-block}--\eqref{eq:B-block} are
+Canonical minimizers of \eqref{eq:A-spectral-block}--\eqref{eq:B-spectral-block} are
 \begin{equation}
-  \Delta A(\lambda_A)
-  =-\frac{\norm{H_A}_*}{\lambda_A}\,C_A^{-1/2}\polar(H_A)Q^{-1/2},
+  \Delta A(\tau_A)
+  =-\tau_A\,C_A^{-1/2}\polar(H_A)Q^{-1/2},
   \qquad
-  \Delta B(\lambda_B)
-  =-\frac{\norm{H_B}_*}{\lambda_B}\,P^{-1/2}\polar(H_B)C_B^{-1/2}.
-  \label{eq:A-solution}
+  \Delta B(\tau_B)
+  =-\tau_B\,P^{-1/2}\polar(H_B)C_B^{-1/2}.
+  \label{eq:spectral-solutions}
 \end{equation}
-If a whitened gradient is zero, the corresponding zero update is a minimizer.
+If a whitened gradient is zero, any feasible update with zero objective is a
+minimizer; the zero update is the canonical choice.
 \end{proposition}
 
 \begin{proof}
 With $Y_A=C_A^{1/2}\Delta A Q^{1/2}$,
-$\langle G_A,\Delta A\rangle=\langle H_A,Y_A\rangle$ and the quadratic term is
-$\frac{\lambda_A}{2}\norm{Y_A}_2^2$. By the scaled conjugacy between squared
-operator norm and squared nuclear norm, the minimum value is
-$-\norm{H_A}_*^2/(2\lambda_A)$, attained (since $\polar(H_A)\in\partial
-\norm{H_A}_*$) at $Y_A=-(\norm{H_A}_*/\lambda_A)\polar(H_A)$. Undoing the change
-of variables gives \eqref{eq:A-solution}; the $\Delta B$ case is identical with
+$\langle G_A,\Delta A\rangle=\langle H_A,Y_A\rangle$ and the constraint is
+$\norm{Y_A}_2\le\tau_A$. Spectral/nuclear duality gives
+$\min_{\norm{Y_A}_2\le\tau_A}\langle H_A,Y_A\rangle=-\tau_A\norm{H_A}_*$,
+attained at $Y_A=-\tau_A\polar(H_A)$. Undoing the change of variables gives
+\eqref{eq:spectral-solutions}; the $\Delta B$ case is identical with
 $Y_B=P^{1/2}\Delta B C_B^{1/2}$.
 \end{proof}
 
-With the Frobenius norm in place of the spectral norm, the same subproblems yield
-the full-inverse steps $-\lambda_A^{-1}C_A^{-1}G_AQ^{-1}$ and
-$-\lambda_B^{-1}P^{-1}G_BC_B^{-1}$ instead; the operator norm is the sole source
-of the polar map (Appendix~\ref{app:frob}). Define the unscaled update directions
+With the Frobenius norm in place of the spectral norm, the same linear problem
+gives the full-inverse directions $-C_A^{-1}G_AQ^{-1}$ and
+$-P^{-1}G_BC_B^{-1}$ after normalization; the operator norm is the sole source of
+the polar map
+(Appendix~\ref{app:frob}). Define the unscaled update directions
 \begin{equation}
   W_A:=C_A^{-1/2}\polar(H_A)Q^{-1/2},
   \qquad
@@ -272,20 +337,13 @@ of the polar map (Appendix~\ref{app:frob}). Define the unscaled update direction
   \label{eq:WA}
 \end{equation}
 
-\section{Damping calibration from the product radius}
+\section{Product-radius calibration}
 \label{sec:radius}
 
-The solutions \eqref{eq:A-solution} have operator norms
-\begin{equation}
-  \norm{\Delta A(\lambda_A)}_2
-  =\frac{\norm{H_A}_*}{\lambda_A}\norm{W_A}_2,
-  \qquad
-  \norm{\Delta B(\lambda_B)}_2
-  =\frac{\norm{H_B}_*}{\lambda_B}\norm{W_B}_2 ,
-  \label{eq:block-norms}
-\end{equation}
-so $\lambda_A,\lambda_B$ control only the scalar lengths along the polar
-directions. The product-radius budget alone does not fix the two lengths: if
+The spectral budgets $\tau_A,\tau_B$ in \eqref{eq:spectral-solutions} control only
+scalar lengths along the polar directions $W_A,W_B$. PoLoRA keeps those directions and
+sets the scalar lengths by a separate product-radius rule. The product-radius
+budget alone does not fix the two lengths: if
 $\norm{\Delta A}_2=\rho_A$ and $\norm{\Delta B}_2=\rho_B$, then
 $\norm{B\Delta A+\Delta B A}_2\le\norm{B}_2\rho_A+\norm{A}_2\rho_B$, and many
 $(\rho_A,\rho_B)$ meet a given budget. PoLoRA removes this freedom by the
@@ -299,14 +357,10 @@ The tangent update then obeys
 $\norm{B\Delta A+\Delta B A}_2\le\rho(\norm{A}_2+\norm{B}_2)$; setting this equal
 to the budget $\eta$ gives
 \begin{equation}
-  \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2},
-  \qquad
-  \lambda_A=\frac{\norm{H_A}_*\norm{W_A}_2}{\rho},
-  \qquad
-  \lambda_B=\frac{\norm{H_B}_*\norm{W_B}_2}{\rho}.
+  \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2}.
   \label{eq:rho}
 \end{equation}
-Substituting into \eqref{eq:A-solution} gives the PoLoRA step
+Normalizing the polar directions to this radius gives the PoLoRA step
 \begin{equation}
   \Delta A=-\rho\,\frac{W_A}{\norm{W_A}_2},
   \qquad
@@ -335,7 +389,7 @@ $\E[\vecop(G_B)\vecop(G_B)^\top]\approx C_B\otimes P$.
 
 \begin{lemma}[Moment closure under a Kronecker gradient-covariance model]
 \label{lem:estimator}
-If $\Sigma_{\mathrm{EF}}\approx Q\otimes P$ with $C_A=B^\top P B$ and
+If $\Sigma\approx Q\otimes P$ with $C_A=B^\top P B$ and
 $C_B=AQA^\top$, then
 \begin{equation}
   \E\!\left[\tfrac1r G_A^\top C_A^{-1}G_A\right]=Q,
@@ -363,147 +417,100 @@ PoLoRA keeps only the diagonals and updates them by EMA:
 \end{equation}
 Because $C_A$ depends on the current $P$ and $C_B$ on the current $Q$, the two
 estimates are coupled; the optimizer takes one EMA alternation per step, then
-freezes $P,Q$ while computing \eqref{eq:WA}--\eqref{eq:final-step}. In
-implementation the inverse square roots are damped, so the formulas are read as
-the ideal SPD case.
+freezes $P,Q$ while computing \eqref{eq:WA}--\eqref{eq:final-step}. In the
+implementation the inverse square roots are damped; the formulas above are
+written for the ideal positive-definite case.
 
-\section{Interpretation: predictive KL}
-\label{sec:interp}
+\section{Summary}
+\label{sec:summary}
 
-The metric \eqref{eq:ef-penalty} is the empirical Fisher, justified directly as a
-gradient-covariance penalty---no curvature claim is needed. It connects to
-predictive KL as follows. If $G_i$ were a model-sampled score gradient rather
-than an observed-label gradient, then $\Sigma_{\mathrm{EF}}$ would equal the true
-Fisher metric, which is the second-order curvature of predictive KL
-(Appendix~\ref{app:kl}). In ordinary supervised training $G_i$ is the
-observed-label gradient, so the maintained metric is the empirical Fisher: a PSD
-surrogate with the same algebraic form, not the true KL Hessian (Kunstner et
-al., 2019).
-
-\paragraph{Summary.}
-The empirical gradient covariance \eqref{eq:ef-penalty} is fit by $Q\otimes P$,
-pulled back to the LoRA factors as $C_A=B^\top PB$, $C_B=AQA^\top$, and made
-worst-input by the spectral norm; the per-factor proximal solutions are the polar
-sandwiches \eqref{eq:WA}, and the common product radius \eqref{eq:rho} fixes the
-scalar lengths, giving the implemented step \eqref{eq:final-step}.
+The RMS gradient-covariance constraint is first rewritten as a dual bound over the
+full ball $\mathcal D_\Sigma$. PoLoRA keeps only the rank-one slice
+$\mathcal R_\Sigma$, fits $\Sigma$ by $Q\otimes P$, and obtains the spectral
+constraint $\norm{P^{1/2}UQ^{1/2}}_2$. Pulling that constraint back to the LoRA
+factors gives $C_A=B^\top PB$ and $C_B=AQA^\top$; the per-factor solutions are the
+polar sandwiches \eqref{eq:WA}, and the common product radius \eqref{eq:rho}
+fixes the scalar lengths, giving the implemented step \eqref{eq:final-step}.
 
 \appendix
 
-\section{Predictive-KL interpretation of the metric}
-\label{app:kl}
-
-This appendix records the predictive-KL reading of $\Sigma_{\mathrm{EF}}$ and
-connects it to the KL metric $\Sigma_{\mathrm{KL}}$. Let
-$z_i\in\R^{d_{\mathrm{in}}}$ be the layer input for token $i$ and
-$y_i=Wz_i\in\R^{d_{\mathrm{out}}}$ the output. Let $p_i(\cdot;y)$ be the model's
-predictive distribution at output $y$, and for an output perturbation $v_i$,
-$D_i(v_i):=\mathrm{KL}(p_i(\cdot;y_i)\,\|\,p_i(\cdot;y_i+v_i))$.
-
-\begin{lemma}[Predictive-KL expansion]\label{lem:local-kl}
-Let
-\[
-  s_i(a):=\nabla_y\log p_i(a;y_i),
-  \qquad
-  F_i:=\E_{a\sim p_i(\cdot;y_i)}[s_i(a)s_i(a)^\top].
-\]
-Then $D_i(v_i)=\tfrac12 v_i^\top F_i v_i+o(\norm{v_i}_2^2)$.
-\end{lemma}
-
-\begin{proof}
-The first derivative at $v_i=0$ is
-$-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y\log p_i(a;y_i)]=0$ by the score identity; the
-second is $-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\log p_i(a;y_i)]=F_i$ by the
-Fisher identity. Taylor expansion gives the claim.
-\end{proof}
-
-\begin{lemma}[When Fisher equals Hessian]\label{lem:fisher-hessian}
-If $\ell_i(y)=-\log p_i(a;y)$ and the label $a$ is averaged under the current
-model $p_i(\cdot;y_i)$, then
-$\E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\ell_i(y_i)]=F_i$.
-\end{lemma}
-
-\begin{proof}
-$\E[\nabla_y^2\ell_i(y_i)]=-\E[\nabla_y^2\log p_i(a;y_i)]
-=\E[s_i(a)s_i(a)^\top]$, the same Fisher identity as
-Lemma~\ref{lem:local-kl}.
-\end{proof}
-
-\paragraph{Connecting $\Sigma_{\mathrm{EF}}$ and $\Sigma_{\mathrm{KL}}$.}
-Assembling the per-token KL metrics gives
-\begin{equation}
-  \Sigma_{\mathrm{KL}}=\frac1N\sum_{i=1}^N (z_iz_i^\top)\otimes F_i .
-  \label{eq:param-kl}
-\end{equation}
-For a likelihood loss the per-example gradient is the score outer product
-$G_i=-s_i(a)\,z_i^\top$, so $\vecop(G_i)=-(z_i\otimes s_i(a))$ and
-\[
-  \E_{a\sim p_i(\cdot;y_i)}\!\big[\vecop(G_i)\vecop(G_i)^\top\big]
-  =(z_iz_i^\top)\otimes F_i .
-\]
-Hence under \emph{model-sampled} labels $\Sigma_{\mathrm{EF}}=\Sigma_{\mathrm{KL}}$
-exactly, and the present derivation is a KL-proximal one. Under \emph{observed}
-labels $\Sigma_{\mathrm{EF}}$ is the empirical Fisher, generally
-$\neq\Sigma_{\mathrm{KL}}$; the two agree only near a realizable optimum (Kunstner
-et al., 2019).
-
-\section{Average response: full inverse versus polar}
+\section{Average response without the rank-one restriction}
 \label{app:frob}
 
-This appendix solves the average-response (Frobenius) problem and contrasts it
-with the worst-input solution \eqref{eq:A-solution}, isolating the operator norm
-as the source of the polar map. Take a single dense variable $U$ with metric
-$F:=Q\otimes P$ (the per-factor case is identical with $(P,Q)\mapsto(C_A,Q)$ and
-$(P,C_B)$).
-
-\begin{lemma}[Average-response solution]\label{lem:frob}
-The minimizer of
-$\mathcal J_{\mathrm{avg}}(U)=\langle G,U\rangle
-+\tfrac{\lambda}{2}\norm{P^{1/2}UQ^{1/2}}_F^2$ is
+This appendix repeats the main derivation but stops before the restriction from
+the full dual ball $\mathcal D_\Sigma$ to the rank-one slice $\mathcal R_\Sigma$.
+Starting from \eqref{eq:dual-trust-region}, the Kronecker fit
+$\Sigma\approx Q\otimes P$ gives
 \begin{equation}
-  U_{\mathrm{avg}}=-\frac1\lambda P^{-1}GQ^{-1},
-  \qquad\text{equivalently}\qquad
-  \vecop(U_{\mathrm{avg}})=-\frac1\lambda F^{-1}\vecop(G):
-  \label{eq:frob}
+  \sup_{r\in\mathcal D_\Sigma}|r^\top\vecop(U)|
+  =\sqrt{\vecop(U)^\top(Q\otimes P)\vecop(U)}
+  =\norm{P^{1/2}UQ^{1/2}}_F .
+  \label{eq:full-ball-frob}
 \end{equation}
-the full-inverse metric-preconditioned step (natural gradient under the
-Appendix~\ref{app:kl} interpretation).
+Thus the full-ball analogue of \eqref{eq:kron-trust-region} is
+\begin{equation}
+  \min_U\;\langle G,U\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \norm{P^{1/2}UQ^{1/2}}_F\le\eta .
+  \label{eq:frob-trust-region}
+\end{equation}
+
+\begin{lemma}[Dense full-ball solution]\label{lem:frob}
+Let $H:=P^{-1/2}GQ^{-1/2}$. If $H\ne0$, a minimizer of
+\eqref{eq:frob-trust-region} is
+\begin{equation}
+  U_{\mathrm{frob}}
+  =-\eta\,\frac{P^{-1}GQ^{-1}}{\norm{P^{-1/2}GQ^{-1/2}}_F}.
+  \label{eq:frob-dense-solution}
+\end{equation}
+If $H=0$, the zero update is a minimizer.
 \end{lemma}
 
 \begin{proof}
-$\norm{P^{1/2}UQ^{1/2}}_F^2=\tr(PUQU^\top)$, so
-$\nabla_U\mathcal J_{\mathrm{avg}}(U)=G+\lambda PUQ$; the objective is strictly
-convex and the gradient vanishes at $U=-\tfrac1\lambda P^{-1}GQ^{-1}$. The
-vectorized form uses
-$\vecop(P^{-1}GQ^{-1})=(Q^{-1}\otimes P^{-1})\vecop(G)=F^{-1}\vecop(G)$.
+Set $Y=P^{1/2}UQ^{1/2}$. Then
+$\langle G,U\rangle=\langle H,Y\rangle$ and the constraint is
+$\norm{Y}_F\le\eta$. Cauchy--Schwarz gives the minimum at
+$Y=-\eta H/\norm{H}_F$. Undoing the change of variables gives
+\eqref{eq:frob-dense-solution}.
 \end{proof}
 
-The worst-input minimizer is instead, with $H=P^{-1/2}GQ^{-1/2}$,
-\[
-  U_\star=-\frac{\norm{H}_*}{\lambda}\,P^{-1/2}\polar(H)Q^{-1/2}.
-\]
-
-\begin{remark}[Where the half-power lives]
-Writing both with the same outer factors,
-\[
-  U_{\mathrm{avg}}\propto P^{-1/2}\,H\,Q^{-1/2},
+For LoRA, substitute the tangent $T=B\Delta A+\Delta B A$ into
+\eqref{eq:frob-trust-region}. The same block split as \S\ref{sec:pullback}
+replaces the spectral constraints by Frobenius constraints,
+\begin{equation}
+  \norm{P^{1/2}B\Delta A\,Q^{1/2}}_F
+  =\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_F,
   \qquad
-  U_\star\propto \norm{H}_*\;P^{-1/2}\,\polar(H)\,Q^{-1/2},
-\]
-the only difference is $H$ versus its polar $\polar(H)$.
-\begin{itemize}
-  \item \emph{Source.} The polar map comes entirely from the operator norm. With
-        the Frobenius norm the middle factor is $H$ itself, the inner and outer
-        $P^{-1/2},Q^{-1/2}$ recombine into the full inverse $P^{-1},Q^{-1}$, and
-        no polar appears.
-  \item \emph{Effect.} $\polar(H)$ has unit singular values, so it discards the
-        magnitude of the inner whitening: across directions the step is
-        reweighted by the half power $P^{-1/2},Q^{-1/2}$ rather than the full
-        inverse. The overall step size is unchanged---the global factor
-        $\norm{H}_*$, itself a half-power-scale quantity, restores the $F^{-1}$
-        aggregate scaling. So the worst-input step is $F^{-1}$ in overall
-        magnitude and $F^{-1/2}$ in the \emph{relative} weighting of directions;
-        it is never a clean $F^{-1/2}G$.
-\end{itemize}
-\end{remark}
+  \norm{P^{1/2}\Delta B\,A\,Q^{1/2}}_F
+  =\norm{P^{1/2}\Delta B\,C_B^{1/2}}_F.
+  \label{eq:frob-factor-blocks}
+\end{equation}
+The per-factor full-ball subproblems are
+\begin{equation}
+  \min_{\Delta A}\;\langle G_A,\Delta A\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \norm{C_A^{1/2}\Delta A\,Q^{1/2}}_F\le\tau_A,
+  \label{eq:A-frob-block}
+\end{equation}
+\begin{equation}
+  \min_{\Delta B}\;\langle G_B,\Delta B\rangle
+  \qquad\mathrm{s.t.}\qquad
+  \norm{P^{1/2}\Delta B\,C_B^{1/2}}_F\le\tau_B .
+  \label{eq:B-frob-block}
+\end{equation}
+With $H_A=C_A^{-1/2}G_AQ^{-1/2}$ and
+$H_B=P^{-1/2}G_BC_B^{-1/2}$, their nonzero-gradient solutions are
+\begin{equation}
+  \Delta A_{\mathrm{frob}}
+  =-\tau_A\,\frac{C_A^{-1}G_AQ^{-1}}{\norm{H_A}_F},
+  \qquad
+  \Delta B_{\mathrm{frob}}
+  =-\tau_B\,\frac{P^{-1}G_BC_B^{-1}}{\norm{H_B}_F}.
+  \label{eq:frob-factor-solutions}
+\end{equation}
+The difference from the main text is now exactly localized: the full dual ball
+produces the Frobenius-normalized inverse direction \eqref{eq:frob-factor-solutions},
+whereas the rank-one slice produces the spectral polar direction
+\eqref{eq:spectral-solutions}.
 
 \end{document}
