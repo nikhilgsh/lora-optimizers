@@ -461,7 +461,7 @@ In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in acc
 % (\Cref{fig:hero}); the result sections then vary one axis at a time
 % (\S\ref{sec:exp-main}--\S\ref{sec:exp-taskdep}).
 
-\paragraph{Baselines.} We compare \methodname{} to the following optimizers (\Cref{sec:setup}):
+\paragraph{Baselines.} We compare \methodname{} (\Cref{sec:setup}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the adapters $A$ and $B$ independently.
   \item \textbf{Muon} \cite{muon} --- the per-adapter Muon update~\eqref{eq:naive}.
