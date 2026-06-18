@@ -143,20 +143,21 @@ Consider a single linear layer with frozen pretrained weight
 $
 W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
 $
-Following LoRA~\cite{lora}, we fine-tune this layer by learning a rank-\(r\) update $BA$ where 
-$
-B \in \mathbb{R}^{d_{\mathrm{out}} \times r},
-\,
+Following LoRA~\cite{lora}, we fine-tune this layer by learning a low-rank adapter
+\begin{equation}
+\DW = \frac{\alpha}{r}\,BA, \qquad
+B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
-$
-and solve
+\label{eq:lora}
+\end{equation}
+of rank \(r\) with scaling \(\alpha\). We absorb the scaling \(\alpha/r\) into \(A\) or \(B\) henceforth and write the adapter as \(BA\), so that we solve
 \[
 \begin{array}{ll}
 \underset{A, B}{\mbox{minimize}}&
 \ell(W_0 + BA),
 \end{array}
 \]
-where \(\ell\) is the task loss. We omit the usual LoRA scaling factor, since it can be absorbed into \(A\) or \(B\).
+where \(\ell\) is the task loss.
 
 
 Here we will derive a type of spectral descent method~\cite{carlson2015preconditioned, carlson2015stochastic}, that is, a variant of Muon~\cite{muon} specialized to low rank matrices. 
@@ -445,7 +446,7 @@ AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.5
 \label{sec:exp-setup}
 
 \paragraph{Comparison.} 
-In our experiments choose the LoRA factor $\alpha$ to be the rank $r$, in accordance with best practice \cite{}, which allows use to ignore the $\alpha / r$ factor \ref{}. We add LoRA adapters to allow linear layers except for the output layer and use the standard initialization which sets $B = 0$ and $A$ to be randomly initialized. For each method we tune the learning rate and use a constant learning rate schedule with no weight decay. \Cref{app:exp} gives the full experimental details.
+In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which allows us to ignore the $\alpha/r$ factor in \Cref{eq:lora}. We add LoRA adapters to every linear layer except for the output layer and use the standard initialization which sets $B = 0$ and $A$ to be randomly initialized. For each method we tune the learning rate and use a constant learning rate schedule with no weight decay. \Cref{app:exp} gives the full experimental details.
 % Only the optimizer and its learning rate vary; everything else is
 % held fixed across runs --- the base model, dataset and split, LoRA rank $r$ and $\alpha{=}r$,
 % target modules (all linear), sequence length, batch size, dtype, and a constant learning rate
@@ -460,13 +461,12 @@ In our experiments choose the LoRA factor $\alpha$ to be the rank $r$, in accord
 % (\Cref{fig:hero}); the result sections then vary one axis at a time
 % (\S\ref{sec:exp-main}--\S\ref{sec:exp-taskdep}).
 
-\paragraph{Baselines.} We compare \methodname{} the following optimizers
-are given in \Cref{sec:setup}.
+\paragraph{Baselines.} We compare \methodname{} to the following optimizers, whose update rules are given in \Cref{sec:setup}.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the adapters $A$ and $B$ independently.
-  \item \textbf{Muon} --- the per-adapter Muon update \eqref{eq:naive}.
+  \item \textbf{Muon} --- the per-adapter Muon update Eq.\ \eqref{eq:naive}.
   
-  \item \textbf{iMuon} \cite{imuon} --- the decoupled product step of \Cref{prop:imuon}, which whitens each factor gradient by the partner factor's Gram root.
+  \item \textbf{iMuon} \cite{imuon} --- the authors' reference optimizer, which feeds a recombined product-space momentum through the spectral LMO and warms up from $B{=}0$. This is \emph{not} the decoupled factor step of \Cref{prop:imuon}: that step is iMuon's idealized memoryless limit, while the shipped optimizer we run keeps the momentum recombination (\Cref{app:memoryless}).
 \end{itemize}
 We report each optimizer's step-speedup over AdamW trained for a fixed horizon of $T$ steps with optimized learning rate. 
 
@@ -484,7 +484,7 @@ largest base needs the smallest adapter update).
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
-  \caption{\textit{[placeholder]} Hero: eval loss vs.\ step (Llama-3.2-1B / OpenMathInstruct / $r{=}256$); \methodname{} vs.\ AdamW, iMuon, Muon; $1.63\times$ fewer steps to AdamW's final loss.}
+  \caption{\textit{[placeholder]} Eval loss vs.\ step (Llama-3.2-1B / OpenMathInstruct / $r{=}256$); \methodname{} vs.\ AdamW, iMuon, Muon; $1.63\times$ fewer steps to AdamW's final loss.}
   \label{fig:hero}
 \end{figure}
 
