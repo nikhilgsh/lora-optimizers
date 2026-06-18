@@ -488,37 +488,26 @@ as the rank-and-shift comparison shows (\Cref{sec:exp-taskdep}).
   \label{fig:hero}
 \end{figure}
 
-\begin{table}[t]
-  \centering\small
-  \input{figs/tab_breadth.tex}
-  \caption{\textbf{Speedup over AdamW across model families} (code task, $r{=}256$).
-  Speedup is steps-to-reach AdamW's best-lr final loss (\Cref{sec:exp-setup}).
-  \methodname{} wins on all four; the speedup is smallest at $8$B. iMuon, run on two
-  settings, does not beat AdamW ($1.01\times$ on OLMo/Code; no crossing on
-  Llama/Math).}
-  \label{tab:breadth}
-\end{table}
-
 \paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer step's FLOPs are fixed in the batch while the forward
 and backward passes scale with it (\Cref{app:flops}), so its share of per-step time shrinks
 as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $4\%$ over AdamW on
-all four bases (\Cref{tab:walltime}), and the step-count speedup carries to wall-clock almost
+all four bases (\Cref{tab:breadth}), and the step-count speedup carries to wall-clock almost
 unchanged.
 
 \begin{table}[t]
 \centering\small
-\begin{tabular}{lcc}
+\begin{tabular}{lrr}
 \toprule
-base ($r{=}256$, all-linear, seq~$2048$) & \methodname{} & rect-polar \\
+model (code, $r{=}256$) & step speedup & wall-clock speedup \\
 \midrule
-Llama-3.2-1B & $1.04\times$ & $1.07\times$ \\
-OLMo-2-1B & $1.04\times$ & $1.06\times$ \\
-Qwen2.5-1.5B & $1.04\times$ & $1.07\times$ \\
-Llama-3-8B & $1.03\times$ & $1.05\times$ \\
+OLMo-2-1B & $1.61\times$ & $1.55\times$ \\
+Llama-3.2-1B & $1.55\times$ & $1.49\times$ \\
+Qwen2.5-1.5B & $1.30\times$ & $1.25\times$ \\
+Llama-3-8B & $1.20\times$ & $1.17\times$ \\
 \bottomrule
 \end{tabular}
-\caption{Full-step wall-clock ratio vs.\ AdamW at production batch (Blackwell RTX PRO 6000, global batch $16$, \texttt{torch.compile} enabled). \methodname{} (gram-form matrix-sign) adds ${\le}4\%$; the \emph{rect-polar} column runs the same polar on the $d{\times}r$ factor instead of the $r{\times}r$ Gram (${\approx}1.5\times$ costlier in the optimizer step), raising the overhead to $5$--$7\%$.}
-\label{tab:walltime}
+\caption{\textbf{\methodname{} speedup over AdamW across model families} (code, $r{=}256$). Step speedup is the steps to reach AdamW's final loss; wall-clock speedup discounts it by \methodname{}'s ${\le}4\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins on all four, by the smallest margin at $8$B.}
+\label{tab:breadth}
 \end{table}
 
 \subsection{Component Ablation}
@@ -1159,7 +1148,7 @@ fixed per-step cost, so the fraction $C_{\mathrm{opt}}/C_{\mathrm{fb}}\propto1/n
 as the batch grows: at the production setting ($r{=}256$, $n_{\mathrm{tok}}{=}32768$) it is under $1\%$
 on every base model, far below the measured ${\le}5\%$ wall (\Cref{sec:exp-walltime}).
 The optimizer's overhead is thus latency-bound on its many small $r\times r$ kernels, not
-FLOP-bound; the FLOP fraction is the floor the wall approaches as the batch grows.
+FLOP-bound; the FLOP fraction is the floor the wall approaches as the batch grows. The ${\le}4\%$ wall uses the gram-form matrix-sign, the polar on the $r{\times}r$ Gram. Running it instead on the rectangular $d{\times}r$ factor is ${\approx}1.5\times$ costlier in the optimizer step, raising the per-step overhead to $5$--$7\%$.
 % Per-model FLOP ratios at r=256, all-linear, T=32768, K=8 (computed from each config.json):
 %   OLMo-2-1B    C_opt 1.1e12 / C_fb 2.2e14 = 0.49%
 %   Llama-3.2-1B C_opt 1.0e12 / C_fb 1.9e14 = 0.56%
