@@ -879,8 +879,19 @@ since $|u_i^\top U' v_i|\le\norm{U'}_2\le1$. Equality holds at $U'=-\polar(M)$, 
 
 \DecoupledFactorStep*
 \begin{proof}[Proof of \Cref{prop:decoupled}]
-Consider the problem w.r.t. the $A$-block, and define $\Delta A := A - A_t$.
-Consider the $A$-block under its constraint $\norm{B\Delta A}_2\le\eta$. Write $B=U_B S_B^{1/2}$ with $U_B^\top U_B=I$, so that $\norm{B\Delta A}_2=\norm{S_B^{1/2}\Delta A}_2$. The substitution $Z=S_B^{1/2}\Delta A$ turns the block into
+Consider the problem w.r.t. the $A$-subproblem, and define $\Delta A := A - A_t$.
+By the definition of the operator norm,
+\[
+\|B_t \Delta A\|_{2}
+= \sqrt{\lambda_{\max}(\Delta A^\top S_{B_t} \Delta A)}
+= \|S_B^{1/2} \Delta A\|_{2}.
+\]
+Further, the objective equals
+\[
+\langle G_A, \Delta A \rangle
+= \langle S_B^{-1/2}G_A, S_B^{1/2} \Delta A\rangle.
+\]
+Define $Z:=S_B^{1/2}\Delta A$, then using the above, the $A$-subproblem becomes
 \[
   \min_{\norm{Z}_2\le\eta}\ \langle S_B^{-1/2}G_A,\,Z\rangle,
 \]
