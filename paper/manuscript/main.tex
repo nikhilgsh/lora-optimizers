@@ -465,7 +465,7 @@ In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in acc
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the adapters $A$ and $B$ independently.
   \item \textbf{Muon} \cite{muon} --- the per-adapter Muon update~\eqref{eq:naive}.
-  \item \textbf{iMuon} \cite{imuon} --- the authors' optimizer: the intrinsic spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to the recombined product-space momentum $\widehat M=\tilde G_B A+B\tilde G_A$ (factor look-aheads $\tilde G_A,\tilde G_B$) rather than to the gradient, warm-started from $B{=}0$.\footnote{Feeding the raw gradient ($H{=}G$) to~\eqref{eq:imuon-lmo-ambient} recovers the decoupled factor step of \Cref{prop:imuon} --- iMuon's idealized memoryless limit (their Cor.~4.1). The shipped optimizer we run feeds $\widehat M\neq G$, so it is a distinct update (\Cref{app:memoryless}).}
+  \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to a momentum in the product space rather than the raw gradient, warm-started from $B{=}0$~(\Cref{app:memoryless}).\footnote{On the raw gradient, \eqref{eq:imuon-lmo-ambient} is the decoupled factor step of \Cref{prop:imuon} (its memoryless limit), not the momentum form we run.}
 \end{itemize}
 We report each optimizer's step-speedup over AdamW trained for a fixed horizon of $T$ steps with optimized learning rate. 
 
