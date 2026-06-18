@@ -421,7 +421,7 @@ LoRA starts at $B{=}0$, where the decoupled factor step of \Cref{prop:imuon} has
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Memory.} Same first moment as AdamW, but AdamW's second moment is replaced by two curvature diagonals $P,Q$ --- a factor $r$ smaller. The $r\times r$ matrices $C_A=B^\top PB$, $C_B=AQA^\top$ are formed on the fly (\Cref{alg:ours}), not stored, and the inverse-sqrt is eigh-free (no eigenbasis, no $d\times d$ state). Net state ${\approx}\tfrac12$ AdamW's (\Cref{tab:optstate}). The four operator-norm estimates (\Cref{alg:smax}) each cache one warm-start vector across steps, adding $4r$ floats/pair --- negligible against the $(r{+}1)(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ state and omitted from \Cref{tab:optstate}.
   \item \textbf{Compute.} Per pair: $8$ matmuls of cost ${\sim}r^2d$ (forming $C_A,C_B$, whiten/un-whiten, two curvature applies), two full polars (PolarExpress \cite{polarexpress}, $K{=}8$ steps), two gram--Newton--Schulz inverse-sqrts \cite{gram_ns} (${\sim}r^3$). All $r\times r$ or $r\times d$, eigh-free; the polars dominate.
-  \item \textbf{Wall.} Near-free at production batch: the fixed \texttt{optimizer.step} amortizes against the batch-scaling forward/backward (\Cref{sec:exp-walltime}).
+  \item \textbf{Wall.} Near-free at our batch size, since the optimizer step's FLOPs are fixed in the batch while the forward and backward passes scale with it (\Cref{app:flops}).
 \end{itemize}
 \begin{table}[h]
 \centering\small
@@ -465,25 +465,26 @@ In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in acc
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the adapters $A$ and $B$ independently.
   \item \textbf{Muon} \cite{muon} --- the per-adapter Muon update~\eqref{eq:naive}.
-  \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to a momentum in the product space.\footnote{Even with momentum off, this is not the decoupled update of \Cref{prop:imuon} (iMuon's Cor.~4.1); it is the form used in the iMuon codebase (their App.~K), as derived in \Cref{app:memoryless}.}
+  \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to a momentum in the product space.\footnote{Even with momentum off, iMuon's codebase update (their App.~K) is not the decoupled step of \Cref{prop:imuon} (their Cor.~4.1), as we show in \Cref{app:memoryless}.}
 \end{itemize}
 We report each optimizer's step-speedup over AdamW trained for a fixed horizon of $T$ steps with optimized learning rate. 
 
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-\methodname{} reaches AdamW's loss in $1.2$--$1.7\times$ fewer steps on all $9$
-settings (\Cref{fig:hero} showcase; \Cref{tab:breadth} across model families;
-\Cref{tab:rank,fig:ood} the rank and task comparisons in \S\ref{sec:exp-taskdep};
-per-setting learning curves in \Cref{app:curves}).
-\Cref{tab:breadth} fixes the task (code) and rank ($256$) and varies the model: the
-win holds across four base models and up to $8$B, and is smallest at $8$B (the
-largest base needs the smallest adapter update).
+Each optimizer is scored by its \emph{steps-to-AdamW}, the number of steps it needs to
+reach the loss AdamW reaches at the fixed horizon $T$, each at its tuned learning rate
+(\Cref{sec:exp-setup}). For Llama-3.2-1B on OpenMathInstruct at $r{=}256$, \methodname{}
+reaches AdamW's loss in $1.63\times$ fewer steps (\Cref{fig:hero}). Fixing the task to code
+and the rank to $256$ and varying the base model, the four bases span $1.61\times$ on
+OLMo-2-1B down to $1.20\times$ on Llama-3-8B, the smallest gain on the largest base
+(\Cref{tab:breadth}). The gain is larger at higher rank and under larger distribution shift,
+as the rank-and-shift comparison shows (\Cref{sec:exp-taskdep}).
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
-  \caption{\textit{[placeholder]} Eval loss vs.\ step (Llama-3.2-1B / OpenMathInstruct / $r{=}256$); \methodname{} vs.\ AdamW, iMuon, Muon; $1.63\times$ fewer steps to AdamW's final loss.}
+  \caption{\textit{[placeholder]} Eval loss vs.\ step (Llama-3.2-1B / OpenMathInstruct / $r{=}256$); \methodname{} vs.\ AdamW, iMuon, Muon; $1.63\times$ fewer steps to AdamW's final loss. Per-setting learning curves in \Cref{app:curves}.}
   \label{fig:hero}
 \end{figure}
 
@@ -498,13 +499,11 @@ largest base needs the smallest adapter update).
   \label{tab:breadth}
 \end{table}
 
-\paragraph{Wall-clock.} The step-count speedup carries to wall-clock nearly intact:
-\methodname{}'s \texttt{optimizer.step} is a fixed, batch-independent cost, so its share of
-the step shrinks as the batch grows, and at production batch the full-step overhead over
-AdamW is ${\le}4\%$ across all four bases (\Cref{tab:walltime}) --- an $N\times$ step-count
-speedup is then a ${\approx}N\times$ wall-clock speedup. The gram-form matrix-sign keeps this
-near-free (the rectangular polar would cost $5$--$7\%$, \Cref{tab:walltime}); a
-hardware-independent FLOP floor is under $1\%$ (\Cref{app:flops}).
+\paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer step's FLOPs are fixed in the batch while the forward
+and backward passes scale with it (\Cref{app:flops}), so its share of per-step time shrinks
+as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $4\%$ over AdamW on
+all four bases (\Cref{tab:walltime}), and the step-count speedup carries to wall-clock almost
+unchanged.
 
 \begin{table}[t]
 \centering\small
