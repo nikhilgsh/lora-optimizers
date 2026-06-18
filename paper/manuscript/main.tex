@@ -465,7 +465,7 @@ In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in acc
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the adapters $A$ and $B$ independently.
   \item \textbf{Muon} \cite{muon} --- the per-adapter Muon update~\eqref{eq:naive}.
-  \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to a momentum in the product space rather than the raw gradient, warm-started from $B{=}0$~(\Cref{app:memoryless}).\footnote{On the raw gradient, \eqref{eq:imuon-lmo-ambient} is the decoupled factor step of \Cref{prop:imuon} (its memoryless limit), not the momentum form we run.}
+  \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to a momentum in the product space.\footnote{Even with momentum off, this is not the decoupled update of \Cref{prop:imuon} (iMuon's Cor.~4.1); it is the form used in the iMuon codebase (their App.~K), as derived in \Cref{app:memoryless}.}
 \end{itemize}
 We report each optimizer's step-speedup over AdamW trained for a fixed horizon of $T$ steps with optimized learning rate. 
 
@@ -970,7 +970,7 @@ $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to the factor update
 The base algorithm (Alg.~1, no momentum) feeds the raw gradient $H=G$, so $HA^\top=G_B$ and
 $B^\top H=G_A$ --- and \eqref{eq:imuon-lmo-ambient} is \Cref{prop:imuon} verbatim.
 
-\paragraph{iMuon, with momentum.} The shipped momentum form (their Sec.~K) does \emph{not}
+\paragraph{iMuon, with momentum.} The shipped momentum form (their App.~K) does \emph{not}
 feed the gradient to \eqref{eq:imuon-lmo-ambient}. It first combines the two factor
 look-aheads $\tilde G_A=G_A+\beta m_A$ and $\tilde G_B=G_B+\beta m_B$ (buffers $m_A,m_B$,
 decay $\beta$) into a single ambient matrix, then feeds that:
