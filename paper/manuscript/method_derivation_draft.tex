@@ -60,17 +60,23 @@ $W=BA\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to a frozen weight, with
 $A\in\R^{r\times d_{\mathrm{in}}}$ and
 $B\in\R^{d_{\mathrm{out}}\times r}$. One optimizer step increments the factors by
 $\Delta A\in\R^{r\times d_{\mathrm{in}}}$ and
-$\Delta B\in\R^{d_{\mathrm{out}}\times r}$, changing $W$ by
+$\Delta B\in\R^{d_{\mathrm{out}}\times r}$. The exact adapter displacement is
 \begin{equation}
-  U:=B\,\Delta A+\Delta B\,A+\Delta B\,\Delta A
-   \approx B\,\Delta A+\Delta B\,A .
+  \Delta W_{\mathrm{exact}}
+  :=
+  B\,\Delta A+\Delta B\,A+\Delta B\,\Delta A .
+\end{equation}
+The derivation works in the first-order tangent model
+\begin{equation}
+  T:=B\,\Delta A+\Delta B\,A,
   \label{eq:tangent}
 \end{equation}
+and discards the second-order product term $\Delta B\,\Delta A$.
 Let $G=\nabla_W\mathcal L\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be the
 gradient with respect to $W$. The first-order loss change splits across the two
 factors,
 \begin{equation}
-  \langle G,U\rangle
+  \langle G,T\rangle
   =\langle B^\top G,\Delta A\rangle
   +\langle G A^\top,\Delta B\rangle ,
   \qquad
@@ -392,6 +398,11 @@ change of variables gives \eqref{eq:A-solution}. The $\Delta B$ proof is
 identical with $Y_B=P^{1/2}\Delta B C_B^{1/2}$.
 \end{proof}
 
+With the Frobenius norm in place of the spectral norm, the same subproblems yield
+the full-inverse natural-gradient steps $-\lambda_A^{-1}C_A^{-1}G_AQ^{-1}$ and
+$-\lambda_B^{-1}P^{-1}G_BC_B^{-1}$; the operator norm is the sole source of the
+polar map (Appendix~\ref{app:frob}).
+
 Define the unscaled update directions
 \begin{equation}
   W_A:=C_A^{-1/2}\polar(H_A)Q^{-1/2},
@@ -418,13 +429,24 @@ operator norms
   \label{eq:block-norms}
 \end{equation}
 Thus $\lambda_A$ and $\lambda_B$ control only the scalar lengths along the
-layerwise-KL polar directions. PoLoRA chooses these dampings so the factor
-updates have a common operator-norm radius
+layerwise-KL polar directions. The product-radius budget by itself does not
+determine those two scalar lengths. If
+$\norm{\Delta A}_2=\rho_A$ and $\norm{\Delta B}_2=\rho_B$, then the tangent
+update obeys
+\[
+  \norm{B\Delta A+\Delta B A}_2
+  \le
+  \norm{B}_2\rho_A+\norm{A}_2\rho_B .
+\]
+Many pairs $(\rho_A,\rho_B)$ can satisfy a given product budget. PoLoRA fixes
+this remaining degree of freedom by imposing the no-preference symmetry between
+the two factor coordinates: exchanging the two factor blocks should leave the
+radius allocation unchanged. This symmetry forces the common-radius choice
 \begin{equation}
   \norm{\Delta A}_2=\norm{\Delta B}_2=\rho .
   \label{eq:equal-radius}
 \end{equation}
-The first-order tangent update then obeys
+With this design choice, the tangent update obeys
 \begin{equation}
   \norm{B\Delta A+\Delta B A}_2
   \le
@@ -461,10 +483,9 @@ for nonzero $W_A,W_B$.
 \label{sec:est}
 
 The derivation assumes $P,Q$ fixed during the step. PoLoRA estimates them by the
-coupled diagonal KL-Shampoo moment equations. This estimator belongs to the same
-layerwise-KL modelling choice, but it does not require forming the dense metric
-\eqref{eq:param-kl}. Instead it uses the stochastic dense layer gradient as an
-empirical-Fisher estimator of that metric:
+coupled diagonal KL-Shampoo moment equations, without forming the dense metric
+\eqref{eq:param-kl}. Observed-gradient moments are used as a practical surrogate
+for the Fisher factors in the KL-derived metric:
 \begin{equation}
   \widehat\Sigma_{\mathrm{KL}}
   :=
@@ -472,12 +493,8 @@ empirical-Fisher estimator of that metric:
   \approx Q\otimes P .
   \label{eq:efisher-kron}
 \end{equation}
-For likelihood losses under the model-distribution expectation,
-Lemma~\ref{lem:fisher-hessian} identifies this gradient second moment with the
-layerwise-KL metric. With observed labels, it is the empirical-Fisher proxy for
-the same metric. In both cases, KL-Shampoo replaces the dense metric by the
-diagonal--Kronecker projection that best matches the observed gradient
-covariance.
+KL-Shampoo replaces the dense metric by the diagonal--Kronecker projection that
+best matches these observed gradient moments.
 
 The only algebraic consequences needed from \eqref{eq:efisher-kron} are the moment
 identities, for compatible $M,N$,
@@ -537,5 +554,99 @@ product radius \eqref{eq:rho} fixes the factor lengths and gives the implemented
 step \eqref{eq:final-step}. The dense warmup
 \eqref{eq:dense-local-kl}--\eqref{eq:merged-polar} only motivates the polar
 mechanism; its single damping never enters the per-factor model.
+
+\appendix
+
+\section{The average-response penalty gives natural gradient}
+\label{app:frob}
+
+This appendix solves the average-response (Frobenius) models---the dense model
+\eqref{eq:pq-avg} and the Frobenius version of the per-factor subproblems
+\eqref{eq:A-block}--\eqref{eq:B-block}---and shows the minimizer is the
+full-inverse natural-gradient step. Contrasting with the worst-input solutions
+\eqref{eq:merged-polar} and \eqref{eq:A-solution}--\eqref{eq:B-solution} isolates
+the operator norm as the sole source of the polar map.
+
+\begin{lemma}[Average-response solution, dense]\label{lem:frob-dense}
+Let $P,Q$ be positive definite and $F:=Q\otimes P$. The minimizer of
+\eqref{eq:pq-avg} is
+\begin{equation}
+  U_{\mathrm{avg}}=-\frac1\lambda P^{-1}GQ^{-1},
+  \qquad\text{equivalently}\qquad
+  \mathrm{vec}(U_{\mathrm{avg}})=-\frac1\lambda F^{-1}\mathrm{vec}(G),
+  \label{eq:frob-dense}
+\end{equation}
+the Kronecker-factored natural-gradient step.
+\end{lemma}
+
+\begin{proof}
+Write the penalty as a trace and differentiate:
+\[
+  \norm{P^{1/2}UQ^{1/2}}_F^2
+  =\tr\!\big(PUQU^\top\big),
+  \qquad
+  \nabla_U\Big[\langle G,U\rangle+\tfrac{\lambda}{2}\tr(PUQU^\top)\Big]
+  =G+\lambda\,PUQ.
+\]
+The objective is strictly convex in $U$; setting the gradient to zero gives
+$PUQ=-\tfrac1\lambda G$, i.e.\ $U=-\tfrac1\lambda P^{-1}GQ^{-1}$. The vectorized
+form uses
+$\mathrm{vec}(P^{-1}GQ^{-1})=(Q^{-1}\otimes P^{-1})\mathrm{vec}(G)
+=F^{-1}\mathrm{vec}(G)$.
+\end{proof}
+
+\begin{lemma}[Average-response solution, per factor]\label{lem:frob-factor}
+Replace the spectral norm by the Frobenius norm in
+\eqref{eq:A-block}--\eqref{eq:B-block}. With $C_A=B^\top P B$ and $C_B=AQA^\top$
+positive definite, the minimizers are
+\begin{equation}
+  \Delta A_{\mathrm{avg}}=-\frac1{\lambda_A}C_A^{-1}G_AQ^{-1},
+  \qquad
+  \Delta B_{\mathrm{avg}}=-\frac1{\lambda_B}P^{-1}G_BC_B^{-1}.
+  \label{eq:frob-factor}
+\end{equation}
+These are the natural-gradient steps for the per-factor Fisher blocks
+$Q\otimes C_A$ and $C_B\otimes P$ identified in \S\ref{sec:est}.
+\end{lemma}
+
+\begin{proof}
+Identical to Lemma~\ref{lem:frob-dense} with $(P,Q)\mapsto(C_A,Q)$ for the $A$
+block and $(P,Q)\mapsto(P,C_B)$ for the $B$ block. For the $A$ block the penalty
+is
+$\tfrac{\lambda_A}{2}\norm{C_A^{1/2}\Delta A Q^{1/2}}_F^2
+=\tfrac{\lambda_A}{2}\tr(C_A\Delta A\,Q\,\Delta A^\top)$,
+whose gradient $G_A+\lambda_A C_A\Delta A Q$ vanishes at \eqref{eq:frob-factor};
+the $B$ block is symmetric.
+\end{proof}
+
+\begin{remark}[Full inverse versus polar: where the half-power lives]
+The average-response minimizers invert the metric on both sides
+($C_A^{-1}\!\cdots Q^{-1}$): they are the full-inverse $F^{-1}$ natural-gradient
+steps. The worst-input minimizers
+\eqref{eq:A-solution}--\eqref{eq:B-solution} carry instead the half-power
+sandwich $C_A^{-1/2}\,\polar(H_A)\,Q^{-1/2}$. Writing both with the same outer
+factors and $H_A=C_A^{-1/2}G_AQ^{-1/2}$,
+\[
+  \Delta A_{\mathrm{avg}}\propto C_A^{-1/2}\,H_A\,Q^{-1/2},
+  \qquad
+  \Delta A\propto \norm{H_A}_*\;C_A^{-1/2}\,\polar(H_A)\,Q^{-1/2},
+\]
+exposes the only difference, $H_A$ versus its polar $\polar(H_A)$. Two facts are
+worth separating.
+\begin{itemize}
+  \item \emph{Source.} The polar map comes entirely from the operator norm. With
+        the Frobenius norm the middle factor is $H_A$ itself, the inner and outer
+        $C_A^{-1/2},Q^{-1/2}$ recombine into the full inverse $C_A^{-1},Q^{-1}$,
+        and no polar appears.
+  \item \emph{Effect.} $\polar(H_A)$ has unit singular values, so it discards the
+        magnitude of the inner whitening: across directions the step is reweighted
+        by the half power $C_A^{-1/2},Q^{-1/2}$ rather than the full inverse. The
+        overall step size is unchanged---the global factor $\norm{H_A}_*$, itself
+        a half-power-scale quantity, restores the $F^{-1}$ aggregate scaling. So
+        the worst-input step is $F^{-1}$ in overall magnitude and $F^{-1/2}$ in
+        the \emph{relative} weighting of directions; it is never a clean
+        $F^{-1/2}G$.
+\end{itemize}
+\end{remark}
 
 \end{document}
