@@ -444,33 +444,31 @@ AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.5
 \subsection{Setup}
 \label{sec:exp-setup}
 
-\paragraph{Comparison.} Only the optimizer and its learning rate vary; everything else is
-held fixed across runs --- the base model, dataset and split, LoRA rank $r$ and $\alpha{=}r$,
-target modules (all linear), sequence length, batch size, dtype, and a constant learning rate
-with no warmup or decay. For each (optimizer, setting) we sweep the learning rate and keep the
-value with the lowest held-out eval loss. \Cref{app:exp} gives the full configuration.
+\paragraph{Comparison.} 
+In our experiments choose the LoRA factor $\alpha$ to be the rank $r$, in accordance with best practice \cite{}, which allows use to ignore the $\alpha / r$ factor \ref{}. We add LoRA adapters to allow linear layers except for the output layer and use the standard initialization which sets $B = 0$ and $A$ to be randomly initialized. For each method we tune the learning rate and use a constant learning rate schedule with no weight decay. \Cref{app:exp} gives the full experimental details.
+% Only the optimizer and its learning rate vary; everything else is
+% held fixed across runs --- the base model, dataset and split, LoRA rank $r$ and $\alpha{=}r$,
+% target modules (all linear), sequence length, batch size, dtype, and a constant learning rate
+% with no warmup or decay. For each (optimizer, setting) we sweep the learning rate and keep the
+% value with the lowest held-out eval loss. \Cref{app:exp} gives the full configuration.
 
-\paragraph{Settings.} The comparison spans four base models (OLMo-2-1B \cite{olmo2},
-Llama-3.2-1B \cite{llama3}, Qwen2.5-1.5B \cite{qwen25}, Llama-3-8B \cite{llama3}), three
-instruction corpora (code \cite{opencoder}, math \cite{openmathinstruct2}, and Bengali
-\cite{aya}), and ranks $r\in\{32,64,128,256\}$, each adapter trained from the standard
-$B{=}0$ initialization. Llama-3.2-1B on math at $r{=}256$ is the primary showcase
-(\Cref{fig:hero}); the result sections then vary one axis at a time
-(\S\ref{sec:exp-main}--\S\ref{sec:exp-taskdep}).
+% \paragraph{Settings.} The comparison spans four base models (OLMo-2-1B \cite{olmo2},
+% Llama-3.2-1B \cite{llama3}, Qwen2.5-1.5B \cite{qwen25}, Llama-3-8B \cite{llama3}), three
+% instruction corpora (code \cite{opencoder}, math \cite{openmathinstruct2}, and Bengali
+% \cite{aya}), and ranks $r\in\{32,64,128,256\}$, each adapter trained from the standard
+% $B{=}0$ initialization. Llama-3.2-1B on math at $r{=}256$ is the primary showcase
+% (\Cref{fig:hero}); the result sections then vary one axis at a time
+% (\S\ref{sec:exp-main}--\S\ref{sec:exp-taskdep}).
 
-\paragraph{Baselines.} We compare \methodname{} against three optimizers; their update rules
+\paragraph{Baselines.} We compare \methodname{} the following optimizers
 are given in \Cref{sec:setup}.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{AdamW} \cite{adamw} --- the practice default, applied to the factors $A$ and $B$ independently.
-  \item \textbf{Muon} --- the per-factor spectral step \eqref{eq:naive}, orthogonalizing each factor gradient on its own.
+  \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the adapters $A$ and $B$ independently.
+  \item \textbf{Muon} --- the per-adapter Muon update \eqref{eq:naive}.
+  
   \item \textbf{iMuon} \cite{imuon} --- the decoupled product step of \Cref{prop:imuon}, which whitens each factor gradient by the partner factor's Gram root.
 \end{itemize}
-
-\paragraph{Speedup.} We report each optimizer's \emph{speedup over AdamW}: how much sooner it
-matches AdamW's final quality. Over a fixed horizon of $T$ steps, AdamW at its best learning
-rate reaches some final eval loss; another optimizer's speedup is $T$ divided by the number of
-steps it needs to reach that same loss. In \Cref{fig:hero} this is where its curve crosses the
-horizontal line at AdamW's final loss, and a method that never reaches it earns no speedup.
+We report each optimizer's step-speedup over AdamW trained for a fixed horizon of $T$ steps with optimized learning rate. 
 
 
 \subsection{Measuring Efficiency Benefits}
