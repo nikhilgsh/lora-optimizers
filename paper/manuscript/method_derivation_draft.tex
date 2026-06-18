@@ -1,6 +1,7 @@
 % =====================================================================
 % DRAFT -- standalone derivation sketch. NOT main.tex.
-% Purpose: recover the PoLoRA direction from a per-factor layerwise-KL model.
+% Purpose: derive the PoLoRA direction from a per-factor empirical-gradient
+%          (gradient-covariance) metric; predictive KL is an interpretation.
 % =====================================================================
 \documentclass[11pt]{article}
 \usepackage{amsmath,amssymb,amsthm,mathtools}
@@ -14,6 +15,7 @@
 \newcommand{\T}{\mathcal T}
 \newcommand{\F}{\mathcal F}
 \DeclareMathOperator{\tr}{tr}
+\DeclareMathOperator{\vecop}{vec}
 \DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator{\diag}{diag}
 
@@ -22,7 +24,7 @@
 \theoremstyle{remark}
 \newtheorem*{remark}{Remark}
 
-\title{PoLoRA from a per-factor layerwise-KL model\\[2pt]
+\title{PoLoRA from a per-factor gradient-covariance metric\\[2pt]
 \large (derivation draft --- for discussion, not for \texttt{main.tex})}
 \author{}
 \date{}
@@ -30,30 +32,27 @@
 \begin{document}
 \maketitle
 
-This note derives the PoLoRA update directly in LoRA factor coordinates
-$(A,B)$. The model is a \emph{layerwise-KL proximal} problem: a first-order
-task-loss term plus a second-order penalty that measures how far the step moves
-the layer's predictive distribution. Solving it separately for each factor
-produces PoLoRA's whiten--polar--unwhiten step \eqref{eq:final-step}.
+This note derives the PoLoRA update in LoRA factor coordinates $(A,B)$ from a
+\emph{linearized trust-region} step on the observed per-example gradients---the
+object PoLoRA actually estimates. The chain is
+\[
+  \begin{aligned}
+  &\text{mean per-example linearized loss change}
+   +\text{RMS per-example penalty}\\
+  &\qquad\to\;\text{empirical Fisher}
+   \;\to\;\text{Kronecker fit}
+   \;\to\;\text{LoRA pullback}
+   \;\to\;\text{spectral polar step}.
+  \end{aligned}
+\]
+Predictive KL enters only as an interpretation (\S\ref{sec:interp},
+Appendix~\ref{app:kl}): the second-moment metric here is the empirical Fisher,
+which equals the predictive-KL (true Fisher) curvature only for model-sampled
+score gradients. The full-inverse (average) counterpart of the step---ordinary
+metric preconditioning---is in Appendix~\ref{app:frob}.
 
-The derivation runs in two stages.
-\begin{itemize}
-  \item A dense one-variable \emph{warmup} (\S\ref{sec:dense-warmup}) on a
-        hypothetical dense update $U\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$
-        to the full adapter matrix $W=BA$. It carries one update variable and one
-        damping, so it is \emph{not} the PoLoRA step; its only job is to show why
-        a layerwise-KL metric plus a worst-input penalty yields a
-        whiten--polar--unwhiten direction.
-  \item The \emph{per-factor model} (\S\ref{sec:channel-model} onward), where the
-        two parts of the tangent update, $B\Delta A$ and $\Delta B\,A$, each carry
-        their own damping $\lambda_A,\lambda_B$ from the start. This is the actual
-        derivation.
-\end{itemize}
-\noindent\S\ref{sec:local-kl} sets up the layerwise-KL metric;
-\S\ref{sec:worst-input}--\S\ref{sec:radius} solve the two per-factor subproblems
-and calibrate the dampings; \S\ref{sec:est} estimates the metric.
-
-\section{Setup}
+\section{Setup: the LoRA tangent split}
+\label{sec:setup}
 
 A LoRA layer adds the rank-$r$ adapter
 $W=BA\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to a frozen weight, with
@@ -61,17 +60,13 @@ $A\in\R^{r\times d_{\mathrm{in}}}$ and
 $B\in\R^{d_{\mathrm{out}}\times r}$. One optimizer step increments the factors by
 $\Delta A\in\R^{r\times d_{\mathrm{in}}}$ and
 $\Delta B\in\R^{d_{\mathrm{out}}\times r}$. The exact adapter displacement is
-\begin{equation}
-  \Delta W_{\mathrm{exact}}
-  :=
-  B\,\Delta A+\Delta B\,A+\Delta B\,\Delta A .
-\end{equation}
-The derivation works in the first-order tangent model
+$\Delta W_{\mathrm{exact}}=B\,\Delta A+\Delta B\,A+\Delta B\,\Delta A$; the
+derivation works in the first-order tangent model
 \begin{equation}
   T:=B\,\Delta A+\Delta B\,A,
   \label{eq:tangent}
 \end{equation}
-and discards the second-order product term $\Delta B\,\Delta A$.
+discarding the second-order product term $\Delta B\,\Delta A$.
 Let $G=\nabla_W\mathcal L\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be the
 gradient with respect to $W$. The first-order loss change splits across the two
 factors,
@@ -87,280 +82,156 @@ factors,
 The derivation uses raw gradients; the optimizer replaces $G_A,G_B$ by
 bias-corrected momentum buffers before the polar map.
 
-\section{Layerwise KL supplies the layer metric}
-\label{sec:local-kl}
+\section{A per-example linearized trust-region step}
+\label{sec:metric}
 
-Newton--Muon derives its triplet quadratic by Taylor expanding the task loss in a
-dense layer update. PoLoRA uses a different model: the task loss is kept to first
-order, while the second-order term is the predictive KL. The algebra has the same
-three ingredients---a gradient, layer inputs, and an output-side metric---but the
-metric is layerwise-KL/Fisher geometry rather than the observed-loss Hessian.
+Let $G_i\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be the dense adapter
+gradient on example or token $i$, and for a dense update $U$ write the first-order
+change in example $i$'s loss as
+\begin{equation}
+  \delta_i(U):=\langle G_i,U\rangle .
+  \label{eq:delta}
+\end{equation}
+The per-example gradients average to the batch gradient of \S\ref{sec:setup},
+$G=\E_i[G_i]$, so the mean first-order change is
+$\E_i[\delta_i(U)]=\langle G,U\rangle$. PoLoRA's update solves the variational
+problem
+\begin{equation}
+  \min_U\;\E_i[\delta_i(U)]+\frac{\lambda}{2}\,\E_i[\delta_i(U)^2]
+  \label{eq:variational}
+\end{equation}
+---decrease the average loss, but penalize the RMS size of the per-example
+linearized effects (equivalently, minimize $\E_i[\delta_i(U)]$ subject to a fixed
+bound on $\E_i[\delta_i(U)^2]$).
 
-Let $z_i\in\R^{d_{\mathrm{in}}}$ be the layer input for token or example $i$,
-collect $Z=[z_1,\ldots,z_N]$, and let
-$y_i=Wz_i\in\R^{d_{\mathrm{out}}}$ be the layer output. For token $i$, let
-$p_i(\cdot;y)$ be the model's predictive distribution when the layer output is
-$y$. For an output perturbation $v_i$, define
-\[
-  D_i(v_i)
-  :=
-  \mathrm{KL}\!\left(p_i(\cdot;y_i)\,\middle\|\,p_i(\cdot;y_i+v_i)\right).
-\]
-
-\begin{lemma}[Layerwise-KL expansion]\label{lem:local-kl}
-Assume the usual regularity conditions allowing differentiation under the
-expectation. Let
-\[
-  s_i(a):=\nabla_y \log p_i(a;y_i),
+The penalty is the second moment of the per-example linearized changes,
+\begin{equation}
+  \E_i[\delta_i(U)^2]
+  =\E_i\!\big[\langle G_i,U\rangle^2\big]
+  =\vecop(U)^\top \Sigma_{\mathrm{EF}}\,\vecop(U),
   \qquad
-  F_i:=\E_{a\sim p_i(\cdot;y_i)}[s_i(a)s_i(a)^\top].
-\]
-Then
-\[
-  D_i(v_i)=\tfrac12 v_i^\top F_i v_i+o(\norm{v_i}_2^2).
-\]
-\end{lemma}
-
-\begin{proof}
-The first derivative at $v_i=0$ is
-$-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y\log p_i(a;y_i)]$, which is zero by the score
-identity. The second derivative is
-$-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\log p_i(a;y_i)]$, which equals $F_i$ by
-the Fisher identity. Taylor expansion gives the claim.
-\end{proof}
-
-\begin{lemma}[When Fisher equals Hessian]\label{lem:fisher-hessian}
-If the token loss is negative log-likelihood, $\ell_i(y)=-\log p_i(a;y)$, and the
-label $a$ is averaged under the current model distribution $p_i(\cdot;y_i)$, then
-\[
-  \E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\ell_i(y_i)]
-  =
-  F_i .
-\]
-\end{lemma}
-
-\begin{proof}
-Since $\ell_i(y)=-\log p_i(a;y)$,
-\[
-  \E[\nabla_y^2\ell_i(y_i)]
-  =
-  -\E[\nabla_y^2\log p_i(a;y_i)]
-  =
-  \E[s_i(a)s_i(a)^\top],
-\]
-using the same Fisher identity as Lemma~\ref{lem:local-kl}.
-\end{proof}
-
-Thus Fisher is an exact expected Hessian only under the model-distribution
-expectation in Lemma~\ref{lem:fisher-hessian}. For observed labels in a finite
-minibatch, the empirical gradient outer product is a PSD estimator or proxy for
-the layerwise-KL metric, not an identity with the raw loss Hessian.
-
-\section{Dense warmup: one update, one damping}
-\label{sec:dense-warmup}
-
-The warmup carries one dense update variable $U$ and one damping $\lambda>0$, so
-it is not the PoLoRA factor step. Its only purpose is to show why a layerwise-KL
-metric combined with a worst-input replacement produces a polar direction.
-
-For a hypothetical dense update $U\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$
-to $W$, the output perturbation on input $z_i$ is $Uz_i$. The first-order
-task-loss term plus the second-order layerwise-KL expansion gives
-\begin{equation}
-  \mathcal J_{\mathrm{dense}}(U)
-  =
-  \langle G,U\rangle
-  +\frac{\lambda}{2N}\sum_{i=1}^N (Uz_i)^\top F_i(Uz_i).
-  \label{eq:dense-local-kl}
+  \Sigma_{\mathrm{EF}}:=\E_i\!\big[\vecop(G_i)\vecop(G_i)^\top\big],
+  \label{eq:ef-penalty}
 \end{equation}
-The corresponding unscaled dense layerwise-KL metric is
-\begin{equation}
-  \Sigma_{\mathrm{KL}}
-  =
-  \frac1N\sum_{i=1}^N (z_i z_i^\top)\otimes F_i .
-  \label{eq:param-kl}
-\end{equation}
-PoLoRA never forms this dense matrix. The KL-Shampoo step instead fits
-$\Sigma_{\mathrm{KL}}$ (or its stochastic gradient-covariance estimator) by a
+so the metric is the empirical Fisher---not a curvature proxy, but exactly the
+quadratic form that penalizes the RMS first-order effect of $U$ across examples.
+(Newton--Muon instead Taylor-expands the task loss to the Hessian.)
+
+Writing $u=\vecop(U)$, the penalty is a squared whitened length,
+$\E_i[\delta_i(U)^2]=\norm{\Sigma_{\mathrm{EF}}^{1/2}u}_2^2$. A worst case taken
+\emph{here}, over parameter-space probes $\xi$, is vacuous---
+$\sup_{\norm{\xi}_2\le1}(\xi^\top\Sigma_{\mathrm{EF}}^{1/2}u)^2
+=\norm{\Sigma_{\mathrm{EF}}^{1/2}u}_2^2$ returns the same length---so a matrix
+spectral norm can appear only after the metric is reshaped (\S\ref{sec:worst-input}).
+
+PoLoRA never forms $\Sigma_{\mathrm{EF}}$; it fits the covariance by a
 diagonal--Kronecker matrix
 \begin{equation}
-  \Sigma_{\mathrm{KL}}\approx Q\otimes P,
+  \Sigma_{\mathrm{EF}}\approx Q\otimes P,
   \label{eq:PQ-approx}
 \end{equation}
-where $P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ is the output-side factor
-and $Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ is the input-side factor, both
-symmetric positive definite, with their coupled estimator given in
-\S\ref{sec:est}. So $P,Q$ are the diagonal Kronecker fit to the layer's
-layerwise-KL metric, not dense metric factors. The scale ambiguity
-$(P,Q)\mapsto(cP,c^{-1}Q)$ is harmless because $P^{1/2}UQ^{1/2}$ is unchanged.
+with $P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ the output-side factor and
+$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ the input-side factor, both
+symmetric positive definite (estimator in \S\ref{sec:est}). Then
+$\Sigma_{\mathrm{EF}}^{1/2}\approx Q^{1/2}\otimes P^{1/2}$, so the whitened vector
+reshapes into a whitened matrix,
+\begin{equation}
+  \E_i[\delta_i(U)^2]
+  \approx\norm{(Q^{1/2}\otimes P^{1/2})\,u}_2^2
+  =\norm{P^{1/2}UQ^{1/2}}_F^2
+  =:\norm{Y}_F^2,
+  \qquad Y:=P^{1/2}UQ^{1/2}.
+  \label{eq:ef-frob}
+\end{equation}
+The half-power factors $P^{1/2},Q^{1/2}$ are the square root of the
+gradient-covariance metric.
 
-Replacing \eqref{eq:param-kl} by \eqref{eq:PQ-approx} gives the fitted average
-model
-\begin{equation}
-  \mathcal J_{\mathrm{avg}}(U)
-  =
-  \langle G,U\rangle
-  +\frac{\lambda}{2}\norm{P^{1/2}UQ^{1/2}}_F^2 .
-  \label{eq:pq-avg}
-\end{equation}
-Replacing the average squared response by the largest one over unit inputs gives
-the worst-input model
-\begin{equation}
-  \mathcal J_{\mathrm{worst}}(U)
-  =
-  \langle G,U\rangle
-  +\frac{\lambda}{2}\norm{P^{1/2}UQ^{1/2}}_2^2
-  =
-  \langle G,U\rangle
-  +\frac{\lambda}{2}
-    \sup_{\norm{x}_2\le1}\norm{P^{1/2}UQ^{1/2}x}_2^2 .
-  \label{eq:robust-pq}
-\end{equation}
-Let $Y=P^{1/2}UQ^{1/2}$ and $H=P^{-1/2}GQ^{-1/2}$. Then
-\begin{equation}
-  \min_U \mathcal J_{\mathrm{worst}}(U)
-  =
-  \min_Y
-  \left\{
-    \langle H,Y\rangle
-    +\frac{\lambda}{2}\norm{Y}_2^2
-  \right\}.
-  \label{eq:dense-penalty}
-\end{equation}
-By the scaled conjugacy between squared operator norm and squared nuclear norm,
-a canonical minimizer, when $H\ne0$, is
-\[
-  Y_\star=-\frac{\norm{H}_*}{\lambda}\polar(H).
-\]
-Thus the dense warmup gives
-\begin{equation}
-  U_\star
-  =
-  -\frac{\norm{H}_*}{\lambda}\,
-  P^{-1/2}\polar\!\big(P^{-1/2}GQ^{-1/2}\big)Q^{-1/2}.
-  \label{eq:merged-polar}
-\end{equation}
-The lesson is only the direction mechanism: layerwise-KL whitening plus the
-worst-input replacement gives a whiten--polar--unwhiten update. The scalar
-$\norm{H}_*/\lambda$ belongs to the dense one-variable proximal problem and is
-not the PoLoRA factor magnitude. PoLoRA starts from the per-factor model below.
+\section{Pullback to the LoRA factors}
+\label{sec:pullback}
 
-\section{Per-factor proximal model}
-\label{sec:channel-model}
-
-A LoRA tangent update splits into two parts,
-\[
-  J_A:=B\Delta A,\qquad
-  J_B:=\Delta B A,\qquad
-  J=J_A+J_B,
-\]
-the part driven by $\Delta A$ and the part driven by $\Delta B$. For input $z_i$,
-the two output perturbations are
-\[
-  v_{A,i}:=B\Delta A z_i,\qquad
-  v_{B,i}:=\Delta B A z_i.
-\]
-The exact second-order layerwise KL of the simultaneous tangent perturbation
-would contain
-\[
-  \frac1{2N}\sum_{i=1}^N
-  (v_{A,i}+v_{B,i})^\top F_i (v_{A,i}+v_{B,i}),
-\]
-including the cross terms $v_{A,i}^\top F_i v_{B,i}$. PoLoRA makes a
-block-diagonal approximation across the two parts and assigns one proximal
-damping to each:
+For LoRA the dense update is the tangent $T=B\Delta A+\Delta B A$
+\eqref{eq:tangent}, so the variational problem \eqref{eq:variational} becomes,
+using the linear split \eqref{eq:split-linear},
 \begin{equation}
-  \Phi_{\lambda_A,\lambda_B}(\Delta A,\Delta B)
-  =
+  \min_{\Delta A,\Delta B}\;
   \langle G_A,\Delta A\rangle+\langle G_B,\Delta B\rangle
-  +\frac{\lambda_A}{2N}\sum_{i=1}^N v_{A,i}^\top F_i v_{A,i}
-  +\frac{\lambda_B}{2N}\sum_{i=1}^N v_{B,i}^\top F_i v_{B,i}.
-  \label{eq:channel-prox}
+  +\frac{\lambda}{2}\,\E_i[\delta_i(T)^2].
+  \label{eq:variational-lora}
 \end{equation}
-This is still a proximal layerwise-KL model; no penalty has been converted into a
-constraint. The two multipliers are present from the start because the retained
-metric is block diagonal across the $\Delta A$ and $\Delta B$ blocks. If the
-cross-term metric block were kept and the two dampings were tied, the model would
-reduce to the exact layerwise-KL quadratic for $J_A+J_B$ under a common damping.
-
-Using the KL-Shampoo fit \eqref{eq:PQ-approx}, the $\Delta A$ part's layerwise-KL
-quadratic becomes
-\begin{equation}
-  \frac1N\sum_{i=1}^N (B\Delta A z_i)^\top F_i(B\Delta A z_i)
+Under the Kronecker fit the penalty is
+$\E_i[\delta_i(T)^2]\approx\norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_F^2$, which
+carries a cross term between the two factors. PoLoRA makes a block-diagonal factor
+approximation, dropping it:
+\[
+  \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_F^2
   \approx
-  \norm{P^{1/2}B\Delta A Q^{1/2}}_F^2
-  =
-  \norm{C_A^{1/2}\Delta A Q^{1/2}}_F^2,
+  \norm{P^{1/2}B\Delta A\,Q^{1/2}}_F^2
+  +\norm{P^{1/2}\Delta B\,A\,Q^{1/2}}_F^2 .
+\]
+Each block reduces by a trace identity:
+\begin{equation}
+  \norm{P^{1/2}B\Delta A\,Q^{1/2}}_F^2
+  =\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_F^2,
+  \qquad C_A:=B^\top P B\in\R^{r\times r},
   \label{eq:A-average-fit}
 \end{equation}
-where
 \begin{equation}
-  C_A:=B^\top P B\in\R^{r\times r} .
-  \label{eq:CA}
-\end{equation}
-The $\Delta B$ part's quadratic becomes
-\begin{equation}
-  \frac1N\sum_{i=1}^N (\Delta B A z_i)^\top F_i(\Delta B A z_i)
-  \approx
-  \norm{P^{1/2}\Delta B A Q^{1/2}}_F^2
-  =
-  \norm{P^{1/2}\Delta B C_B^{1/2}}_F^2,
+  \norm{P^{1/2}\Delta B\,A\,Q^{1/2}}_F^2
+  =\norm{P^{1/2}\Delta B\,C_B^{1/2}}_F^2,
+  \qquad C_B:=AQA^\top\in\R^{r\times r}
   \label{eq:B-average-fit}
 \end{equation}
-where
-\begin{equation}
-  C_B:=AQA^\top\in\R^{r\times r} .
-  \label{eq:CB}
-\end{equation}
-The equalities in \eqref{eq:A-average-fit} and \eqref{eq:B-average-fit} are
-ordinary trace identities. For example,
-\[
-  \tr(PB\Delta A Q\Delta A^\top B^\top)
-  =
-  \tr(C_A\Delta A Q\Delta A^\top).
-\]
+(e.g.\ $\tr(PB\Delta A\,Q\,\Delta A^\top B^\top)=\tr(C_A\Delta A\,Q\,\Delta
+A^\top)$). Here $C_A,C_B$ are the sensitivity metrics induced on the LoRA factor
+directions by the per-example gradient metric; equivalently $Q\otimes C_A$ and
+$C_B\otimes P$ are the Kronecker fits to the per-factor gradient covariances
+$\E_i[\vecop(G_{A,i})\vecop(G_{A,i})^\top]$ and
+$\E_i[\vecop(G_{B,i})\vecop(G_{B,i})^\top]$.
 
-\section{Worst-input proximal problems}
+\section{Worst-input (spectral) replacement}
 \label{sec:worst-input}
 
-The KL-Shampoo fit gives an average squared response. PoLoRA replaces that
-average by the largest response over unit inputs, separately for each factor:
+The per-factor penalties \eqref{eq:A-average-fit}--\eqref{eq:B-average-fit} are
+squared whitened matrices $\norm{Y}_F^2$---with $Y=C_A^{1/2}\Delta A\,Q^{1/2}$ for
+the $A$ factor and $Y=P^{1/2}\Delta B\,C_B^{1/2}$ for the $B$ factor, the dense
+case $Y=P^{1/2}UQ^{1/2}$ of \eqref{eq:ef-frob} being identical. For any such
+whitened matrix the Frobenius norm is the \emph{average} squared response over
+unit input probes,
 \begin{equation}
-  R_A(\Delta A)
-  :=
-  \norm{C_A^{1/2}\Delta A Q^{1/2}}_2^2
-  =
-  \sup_{\norm{x}_2\le1}
-  \norm{C_A^{1/2}\Delta A Q^{1/2}x}_2^2,
+  \norm{Y}_F^2=\tr(Y^\top Y)\;\propto\;\E_{\norm{x}_2=1}\norm{Yx}_2^2 ,
+  \label{eq:probe}
+\end{equation}
+the constant ($d_{\mathrm{in}}$) folding into the damping. As a further design
+choice, PoLoRA replaces the average probe by the \emph{worst} input probe,
+\begin{equation}
+  \E_{\norm{x}_2=1}\norm{Yx}_2^2
+  \;\leadsto\;
+  \sup_{\norm{x}_2\le1}\norm{Yx}_2^2=\norm{Y}_2^2 ,
   \label{eq:RA}
 \end{equation}
-\begin{equation}
-  R_B(\Delta B)
-  :=
-  \norm{P^{1/2}\Delta B C_B^{1/2}}_2^2 .
-  \label{eq:RB}
-\end{equation}
-Substituting \eqref{eq:RA}--\eqref{eq:RB} into the per-factor model gives two
-separable subproblems:
+turning each Frobenius penalty into the spectral
+$\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_2^2$ and $\norm{P^{1/2}\Delta B\,C_B^{1/2}}_2^2$.
+The block-diagonal split made the two factors independent, so each carries its own
+multiplier $\lambda_A,\lambda_B$ (fixed by the radius calibration of
+\S\ref{sec:radius}). The two per-factor subproblems are then
 \begin{equation}
   \mathcal J_A(\Delta A)
-  =
-  \langle G_A,\Delta A\rangle
-  +\frac{\lambda_A}{2}
-    \norm{C_A^{1/2}\Delta A Q^{1/2}}_2^2,
+  =\langle G_A,\Delta A\rangle
+  +\frac{\lambda_A}{2}\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_2^2,
   \label{eq:A-block}
 \end{equation}
 \begin{equation}
   \mathcal J_B(\Delta B)
-  =
-  \langle G_B,\Delta B\rangle
-  +\frac{\lambda_B}{2}
-    \norm{P^{1/2}\Delta B C_B^{1/2}}_2^2 .
+  =\langle G_B,\Delta B\rangle
+  +\frac{\lambda_B}{2}\norm{P^{1/2}\Delta B\,C_B^{1/2}}_2^2 .
   \label{eq:B-block}
 \end{equation}
 
+\section{Solving by whitening and polar projection}
+\label{sec:solve}
+
 \begin{proposition}[Per-factor proximal solutions]\label{prop:channels}
-Assume the damped matrices $P,Q,C_A,C_B$ are positive definite, and set
+Assume $P,Q,C_A,C_B$ positive definite, and set
 \[
   H_A:=C_A^{-1/2}G_AQ^{-1/2},
   \qquad
@@ -370,111 +241,76 @@ If $H_A\ne0$ and $H_B\ne0$, canonical minimizers of
 \eqref{eq:A-block}--\eqref{eq:B-block} are
 \begin{equation}
   \Delta A(\lambda_A)
-  =
-  -\frac{\norm{H_A}_*}{\lambda_A}\,
-  C_A^{-1/2}\polar(H_A)Q^{-1/2},
-  \label{eq:A-solution}
-\end{equation}
-\begin{equation}
+  =-\frac{\norm{H_A}_*}{\lambda_A}\,C_A^{-1/2}\polar(H_A)Q^{-1/2},
+  \qquad
   \Delta B(\lambda_B)
-  =
-  -\frac{\norm{H_B}_*}{\lambda_B}\,
-  P^{-1/2}\polar(H_B)C_B^{-1/2}.
-  \label{eq:B-solution}
+  =-\frac{\norm{H_B}_*}{\lambda_B}\,P^{-1/2}\polar(H_B)C_B^{-1/2}.
+  \label{eq:A-solution}
 \end{equation}
 If a whitened gradient is zero, the corresponding zero update is a minimizer.
 \end{proposition}
 
 \begin{proof}
 With $Y_A=C_A^{1/2}\Delta A Q^{1/2}$,
-$\langle G_A,\Delta A\rangle=\langle H_A,Y_A\rangle$
-and the quadratic term is $\frac{\lambda_A}{2}\norm{Y_A}_2^2$. By the scaled
-conjugacy between squared operator norm and squared nuclear norm, the minimum
-value is $-\norm{H_A}_*^2/(2\lambda_A)$. Since
-$\polar(H_A)\in\partial\norm{H_A}_*$, the canonical
-attainer is
-$Y_A=-(\norm{H_A}_*/\lambda_A)\polar(H_A)$. Undoing the
-change of variables gives \eqref{eq:A-solution}. The $\Delta B$ proof is
-identical with $Y_B=P^{1/2}\Delta B C_B^{1/2}$.
+$\langle G_A,\Delta A\rangle=\langle H_A,Y_A\rangle$ and the quadratic term is
+$\frac{\lambda_A}{2}\norm{Y_A}_2^2$. By the scaled conjugacy between squared
+operator norm and squared nuclear norm, the minimum value is
+$-\norm{H_A}_*^2/(2\lambda_A)$, attained (since $\polar(H_A)\in\partial
+\norm{H_A}_*$) at $Y_A=-(\norm{H_A}_*/\lambda_A)\polar(H_A)$. Undoing the change
+of variables gives \eqref{eq:A-solution}; the $\Delta B$ case is identical with
+$Y_B=P^{1/2}\Delta B C_B^{1/2}$.
 \end{proof}
 
 With the Frobenius norm in place of the spectral norm, the same subproblems yield
-the full-inverse natural-gradient steps $-\lambda_A^{-1}C_A^{-1}G_AQ^{-1}$ and
-$-\lambda_B^{-1}P^{-1}G_BC_B^{-1}$; the operator norm is the sole source of the
-polar map (Appendix~\ref{app:frob}).
-
-Define the unscaled update directions
+the full-inverse steps $-\lambda_A^{-1}C_A^{-1}G_AQ^{-1}$ and
+$-\lambda_B^{-1}P^{-1}G_BC_B^{-1}$ instead; the operator norm is the sole source
+of the polar map (Appendix~\ref{app:frob}). Define the unscaled update directions
 \begin{equation}
   W_A:=C_A^{-1/2}\polar(H_A)Q^{-1/2},
-  \label{eq:WA}
-\end{equation}
-\begin{equation}
+  \qquad
   W_B:=P^{-1/2}\polar(H_B)C_B^{-1/2}.
-  \label{eq:WB}
+  \label{eq:WA}
 \end{equation}
 
 \section{Damping calibration from the product radius}
 \label{sec:radius}
 
-The proximal solutions \eqref{eq:A-solution}--\eqref{eq:B-solution} have
-operator norms
+The solutions \eqref{eq:A-solution} have operator norms
 \begin{equation}
   \norm{\Delta A(\lambda_A)}_2
-  =
-  \frac{\norm{H_A}_*}{\lambda_A}\norm{W_A}_2,
+  =\frac{\norm{H_A}_*}{\lambda_A}\norm{W_A}_2,
   \qquad
   \norm{\Delta B(\lambda_B)}_2
-  =
-  \frac{\norm{H_B}_*}{\lambda_B}\norm{W_B}_2 .
+  =\frac{\norm{H_B}_*}{\lambda_B}\norm{W_B}_2 ,
   \label{eq:block-norms}
 \end{equation}
-Thus $\lambda_A$ and $\lambda_B$ control only the scalar lengths along the
-layerwise-KL polar directions. The product-radius budget by itself does not
-determine those two scalar lengths. If
-$\norm{\Delta A}_2=\rho_A$ and $\norm{\Delta B}_2=\rho_B$, then the tangent
-update obeys
-\[
-  \norm{B\Delta A+\Delta B A}_2
-  \le
-  \norm{B}_2\rho_A+\norm{A}_2\rho_B .
-\]
-Many pairs $(\rho_A,\rho_B)$ can satisfy a given product budget. PoLoRA fixes
-this remaining degree of freedom by imposing the no-preference symmetry between
-the two factor coordinates: exchanging the two factor blocks should leave the
-radius allocation unchanged. This symmetry forces the common-radius choice
+so $\lambda_A,\lambda_B$ control only the scalar lengths along the polar
+directions. The product-radius budget alone does not fix the two lengths: if
+$\norm{\Delta A}_2=\rho_A$ and $\norm{\Delta B}_2=\rho_B$, then
+$\norm{B\Delta A+\Delta B A}_2\le\norm{B}_2\rho_A+\norm{A}_2\rho_B$, and many
+$(\rho_A,\rho_B)$ meet a given budget. PoLoRA removes this freedom by the
+no-preference symmetry between the two factor coordinates---exchanging the blocks
+should not change the radius allocation---which forces the common radius
 \begin{equation}
   \norm{\Delta A}_2=\norm{\Delta B}_2=\rho .
   \label{eq:equal-radius}
 \end{equation}
-With this design choice, the tangent update obeys
-\begin{equation}
-  \norm{B\Delta A+\Delta B A}_2
-  \le
-  \norm{B}_2\norm{\Delta A}_2+\norm{A}_2\norm{\Delta B}_2
-  =\rho(\norm{A}_2+\norm{B}_2).
-\end{equation}
-Setting this bound equal to the budget $\eta$ gives
+The tangent update then obeys
+$\norm{B\Delta A+\Delta B A}_2\le\rho(\norm{A}_2+\norm{B}_2)$; setting this equal
+to the budget $\eta$ gives
 \begin{equation}
   \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2},
+  \qquad
+  \lambda_A=\frac{\norm{H_A}_*\norm{W_A}_2}{\rho},
+  \qquad
+  \lambda_B=\frac{\norm{H_B}_*\norm{W_B}_2}{\rho}.
   \label{eq:rho}
 \end{equation}
-and the dampings that realize this radius are
-\begin{equation}
-  \lambda_A
-  =
-  \frac{\norm{H_A}_*\norm{W_A}_2}{\rho},
-  \qquad
-  \lambda_B
-  =
-  \frac{\norm{H_B}_*\norm{W_B}_2}{\rho}.
-  \label{eq:lambdas}
-\end{equation}
-Substituting \eqref{eq:lambdas} into
-\eqref{eq:A-solution}--\eqref{eq:B-solution} gives the PoLoRA step
+Substituting into \eqref{eq:A-solution} gives the PoLoRA step
 \begin{equation}
   \Delta A=-\rho\,\frac{W_A}{\norm{W_A}_2},
   \qquad
-  \Delta B=-\rho\,\frac{W_B}{\norm{W_B}_2}.
+  \Delta B=-\rho\,\frac{W_B}{\norm{W_B}_2}
   \label{eq:final-step}
 \end{equation}
 for nonzero $W_A,W_B$.
@@ -482,21 +318,9 @@ for nonzero $W_A,W_B$.
 \section{Estimating the diagonal metric}
 \label{sec:est}
 
-The derivation assumes $P,Q$ fixed during the step. PoLoRA estimates them by the
-coupled diagonal KL-Shampoo moment equations, without forming the dense metric
-\eqref{eq:param-kl}. Observed-gradient moments are used as a practical surrogate
-for the Fisher factors in the KL-derived metric:
-\begin{equation}
-  \widehat\Sigma_{\mathrm{KL}}
-  :=
-  \E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]
-  \approx Q\otimes P .
-  \label{eq:efisher-kron}
-\end{equation}
-KL-Shampoo replaces the dense metric by the diagonal--Kronecker projection that
-best matches these observed gradient moments.
-
-The only algebraic consequences needed from \eqref{eq:efisher-kron} are the moment
+It remains to estimate $P,Q$ in \eqref{eq:PQ-approx}. PoLoRA does so by a coupled
+moment closure, with all expectations over the per-example gradient distribution.
+The only algebraic consequences needed from \eqref{eq:PQ-approx} are the moment
 identities, for compatible $M,N$,
 \begin{equation}
   \E[G M G^\top]=\tr(MQ)P,
@@ -506,18 +330,17 @@ identities, for compatible $M,N$,
 \end{equation}
 The factor gradients are linear images of $G$, so their second moments carry the
 same $r\times r$ matrices $C_A,C_B$ that appear in the update:
-\begin{equation}
-  \E[\mathrm{vec}(G_A)\mathrm{vec}(G_A)^\top]\approx Q\otimes C_A,
-  \qquad
-  \E[\mathrm{vec}(G_B)\mathrm{vec}(G_B)^\top]\approx C_B\otimes P .
-\end{equation}
+$\E[\vecop(G_A)\vecop(G_A)^\top]\approx Q\otimes C_A$ and
+$\E[\vecop(G_B)\vecop(G_B)^\top]\approx C_B\otimes P$.
 
-\begin{lemma}[Coupled diagonal moment estimator]\label{lem:estimator}
-With $C_A=B^\top P B$ and $C_B=AQA^\top$,
+\begin{lemma}[Moment closure under a Kronecker gradient-covariance model]
+\label{lem:estimator}
+If $\Sigma_{\mathrm{EF}}\approx Q\otimes P$ with $C_A=B^\top P B$ and
+$C_B=AQA^\top$, then
 \begin{equation}
-  \E\!\left[\frac1r G_A^\top C_A^{-1}G_A\right]=Q,
+  \E\!\left[\tfrac1r G_A^\top C_A^{-1}G_A\right]=Q,
   \qquad
-  \E\!\left[\frac1r G_B C_B^{-1}G_B^\top\right]=P .
+  \E\!\left[\tfrac1r G_B C_B^{-1}G_B^\top\right]=P .
   \label{eq:unbiased}
 \end{equation}
 \end{lemma}
@@ -525,127 +348,161 @@ With $C_A=B^\top P B$ and $C_B=AQA^\top$,
 \begin{proof}
 Use the second identity of \eqref{eq:moment-identities} with $N=B C_A^{-1}B^\top$:
 $G^\top N G=G_A^\top C_A^{-1}G_A$ and
-$\tr(NP)=\tr(C_A^{-1}B^\top P B)=\tr(I_r)=r$, giving the first identity. The second
-follows by the same argument with $M=A^\top C_B^{-1}A$.
+$\tr(NP)=\tr(C_A^{-1}B^\top P B)=\tr(I_r)=r$, giving the first identity. The
+second follows with $M=A^\top C_B^{-1}A$.
 \end{proof}
 
 PoLoRA keeps only the diagonals and updates them by EMA:
 \begin{equation}
   q_j\leftarrow
-  \mathrm{EMA}\!\left[\frac1r (G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\right],
+  \mathrm{EMA}\!\left[\tfrac1r (G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\right],
   \qquad
   p_i\leftarrow
-  \mathrm{EMA}\!\left[\frac1r (G_B)_{i,:}C_B^{-1}(G_B)_{i,:}^\top\right].
+  \mathrm{EMA}\!\left[\tfrac1r (G_B)_{i,:}C_B^{-1}(G_B)_{i,:}^\top\right].
   \label{eq:ema}
 \end{equation}
 Because $C_A$ depends on the current $P$ and $C_B$ on the current $Q$, the two
 estimates are coupled; the optimizer takes one EMA alternation per step, then
 freezes $P,Q$ while computing \eqref{eq:WA}--\eqref{eq:final-step}. In
-implementation the inverse square roots are damped, so the formulas are read as the
-ideal SPD case.
+implementation the inverse square roots are damped, so the formulas are read as
+the ideal SPD case.
+
+\section{Interpretation: predictive KL}
+\label{sec:interp}
+
+The metric \eqref{eq:ef-penalty} is the empirical Fisher, justified directly as a
+gradient-covariance penalty---no curvature claim is needed. It connects to
+predictive KL as follows. If $G_i$ were a model-sampled score gradient rather
+than an observed-label gradient, then $\Sigma_{\mathrm{EF}}$ would equal the true
+Fisher metric, which is the second-order curvature of predictive KL
+(Appendix~\ref{app:kl}). In ordinary supervised training $G_i$ is the
+observed-label gradient, so the maintained metric is the empirical Fisher: a PSD
+surrogate with the same algebraic form, not the true KL Hessian (Kunstner et
+al., 2019).
 
 \paragraph{Summary.}
-Starting from the per-factor layerwise-KL proximal model \eqref{eq:channel-prox},
-KL-Shampoo fits the retained metric by $Q\otimes P$, the worst-input replacement
-turns each penalty into a spectral norm \eqref{eq:RA}--\eqref{eq:RB}, and the
-per-factor proximal solutions are the polar sandwiches
-\eqref{eq:WA}--\eqref{eq:WB}. Calibrating $\lambda_A,\lambda_B$ to the common
-product radius \eqref{eq:rho} fixes the factor lengths and gives the implemented
-step \eqref{eq:final-step}. The dense warmup
-\eqref{eq:dense-local-kl}--\eqref{eq:merged-polar} only motivates the polar
-mechanism; its single damping never enters the per-factor model.
+The empirical gradient covariance \eqref{eq:ef-penalty} is fit by $Q\otimes P$,
+pulled back to the LoRA factors as $C_A=B^\top PB$, $C_B=AQA^\top$, and made
+worst-input by the spectral norm; the per-factor proximal solutions are the polar
+sandwiches \eqref{eq:WA}, and the common product radius \eqref{eq:rho} fixes the
+scalar lengths, giving the implemented step \eqref{eq:final-step}.
 
 \appendix
 
-\section{The average-response penalty gives natural gradient}
+\section{Predictive-KL interpretation of the metric}
+\label{app:kl}
+
+This appendix records the predictive-KL reading of $\Sigma_{\mathrm{EF}}$ and
+connects it to the KL metric $\Sigma_{\mathrm{KL}}$. Let
+$z_i\in\R^{d_{\mathrm{in}}}$ be the layer input for token $i$ and
+$y_i=Wz_i\in\R^{d_{\mathrm{out}}}$ the output. Let $p_i(\cdot;y)$ be the model's
+predictive distribution at output $y$, and for an output perturbation $v_i$,
+$D_i(v_i):=\mathrm{KL}(p_i(\cdot;y_i)\,\|\,p_i(\cdot;y_i+v_i))$.
+
+\begin{lemma}[Predictive-KL expansion]\label{lem:local-kl}
+Let
+\[
+  s_i(a):=\nabla_y\log p_i(a;y_i),
+  \qquad
+  F_i:=\E_{a\sim p_i(\cdot;y_i)}[s_i(a)s_i(a)^\top].
+\]
+Then $D_i(v_i)=\tfrac12 v_i^\top F_i v_i+o(\norm{v_i}_2^2)$.
+\end{lemma}
+
+\begin{proof}
+The first derivative at $v_i=0$ is
+$-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y\log p_i(a;y_i)]=0$ by the score identity; the
+second is $-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\log p_i(a;y_i)]=F_i$ by the
+Fisher identity. Taylor expansion gives the claim.
+\end{proof}
+
+\begin{lemma}[When Fisher equals Hessian]\label{lem:fisher-hessian}
+If $\ell_i(y)=-\log p_i(a;y)$ and the label $a$ is averaged under the current
+model $p_i(\cdot;y_i)$, then
+$\E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\ell_i(y_i)]=F_i$.
+\end{lemma}
+
+\begin{proof}
+$\E[\nabla_y^2\ell_i(y_i)]=-\E[\nabla_y^2\log p_i(a;y_i)]
+=\E[s_i(a)s_i(a)^\top]$, the same Fisher identity as
+Lemma~\ref{lem:local-kl}.
+\end{proof}
+
+\paragraph{Connecting $\Sigma_{\mathrm{EF}}$ and $\Sigma_{\mathrm{KL}}$.}
+Assembling the per-token KL metrics gives
+\begin{equation}
+  \Sigma_{\mathrm{KL}}=\frac1N\sum_{i=1}^N (z_iz_i^\top)\otimes F_i .
+  \label{eq:param-kl}
+\end{equation}
+For a likelihood loss the per-example gradient is the score outer product
+$G_i=-s_i(a)\,z_i^\top$, so $\vecop(G_i)=-(z_i\otimes s_i(a))$ and
+\[
+  \E_{a\sim p_i(\cdot;y_i)}\!\big[\vecop(G_i)\vecop(G_i)^\top\big]
+  =(z_iz_i^\top)\otimes F_i .
+\]
+Hence under \emph{model-sampled} labels $\Sigma_{\mathrm{EF}}=\Sigma_{\mathrm{KL}}$
+exactly, and the present derivation is a KL-proximal one. Under \emph{observed}
+labels $\Sigma_{\mathrm{EF}}$ is the empirical Fisher, generally
+$\neq\Sigma_{\mathrm{KL}}$; the two agree only near a realizable optimum (Kunstner
+et al., 2019).
+
+\section{Average response: full inverse versus polar}
 \label{app:frob}
 
-This appendix solves the average-response (Frobenius) models---the dense model
-\eqref{eq:pq-avg} and the Frobenius version of the per-factor subproblems
-\eqref{eq:A-block}--\eqref{eq:B-block}---and shows the minimizer is the
-full-inverse natural-gradient step. Contrasting with the worst-input solutions
-\eqref{eq:merged-polar} and \eqref{eq:A-solution}--\eqref{eq:B-solution} isolates
-the operator norm as the sole source of the polar map.
+This appendix solves the average-response (Frobenius) problem and contrasts it
+with the worst-input solution \eqref{eq:A-solution}, isolating the operator norm
+as the source of the polar map. Take a single dense variable $U$ with metric
+$F:=Q\otimes P$ (the per-factor case is identical with $(P,Q)\mapsto(C_A,Q)$ and
+$(P,C_B)$).
 
-\begin{lemma}[Average-response solution, dense]\label{lem:frob-dense}
-Let $P,Q$ be positive definite and $F:=Q\otimes P$. The minimizer of
-\eqref{eq:pq-avg} is
+\begin{lemma}[Average-response solution]\label{lem:frob}
+The minimizer of
+$\mathcal J_{\mathrm{avg}}(U)=\langle G,U\rangle
++\tfrac{\lambda}{2}\norm{P^{1/2}UQ^{1/2}}_F^2$ is
 \begin{equation}
   U_{\mathrm{avg}}=-\frac1\lambda P^{-1}GQ^{-1},
   \qquad\text{equivalently}\qquad
-  \mathrm{vec}(U_{\mathrm{avg}})=-\frac1\lambda F^{-1}\mathrm{vec}(G),
-  \label{eq:frob-dense}
+  \vecop(U_{\mathrm{avg}})=-\frac1\lambda F^{-1}\vecop(G):
+  \label{eq:frob}
 \end{equation}
-the Kronecker-factored natural-gradient step.
+the full-inverse metric-preconditioned step (natural gradient under the
+Appendix~\ref{app:kl} interpretation).
 \end{lemma}
 
 \begin{proof}
-Write the penalty as a trace and differentiate:
-\[
-  \norm{P^{1/2}UQ^{1/2}}_F^2
-  =\tr\!\big(PUQU^\top\big),
-  \qquad
-  \nabla_U\Big[\langle G,U\rangle+\tfrac{\lambda}{2}\tr(PUQU^\top)\Big]
-  =G+\lambda\,PUQ.
-\]
-The objective is strictly convex in $U$; setting the gradient to zero gives
-$PUQ=-\tfrac1\lambda G$, i.e.\ $U=-\tfrac1\lambda P^{-1}GQ^{-1}$. The vectorized
-form uses
-$\mathrm{vec}(P^{-1}GQ^{-1})=(Q^{-1}\otimes P^{-1})\mathrm{vec}(G)
-=F^{-1}\mathrm{vec}(G)$.
+$\norm{P^{1/2}UQ^{1/2}}_F^2=\tr(PUQU^\top)$, so
+$\nabla_U\mathcal J_{\mathrm{avg}}(U)=G+\lambda PUQ$; the objective is strictly
+convex and the gradient vanishes at $U=-\tfrac1\lambda P^{-1}GQ^{-1}$. The
+vectorized form uses
+$\vecop(P^{-1}GQ^{-1})=(Q^{-1}\otimes P^{-1})\vecop(G)=F^{-1}\vecop(G)$.
 \end{proof}
 
-\begin{lemma}[Average-response solution, per factor]\label{lem:frob-factor}
-Replace the spectral norm by the Frobenius norm in
-\eqref{eq:A-block}--\eqref{eq:B-block}. With $C_A=B^\top P B$ and $C_B=AQA^\top$
-positive definite, the minimizers are
-\begin{equation}
-  \Delta A_{\mathrm{avg}}=-\frac1{\lambda_A}C_A^{-1}G_AQ^{-1},
-  \qquad
-  \Delta B_{\mathrm{avg}}=-\frac1{\lambda_B}P^{-1}G_BC_B^{-1}.
-  \label{eq:frob-factor}
-\end{equation}
-These are the natural-gradient steps for the per-factor Fisher blocks
-$Q\otimes C_A$ and $C_B\otimes P$ identified in \S\ref{sec:est}.
-\end{lemma}
-
-\begin{proof}
-Identical to Lemma~\ref{lem:frob-dense} with $(P,Q)\mapsto(C_A,Q)$ for the $A$
-block and $(P,Q)\mapsto(P,C_B)$ for the $B$ block. For the $A$ block the penalty
-is
-$\tfrac{\lambda_A}{2}\norm{C_A^{1/2}\Delta A Q^{1/2}}_F^2
-=\tfrac{\lambda_A}{2}\tr(C_A\Delta A\,Q\,\Delta A^\top)$,
-whose gradient $G_A+\lambda_A C_A\Delta A Q$ vanishes at \eqref{eq:frob-factor};
-the $B$ block is symmetric.
-\end{proof}
-
-\begin{remark}[Full inverse versus polar: where the half-power lives]
-The average-response minimizers invert the metric on both sides
-($C_A^{-1}\!\cdots Q^{-1}$): they are the full-inverse $F^{-1}$ natural-gradient
-steps. The worst-input minimizers
-\eqref{eq:A-solution}--\eqref{eq:B-solution} carry instead the half-power
-sandwich $C_A^{-1/2}\,\polar(H_A)\,Q^{-1/2}$. Writing both with the same outer
-factors and $H_A=C_A^{-1/2}G_AQ^{-1/2}$,
+The worst-input minimizer is instead, with $H=P^{-1/2}GQ^{-1/2}$,
 \[
-  \Delta A_{\mathrm{avg}}\propto C_A^{-1/2}\,H_A\,Q^{-1/2},
-  \qquad
-  \Delta A\propto \norm{H_A}_*\;C_A^{-1/2}\,\polar(H_A)\,Q^{-1/2},
+  U_\star=-\frac{\norm{H}_*}{\lambda}\,P^{-1/2}\polar(H)Q^{-1/2}.
 \]
-exposes the only difference, $H_A$ versus its polar $\polar(H_A)$. Two facts are
-worth separating.
+
+\begin{remark}[Where the half-power lives]
+Writing both with the same outer factors,
+\[
+  U_{\mathrm{avg}}\propto P^{-1/2}\,H\,Q^{-1/2},
+  \qquad
+  U_\star\propto \norm{H}_*\;P^{-1/2}\,\polar(H)\,Q^{-1/2},
+\]
+the only difference is $H$ versus its polar $\polar(H)$.
 \begin{itemize}
   \item \emph{Source.} The polar map comes entirely from the operator norm. With
-        the Frobenius norm the middle factor is $H_A$ itself, the inner and outer
-        $C_A^{-1/2},Q^{-1/2}$ recombine into the full inverse $C_A^{-1},Q^{-1}$,
-        and no polar appears.
-  \item \emph{Effect.} $\polar(H_A)$ has unit singular values, so it discards the
-        magnitude of the inner whitening: across directions the step is reweighted
-        by the half power $C_A^{-1/2},Q^{-1/2}$ rather than the full inverse. The
-        overall step size is unchanged---the global factor $\norm{H_A}_*$, itself
-        a half-power-scale quantity, restores the $F^{-1}$ aggregate scaling. So
-        the worst-input step is $F^{-1}$ in overall magnitude and $F^{-1/2}$ in
-        the \emph{relative} weighting of directions; it is never a clean
-        $F^{-1/2}G$.
+        the Frobenius norm the middle factor is $H$ itself, the inner and outer
+        $P^{-1/2},Q^{-1/2}$ recombine into the full inverse $P^{-1},Q^{-1}$, and
+        no polar appears.
+  \item \emph{Effect.} $\polar(H)$ has unit singular values, so it discards the
+        magnitude of the inner whitening: across directions the step is
+        reweighted by the half power $P^{-1/2},Q^{-1/2}$ rather than the full
+        inverse. The overall step size is unchanged---the global factor
+        $\norm{H}_*$, itself a half-power-scale quantity, restores the $F^{-1}$
+        aggregate scaling. So the worst-input step is $F^{-1}$ in overall
+        magnitude and $F^{-1/2}$ in the \emph{relative} weighting of directions;
+        it is never a clean $F^{-1/2}G$.
 \end{itemize}
 \end{remark}
 
