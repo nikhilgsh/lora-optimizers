@@ -1,8 +1,6 @@
 % =====================================================================
-% DRAFT — proposed reframing of the method derivation. NOT main.tex.
-% For coauthor discussion before integrating. Compiles standalone.
-% Proposes replacing the current (A)/(B)/(C) split with a single
-% joint-constraint (variational) view of the update.
+% DRAFT -- standalone derivation sketch. NOT main.tex.
+% Purpose: recover the PoLoRA direction from a per-factor layerwise-KL model.
 % =====================================================================
 \documentclass[11pt]{article}
 \usepackage{amsmath,amssymb,amsthm,mathtools}
@@ -10,12 +8,13 @@
 
 \DeclarePairedDelimiter{\norm}{\lVert}{\rVert}
 \newcommand{\polar}{\operatorname{polar}}
-\newcommand{\methodname}{\textsc{Ours}}
 \newcommand{\DW}{\Delta W}
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\E}{\mathbb{E}}
+\newcommand{\T}{\mathcal T}
+\newcommand{\F}{\mathcal F}
 \DeclareMathOperator{\tr}{tr}
-\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator{\diag}{diag}
 
 \newtheorem{proposition}{Proposition}
@@ -23,7 +22,7 @@
 \theoremstyle{remark}
 \newtheorem*{remark}{Remark}
 
-\title{The update as steepest descent under a learned-metric cap\\[2pt]
+\title{PoLoRA from a per-factor layerwise-KL model\\[2pt]
 \large (derivation draft --- for discussion, not for \texttt{main.tex})}
 \author{}
 \date{}
@@ -31,271 +30,512 @@
 \begin{document}
 \maketitle
 
-This note derives the optimiser update from a single principle. The update has a
-\emph{magnitude} and a \emph{direction}; the magnitude is forced by symmetry (no free knob),
-and the direction is the one place a modelling choice (the curvature metric) enters. Both
-reduce to one linear-minimisation oracle --- the curvature-metric cap, with its budget chosen so
-the step's operator norm is exactly the radius $\rho$ --- whose exact closed-form solution is the
-update (\S\ref{sec:joint}).
+This note derives the PoLoRA update directly in LoRA factor coordinates
+$(A,B)$. The model is a \emph{layerwise-KL proximal} problem: a first-order
+task-loss term plus a second-order penalty that measures how far the step moves
+the layer's predictive distribution. Solving it separately for each factor
+produces PoLoRA's whiten--polar--unwhiten step \eqref{eq:final-step}.
 
-\paragraph{Setup.}
-A LoRA layer adds $W=BA$ to the frozen weight, with
-$A\in\R^{r\times d_{\mathrm{in}}}$ and $B\in\R^{d_{\mathrm{out}}\times r}$. One step
-$A\!\to\!A+\Delta A$, $B\!\to\!B+\Delta B$ changes the effective weight by
+The derivation runs in two stages.
+\begin{itemize}
+  \item A dense one-variable \emph{warmup} (\S\ref{sec:dense-warmup}) on a
+        hypothetical dense update $U\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$
+        to the full adapter matrix $W=BA$. It carries one update variable and one
+        damping, so it is \emph{not} the PoLoRA step; its only job is to show why
+        a layerwise-KL metric plus a worst-input penalty yields a
+        whiten--polar--unwhiten direction.
+  \item The \emph{per-factor model} (\S\ref{sec:channel-model} onward), where the
+        two parts of the tangent update, $B\Delta A$ and $\Delta B\,A$, each carry
+        their own damping $\lambda_A,\lambda_B$ from the start. This is the actual
+        derivation.
+\end{itemize}
+\noindent\S\ref{sec:local-kl} sets up the layerwise-KL metric;
+\S\ref{sec:worst-input}--\S\ref{sec:radius} solve the two per-factor subproblems
+and calibrate the dampings; \S\ref{sec:est} estimates the metric.
+
+\section{Setup}
+
+A LoRA layer adds the rank-$r$ adapter
+$W=BA\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to a frozen weight, with
+$A\in\R^{r\times d_{\mathrm{in}}}$ and
+$B\in\R^{d_{\mathrm{out}}\times r}$. One optimizer step increments the factors by
+$\Delta A\in\R^{r\times d_{\mathrm{in}}}$ and
+$\Delta B\in\R^{d_{\mathrm{out}}\times r}$, changing $W$ by
 \begin{equation}
-  \DW = B\,\Delta A + \Delta B\,A + \Delta B\,\Delta A
-      \;\approx\; B\,\Delta A + \Delta B\,A \qquad\text{(first order).}
-  \label{eq:dw}
+  U:=B\,\Delta A+\Delta B\,A+\Delta B\,\Delta A
+   \approx B\,\Delta A+\Delta B\,A .
+  \label{eq:tangent}
 \end{equation}
-Throughout, $G=\nabla_W\mathcal{L}$ is the loss gradient w.r.t.\ the effective weight;
-$G_A=B^\top G$ and $G_B=GA^\top$ are the factor gradients; $a:=\norm{A}_2$, $b:=\norm{B}_2$
-are the factors' spectral norms; $s_A:=\norm{\Delta A}_2$, $s_B:=\norm{\Delta B}_2$ are the
-step sizes we will solve for. $\norm{\cdot}_2$ is the spectral (operator) norm.
-
-\section{The magnitude is forced, not a hyperparameter}
-
-The single assumption is that each step changes the layer's function by a bounded amount. The
-worst-case output change of a step is $\max_{\norm{x}=1}\norm{(\DW)x}=\norm{\DW}_2$, so we
-require
+Let $G=\nabla_W\mathcal L\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be the
+gradient with respect to $W$. The first-order loss change splits across the two
+factors,
 \begin{equation}
-  \norm{\DW}_2 \le \eta .
-  \label{eq:trust}
+  \langle G,U\rangle
+  =\langle B^\top G,\Delta A\rangle
+  +\langle G A^\top,\Delta B\rangle ,
+  \qquad
+  G_A:=B^\top G\in\R^{r\times d_{\mathrm{in}}},\quad
+  G_B:=G A^\top\in\R^{d_{\mathrm{out}}\times r} .
+  \label{eq:split-linear}
 \end{equation}
-Everything below either transfers this bound to the factors or pins the resulting step size;
-the operator norm and the equal-radius rule are both consequences, not separate choices.
+The derivation uses raw gradients; the optimizer replaces $G_A,G_B$ by
+bias-corrected momentum buffers before the polar map.
 
-\begin{lemma}[Operator-norm factor budget]\label{lem:budget}
-Any step satisfies
-$\norm{\DW}_2 \le b\,s_A + a\,s_B$.
-\end{lemma}
-\begin{proof}
-By \eqref{eq:dw}, the triangle inequality, and submultiplicativity $\norm{MN}_2\le\norm{M}_2\norm{N}_2$,
+\section{Layerwise KL supplies the layer metric}
+\label{sec:local-kl}
+
+Newton--Muon derives its triplet quadratic by Taylor expanding the task loss in a
+dense layer update. PoLoRA uses a different model: the task loss is kept to first
+order, while the second-order term is the predictive KL. The algebra has the same
+three ingredients---a gradient, layer inputs, and an output-side metric---but the
+metric is layerwise-KL/Fisher geometry rather than the observed-loss Hessian.
+
+Let $z_i\in\R^{d_{\mathrm{in}}}$ be the layer input for token or example $i$,
+collect $Z=[z_1,\ldots,z_N]$, and let
+$y_i=Wz_i\in\R^{d_{\mathrm{out}}}$ be the layer output. For token $i$, let
+$p_i(\cdot;y)$ be the model's predictive distribution when the layer output is
+$y$. For an output perturbation $v_i$, define
 \[
-  \norm{\DW}_2=\norm{B\,\Delta A+\Delta B\,A}_2
-  \le\norm{B}_2\norm{\Delta A}_2+\norm{A}_2\norm{\Delta B}_2
-  = b\,s_A+a\,s_B. \qedhere
+  D_i(v_i)
+  :=
+  \mathrm{KL}\!\left(p_i(\cdot;y_i)\,\middle\|\,p_i(\cdot;y_i+v_i)\right).
 \]
-\end{proof}
-\noindent The factor steps enter \eqref{lem:budget} only through their operator norms
-$s_A,s_B$ --- which is why the operator norm is the factor budget. A sufficient condition for
-\eqref{eq:trust} is $b\,s_A+a\,s_B\le\eta$; saturating it leaves one equation in two unknowns.
-The second comes from symmetry.
 
-\begin{lemma}[Equal radius from symmetry]\label{lem:equal}
-Require the update to be equivariant under the transpose relabelling
-$\tau:(A,B)\mapsto(B^\top,A^\top)$ (which sends $W\mapsto W^\top$ and $(a,b)\mapsto(b,a)$).
-Then a single rule sets both radii, $s_A=\sigma(a,b)$ and $s_B=\sigma(b,a)$, and any
-state-independent ratio $s_B/s_A=\lambda$ forces $\lambda=1$.
+\begin{lemma}[Layerwise-KL expansion]\label{lem:local-kl}
+Assume the usual regularity conditions allowing differentiation under the
+expectation. Let
+\[
+  s_i(a):=\nabla_y \log p_i(a;y_i),
+  \qquad
+  F_i:=\E_{a\sim p_i(\cdot;y_i)}[s_i(a)s_i(a)^\top].
+\]
+Then
+\[
+  D_i(v_i)=\tfrac12 v_i^\top F_i v_i+o(\norm{v_i}_2^2).
+\]
 \end{lemma}
+
 \begin{proof}
-Equivariance means the optimiser cannot use which factor is labelled ``$A$,'' so the radius
-of a factor is one fixed function of (its own norm, its partner's norm): $s_A=\sigma(a,b)$,
-$s_B=\sigma(b,a)$. A constant ratio gives $\sigma(b,a)=\lambda\,\sigma(a,b)$ for all $a,b$;
-swapping $a\leftrightarrow b$ gives $\sigma(a,b)=\lambda\,\sigma(b,a)=\lambda^2\sigma(a,b)$,
-hence $\lambda^2=1$ and $\lambda=1$. Equal radii are the unique constant-ratio rule. \qedhere
+The first derivative at $v_i=0$ is
+$-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y\log p_i(a;y_i)]$, which is zero by the score
+identity. The second derivative is
+$-\E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\log p_i(a;y_i)]$, which equals $F_i$ by
+the Fisher identity. Taylor expansion gives the claim.
 \end{proof}
 
-\begin{proposition}[Operator-norm radius]\label{prop:rho}
-Imposing equal radii $s_A=s_B=:\rho$ (Lemma~\ref{lem:equal}) and saturating the budget
-(Lemma~\ref{lem:budget}) gives
+\begin{lemma}[When Fisher equals Hessian]\label{lem:fisher-hessian}
+If the token loss is negative log-likelihood, $\ell_i(y)=-\log p_i(a;y)$, and the
+label $a$ is averaged under the current model distribution $p_i(\cdot;y_i)$, then
+\[
+  \E_{a\sim p_i(\cdot;y_i)}[\nabla_y^2\ell_i(y_i)]
+  =
+  F_i .
+\]
+\end{lemma}
+
+\begin{proof}
+Since $\ell_i(y)=-\log p_i(a;y)$,
+\[
+  \E[\nabla_y^2\ell_i(y_i)]
+  =
+  -\E[\nabla_y^2\log p_i(a;y_i)]
+  =
+  \E[s_i(a)s_i(a)^\top],
+\]
+using the same Fisher identity as Lemma~\ref{lem:local-kl}.
+\end{proof}
+
+Thus Fisher is an exact expected Hessian only under the model-distribution
+expectation in Lemma~\ref{lem:fisher-hessian}. For observed labels in a finite
+minibatch, the empirical gradient outer product is a PSD estimator or proxy for
+the layerwise-KL metric, not an identity with the raw loss Hessian.
+
+\section{Dense warmup: one update, one damping}
+\label{sec:dense-warmup}
+
+The warmup carries one dense update variable $U$ and one damping $\lambda>0$, so
+it is not the PoLoRA factor step. Its only purpose is to show why a layerwise-KL
+metric combined with a worst-input replacement produces a polar direction.
+
+For a hypothetical dense update $U\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$
+to $W$, the output perturbation on input $z_i$ is $Uz_i$. The first-order
+task-loss term plus the second-order layerwise-KL expansion gives
 \begin{equation}
-  \rho \;=\; \frac{\eta}{\norm{A}_2+\norm{B}_2}.
+  \mathcal J_{\mathrm{dense}}(U)
+  =
+  \langle G,U\rangle
+  +\frac{\lambda}{2N}\sum_{i=1}^N (Uz_i)^\top F_i(Uz_i).
+  \label{eq:dense-local-kl}
+\end{equation}
+The corresponding unscaled dense layerwise-KL metric is
+\begin{equation}
+  \Sigma_{\mathrm{KL}}
+  =
+  \frac1N\sum_{i=1}^N (z_i z_i^\top)\otimes F_i .
+  \label{eq:param-kl}
+\end{equation}
+PoLoRA never forms this dense matrix. The KL-Shampoo step instead fits
+$\Sigma_{\mathrm{KL}}$ (or its stochastic gradient-covariance estimator) by a
+diagonal--Kronecker matrix
+\begin{equation}
+  \Sigma_{\mathrm{KL}}\approx Q\otimes P,
+  \label{eq:PQ-approx}
+\end{equation}
+where $P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ is the output-side factor
+and $Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ is the input-side factor, both
+symmetric positive definite, with their coupled estimator given in
+\S\ref{sec:est}. So $P,Q$ are the diagonal Kronecker fit to the layer's
+layerwise-KL metric, not dense metric factors. The scale ambiguity
+$(P,Q)\mapsto(cP,c^{-1}Q)$ is harmless because $P^{1/2}UQ^{1/2}$ is unchanged.
+
+Replacing \eqref{eq:param-kl} by \eqref{eq:PQ-approx} gives the fitted average
+model
+\begin{equation}
+  \mathcal J_{\mathrm{avg}}(U)
+  =
+  \langle G,U\rangle
+  +\frac{\lambda}{2}\norm{P^{1/2}UQ^{1/2}}_F^2 .
+  \label{eq:pq-avg}
+\end{equation}
+Replacing the average squared response by the largest one over unit inputs gives
+the worst-input model
+\begin{equation}
+  \mathcal J_{\mathrm{worst}}(U)
+  =
+  \langle G,U\rangle
+  +\frac{\lambda}{2}\norm{P^{1/2}UQ^{1/2}}_2^2
+  =
+  \langle G,U\rangle
+  +\frac{\lambda}{2}
+    \sup_{\norm{x}_2\le1}\norm{P^{1/2}UQ^{1/2}x}_2^2 .
+  \label{eq:robust-pq}
+\end{equation}
+Let $Y=P^{1/2}UQ^{1/2}$ and $H=P^{-1/2}GQ^{-1/2}$. Then
+\begin{equation}
+  \min_U \mathcal J_{\mathrm{worst}}(U)
+  =
+  \min_Y
+  \left\{
+    \langle H,Y\rangle
+    +\frac{\lambda}{2}\norm{Y}_2^2
+  \right\}.
+  \label{eq:dense-penalty}
+\end{equation}
+By the scaled conjugacy between squared operator norm and squared nuclear norm,
+a canonical minimizer, when $H\ne0$, is
+\[
+  Y_\star=-\frac{\norm{H}_*}{\lambda}\polar(H).
+\]
+Thus the dense warmup gives
+\begin{equation}
+  U_\star
+  =
+  -\frac{\norm{H}_*}{\lambda}\,
+  P^{-1/2}\polar\!\big(P^{-1/2}GQ^{-1/2}\big)Q^{-1/2}.
+  \label{eq:merged-polar}
+\end{equation}
+The lesson is only the direction mechanism: layerwise-KL whitening plus the
+worst-input replacement gives a whiten--polar--unwhiten update. The scalar
+$\norm{H}_*/\lambda$ belongs to the dense one-variable proximal problem and is
+not the PoLoRA factor magnitude. PoLoRA starts from the per-factor model below.
+
+\section{Per-factor proximal model}
+\label{sec:channel-model}
+
+A LoRA tangent update splits into two parts,
+\[
+  J_A:=B\Delta A,\qquad
+  J_B:=\Delta B A,\qquad
+  J=J_A+J_B,
+\]
+the part driven by $\Delta A$ and the part driven by $\Delta B$. For input $z_i$,
+the two output perturbations are
+\[
+  v_{A,i}:=B\Delta A z_i,\qquad
+  v_{B,i}:=\Delta B A z_i.
+\]
+The exact second-order layerwise KL of the simultaneous tangent perturbation
+would contain
+\[
+  \frac1{2N}\sum_{i=1}^N
+  (v_{A,i}+v_{B,i})^\top F_i (v_{A,i}+v_{B,i}),
+\]
+including the cross terms $v_{A,i}^\top F_i v_{B,i}$. PoLoRA makes a
+block-diagonal approximation across the two parts and assigns one proximal
+damping to each:
+\begin{equation}
+  \Phi_{\lambda_A,\lambda_B}(\Delta A,\Delta B)
+  =
+  \langle G_A,\Delta A\rangle+\langle G_B,\Delta B\rangle
+  +\frac{\lambda_A}{2N}\sum_{i=1}^N v_{A,i}^\top F_i v_{A,i}
+  +\frac{\lambda_B}{2N}\sum_{i=1}^N v_{B,i}^\top F_i v_{B,i}.
+  \label{eq:channel-prox}
+\end{equation}
+This is still a proximal layerwise-KL model; no penalty has been converted into a
+constraint. The two multipliers are present from the start because the retained
+metric is block diagonal across the $\Delta A$ and $\Delta B$ blocks. If the
+cross-term metric block were kept and the two dampings were tied, the model would
+reduce to the exact layerwise-KL quadratic for $J_A+J_B$ under a common damping.
+
+Using the KL-Shampoo fit \eqref{eq:PQ-approx}, the $\Delta A$ part's layerwise-KL
+quadratic becomes
+\begin{equation}
+  \frac1N\sum_{i=1}^N (B\Delta A z_i)^\top F_i(B\Delta A z_i)
+  \approx
+  \norm{P^{1/2}B\Delta A Q^{1/2}}_F^2
+  =
+  \norm{C_A^{1/2}\Delta A Q^{1/2}}_F^2,
+  \label{eq:A-average-fit}
+\end{equation}
+where
+\begin{equation}
+  C_A:=B^\top P B\in\R^{r\times r} .
+  \label{eq:CA}
+\end{equation}
+The $\Delta B$ part's quadratic becomes
+\begin{equation}
+  \frac1N\sum_{i=1}^N (\Delta B A z_i)^\top F_i(\Delta B A z_i)
+  \approx
+  \norm{P^{1/2}\Delta B A Q^{1/2}}_F^2
+  =
+  \norm{P^{1/2}\Delta B C_B^{1/2}}_F^2,
+  \label{eq:B-average-fit}
+\end{equation}
+where
+\begin{equation}
+  C_B:=AQA^\top\in\R^{r\times r} .
+  \label{eq:CB}
+\end{equation}
+The equalities in \eqref{eq:A-average-fit} and \eqref{eq:B-average-fit} are
+ordinary trace identities. For example,
+\[
+  \tr(PB\Delta A Q\Delta A^\top B^\top)
+  =
+  \tr(C_A\Delta A Q\Delta A^\top).
+\]
+
+\section{Worst-input proximal problems}
+\label{sec:worst-input}
+
+The KL-Shampoo fit gives an average squared response. PoLoRA replaces that
+average by the largest response over unit inputs, separately for each factor:
+\begin{equation}
+  R_A(\Delta A)
+  :=
+  \norm{C_A^{1/2}\Delta A Q^{1/2}}_2^2
+  =
+  \sup_{\norm{x}_2\le1}
+  \norm{C_A^{1/2}\Delta A Q^{1/2}x}_2^2,
+  \label{eq:RA}
+\end{equation}
+\begin{equation}
+  R_B(\Delta B)
+  :=
+  \norm{P^{1/2}\Delta B C_B^{1/2}}_2^2 .
+  \label{eq:RB}
+\end{equation}
+Substituting \eqref{eq:RA}--\eqref{eq:RB} into the per-factor model gives two
+separable subproblems:
+\begin{equation}
+  \mathcal J_A(\Delta A)
+  =
+  \langle G_A,\Delta A\rangle
+  +\frac{\lambda_A}{2}
+    \norm{C_A^{1/2}\Delta A Q^{1/2}}_2^2,
+  \label{eq:A-block}
+\end{equation}
+\begin{equation}
+  \mathcal J_B(\Delta B)
+  =
+  \langle G_B,\Delta B\rangle
+  +\frac{\lambda_B}{2}
+    \norm{P^{1/2}\Delta B C_B^{1/2}}_2^2 .
+  \label{eq:B-block}
+\end{equation}
+
+\begin{proposition}[Per-factor proximal solutions]\label{prop:channels}
+Assume the damped matrices $P,Q,C_A,C_B$ are positive definite, and set
+\[
+  H_A:=C_A^{-1/2}G_AQ^{-1/2},
+  \qquad
+  H_B:=P^{-1/2}G_BC_B^{-1/2}.
+\]
+If $H_A\ne0$ and $H_B\ne0$, canonical minimizers of
+\eqref{eq:A-block}--\eqref{eq:B-block} are
+\begin{equation}
+  \Delta A(\lambda_A)
+  =
+  -\frac{\norm{H_A}_*}{\lambda_A}\,
+  C_A^{-1/2}\polar(H_A)Q^{-1/2},
+  \label{eq:A-solution}
+\end{equation}
+\begin{equation}
+  \Delta B(\lambda_B)
+  =
+  -\frac{\norm{H_B}_*}{\lambda_B}\,
+  P^{-1/2}\polar(H_B)C_B^{-1/2}.
+  \label{eq:B-solution}
+\end{equation}
+If a whitened gradient is zero, the corresponding zero update is a minimizer.
+\end{proposition}
+
+\begin{proof}
+With $Y_A=C_A^{1/2}\Delta A Q^{1/2}$,
+$\langle G_A,\Delta A\rangle=\langle H_A,Y_A\rangle$
+and the quadratic term is $\frac{\lambda_A}{2}\norm{Y_A}_2^2$. By the scaled
+conjugacy between squared operator norm and squared nuclear norm, the minimum
+value is $-\norm{H_A}_*^2/(2\lambda_A)$. Since
+$\polar(H_A)\in\partial\norm{H_A}_*$, the canonical
+attainer is
+$Y_A=-(\norm{H_A}_*/\lambda_A)\polar(H_A)$. Undoing the
+change of variables gives \eqref{eq:A-solution}. The $\Delta B$ proof is
+identical with $Y_B=P^{1/2}\Delta B C_B^{1/2}$.
+\end{proof}
+
+Define the unscaled update directions
+\begin{equation}
+  W_A:=C_A^{-1/2}\polar(H_A)Q^{-1/2},
+  \label{eq:WA}
+\end{equation}
+\begin{equation}
+  W_B:=P^{-1/2}\polar(H_B)C_B^{-1/2}.
+  \label{eq:WB}
+\end{equation}
+
+\section{Damping calibration from the product radius}
+\label{sec:radius}
+
+The proximal solutions \eqref{eq:A-solution}--\eqref{eq:B-solution} have
+operator norms
+\begin{equation}
+  \norm{\Delta A(\lambda_A)}_2
+  =
+  \frac{\norm{H_A}_*}{\lambda_A}\norm{W_A}_2,
+  \qquad
+  \norm{\Delta B(\lambda_B)}_2
+  =
+  \frac{\norm{H_B}_*}{\lambda_B}\norm{W_B}_2 .
+  \label{eq:block-norms}
+\end{equation}
+Thus $\lambda_A$ and $\lambda_B$ control only the scalar lengths along the
+layerwise-KL polar directions. PoLoRA chooses these dampings so the factor
+updates have a common operator-norm radius
+\begin{equation}
+  \norm{\Delta A}_2=\norm{\Delta B}_2=\rho .
+  \label{eq:equal-radius}
+\end{equation}
+The first-order tangent update then obeys
+\begin{equation}
+  \norm{B\Delta A+\Delta B A}_2
+  \le
+  \norm{B}_2\norm{\Delta A}_2+\norm{A}_2\norm{\Delta B}_2
+  =\rho(\norm{A}_2+\norm{B}_2).
+\end{equation}
+Setting this bound equal to the budget $\eta$ gives
+\begin{equation}
+  \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2},
   \label{eq:rho}
 \end{equation}
-\end{proposition}
-\begin{proof}
-$\rho\,b+\rho\,a=\eta\Rightarrow\rho=\eta/(a+b)$. \qedhere
-\end{proof}
-\noindent No factor preference is hard-coded: any $A$/$B$ asymmetry enters only through the
-state $a,b$ (the per-factor contributions to $\DW$ are $b\rho:a\rho$). The magnitude is thus
-not a tunable knob.
-
-\section{The direction: curvature-adapted steepest descent}
-
-The one modelling input is the geometry in which the step is measured. Model the gradient
-second moment as diagonal--Kronecker,
+and the dampings that realize this radius are
 \begin{equation}
-  \Sigma=\E[\mathrm{vec}(G)\,\mathrm{vec}(G)^\top]\approx Q\otimes P,\qquad
-  P=\diag(p)\ (d_{\mathrm{out}}),\quad Q=\diag(q)\ (d_{\mathrm{in}}),
-  \label{eq:sigma}
+  \lambda_A
+  =
+  \frac{\norm{H_A}_*\norm{W_A}_2}{\rho},
+  \qquad
+  \lambda_B
+  =
+  \frac{\norm{H_B}_*\norm{W_B}_2}{\rho}.
+  \label{eq:lambdas}
 \end{equation}
-the Shampoo Kronecker factorisation under an Adafactor diagonal restriction, and measure the
-step in the induced metric $\norm{X}_{P,Q}:=\norm{P^{1/2}XQ^{1/2}}_2$.
+Substituting \eqref{eq:lambdas} into
+\eqref{eq:A-solution}--\eqref{eq:B-solution} gives the PoLoRA step
+\begin{equation}
+  \Delta A=-\rho\,\frac{W_A}{\norm{W_A}_2},
+  \qquad
+  \Delta B=-\rho\,\frac{W_B}{\norm{W_B}_2}.
+  \label{eq:final-step}
+\end{equation}
+for nonzero $W_A,W_B$.
 
-\begin{lemma}[Metric cap $=$ gradient whitening]\label{lem:dual}
-Capping a step in the $\Sigma$-metric and whitening the gradient by $\Sigma^{-1/2}$ are the
-same change of variables: with $Y=\Sigma^{1/2}\mathrm{vec}(\Delta W)$,
-\[
-  \argmax_{\Delta W}\langle\Delta W,-G\rangle\ \text{s.t.}\ \norm{\Delta W}_\Sigma\le\tau
-  \quad=\quad
-  \Sigma^{-1/2}\,\argmax_{Y}\langle Y,-\Sigma^{-1/2}\mathrm{vec}(G)\rangle\ \text{s.t.}\ \norm{Y}_2\le\tau .
-\]
+\section{Estimating the diagonal metric}
+\label{sec:est}
+
+The derivation assumes $P,Q$ fixed during the step. PoLoRA estimates them by the
+coupled diagonal KL-Shampoo moment equations. This estimator belongs to the same
+layerwise-KL modelling choice, but it does not require forming the dense metric
+\eqref{eq:param-kl}. Instead it uses the stochastic dense layer gradient as an
+empirical-Fisher estimator of that metric:
+\begin{equation}
+  \widehat\Sigma_{\mathrm{KL}}
+  :=
+  \E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]
+  \approx Q\otimes P .
+  \label{eq:efisher-kron}
+\end{equation}
+For likelihood losses under the model-distribution expectation,
+Lemma~\ref{lem:fisher-hessian} identifies this gradient second moment with the
+layerwise-KL metric. With observed labels, it is the empirical-Fisher proxy for
+the same metric. In both cases, KL-Shampoo replaces the dense metric by the
+diagonal--Kronecker projection that best matches the observed gradient
+covariance.
+
+The only algebraic consequences needed from \eqref{eq:efisher-kron} are the moment
+identities, for compatible $M,N$,
+\begin{equation}
+  \E[G M G^\top]=\tr(MQ)P,
+  \qquad
+  \E[G^\top N G]=\tr(NP)Q .
+  \label{eq:moment-identities}
+\end{equation}
+The factor gradients are linear images of $G$, so their second moments carry the
+same $r\times r$ matrices $C_A,C_B$ that appear in the update:
+\begin{equation}
+  \E[\mathrm{vec}(G_A)\mathrm{vec}(G_A)^\top]\approx Q\otimes C_A,
+  \qquad
+  \E[\mathrm{vec}(G_B)\mathrm{vec}(G_B)^\top]\approx C_B\otimes P .
+\end{equation}
+
+\begin{lemma}[Coupled diagonal moment estimator]\label{lem:estimator}
+With $C_A=B^\top P B$ and $C_B=AQA^\top$,
+\begin{equation}
+  \E\!\left[\frac1r G_A^\top C_A^{-1}G_A\right]=Q,
+  \qquad
+  \E\!\left[\frac1r G_B C_B^{-1}G_B^\top\right]=P .
+  \label{eq:unbiased}
+\end{equation}
 \end{lemma}
+
 \begin{proof}
-Substitute $\mathrm{vec}(\Delta W)=\Sigma^{-1/2}Y$; the constraint becomes $\norm{Y}_2\le\tau$
-and the objective $\langle\Sigma^{-1/2}Y,-G\rangle=\langle Y,-\Sigma^{-1/2}\mathrm{vec}(G)\rangle$.
-\qedhere
+Use the second identity of \eqref{eq:moment-identities} with $N=B C_A^{-1}B^\top$:
+$G^\top N G=G_A^\top C_A^{-1}G_A$ and
+$\tr(NP)=\tr(C_A^{-1}B^\top P B)=\tr(I_r)=r$, giving the first identity. The second
+follows by the same argument with $M=A^\top C_B^{-1}A$.
 \end{proof}
 
-\noindent So putting $\Sigma$ in the trust region is one decision viewed two ways. It is the
-right decision because raw weight distance is the wrong trust measure --- it ignores that the
-loss is anisotropic:
-\begin{itemize}
-  \item a direction with large $\Sigma$ (steep / high gradient scale) gets a \emph{smaller}
-        step (it contributes more to $\norm{\Delta W}_\Sigma$);
-  \item a flat direction gets a \emph{larger} step;
-  \item so a bounded step is a bounded \emph{predicted loss change}, uniform across directions
-        --- the matrix analogue of Adam's $1/\!\sqrt{v}$, natural-gradient logic with a
-        spectral cap.
-\end{itemize}
-
-\begin{proposition}[Metric LMO direction]\label{prop:dir}
-With $P,Q$ frozen and the $A$-channel's contribution capped in the metric,
-$\norm{B\Delta A}_{P,Q}\le\tau$, the maximiser of $\langle\Delta A,-G_A\rangle$ has direction
+PoLoRA keeps only the diagonals and updates them by EMA:
 \begin{equation}
-  W_A = C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,G_A\,Q^{-1/2}\big)\,Q^{-1/2},
-  \qquad C_A=B^\top P B,
-  \label{eq:dir}
+  q_j\leftarrow
+  \mathrm{EMA}\!\left[\frac1r (G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\right],
+  \qquad
+  p_i\leftarrow
+  \mathrm{EMA}\!\left[\frac1r (G_B)_{i,:}C_B^{-1}(G_B)_{i,:}^\top\right].
+  \label{eq:ema}
 \end{equation}
-with $W_B$ the mirror under $C_B=AQA^\top$.
-\end{proposition}
-\begin{proof}
-Substitute $Y_A=C_A^{1/2}\Delta A\,Q^{1/2}$, so $\norm{B\Delta A}_{P,Q}=\norm{Y_A}_2$ and the
-objective is $\langle Y_A,-C_A^{-1/2}G_A Q^{-1/2}\rangle$; the spectral-norm LMO
-(Lemma~\ref{lem:dual}) gives $Y_A\propto\polar(C_A^{-1/2}G_A Q^{-1/2})$, and undoing the
-substitution gives \eqref{eq:dir}. \qedhere
-\end{proof}
-\noindent The whitening appears twice: inside the polar (whiten the gradient) and outside
-(map the orthogonalised direction back). The polar --- the orthogonalisation at the heart of
-Muon --- is therefore taken in the curvature-whitened frame: curvature-aware Muon.
-
-\section{The update is the exact closed-form solution of one capped LMO}
-\label{sec:joint}
-
-The direction (Proposition~\ref{prop:dir}) and the radius (Proposition~\ref{prop:rho}) are one
-linear-minimisation oracle --- the curvature-metric cap of Proposition~\ref{prop:dir}, with its
-budget chosen so the step's operator norm is exactly $\rho$. Writing the unit metric-norm
-direction $W_A$ of \eqref{eq:dir} ($\norm{B W_A}_{P,Q}=1$, with $\norm{W_A}_2$ its operator norm),
-\begin{equation}
-  \max_{\Delta A}\ \langle B\Delta A,-G\rangle \quad\text{s.t.}\quad \norm{B\Delta A}_{P,Q}\le\tau ,
-  \qquad \tau:=\rho/\norm{W_A}_2 .
-  \label{eq:joint}
-\end{equation}
-
-\begin{proposition}[The update]\label{prop:update}
-Assume $H_A:=C_A^{-1/2}G_A Q^{-1/2}$ has full row rank, so $\polar(H_A)$ is unique. The unique
-solution of \eqref{eq:joint} is
-\begin{equation}
-  \Delta A=-\rho\,\frac{W_A}{\norm{W_A}_2},\qquad \Delta B=-\rho\,\frac{W_B}{\norm{W_B}_2},
-  \qquad \norm{\Delta A}_2=\norm{\Delta B}_2=\rho .
-  \label{eq:update}
-\end{equation}
-\end{proposition}
-\begin{proof}
-Proposition~\ref{prop:dir} gives the LMO maximiser $-\tau W_A$ (the sign aligns $B\Delta A$ with
-$-G$), whose operator norm is $\tau\norm{W_A}_2=\rho$ by the choice of $\tau$. Full row rank of
-$H_A$ makes $\polar(H_A)$, hence the maximiser, unique. The $B$-block is the mirror. \qedhere
-\end{proof}
-
-\noindent There is a single knob, the radius $\rho$ (the $B=0$-stable magnitude of
-Proposition~\ref{prop:rho}); the metric budget $\tau$ is \emph{not} free --- it is fixed by $\rho$
-as the budget for which the solution has operator norm $\rho$. So there is no second
-hyperparameter, and no ``solve a direction, then set a magnitude'': \eqref{eq:update} is the
-closed-form solution of one LMO.
-
-\begin{remark}[Why this budget --- and why a second cap would be redundant]
-One could instead impose an explicit operator-norm cap $\norm{\Delta A}_2\le\rho$ alongside the
-metric cap. As $\tau$ grows, the solution $-\tau W_A$ scales linearly, so its operator norm passes
-through $\rho$ at exactly $\tau=\rho/\norm{W_A}_2$: below this the metric cap binds and the
-operator-norm cap is slack; above it the operator-norm cap binds and the solution degenerates to
-the un-whitened polar $-\rho\,\polar(G_A)$. Choosing $\tau=\rho/\norm{W_A}_2$ is the boundary,
-where the operator-norm cap is tight but redundant. Stating both caps therefore adds nothing
-beyond re-expressing this choice of $\tau$ --- which is why we set $\tau$ from $\rho$ directly.
-\end{remark}
-
-\begin{remark}[Contrast with Aurora]
-Aurora~\cite{aurora} also poses steepest descent under a joint constraint, but its two constraints
---- orthogonality and uniform row norms --- genuinely \emph{conflict}: a tall matrix cannot satisfy
-both (their Claim~1), so the joint problem has no closed form and is solved by an \emph{iterative}
-alternating projection. Ours reduces to a single cap with the exact closed form \eqref{eq:update}:
-the curvature and magnitude requirements are compatible, met by one whitened-polar step.
-Conflicting constraints force iteration; compatible ones admit a closed form.
-\end{remark}
-
-\section{Estimating the metric: a coupled flip-flop}
-
-We never form $G$. The factor gradients are linear images of it, so their row second moments
-are the partner side conjugated by the factor: $\mathrm{Cov}\,\mathrm{vec}(G_A)=Q\otimes C_A$
-with $C_A=B^\top P B$, and the mirror $C_B=AQA^\top$ --- the same $r\times r$ matrices used in
-\eqref{eq:dir}.
-
-\begin{lemma}[Unbiased curvature estimator]\label{lem:est}
-Under model \eqref{eq:sigma}, $\E\!\big[\tfrac1r\,G_A^\top C_A^{-1}G_A\big]=Q$ and
-$\E\!\big[\tfrac1r\,G_B C_B^{-1}G_B^\top\big]=P$, with no distributional assumption on $G$.
-\end{lemma}
-\begin{proof}
-Model \eqref{eq:sigma} gives the moment identity $\E[G^\top N G]=\tr(NP)\,Q$. Put
-$N=B C_A^{-1}B^\top$; then $G^\top N G=G_A^\top C_A^{-1}G_A$ and
-$\tr(NP)=\tr(C_A^{-1}B^\top P B)=\tr(C_A^{-1}C_A)=r$, so the expectation is $rQ$. The mirror is
-identical. \qedhere
-\end{proof}
-
-\noindent The diagonals of these estimators, run as EMAs, are the metric:
-\begin{equation}
-  q_j=\mathrm{EMA}\Big[\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
-  p_i=\mathrm{EMA}\Big[\tfrac1r\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top\Big].
-  \label{eq:est}
-\end{equation}
-The two sides are coupled, so the estimate is a fixed point solved by alternation:
-\begin{itemize}
-  \item $C_A$ carries the current $P$ and $C_B$ the current $Q$ --- that shared dependence is
-        the coupling;
-  \item we estimate $Q$ under the current $P$, then $P$ under the current $Q$, one EMA step per
-        iteration (the ``flip-flop'');
-  \item this is the coupled diagonal second-moment matching of KL-Shampoo, on the factor
-        gradients rather than the dense gradient;
-  \item decoupling ($C_A=C_B=I$) degenerates to two independent Adafactor diagonals.
-\end{itemize}
-
-\begin{remark}[Matrix-normal lens]
-Assuming $G$ is matrix-normal, $\mathrm{vec}(G)\sim\mathcal{N}(0,Q\otimes P)$, strengthens
-Lemma~\ref{lem:est} but is not needed for it:
-\begin{itemize}
-  \item the flip-flop \eqref{eq:est} becomes the maximum-likelihood estimator (Dutilleul's
-        flip-flop algorithm), upgrading ``unbiased'' to ``MLE'';
-  \item the whitened gradient is then exactly $\Sigma^{-1/2}\mathrm{vec}(G)\sim\mathcal{N}(0,I)$,
-        upgrading ``white in second moment'' to ``exactly white'';
-  \item the trust-region argument (\S2) uses only the second-moment version, so this is an
-        interpretive lens, not a load-bearing assumption --- real gradients are not exactly
-        matrix-normal.
-\end{itemize}
-\end{remark}
-
-\noindent Estimation (this section) and the step (\eqref{eq:joint}) are separate problems ---
-estimate the curvature, freeze it, take the step --- composed by an outer alternation.
-
-\section{Why this construction: stability at $B=0$}
-
-The operator-norm radius \eqref{eq:rho} is gauge-dependent on purpose, and that is what makes
-the standard initialisation $B=0$ safe.
-\begin{itemize}
-  \item At $B=0$, $\rho=\eta/\norm{A}_2$ by \eqref{eq:rho} --- finite, an ordinary step. ($\Delta A=0$ there, since $G_A=B^\top G=0$, so $B$ moves first.)
-  \item The metric LMO's \emph{own} magnitude is scale-free: $\norm{\Delta A}_2\propto1/\sigma_{\min}(B)\to\infty$ as $B\to0$ --- the decoupled / iMuon failure.
-  \item A magnitude invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$ could depend only on gauge invariants ($\norm{A}_2\norm{B}_2$ or $\norm{BA}_2$), both zero at $B=0$. Pinning $\rho$ to $\norm{A}_2+\norm{B}_2$ trades that invariance for $B=0$ stability.
-\end{itemize}
+Because $C_A$ depends on the current $P$ and $C_B$ on the current $Q$, the two
+estimates are coupled; the optimizer takes one EMA alternation per step, then
+freezes $P,Q$ while computing \eqref{eq:WA}--\eqref{eq:final-step}. In
+implementation the inverse square roots are damped, so the formulas are read as the
+ideal SPD case.
 
 \paragraph{Summary.}
-The update is the exact closed-form solution of one curvature-metric-capped LMO \eqref{eq:joint}.
-The direction is the whitened polar in the estimated metric (Proposition~\ref{prop:dir}); the only
-knob is the radius $\rho=\eta/(\norm{A}_2+\norm{B}_2)$, forced by the merged-step budget
-(Lemma~\ref{lem:budget}) and transpose symmetry (Lemma~\ref{lem:equal}), and it fixes the metric
-budget $\tau=\rho/\norm{W_A}_2$ at which the solution has operator norm $\rho$
-(Proposition~\ref{prop:update}). The metric is estimated by a coupled flip-flop
-(Lemma~\ref{lem:est}), composed with the step by an outer alternation.
-
-\begin{thebibliography}{9}
-\bibitem{aurora} A.~Dewulf, D.~Pai, L.~Yang, A.~Zhang, B.~Keigwin.
-\emph{Aurora: A Leverage-Aware Optimizer for Rectangular Matrices.} Tilde Research, 2026.
-\end{thebibliography}
+Starting from the per-factor layerwise-KL proximal model \eqref{eq:channel-prox},
+KL-Shampoo fits the retained metric by $Q\otimes P$, the worst-input replacement
+turns each penalty into a spectral norm \eqref{eq:RA}--\eqref{eq:RB}, and the
+per-factor proximal solutions are the polar sandwiches
+\eqref{eq:WA}--\eqref{eq:WB}. Calibrating $\lambda_A,\lambda_B$ to the common
+product radius \eqref{eq:rho} fixes the factor lengths and gives the implemented
+step \eqref{eq:final-step}. The dense warmup
+\eqref{eq:dense-local-kl}--\eqref{eq:merged-polar} only motivates the polar
+mechanism; its single damping never enters the per-factor model.
 
 \end{document}
