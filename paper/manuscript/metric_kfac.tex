@@ -1,0 +1,215 @@
+\documentclass[11pt]{article}
+
+% ---------------------------------------------------------------------------
+% WORKSHOP / arXiv preprint draft -- SKELETON ONLY (prose to be authored).
+% Swap \documentclass for the venue style file once a target is chosen.
+% Story (LOCKED 2026-06-08):
+%   Headline   : WE WIN -- the cheapest spectral-polar member is the fastest
+%                LoRA optimizer.
+%   Protagonist: coupled two-sided DIAGONAL curvature + full polar + op-norm radius
+%                (kl-diag-polar-lora).
+%   Claim      : it matches the expensive members and beats AdamW 1.2-1.7x
+%                across 9 (model,dataset,rank) settings -- the expensive
+%                machinery is dead weight.
+% ---------------------------------------------------------------------------
+
+\usepackage{amssymb,amsmath,amsthm,amsbsy,amsfonts}
+\usepackage{mathtools}
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{float}        % [H] keeps trailing appendix figures with their section
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+% Looser line spacing inside algorithm blocks for readability.
+\makeatletter
+\newcommand{\algspacing}{\setlength{\@tempdima}{0pt}\renewcommand{\baselinestretch}{1.25}\selectfont}
+\makeatother
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+% Phase header: blank line + vertical space above, bold label.
+\algnewcommand\algorithmicphase{\vspace{5pt}\textbf}
+\algnewcommand\Phase{\Statex\algorithmicphase}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage[nameinlink]{cleveref}
+\usepackage[firstinits=true,backend=bibtex,style=numeric-comp,citestyle=numeric-comp,sorting=nyt,url=false,arxiv=false,isbn=false,doi=false]{biblatex}
+\bibliography{references}
+
+\graphicspath{{figs/}}
+
+% --- macros -----------------------------------------------------------------
+\renewcommand{\vec}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\bm{#1}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newcommand{\smax}{\sigma_{\max}}
+\DeclarePairedDelimiter{\norm}{\lVert}{\rVert}
+\newcommand{\DW}{\Delta W}
+\DeclareMathOperator{\polar}{msign}          % matrix sign (orthogonal polar factor): U\Sigma V^T -> U V^T
+% Working method name -- rename in one place once finalized.
+\newcommand{\methodname}{\textsc{PoLoRA}\xspace}
+\usepackage{xspace}
+% Visible marker for numbers pending the full-polar confirm/negate sweep.
+\newcommand{\PLACEHOLDER}[1]{\textcolor{red}{[#1]}}
+% theorem environments
+\theoremstyle{plain}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\title{K-FAC Robust Steepest Descent} \author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+Consider
+\[
+    \ell(W)=\mathbb{E}_i\,\ell_i(Wx_i).
+\]
+Define
+\[
+    b_i
+    =
+    \left.\nabla_y\ell_i(y)\right|_{y=Wx_i},
+    \qquad
+    G_i=\nabla_W\ell_i(Wx_i)=b_i x_i^\top,
+\]
+and let
+\[
+    G=\mathbb{E}_i G_i,
+    \qquad
+    g_i=\operatorname{vec}(G_i)=x_i\otimes b_i.
+\]
+The gradient second moment is
+\[
+    \Sigma
+    =
+    \mathbb{E}_i[g_i g_i^\top]
+    =
+    \mathbb{E}_i
+    \left[
+        (x_i x_i^\top)\otimes(b_i b_i^\top)
+    \right].
+\]
+K-FAC approximates this matrix by
+\[
+    \Sigma\approx Q\otimes P,
+    \qquad
+    Q=\mathbb{E}_i[x_i x_i^\top],
+    \qquad
+    P=\mathbb{E}_i[b_i b_i^\top].
+\]
+
+For a small update $\Delta W$,
+\[
+    \ell_i((W+\Delta W)x_i)-\ell_i(Wx_i)
+    =
+    \langle G_i,\Delta W\rangle
+    +o(\|\Delta W\|).
+\]
+Thus $\langle G_i,\Delta W\rangle$ is the first-order change of the
+$i$th sample loss. This motivates problem
+\[
+\begin{array}{ll}
+\underset{\Delta W}{\operatorname{minimize}}
+    & \langle G,\Delta W\rangle \\
+\operatorname{subject\ to}
+    & \displaystyle
+      \max_i \,\langle G_i,\Delta W\rangle\leq\eta ,
+\end{array}
+\]
+which minimizes the average first-order loss change while limiting the
+largest sample-wise increase.
+
+We replace the empirical gradient set
+by a rank-one ball in the K-FAC metric. 
+For $U=bx^\top$,
+\[
+\operatorname{vec}(U)^\top
+(Q\otimes P)^{-1}
+\operatorname{vec}(U)
+=
+(x\otimes b)^\top
+(Q^{-1}\otimes P^{-1})
+(x\otimes b) =
+(x^\top Q^{-1}x)(b^\top P^{-1}b).
+\]
+Define
+\[
+    \mathcal G_\rho
+    =
+    \left\{
+        bx^\top ~\middle|~
+        (x^\top Q^{-1}x)(b^\top P^{-1}b)\leq\rho^2
+    \right\}.
+\]
+Choosing
+\[
+\rho
+=
+\max_i
+\sqrt{
+    (x_i^\top Q^{-1}x_i)
+    (b_i^\top P^{-1}b_i)
+}
+\]
+ensures that all sample gradients are in the set $\mathcal G_\rho$, therefore,
+\[
+\max_i \, \langle G_i,\Delta W\rangle
+\leq
+\max_{U\in\mathcal G_\rho} \,
+\langle U,\Delta W\rangle.
+\]
+Since $\mathcal G_\rho=\rho\mathcal G_1$,
+factor $\rho$ can therefore be absorbed into $\eta$. Without
+loss of generality, we use $\mathcal G=\mathcal G_1$.
+
+
+The conservative robust problem is
+\[
+\begin{array}{ll}
+    \underset{\Delta W}{\operatorname{minimize}}
+        & \langle G,\Delta W\rangle \\
+    \operatorname{subject\ to}
+        & \displaystyle
+          \max_{U\in\mathcal G} \,
+          \langle U,\Delta W\rangle
+          \leq\eta .
+\end{array}
+\]
+Let $x=Q^{1/2}u$ and
+$b=P^{1/2}v$,
+then $U=bx^\top\in\mathcal G$ if and only if
+$\|u\|_2\|v\|_2\leq1$, and therefore
+\[
+    \max_{U\in\mathcal G}\langle U,\Delta W\rangle
+    =
+    \max_{\|u\|_2\|v\|_2\leq1}
+    v^\top P^{1/2}\Delta WQ^{1/2}u 
+    =
+    \left\|P^{1/2}\Delta WQ^{1/2}\right\|_2.
+\]
+Finally, the robust steepest descent problem is
+\[
+\begin{array}{ll}
+    \underset{\Delta W}{\operatorname{minimize}}
+        & \langle G,\Delta W\rangle \\
+    \operatorname{subject\ to}
+        &
+        \left\|P^{1/2}\Delta WQ^{1/2}\right\|_2
+        \leq\eta .
+\end{array}
+\]
+
+
+\end{document}

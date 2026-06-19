@@ -272,18 +272,19 @@ in~\eqref{eq:muon-quad},
 we arrive at the two programs
 \begin{align}
   A_{t+1}& =   \argmin_{ 
-A \in \mathbb{R}^{r \times d_{\mathrm{in}}}}~ \langle G_A, A-A_t\rangle \quad \textnormal{subject to}\quad  \norm{B(A-A_t)}_2\le\eta_A \nonumber \\
- B_{t+1} &=   \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r}}~ \langle G_B,  B -B_t\rangle \quad \textnormal{subject to}\quad  \norm{(B-B_t) A}_2\le\eta_B,
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}}}~ \langle G_A, A-A_t\rangle \quad \textnormal{subject to}\quad  \norm{B_t(A-A_t)}_2\le\eta_A \nonumber \\
+ B_{t+1} &=   \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r}}~ \langle G_B,  B -B_t\rangle \quad \textnormal{subject to}\quad  \norm{(B-B_t) A_t}_2\le\eta_B,
   \label{eq:imuon-lmo}
 \end{align}
 to which their solutions are  given by 
 \begin{equation*}
- A_{t+1}= A_t-\eta_A\,S_B^{-1/2}\,\polar\!\big(S_B^{-1/2}G_A\big),\qquad
-B_{t+1}= B_t-\eta_B\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2}.
+ A_{t+1}= A_t-\eta_A S_B^{-1/2} \polar \big(S_B^{-1/2}G_A\big),
+ \qquad
+B_{t+1}= B_t-\eta_B \polar \big(G_B S_A^{-1/2}\big) S_A^{-1/2}.
 \end{equation*}
 Furthermore we have that 
 \begin{equation} \label{cor:imuon}
-    \norm{B(A_{t+1}-A_t)}_2 = \eta_A, \quad \mbox{and} \quad   \norm{(B_{t+1}-B_t) A}_2 = \eta_B.
+    \norm{B_t(A_{t+1}-A_t)}_2 = \eta_A, \quad \mbox{and} \quad   \norm{(B_{t+1}-B_t) A_t}_2 = \eta_B.
 \end{equation}
 \end{restatable}
 
@@ -351,11 +352,13 @@ We never form $G$. The factor gradients $G_A=B^\top G$ and $G_B=GA^\top$ are lin
 \end{equation}
 It is unbiased ($\E[\tfrac1r\,G_A^\top C_A^{-1}G_A]=Q$, \Cref{app:matnormal}) and couples the sides through $C_A,C_B$ ($C_A$ injects $P$, $C_B$ injects $Q$); $C_A=C_B=I$ drops to two independent Adafactor diagonals \cite{adafactor}. This is the coupled diagonal second-moment matching of \cite{klshampoo}, specialised to the LoRA factor gradients; we run one $\beta_2$-EMA alternation per step.
 
-\paragraph{(B) The step: spectral LMO in the frozen metric.} With $P,Q$ \emph{frozen} at their current estimate, cap the product step in the metric \eqref{eq:ours-metric} and maximize alignment with the gradient:
+\paragraph{(B) The step: spectral LMO in the frozen metric.} With $P,Q$ \emph{frozen} at their current estimate, cap the product step in the metric \eqref{eq:ours-metric} and maximize alignment with the negative gradient:
 \begin{equation}
-  \max_{\Delta A}\ \langle B\Delta A,\,-G\rangle
-  \quad\text{s.t.}\quad
-  \norm{B\Delta A}_{P,Q}\le\tau .
+\begin{array}{llll}
+\underset{\Delta A}{\mbox{maximize}}&
+\langle B\Delta A,-G\rangle
+& \mbox{subject to} & \norm{B\Delta A}_{P,Q}\leq\tau. 
+\end{array}
   \label{eq:ours-opt}
 \end{equation}
 This is the spectral LMO of \Cref{lem:lmo} in the $P,Q$ metric, with $P,Q$ from (A) held fixed. Whitening both sides by $P^{-1/2},Q^{-1/2}$ reduces it to the Euclidean spectral case, giving a closed form.
@@ -363,8 +366,8 @@ This is the spectral LMO of \Cref{lem:lmo} in the $P,Q$ metric, with $P,Q$ from 
 \begin{restatable}[Metric LMO]{proposition}{MetricLMO}\label{prop:ours}
 For $B$ of full column rank, the solution of \eqref{eq:ours-opt} is
 \begin{equation*}
-  \Delta A = -\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,G_A\,Q^{-1/2}\big)\,Q^{-1/2},
-  \qquad C_A=B^\top P B .
+  \Delta A = -\tau C_A^{-1/2} \polar \big(C_A^{-1/2} G_A Q^{-1/2}\big) Q^{-1/2},
+  \qquad C_A=B_t^\top P B_t .
 \end{equation*}
 \end{restatable}
 \medskip
@@ -868,63 +871,139 @@ hardware-independent.
 \section{Proofs}
 \label{app:proofs}
 
-\begin{proof}[Proof of \Cref{lem:lmo}]
-Let $M=U\Sigma V^\top$. For any $U'$ with $\norm{U'}_2\le1$,
+
+
+\begin{lemma}[Spectral norm linear minimization]\label{lem:muon-lmo}
+For $G\in\mathbb{R}^{m\times n}$ and $\eta>0$,
 \[
-  \langle M,U'\rangle=\sum_i\sigma_i\,u_i^\top U' v_i \;\ge\; -\sum_i\sigma_i,
+    \min_{\|X\|_2\leq \eta}\langle G,X\rangle
+    =
+    -\eta\|G\|_{\operatorname{nuc}},
 \]
-since $|u_i^\top U' v_i|\le\norm{U'}_2\le1$. Equality holds at $U'=-\polar(M)$, uniquely when $M$ has full rank with distinct singular values; the zero and repeated singular directions otherwise leave $U'$ free.
+and
+\[
+    -\eta\polar(G)
+    \in
+    \argmin_{\|X\|_2\leq \eta}\,\langle G,X\rangle .
+\]
+Consequently,
+\[
+    W_t-\eta\polar(G_t) \in \argmin_{\|W-W_t\|_2\leq\eta}
+    \langle G_t,W-W_t\rangle.
+\]
+\end{lemma}
+
+\begin{proof}
+By duality of the spectral and nuclear norms, every feasible $X$ satisfies
+\[
+    \langle G,X\rangle
+    \geq
+    -\|G\|_{\operatorname{nuc}}\|X\|_2
+    \geq
+    -\eta\|G\|_{\operatorname{nuc}}.
+\]
+Let $G=U\Sigma V^\top$ be a reduced singular value decomposition.  The
+choice
+\[
+    X=-\eta UV^\top=-\eta\polar(G)
+\]
+is feasible and satisfies
+\[
+    \langle G,X\rangle
+    =
+    -\eta\operatorname{tr}(\Sigma)
+    =
+    -\eta\|G\|_{\operatorname{nuc}}.
+\]
+It therefore attains the lower bound.  
+Substituting $X=W-W_t$ gives the
+stated update.
 \end{proof}
+
 
 
 \DecoupledFactorStep*
 \begin{proof}[Proof of \Cref{prop:decoupled}]
-Consider the problem w.r.t. the $A$-subproblem, and define $\Delta A := A - A_t$.
+Consider the problem w.r.t. the $A$-subproblem, and define $\Delta A := A - A_t$ and $Z:=S_B^{1/2}\Delta A$.
 By the definition of the operator norm,
 \[
 \|B_t \Delta A\|_{2}
-= \sqrt{\lambda_{\max}(\Delta A^\top S_{B_t} \Delta A)}
-= \|S_B^{1/2} \Delta A\|_{2}.
+= \sqrt{\lambda_{\max}(\Delta A^\top S_B \Delta A)}
+= \|S_B^{1/2} \Delta A\|_{2}
+=\|Z\|_2.
 \]
-Further, the objective equals
+Moreover, since $B_t$ has full column rank, $S_B\succ 0$,
+and
 \[
 \langle G_A, \Delta A \rangle
-= \langle S_B^{-1/2}G_A, S_B^{1/2} \Delta A\rangle.
+= \langle S_B^{-1/2}G_A, S_B^{1/2} \Delta A\rangle
+= \langle S_B^{-1/2}G_A, Z\rangle.
 \]
-Define $Z:=S_B^{1/2}\Delta A$, then using the above, the $A$-subproblem becomes
+Combining the above, the $A$-subproblem is equivalent to
 \[
-  \min_{\norm{Z}_2\le\eta}\ \langle S_B^{-1/2}G_A,\,Z\rangle,
+\begin{array}{ll}
+\underset{\|Z\|_2 \leq \eta_A}{\mbox{minimize}}&
+\langle S_B^{-1/2}G_A, Z \rangle.
+\end{array}
 \]
-which \Cref{lem:lmo} solves at $Z=-\eta\,\polar(S_B^{-1/2}G_A)$. Undoing the substitution gives
+By \Cref{lem:muon-lmo}, one update is
 \[
-  \Delta A=S_B^{-1/2}Z=-\eta\,S_B^{-1/2}\polar\!\big(S_B^{-1/2}G_A\big),
+  \Delta A=S_B^{-1/2}Z=-\eta_A S_B^{-1/2}\polar \big(S_B^{-1/2}G_A\big).
 \]
-and the $B$-block is symmetric. This recovers iMuon's idealized (decoupled) update \cite{imuon}, the per-factor split of compositional Muon \cite{tilde_csd}.
+We assume $S_B^{-1/2}G_A\neq 0$, then its polar factor has operator norm one.
+Consequently,
+\[
+  \|B_t\Delta A\|_2
+  = \left\|S_B^{1/2}\Delta A\right\|_2
+  =\eta_A \left\| \polar \big(S_B^{-1/2}G_A\big)\right\|_2
+  = \eta_A.
+\]
 
+The argument for the  $B$-update is symmetric.
 
-Finally for the proof of~\eqref{cor:imuon}. 
-With $U_B=BS_B^{-1/2}$ (orthonormal columns),
-\[
-  B\Delta A=-\eta\,U_B\,\polar(S_B^{-1/2}G_A).
-\]
-Left-multiplication by $U_B$ preserves the spectral norm, and $\polar(\cdot)$ has unit nonzero singular values, so $\norm{B\Delta A}_2=\eta$.
 \end{proof}
 
 \MetricLMO*
 \begin{proof}[Proof of \Cref{prop:ours}]
-Write $C_A=B^\top P B$ and substitute $Y_A=C_A^{1/2}\Delta A\,Q^{1/2}$, so $\Delta A=C_A^{-1/2}Y_A Q^{-1/2}$. Since $P^{1/2}B\,C_A^{-1/2}$ has orthonormal columns (its Gram is $I$), left-multiplication preserves singular values:
+Since $P\succ0$ and $B_t$ has full column rank,
 \[
-  \norm{B\Delta A}_{P,Q}=\norm{P^{1/2}B\Delta A\,Q^{1/2}}_2=\norm{Y_A}_2 .
+    C_A=B_t^\top P B_t\succ0.
 \]
-The objective is plain in $Y_A$ as well: with $G_A=B^\top G$ and trace cyclicity,
+Set 
 \[
-  \langle B\Delta A,-G\rangle=\langle\Delta A,-G_A\rangle=\langle Y_A,-H_A\rangle,\qquad H_A=C_A^{-1/2}G_A Q^{-1/2}.
-\]
-So the problem reduces to $\max_{\norm{Y_A}_2\le\tau}\langle Y_A,-H_A\rangle$, solved by $Y_A=-\tau\,\polar(H_A)$ (\Cref{lem:lmo}); unwhitening,
+Y_A:=C_A^{1/2}\Delta A Q^{1/2},
+\qquad 
+\Delta A=C_A^{-1/2}Y_A Q^{-1/2}.
+\] 
+Thus
 \[
-  \Delta A=-\tau\,C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}G_A Q^{-1/2}\big)\,Q^{-1/2}.
+  \norm{B\Delta A}_{P,Q}=
+  \norm{P^{1/2}B\Delta A Q^{1/2}}_2 =
+  \sqrt{
+\lambda_{\max}(Y_A^\top C_A^{-1/2}B_t^\top
+PB_t C_A^{-1/2} Y_A)
+  }=\norm{Y_A}_2 .
 \]
-The Frobenius ball $\norm{Y_A}_F\le\tau$ instead gives $\Delta A\propto C_A^{-1}G_A Q^{-1}$, recovering AdaPreLoRA.
+Using $G_A=B^\top G$ and trace cyclicity,
+the objective becomes
+\[
+  \langle B\Delta A,-G\rangle=\langle\Delta A,-G_A\rangle=\langle Y_A,-H_A\rangle,
+  \qquad H_A:=C_A^{-1/2}G_A Q^{-1/2}.
+\]
+So the problem reduces to 
+\[
+\begin{array}{ll}
+\underset{\norm{Y_A}_2\le\tau}{\mbox{maximize}}&
+\langle Y_A,-H_A\rangle.
+\end{array}
+\]
+By \Cref{lem:muon-lmo}, one solution is
+$Y_A=-\tau \polar(H_A)$.
+Substituting
+$\Delta A=C_A^{-1/2}Y_AQ^{-1/2}$ gives the result.
+
+% Interestingly, Frobenius norm ball constraint $\norm{Y_A}_F\le\tau$ instead gives an update $\Delta A\propto C_A^{-1}G_A Q^{-1}$, 
+% recovering AdaPreLoRA.
 \end{proof}
 
 \section{Memoryless Limits of LoRA-RITE and iMuon}
