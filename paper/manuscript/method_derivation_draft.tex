@@ -1,7 +1,7 @@
 % =====================================================================
 % DRAFT -- standalone derivation sketch. NOT main.tex.
-% Purpose: derive the PoLoRA direction from a per-factor empirical-gradient
-%          (gradient-covariance) metric and rank-one layer tests.
+% Purpose: derive the PoLoRA direction from a per-factor gradient-covariance
+%          metric and single-sample pseudo-gradients.
 % =====================================================================
 \documentclass[11pt]{article}
 \usepackage{amsmath,amssymb,amsthm,mathtools}
@@ -31,24 +31,38 @@
 \begin{document}
 \maketitle
 
-This note derives the PoLoRA direction from a dense linearized trust-region
-problem and then pulls the result back to the LoRA factors. For a dense update
-$U$ and the gradient $G_i$ on example $i$, the first-order change in that
-example's loss is $\delta_i(U)=\langle G_i,U\rangle$. The trust region bounds the
-root-mean-square (RMS) effect $\E_i[\delta_i(U)^2]$---equivalently, it bounds the
-response to every unit-RMS weighted average of the observed per-example
-gradients. PoLoRA replaces that full dual ball by the rank-one layer tests
-$r=\vecop(bx^\top)$, fits the empirical gradient covariance by $Q\otimes P$, and
-thereby obtains the spectral constraint $\norm{P^{1/2}UQ^{1/2}}_2$. The remaining
-steps are algebra: apply this constraint to the LoRA tangent
-$B\Delta A+\Delta B A$, split the two factor blocks, and solve the resulting
-spectral linear subproblems by whitening, applying the polar map, and
-unwhitening.
+This note derives the PoLoRA update direction. The method measures a dense layer
+update against \emph{sample pseudo-gradients}---the rank-one matrices $bx^\top$ a
+single training sample produces, from one input $x$ and one output sensitivity
+$b$. It takes the worst case over these, which reduces to a spectral norm, then
+pulls that constraint back to the LoRA factors.
 
-Throughout, the metric is built from observed per-example gradients only.
-Appendix~\ref{app:frob} repeats the same path but stops short of the rank-one
-restriction, recovering a Frobenius (full-inverse) step in place of the polar
-one.
+The pseudo-gradients are measured in the fitted gradient metric, the Kronecker
+fit $\Sigma\approx Q\otimes P$ that KL-Shampoo already maintains. The worst
+response of an update to a unit-size sample pseudo-gradient is a spectral norm.
+Capping it by a step budget gives the trust-region step solved in
+\S\ref{sec:metric}.
+
+The remaining sections are algebra:
+\begin{itemize}
+  \item \S\ref{sec:setup} sets up the first-order LoRA tangent
+    $T=B\Delta A+\Delta B A$.
+  \item \S\ref{sec:pullback} pulls the spectral constraint back to the factors
+    and splits it into two single-factor blocks.
+  \item \S\ref{sec:solve} solves each block by whitening, the polar map, and
+    unwhitening.
+  \item \S\ref{sec:radius} fixes the scalar step lengths by a product-radius
+    rule.
+  \item \S\ref{sec:est} estimates the metric factors $P,Q$.
+\end{itemize}
+
+\begin{remark}[Metric only, no probabilistic model]
+The derivation uses the covariance model only as a metric. Adding a Gaussian or
+elliptical model for vectorized layer gradients makes the same Mahalanobis
+constraint a fixed-radius density contour, but the algebra does not need that
+probabilistic assumption. Appendix~\ref{app:frob} gives the dense Frobenius
+analogue.
+\end{remark}
 
 \section{Setup: the LoRA tangent split}
 \label{sec:setup}
@@ -58,14 +72,13 @@ $W=BA\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to a frozen weight, with
 $A\in\R^{r\times d_{\mathrm{in}}}$ and
 $B\in\R^{d_{\mathrm{out}}\times r}$. One optimizer step increments the factors by
 $\Delta A\in\R^{r\times d_{\mathrm{in}}}$ and
-$\Delta B\in\R^{d_{\mathrm{out}}\times r}$. The exact adapter displacement is
-$\Delta W_{\mathrm{exact}}=B\,\Delta A+\Delta B\,A+\Delta B\,\Delta A$; the
-derivation works in the first-order tangent model
+$\Delta B\in\R^{d_{\mathrm{out}}\times r}$. The exact displacement is
+$B\,\Delta A+\Delta B\,A+\Delta B\,\Delta A$. We keep the first-order tangent
 \begin{equation}
   T:=B\,\Delta A+\Delta B\,A,
   \label{eq:tangent}
 \end{equation}
-discarding the second-order product term $\Delta B\,\Delta A$.
+dropping the second-order term $\Delta B\,\Delta A$.
 Let $G=\nabla_W\mathcal L\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be the
 gradient with respect to $W$. The first-order loss change splits across the two
 factors,
@@ -78,128 +91,49 @@ factors,
   G_B:=G A^\top\in\R^{d_{\mathrm{out}}\times r} .
   \label{eq:split-linear}
 \end{equation}
-The derivation uses raw gradients; the optimizer replaces $G_A,G_B$ by
+The derivation uses raw gradients. In the optimizer, $G_A,G_B$ are replaced by
 bias-corrected momentum buffers before the polar map.
 
-\section{A per-example linearized trust-region step}
+\section{Covariance-normalized pseudo-gradients}
 \label{sec:metric}
 
-Let $G_i\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be the dense adapter
-gradient on example or token $i$, let $g_i:=\vecop(G_i)$, and write
-$u:=\vecop(U)$ for a dense update. The first-order change in example $i$'s loss
-is
+Let $U\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ be a dense update. A single
+sample or token gives a rank-one layer gradient $bx^\top$, with $x$ the layer
+input and $b$ the backpropagated output sensitivity. We test $U$ against such
+sample pseudo-gradients, with first-order interaction
 \begin{equation}
-  \delta_i(U):=\langle G_i,U\rangle .
-  \label{eq:delta}
+  \langle U,bx^\top\rangle=b^\top Ux .
+  \label{eq:rank-one-interaction}
 \end{equation}
-The per-example gradients average to the batch gradient of \S\ref{sec:setup},
-$G=\E_i[G_i]$, so the mean first-order change is
-$\E_i[\delta_i(U)]=\langle G,U\rangle$. The starting point is the constrained
-linearized step
-\begin{equation}
-  \min_U\;\E_i[\delta_i(U)]
-  \qquad\mathrm{s.t.}\qquad
-  \E_i[\delta_i(U)^2]\le \eta^2 .
-  \label{eq:rms-trust-region}
-\end{equation}
-It asks for a descent step whose per-example linearized effects have bounded RMS
-size.
 
-The RMS constraint is the empirical gradient second moment:
+The pseudo-gradients are measured in the fitted gradient metric. With $\Sigma$
+the second moment of vectorized layer gradients, any matrix $R$ has
+inverse-covariance size
 \begin{equation}
-  \E_i[\delta_i(U)^2]
-  =\E_i[(g_i^\top u)^2]
-  =u^\top \Sigma u,
-  \qquad
-  \Sigma:=\E_i[g_i g_i^\top].
-  \label{eq:ef-penalty}
+  \norm{R}_{\Sigma^{-1}}^2
+  :=\vecop(R)^\top\Sigma^{-1}\vecop(R).
+  \label{eq:maha-size}
 \end{equation}
-This is the empirical Fisher: the covariance of the observed per-example
-gradients, used here because it is exactly the quadratic form that penalizes the
-RMS first-order effect of $U$ across examples.
-
-\begin{lemma}[Dual view of the RMS constraint]
-\label{lem:rms-dual}
-Define the full dual unit ball
-\begin{equation}
-  \mathcal D_{\Sigma}:=
-  \{\,r\in\range(\Sigma): r^\top\Sigma^+r\le1\,\}.
-  \label{eq:test-set}
-\end{equation}
-Equivalently, $\mathcal D_{\Sigma}$ is the set of gradients
-$r=\E_i[\alpha_i g_i]$ that can be synthesized by weights with
-$\E_i[\alpha_i^2]\le1$. Then
-\begin{equation}
-  \sqrt{\E_i[\delta_i(U)^2]}
-  =\sup_{r\in\mathcal D_{\Sigma}} |r^\top u| .
-  \label{eq:rms-dual}
-\end{equation}
-\end{lemma}
-
-\begin{proof}
-The identity \eqref{eq:ef-penalty} gives
-$\sqrt{\E_i[\delta_i(U)^2]}=\sqrt{u^\top\Sigma u}$. Generalized
-Cauchy--Schwarz gives
-$|r^\top u|\le (r^\top\Sigma^+r)^{1/2}(u^\top\Sigma u)^{1/2}$ for
-$r\in\range(\Sigma)$, and equality is attained by $r=\Sigma u$ after
-normalizing when $\Sigma u\ne0$. For the weighting interpretation, consider the
-linear map $\alpha\mapsto\E_i[\alpha_i g_i]$ from the example-weight Hilbert
-space with norm $(\E_i[\alpha_i^2])^{1/2}$ into parameter space. Its range
-covariance is $\Sigma$, so the minimum weight norm required to synthesize $r$ is
-$(r^\top\Sigma^+r)^{1/2}$.
-\end{proof}
-
-Thus the RMS constraint in \eqref{eq:rms-trust-region} has a dual reading: every
-unit-RMS weighted average of per-example gradients has response at most $\eta$.
-The full dual ball $\mathcal D_\Sigma$ is large; it contains arbitrary weighted
-combinations of observed example gradients. PoLoRA's spectral step comes from
-replacing this full set by a structured subset.
-
-\section{Rank-one layer tests and the spectral norm}
-\label{sec:rank-one}
-
-A layerwise first-order increment has a special bilinear probe form. For a
-backward vector $b\in\R^{d_{\mathrm{out}}}$ and an input vector
-$x\in\R^{d_{\mathrm{in}}}$, the test gradient is $r=\vecop(bx^\top)$ and its
-response is
-\begin{equation}
-  r^\top u=b^\top Ux .
-  \label{eq:rank-one-response}
-\end{equation}
-Define the rank-one slice of the dual ball by restricting to these
-layer-structured directions:
-\begin{equation}
-  \mathcal R_{\Sigma}:=
-  \{\,\vecop(bx^\top)\in\mathcal D_\Sigma:
-        b\in\R^{d_{\mathrm{out}}},\ x\in\R^{d_{\mathrm{in}}}\,\}.
-  \label{eq:rank-one-slice}
-\end{equation}
-The associated rank-one response of $U$ is
+The worst interaction of $U$ with a unit-size sample pseudo-gradient is then
 \begin{equation}
   \Gamma_{\Sigma}(U)
-  :=\sup_{r\in\mathcal R_{\Sigma}} |r^\top u|
-  =\sup_{\vecop(bx^\top)\in\mathcal D_\Sigma}|b^\top Ux| .
+  :=\sup_{\substack{b,x\\
+      \vecop(bx^\top)^\top\Sigma^{-1}\vecop(bx^\top)\le1}}
+      |b^\top Ux| .
   \label{eq:rank-one-bound-def}
 \end{equation}
-Because $\mathcal R_{\Sigma}\subseteq\mathcal D_\Sigma$,
-\begin{equation}
-  \Gamma_{\Sigma}(U)
-  \le \sqrt{u^\top\Sigma u}.
-  \label{eq:rank-one-bound}
-\end{equation}
-This rank-one restriction is therefore not the full RMS constraint. It keeps only
-the largest response generated by one backward direction paired with one forward
-direction.
 
-PoLoRA never forms $\Sigma$; it fits the covariance by a diagonal--Kronecker
-matrix
+PoLoRA never forms $\Sigma$. It uses the same diagonal--Kronecker fit as the
+KL-Shampoo metric estimator,
 \begin{equation}
   \Sigma\approx Q\otimes P,
   \label{eq:PQ-approx}
 \end{equation}
 with $P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ the output-side factor and
-$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ the input-side factor. In the
-ideal SPD case, the rank-one normalization becomes
+$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ the input-side factor. These
+factor the full second moment and need not be the separate covariances of $b$ and
+$x$. When $P,Q$ are positive definite, the inverse-covariance size of $bx^\top$
+factors,
 \begin{equation}
   \vecop(bx^\top)^\top (Q^{-1}\otimes P^{-1}) \vecop(bx^\top)
   =(b^\top P^{-1}b)(x^\top Q^{-1}x).
@@ -212,28 +146,16 @@ Hence
   =\norm{P^{1/2}UQ^{1/2}}_2 .
   \label{eq:kron-spectral}
 \end{equation}
-The last equality follows by substituting $b=P^{1/2}a$ and $x=Q^{1/2}z$; the
-product constraint is equivalent to $\norm{a}_2\le1$ and $\norm{z}_2\le1$ because
-the response is bilinear. Thus the rank-one response bound is exactly the
-spectral norm of the whitened matrix.
+The last equality substitutes $b=P^{1/2}a$ and $x=Q^{1/2}z$. Bilinearity makes
+the supremum over $\norm{a}_2\norm{z}_2\le1$ equal the supremum over
+$\norm{a}_2\le1$ and $\norm{z}_2\le1$.
 
-Combining the pieces, the dense trust-region problem evolves in three steps. The
-original RMS program \eqref{eq:rms-trust-region} is equivalently
-\begin{equation}
-  \min_U\;\langle G,U\rangle
-  \qquad\mathrm{s.t.}\qquad
-  \sup_{r\in\mathcal D_\Sigma}|r^\top\vecop(U)|\le\eta .
-  \label{eq:dual-trust-region}
-\end{equation}
-Restricting the tests to the rank-one slice gives
-\begin{equation}
-  \min_U\;\langle G,U\rangle
-  \qquad\mathrm{s.t.}\qquad
-  \Gamma_{\Sigma}(U)\le\eta .
-  \label{eq:rank-one-trust-region}
-\end{equation}
-Finally, the Kronecker fit $\Sigma\approx Q\otimes P$ turns
-\eqref{eq:rank-one-trust-region} into the spectral program
+The objective and the constraint are both linearized loss changes. By
+\eqref{eq:rank-one-interaction}, $\langle U,bx^\top\rangle$ is the first-order loss
+change $U$ induces under a single pseudo-gradient, so $\Gamma_{P,Q}(U)$ is the
+largest such change over unit-size pseudo-gradients. PoLoRA minimizes the loss
+change $\langle G,U\rangle$ under the true gradient, subject to this worst-case
+per-sample change being at most $\eta$:
 \begin{equation}
   \min_U\;\langle G,U\rangle
   \qquad\mathrm{s.t.}\qquad
@@ -254,9 +176,8 @@ using the split \eqref{eq:split-linear} gives the joint problem
   \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2\le\eta .
   \label{eq:rank-one-lora}
 \end{equation}
-The constraint couples the two factor increments. PoLoRA uses a block split,
-treating the two tangent
-contributions separately:
+The constraint couples $\Delta A$ and $\Delta B$. PoLoRA splits it into two
+blocks, one per factor:
 \begin{equation}
   \norm{P^{1/2}B\Delta A\,Q^{1/2}}_2
   =\norm{C_A^{1/2}\Delta A\,Q^{1/2}}_2,
@@ -269,19 +190,16 @@ contributions separately:
   \qquad C_B:=AQA^\top\in\R^{r\times r},
   \label{eq:B-rank-one-fit}
 \end{equation}
-assuming the partner factor has full rank in the corresponding metric. For
-example, if $P^{1/2}B=V C_A^{1/2}$ with $V^\top V=I$, left multiplication by $V$
-does not change the operator norm. Here $C_A,C_B$ are the sensitivity metrics
-induced on the LoRA factor directions by the per-example gradient metric;
-equivalently $Q\otimes C_A$ and $C_B\otimes P$ are the Kronecker fits to the
-per-factor gradient covariances
-$\E_i[\vecop(G_{A,i})\vecop(G_{A,i})^\top]$ and
-$\E_i[\vecop(G_{B,i})\vecop(G_{B,i})^\top]$.
+These hold when the partner factor has full column rank: writing
+$P^{1/2}B=V C_A^{1/2}$ with $V^\top V=I$, the orthogonal $V$ leaves the operator
+norm unchanged. The $r\times r$ matrices $C_A,C_B$ are the metrics the fitted
+geometry induces on each factor; equivalently $Q\otimes C_A$ and $C_B\otimes P$
+fit the per-factor gradient covariances.
 
 \section{Solving by whitening and polar projection}
 \label{sec:solve}
 
-The block split makes the two factor linear minimization problems independent:
+The split gives two independent subproblems, one per factor:
 \begin{equation}
   \min_{\Delta A}\;\langle G_A,\Delta A\rangle
   \qquad\mathrm{s.t.}\qquad
@@ -294,6 +212,9 @@ The block split makes the two factor linear minimization problems independent:
   \norm{P^{1/2}\Delta B\,C_B^{1/2}}_2\le\tau_B .
   \label{eq:B-spectral-block}
 \end{equation}
+
+Here $\polar(M)$ is the orthogonal polar factor of $M$: the nearest orthogonal
+matrix, keeping $M$'s singular vectors and setting all singular values to one.
 
 \begin{proposition}[Per-factor spectral subproblems]\label{prop:channels}
 Assume $P,Q,C_A,C_B$ positive definite, and set
@@ -325,11 +246,7 @@ attained at $Y_A=-\tau_A\polar(H_A)$. Undoing the change of variables gives
 $Y_B=P^{1/2}\Delta B C_B^{1/2}$.
 \end{proof}
 
-With the Frobenius norm in place of the spectral norm, the same linear problem
-gives the full-inverse directions $-C_A^{-1}G_AQ^{-1}$ and
-$-P^{-1}G_BC_B^{-1}$ after normalization; the operator norm is the sole source of
-the polar map
-(Appendix~\ref{app:frob}). Define the unscaled update directions
+Define the unscaled update directions
 \begin{equation}
   W_A:=C_A^{-1/2}\polar(H_A)Q^{-1/2},
   \qquad
@@ -340,27 +257,24 @@ the polar map
 \section{Product-radius calibration}
 \label{sec:radius}
 
-The spectral budgets $\tau_A,\tau_B$ in \eqref{eq:spectral-solutions} control only
-scalar lengths along the polar directions $W_A,W_B$. PoLoRA keeps those directions and
-sets the scalar lengths by a separate product-radius rule. The product-radius
-budget alone does not fix the two lengths: if
-$\norm{\Delta A}_2=\rho_A$ and $\norm{\Delta B}_2=\rho_B$, then
-$\norm{B\Delta A+\Delta B A}_2\le\norm{B}_2\rho_A+\norm{A}_2\rho_B$, and many
-$(\rho_A,\rho_B)$ meet a given budget. PoLoRA removes this freedom by the
-no-preference symmetry between the two factor coordinates---exchanging the blocks
-should not change the radius allocation---which forces the common radius
+The budgets $\tau_A,\tau_B$ set only the lengths of the fixed directions
+$W_A,W_B$. A single budget on the tangent does not pin both lengths: with
+$\norm{\Delta A}_2=\rho_A$ and $\norm{\Delta B}_2=\rho_B$,
+$\norm{B\Delta A+\Delta B A}_2\le\norm{B}_2\rho_A+\norm{A}_2\rho_B$, which many
+$(\rho_A,\rho_B)$ satisfy. PoLoRA breaks the tie symmetrically, giving both
+factors the same radius,
 \begin{equation}
   \norm{\Delta A}_2=\norm{\Delta B}_2=\rho .
   \label{eq:equal-radius}
 \end{equation}
-The tangent update then obeys
-$\norm{B\Delta A+\Delta B A}_2\le\rho(\norm{A}_2+\norm{B}_2)$; setting this equal
-to the budget $\eta$ gives
+The tangent then obeys
+$\norm{B\Delta A+\Delta B A}_2\le\rho(\norm{A}_2+\norm{B}_2)$. Setting this bound
+to $\eta$ gives
 \begin{equation}
   \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2}.
   \label{eq:rho}
 \end{equation}
-Normalizing the polar directions to this radius gives the PoLoRA step
+Scaling the directions $W_A,W_B$ to this radius gives the PoLoRA step
 \begin{equation}
   \Delta A=-\rho\,\frac{W_A}{\norm{W_A}_2},
   \qquad
@@ -372,10 +286,9 @@ for nonzero $W_A,W_B$.
 \section{Estimating the diagonal metric}
 \label{sec:est}
 
-It remains to estimate $P,Q$ in \eqref{eq:PQ-approx}. PoLoRA does so by a coupled
-moment closure, with all expectations over the per-example gradient distribution.
-The only algebraic consequences needed from \eqref{eq:PQ-approx} are the moment
-identities, for compatible $M,N$,
+It remains to estimate $P,Q$. PoLoRA uses two moment identities of the Kronecker
+fit \eqref{eq:PQ-approx}, with expectations over per-example gradients and any
+compatible $M,N$:
 \begin{equation}
   \E[G M G^\top]=\tr(MQ)P,
   \qquad
@@ -416,38 +329,43 @@ PoLoRA keeps only the diagonals and updates them by EMA:
   \label{eq:ema}
 \end{equation}
 Because $C_A$ depends on the current $P$ and $C_B$ on the current $Q$, the two
-estimates are coupled; the optimizer takes one EMA alternation per step, then
+estimates are coupled. The optimizer takes one EMA alternation per step, then
 freezes $P,Q$ while computing \eqref{eq:WA}--\eqref{eq:final-step}. In the
-implementation the inverse square roots are damped; the formulas above are
+implementation the inverse square roots are damped, while the formulas above are
 written for the ideal positive-definite case.
 
 \section{Summary}
 \label{sec:summary}
 
-The RMS gradient-covariance constraint is first rewritten as a dual bound over the
-full ball $\mathcal D_\Sigma$. PoLoRA keeps only the rank-one slice
-$\mathcal R_\Sigma$, fits $\Sigma$ by $Q\otimes P$, and obtains the spectral
-constraint $\norm{P^{1/2}UQ^{1/2}}_2$. Pulling that constraint back to the LoRA
-factors gives $C_A=B^\top PB$ and $C_B=AQA^\top$; the per-factor solutions are the
-polar sandwiches \eqref{eq:WA}, and the common product radius \eqref{eq:rho}
-fixes the scalar lengths, giving the implemented step \eqref{eq:final-step}.
+PoLoRA measures pseudo-gradients by their inverse-covariance size under the
+fitted gradient second moment. With the KL-Shampoo fit
+$\Sigma\approx Q\otimes P$, the worst unit-size pseudo-gradient interaction is
+$\norm{P^{1/2}UQ^{1/2}}_2$. Pulling that constraint back to the LoRA factors gives
+$C_A=B^\top PB$ and $C_B=AQA^\top$. The per-factor solutions are the polar
+directions \eqref{eq:WA}, and the common product radius \eqref{eq:rho} fixes the
+scalar lengths, giving the implemented step \eqref{eq:final-step}.
 
 \appendix
 
-\section{Average response without the rank-one restriction}
+\section{Dense covariance ellipsoid and the Frobenius alternative}
 \label{app:frob}
 
-This appendix repeats the main derivation but stops before the restriction from
-the full dual ball $\mathcal D_\Sigma$ to the rank-one slice $\mathcal R_\Sigma$.
-Starting from \eqref{eq:dual-trust-region}, the Kronecker fit
-$\Sigma\approx Q\otimes P$ gives
+A sample pseudo-gradient $bx^\top$ is rank one, so the main text pairs $U$ only
+with rank-one matrices. Relaxing to an arbitrary dense matrix $R$ (same
+inverse-covariance bound) gives the worst-case interaction
 \begin{equation}
-  \sup_{r\in\mathcal D_\Sigma}|r^\top\vecop(U)|
+  \widetilde\Gamma_{\Sigma}(U)
+  :=\sup_{\vecop(R)^\top\Sigma^{-1}\vecop(R)\le1} |\langle U,R\rangle| .
+  \label{eq:dense-probe-interaction}
+\end{equation}
+Under the Kronecker fit $\Sigma\approx Q\otimes P$,
+\begin{equation}
+  \widetilde\Gamma_{P,Q}(U)
   =\sqrt{\vecop(U)^\top(Q\otimes P)\vecop(U)}
   =\norm{P^{1/2}UQ^{1/2}}_F .
   \label{eq:full-ball-frob}
 \end{equation}
-Thus the full-ball analogue of \eqref{eq:kron-trust-region} is
+Thus the dense-matrix analogue of \eqref{eq:kron-trust-region} is
 \begin{equation}
   \min_U\;\langle G,U\rangle
   \qquad\mathrm{s.t.}\qquad
@@ -455,7 +373,7 @@ Thus the full-ball analogue of \eqref{eq:kron-trust-region} is
   \label{eq:frob-trust-region}
 \end{equation}
 
-\begin{lemma}[Dense full-ball solution]\label{lem:frob}
+\begin{lemma}[Dense Frobenius solution]\label{lem:frob}
 Let $H:=P^{-1/2}GQ^{-1/2}$. If $H\ne0$, a minimizer of
 \eqref{eq:frob-trust-region} is
 \begin{equation}
@@ -485,7 +403,7 @@ replaces the spectral constraints by Frobenius constraints,
   =\norm{P^{1/2}\Delta B\,C_B^{1/2}}_F.
   \label{eq:frob-factor-blocks}
 \end{equation}
-The per-factor full-ball subproblems are
+The per-factor Frobenius subproblems are
 \begin{equation}
   \min_{\Delta A}\;\langle G_A,\Delta A\rangle
   \qquad\mathrm{s.t.}\qquad
@@ -508,9 +426,8 @@ $H_B=P^{-1/2}G_BC_B^{-1/2}$, their nonzero-gradient solutions are
   =-\tau_B\,\frac{P^{-1}G_BC_B^{-1}}{\norm{H_B}_F}.
   \label{eq:frob-factor-solutions}
 \end{equation}
-The difference from the main text is now exactly localized: the full dual ball
-produces the Frobenius-normalized inverse direction \eqref{eq:frob-factor-solutions},
-whereas the rank-one slice produces the spectral polar direction
-\eqref{eq:spectral-solutions}.
+The difference is now localized: arbitrary dense matrices give the
+Frobenius-normalized inverse direction \eqref{eq:frob-factor-solutions}, sample
+pseudo-gradients the spectral polar direction \eqref{eq:spectral-solutions}.
 
 \end{document}
