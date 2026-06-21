@@ -1162,6 +1162,9 @@ def main():
         world_size=world_size,
         local_rank=local_rank,
     )
+    if args.compile:
+        from lora_playground.optim import enable_kernel_compile
+        enable_kernel_compile()
     bare_model = peft.bare_model
     model = peft.train_model
     liger_applied = peft.liger_applied

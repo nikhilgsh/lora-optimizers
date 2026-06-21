@@ -74,3 +74,6 @@ slurm_cancel_submitted/
 
 # collaborator-shared result artifacts (not project-tracked)
 tanya_results/
+
+# polar-orthogonality bench scratch (logs/drafts; not part of the pipeline)
+bench_polar_out/

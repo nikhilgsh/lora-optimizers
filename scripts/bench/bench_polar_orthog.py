@@ -43,6 +43,7 @@ from lora_playground.optim import (  # noqa: E402
     _newton_schulz,
     _newton_schulz_gram_batched,
     _polar_express,
+    _polar_express_gram_batched,
 )
 
 
@@ -64,13 +65,36 @@ def _ns_gram(X, nsteps):
 
 
 def _pe(X, nsteps):
+    # Rectangular (NON-gram) Polar Express — Amsel 2025, operates on the full
+    # (r, d) matrix every iteration.
     return _polar_express(X, nsteps=nsteps)
+
+
+def _pe_gram(X, nsteps):
+    # PRODUCTION polar: gram-form Polar Express, fp32 (matches the dtype/path
+    # _polar_poly_batched dispatches at optim.py:1450). Forms the r×r Gram once,
+    # iterates on r×r — the "gram trick" whose saving vs _pe we are measuring.
+    return _polar_express_gram_batched(
+        X.unsqueeze(0), nsteps=nsteps, dtype=torch.float32, pre_norm="frob",
+    ).squeeze(0)
+
+
+def _pe_gram_fp16(X, nsteps):
+    # bf16/fp16-inner candidate: fp32 in/out + fp32 Frobenius pre-norm, fp16
+    # inner NS matmuls with the restart_at=2 reform as the "polish". Tests the
+    # "fp16 Gram NS needs MORE restarts; defer fp16 path until tested" question
+    # the production code (optim.py:3736) deferred. Accuracy reported as max|σ-1|.
+    return _polar_express_gram_batched(
+        X.unsqueeze(0), nsteps=nsteps, dtype=torch.float16, pre_norm="frob",
+    ).squeeze(0)
 
 
 VARIANTS = {
     "ns_rect": _ns_rect,
     "ns_gram_fp16": _ns_gram,
-    "polar_express": _pe,
+    "polar_express": _pe,                       # rectangular (non-gram) PE
+    "polar_express_gram": _pe_gram,             # PRODUCTION: gram PE, fp32
+    "polar_express_gram_fp16": _pe_gram_fp16,   # gram PE, fp16 inner
 }
 
 

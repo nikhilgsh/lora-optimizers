@@ -162,3 +162,84 @@ for N, r, d in [(112, 16, 2048), (112, 64, 2048), (112, 128, 2048), (224, 256, 2
     t_e, t_g = bench_gram_ns(N, r, d)
     print(f"({N:4d},{r:4d},{d:4d}) | {t_e:10.3f} | {t_g:10.3f} | "
           f"{t_e/t_g:9.2f}x")
+
+
+# ─── σ_max power iteration (op-norm) — launch-bound diagnostic ────────────────
+# The polar/inv-sqrt benches above cover the tensor-core-bound kernels. σ_max is
+# a different beast: batched matvecs M@(Mᵀv), memory-BW-bound, the candidate for
+# hiding behind the compute-bound polar. A large eager→graph speedup here ⇒
+# launch-bound; ~1.0× ⇒ BW-bound (still overlappable, see the two-stream test).
+from lora_playground.spectral import sigma_max_power_iter_batched
+
+
+def bench_sigma_max(N, m, n, n_iters=8):
+    M = make_rect(N, m, n)
+    v0 = torch.ones(N, min(m, n), device=device)   # deterministic warm start (graph-safe)
+    eager_call = lambda: sigma_max_power_iter_batched(M, v_init=v0, n_iters=n_iters)
+    t_eager = bench_eager(eager_call)
+
+    static_in = torch.zeros_like(M); static_in.copy_(M)
+    s = torch.cuda.Stream(); s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        for _ in range(3):
+            _ = sigma_max_power_iter_batched(static_in, v_init=v0, n_iters=n_iters)
+    torch.cuda.current_stream().wait_stream(s); torch.cuda.synchronize()
+
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        static_out = sigma_max_power_iter_batched(static_in, v_init=v0, n_iters=n_iters)
+
+    def refresh():
+        static_in.copy_(M)
+    t_graph = bench_graphed(static_in, static_out, g.replay, refresh)
+    return t_eager, t_graph
+
+
+print(f"\n=== sigma_max_power_iter_batched (op-norm power iter, n_iters=8) ===")
+print(f"{'shape (N,m,n)':>18s} | {'eager ms':>10s} | {'graph ms':>10s} | {'speedup':>10s}")
+print("-" * 60)
+for N, m, n in [(112, 256, 2048), (112, 2048, 256)]:   # A-side (r,d) and B-side (d,r)
+    try:
+        t_e, t_g = bench_sigma_max(N, m, n)
+        print(f"({N:4d},{m:5d},{n:5d}) | {t_e:10.3f} | {t_g:10.3f} | {t_e/t_g:9.2f}x")
+    except Exception as ex:
+        print(f"({N:4d},{m:5d},{n:5d}) | graph capture FAILED: {type(ex).__name__}: {ex}")
+
+
+# ─── DIRECT overlap test: σ_max ∥ polar on two streams vs sequential ──────────
+# This is the actual question — does the BW-bound σ_max hide behind the compute-
+# bound polar map? t_overlap < t_seq ⇒ yes (complementary resources). t_overlap
+# ≈ t_seq ⇒ they contend (the polar already saturates), no hiding.
+
+def bench_overlap_sigmax_polar(N, r, d, n_iters=8, nsteps=8):
+    W = make_rect(N, r, d)          # σ_max input (op-norm of an update factor)
+    Z = make_rect(N, r, d)          # polar input
+    v0 = torch.ones(N, min(r, d), device=device)
+
+    def seq():
+        sigma_max_power_iter_batched(W, v_init=v0, n_iters=n_iters)
+        _newton_schulz_gram_batched(Z, nsteps=nsteps, restart_at=2)
+
+    s1 = torch.cuda.Stream(); s2 = torch.cuda.Stream()
+    def overlap():
+        cur = torch.cuda.current_stream()
+        s1.wait_stream(cur); s2.wait_stream(cur)
+        with torch.cuda.stream(s1):
+            sigma_max_power_iter_batched(W, v_init=v0, n_iters=n_iters)
+        with torch.cuda.stream(s2):
+            _newton_schulz_gram_batched(Z, nsteps=nsteps, restart_at=2)
+        cur.wait_stream(s1); cur.wait_stream(s2)
+
+    return bench_eager(seq), bench_eager(overlap)
+
+
+print(f"\n=== overlap: σ_max ∥ polar (two streams) vs sequential ===")
+print(f"{'shape (N,r,d)':>18s} | {'seq ms':>10s} | {'2-stream ms':>12s} | {'hidden frac':>12s}")
+print("-" * 62)
+for N, r, d in [(112, 16, 2048), (112, 64, 2048), (112, 256, 2048)]:
+    try:
+        t_seq, t_ovl = bench_overlap_sigmax_polar(N, r, d)
+        print(f"({N:4d},{r:4d},{d:5d}) | {t_seq:10.3f} | {t_ovl:12.3f} | "
+              f"{(t_seq - t_ovl) / t_seq:11.1%}")
+    except Exception as ex:
+        print(f"({N:4d},{r:4d},{d:5d}) | overlap test FAILED: {type(ex).__name__}: {ex}")
