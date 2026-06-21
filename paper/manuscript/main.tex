@@ -513,7 +513,7 @@ Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the impleme
 \label{sec:exp-setup}
 
 \paragraph{Comparison.} 
-Across every comparison only the optimizer and its learning rate vary. We set the LoRA factor $\alpha$ to the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which lets us ignore the $\alpha/r$ factor in \eqref{eq:lora}. We apply LoRA to every linear layer except the output layer, and use the standard initialization that sets $B = 0$ and $A$ random \cite{lora}. For each method we sweep the learning rate under a constant schedule with no weight decay, and select the value with the lowest held-out eval loss. \Cref{app:exp} gives the base models, datasets, and full experimental configuration.
+Across every comparison only the optimizer and its learning rate vary. We set the LoRA factor $\alpha$ to the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which lets us ignore the $\alpha/r$ factor in \eqref{eq:lora}. We apply LoRA to every linear layer except the output layer, and use the standard initialization that sets $B = 0$ and $A$ random \cite{lora}. For each method we sweep the learning rate under a constant schedule with no weight decay, and select the value with the lowest held-out eval loss. We fine-tune four base models (OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, Llama-3-8B) on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}). Our primary rank is $r = 256$, varied in \Cref{sec:exp-taskdep}. \Cref{app:exp} gives the full experimental configuration.
 
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:setup}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
@@ -525,11 +525,7 @@ Across every comparison only the optimizer and its learning rate vary. We set th
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}: how many steps its tuned run needs to match Adam's tuned loss at horizon $T$. On Llama-3.2-1B
-finetuned on math at rank $r = 256$, \methodname{} reaches Adam's loss in $1.63\times$ fewer
-steps (\Cref{fig:hero}). The gain holds across base models. On code at $r = 256$, the speedup
-ranges from $1.61\times$ on OLMo-2-1B to $1.20\times$ on the larger Llama-3-8B
-(\Cref{tab:breadth}).
+We score each optimizer by its \emph{steps-to-Adam}: the number of steps its tuned run needs to match Adam's tuned loss at the horizon $T$. Across all nine (model, dataset, rank) settings \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{fig:hero,tab:breadth}), and on Llama-3.2-1B finetuned on math it also leads Muon and iMuon (\Cref{fig:hero}).
 
 \begin{figure}[t]
   \centering
@@ -562,13 +558,12 @@ Llama-3-8B & $1.20\times$ & $1.17\times$ \\
 
 \subsection{Component Ablation}
 \label{sec:exp-ablation}
-We ablate on Llama-3.2-1B finetuned on math at rank $r = 256$.
-\methodname{} wraps the decoupled spectral direction of \Cref{sec:method} (\Cref{eq:factor-directions}) in two controls:
+We perform ablations on Llama-3.2-1B finetuned on math to isolate the effect of the two components that distinguish \methodname{} from the decoupled step of \Cref{prop:decoupled}:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
   \item \textbf{Curvature} --- the two-sided diagonal metric $P,Q$ (\Cref{eq:ours-metric}).
-  \item \textbf{Magnitude} --- rescale each factor step to spectral norm $\rho$ (\Cref{eq:ours-prodcap}).
+  \item \textbf{Magnitude} --- the per-factor step rescaled to spectral norm $\rho$ (\Cref{eq:ours-rho}).
 \end{itemize}
-Removing the curvature, then the magnitude, leaves the bare decoupled step of \Cref{prop:decoupled} (\Cref{fig:ablation}). That bare step ties Adam. Each component contributes about half the speedup. 
+Removing both reduces \methodname{} to that step, which matches Adam. Restoring the curvature metric and then the magnitude rule each recovers about half of \methodname{}'s speedup (\Cref{fig:ablation}, right panel). 
 
 \begin{figure}[t]
   \centering
@@ -580,17 +575,15 @@ Removing the curvature, then the magnitude, leaves the bare decoupled step of \C
 
 \subsection{Effect of Rank and Distribution Shift}
 \label{sec:exp-taskdep}
-We run two single-axis comparisons, each on its own base model. The step-speedup over
-Adam (\Cref{sec:exp-main}) grows both with rank and with distribution shift. By \emph{shift} we mean distance from the
-base model's pretraining distribution. Code is well represented there and Bengali far
-less so, making Bengali the further task.
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \textbf{Rank (only $r$ changes).} Llama-3.2-1B on Math: the speedup rises from $1.48\times$ at $r = 32$ to $1.63\times$ at $r = 256$ (\Cref{fig:curves-rank}).
-  \item \textbf{Task (only the data changes).} Qwen2.5-1.5B at rank $r = 256$: the speedup rises from $1.30\times$ on in-distribution code to $1.73\times$ on out-of-distribution Bengali (\Cref{tab:ood,fig:ood}).
-\end{itemize}
-In both comparisons, the gain is larger when the update has more to change within
-the fixed step budget, whether from a wider pretraining-to-task gap or more rank to
-fill. We report this as an empirical correlation across our settings, not a mechanism.
+To isolate the effect of rank and of the target dataset, we vary each on its own: the rank on Llama-3.2-1B finetuned on math, and the target corpus on Qwen2.5-1.5B.
+
+\paragraph{Rank.} As the rank grows, \methodname{}'s step-speedup over Adam grows with it (\Cref{fig:curves-rank}).
+
+\paragraph{Learning-rate transfer.} The same rank sweep shows learning-rate transfer. \methodname{}'s loss-minimizing learning rate is the same at every rank, while Adam's shifts with rank (\Cref{fig:lr_transfer}). \methodname{} therefore needs no per-rank retuning.
+
+\paragraph{Distribution shift.} By \emph{shift} we mean distance from a base model's presumed pretraining distribution. Code is heavily represented in typical pretraining data and Bengali (Aya \cite{aya}) much less so, so we treat code as in-distribution and Bengali as out-of-distribution. On Qwen2.5-1.5B the speedup is larger on Bengali than on code (\Cref{tab:ood,fig:ood}).
+
+The speedup grows along both axes.
 
 \begin{table}[h]
   \centering\small
@@ -606,12 +599,6 @@ fill. We report this as an empirical correlation across our settings, not a mech
   \caption{\textit{[placeholder]} Task pair (Qwen2.5-1.5B / $r = 256$): eval loss vs.\ step, Adam vs.\ \methodname{}, on in-distribution code (left) and out-of-distribution Bengali (right).}
   \label{fig:ood}
 \end{figure}
-
-\subsection{Learning-Rate Transfer across Rank}
-\label{sec:exp-lrtransfer}
-Across ranks on Llama-3.2-1B finetuned on math, \methodname{}'s loss-minimizing lr stays at
-$10^{-2}$ for every $r$ while Adam's drifts $3\times10^{-4}{\to}10^{-4}$
-(\Cref{fig:lr_transfer}).
 
 \begin{figure}[t]
   \centering
