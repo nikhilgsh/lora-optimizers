@@ -348,7 +348,7 @@ To make the optimizer step tractable, we choose the update direction using a loc
 Since the LMO is homogeneous, $\gamma$ only sets the scale of its solution. We use the solution as the update direction. Later we will choose its magnitude separately so that the merged update has a controlled spectral norm.
 
 \paragraph{Pseudogradient proxy.}
-Since enumerating the full set of sample gradients is not tractable, we replace the sample-wise constraint by a maximum over a proxy set $\Gamma$ of pseudogradients. For a linear layer, the per-sample gradient has rank one. By the chain rule, $G_i = b_i x_i^\top$, where $x_i$ is the incoming activation and $b_i$ the backpropagated gradient of the sample loss with respect to the layer output. We therefore choose $\Gamma$ to be the set of rank-one matrices $bx^\top$ whose size is controlled by the second moment of the gradient distribution, $\Sigma = \E_i[ \mathrm{vec}(G_i) \mathrm{vec}(G_i)^\top ]$, namely
+Since enumerating the full set of sample gradients is not tractable, we replace the sample-wise constraint by a maximum over a proxy set $\Gamma$ of pseudogradients. For a linear layer, the per-sample gradient has rank one. By the chain rule, $G_i = b_i x_i^\top$, where $x_i$ is the incoming activation and $b_i$ the backpropagated gradient of the sample loss with respect to the layer output. We therefore choose $\Gamma$ to be the set of rank-one matrices $bx^\top$ in the unit ball of the metric defined by the second moment of the gradient distribution, $\Sigma = \E_i[ \mathrm{vec}(G_i) \mathrm{vec}(G_i)^\top ]$, namely
 \[
 \Gamma = \{bx^\top : \mathrm{vec}(bx^\top)^\top \Sigma^{-1} \mathrm{vec}(bx^\top) \le 1\}.
 \]
