@@ -1,0 +1,74 @@
+
+
+% ===========================================================================
+\section{Related work}
+\label{sec:related}
+% SKELETON -- organize by methodological axis, NOT paper-by-paper:
+%   - spectral / steepest-descent updates: Muon and variants.
+%   - Shampoo / SOAP curvature.
+%   - Riemannian-preconditioned LoRA -- the product-norm precedent.
+%   - LoRA optimizer/init work (GaLore, LoRA+, nonzero-init).
+%   - rank-aware lr / alpha rules \cite{mua, loraalpha} -- cite as related work only.
+%     Our lr-transfer claim is EMPIRICAL (the r>=32 basin alignment, \Cref{fig:lr_transfer}),
+%     NOT a muA-style theoretical rank-invariance prediction -- do not invoke muA / r^{-1/2}
+%     as predicting our result. muA = rank-aware lr theory; LoRA-alpha = alpha ~ 256 sqrt(r)
+%     under AdamW (a parameterization knob).
+%   - norm-scaled per-factor lr that bounds a bilinear product's change
+%     (QuacK \cite{quack}, concurrent) -- closest external precedent to our
+%     operator-norm radius; they pick Frobenius, we pick spectral.
+%   - invariant decoupled factor-step updates on LoRA (authored paragraph below): RITE -> iMuon ->
+%     LoRA-Muon lineage; their Alg 1 = the decoupled factor step (Prop. 2) we run as a baseline and beat,
+%     + the B=0 init-stability edge. NO gauge-invariance / Prop-5 engagement (cut: we don't
+%     compare across rank, our performance is better; gauge is a distraction from the
+%     stable-across-r>=32-vs-Adam headline).
+
+\paragraph{Curvature-whitened spectral updates.} Measuring the spectral (Muon) cap in a Shampoo-curvature metric has a dense, full-rank precedent in pre-training: SOAP-Muon \cite{soapmuon} (one-sided SOAP whitens the small side, Muon orthogonalizes the other, converging to a two-sided equilibrium) and, closest to us, Mousse \cite{mousse}. With one-sided second-moment factors $L=\mathrm{EMA}(GG^\top)$ and $R=\mathrm{EMA}(G^\top G)$, Mousse takes the step
+\begin{equation*}
+  \DW=-L^{-1/4}\,\polar\!\big(L^{-1/4}\,G\,R^{-1/4}\big)\,R^{-1/4},
+\end{equation*}
+the same whiten/polar/unwhiten sandwich as \eqref{eq:ours-lmo}, but at the quarter power $L^{-1/4}$ \cite{shampoo} (tempered to $1/8$ in practice) where we whiten fully at $\Sigma^{-1/2}$. \methodname{} differs on four further axes that matter for adapter fine-tuning:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Factor space.} On a LoRA pair the curvature never forms a dense $d\times d$ matrix. It collapses to two small $r\times r$ matrices, $C_A=B^\top PB$ and $C_B=AQA^\top$ --- the curvature seen on the rank-$r$ subspaces the factors actually span --- in place of the dense Kronecker factors of Mousse/SOAP-Muon.
+  \item \textbf{Diagonal but coupled.} The two side-factors $P,Q$ are diagonal (Adafactor-form \cite{adafactor}) but coupled through the second-moment matching of \cite{klshampoo}: not independent per-axis gradient energies, and not full Shampoo eigenbases. Our ablations show this dense, full-eigenbasis flavor does not improve on the coupled diagonal.
+  \item \textbf{LoRA-native.} It is the adapter member of this family, where the dense methods target full-parameter pre-training.
+  \item \textbf{Magnitude without grafting.} Mousse's unwhitened step $L^{-1/4}(\cdot)R^{-1/4}$ shrinks as the curvature factors $L,R$ grow, so it grafts the step to the whitened update's Frobenius norm to hold the update scale across training \cite{mousse}; our radius $\rho=\eta/(\norm{A}_2{+}\norm{B}_2)$ \eqref{eq:ours-prodcap} fixes $\norm{B\dot A+\dot B A}_2=\eta$ from the current factors rather than the curvature, so the scale cannot drift and grafting is unnecessary.
+\end{itemize}
+
+\paragraph{Norm-scaled per-factor learning rates.} QuacK \cite{quack} (concurrent) shares our aim of keeping a \emph{product} of two trained matrices from moving too far in one step, but reaches it by rescaling learning rates rather than by capping the step. On the attention-logit product $W_QW_K^\top$ it gives each weight a learning rate equal to a base rate $\eta_0$ over the Frobenius norm of its partner,
+\begin{equation}
+  \eta^{(Q)}=\frac{\eta_0}{\norm{W_K}_F},\qquad
+  \eta^{(K)}=\frac{\eta_0}{\norm{W_Q}_F},
+  \label{eq:quack}
+\end{equation}
+so a larger $W_K$ slows $W_Q$ and vice versa. Our radius \eqref{eq:ours-prodcap} does the same job on the adapter product $BA$, through a single scalar $\rho=\eta/(\norm{A}_2{+}\norm{B}_2)$ that holds the merged step at $\norm{B\dot A+\dot B A}_2=\eta$. Three differences:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \textbf{What moves:} for QuacK, the attention logits during pre-training \eqref{eq:quack}; for us, a fine-tuning adapter.
+  \item \textbf{Which norm:} QuacK divides by the Frobenius norm of the partner factor (they report the spectral norm performs comparably); we divide by the operator norm, and cap the operator norm of the merged step.
+  \item \textbf{What the rate multiplies:} QuacK rescales the base-optimizer step on each factor, leaving its direction unchanged; our $\rho$ rescales the polar direction \eqref{eq:ours-lmo} --- the curvature-whitened, orthogonalized update --- so it bounds the magnitude on top of a changed direction.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+% iMuon / LoRA-Muon concrete weaknesses to LAND in related work (don't forget;
+% each is verified -- code read, paper read end-to-end, or measured):
+% iMuon \cite{imuon}:
+%   - Controls only the PRODUCT step; per-factor step ~ eta/sigma_min(partner) is
+%     uncapped (no per-factor magnitude bound); headline runs are momentum-free at low r.
+%   - No curvature (first-moment spectral only).
+%   - Code-vs-theory gap: the PROVEN update (Cor 4.1, decoupled per-factor sandwich
+%     = our Prop 2) is B=0-unstable; the SHIPPED optimizer instead uses a JOINT
+%     product-space momentum (their with-momentum appendix) + an undocumented ~50-step
+%     warmup to survive B=0. The proven equation is implemented in NO code variant.
+%   - Slow: ~3.9 s/step at OLMo r256 (our E0 baseline).
+% LoRA-Muon \cite{loramuon}: full analysis in related_work_notes.md (Alg 1 = the method
+%   we reproduce as the iMuon baseline and beat; Alg 2 = optional no-op gauge rebalancing;
+%   B=0 instability; scope). We do NOT engage their across-rank gauge story or Prop 5 (cut for
+%   v1). Load-bearing notes live in related_work_notes.md, NOT in these comments.
+% ---------------------------------------------------------------------------
+\paragraph{Factorization-invariant LoRA updates.} A lineage enforces \emph{transformation invariance} --- the update to $\DW$ should not depend on the factorization $(NA,BN^{-1})$ --- via the factor whitening of \Cref{prop:imuon}.
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Lineage.} LoRA-RITE \cite{lorarite} introduced the invariance; its memoryless limit is \Cref{prop:imuon}, re-derived as iMuon's decoupled form \cite{imuon} and, concurrently, LoRA-Muon \cite{loramuon} (\Cref{app:memoryless}).
+  \item \textbf{We run the shared update.} LoRA-Muon's optimizer \emph{is} this update (their Alg.~1); its two extras --- split weight decay (a no-op at $\lambda{=}0$) and scalar gauge rebalancing (a no-op when the update is already gauge-invariant) --- are optional, and we omit both. Our both-controls-removed arm is this update, so \Cref{sec:exp} measures what our two controls add over the family at once.
+  \item \textbf{Init stability.} At the standard $B{=}0$ init this update has no stable lr (its per-factor step $\propto 1/\sigma_{\min}(B)$, undefined at $B{=}0$), so it needs warmup or nonzero init; our radius pins $\norm{\dot A}_2=\rho$ and starts cleanly (\Cref{rem:b0}).
+\end{itemize}
+
+
