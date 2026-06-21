@@ -513,7 +513,7 @@ Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the impleme
 \label{sec:exp-setup}
 
 \paragraph{Comparison.} 
-Across every comparison only the optimizer and its learning rate vary. We set the LoRA factor $\alpha$ to the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which lets us ignore the $\alpha/r$ factor in \eqref{eq:lora}. We apply LoRA to every linear layer except the output layer, and use the standard initialization that sets $B = 0$ and $A$ random. For each method we sweep the learning rate and select the value with the lowest held-out eval loss, under a constant schedule with no weight decay. \Cref{app:exp} gives the base models, datasets, and full configuration.
+Across every comparison only the optimizer and its learning rate vary. We set the LoRA factor $\alpha$ to the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which lets us ignore the $\alpha/r$ factor in \eqref{eq:lora}. We apply LoRA to every linear layer except the output layer, and use the standard initialization that sets $B = 0$ and $A$ random. For each method we sweep the learning rate under a constant schedule with no weight decay, and select the value with the lowest held-out eval loss. \Cref{app:exp} gives the base models, datasets, and full configuration.
 
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:setup}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
@@ -539,7 +539,7 @@ ranges from $1.61\times$ on OLMo-2-1B to $1.20\times$ on the larger Llama-3-8B
   \label{fig:hero}
 \end{figure}
 
-\paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer step's FLOPs are fixed in the batch while the forward
+\paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer step's FLOPs are independent of the batch size, while the forward
 and backward passes scale with it (\Cref{app:flops}), so its share of per-step time shrinks
 as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $4\%$ over Adam on
 all four base models (\Cref{tab:breadth}), and the step-count speedup carries to wall-clock almost
@@ -581,9 +581,8 @@ Removing the curvature, then the magnitude, leaves the bare decoupled step of \C
 
 \subsection{Effect of Rank and Distribution Shift}
 \label{sec:exp-taskdep}
-Two comparisons, each varying a single axis with everything else fixed on its own
-base, point the same way. The step-speedup over Adam (\Cref{sec:exp-main}) grows
-both with rank and with distribution shift. By \emph{shift} we mean distance from the
+We run two single-axis comparisons, each on its own base model. The step-speedup over
+Adam (\Cref{sec:exp-main}) grows both with rank and with distribution shift. By \emph{shift} we mean distance from the
 base model's pretraining distribution. Code is well represented there and Bengali far
 less so, making Bengali the further task.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
