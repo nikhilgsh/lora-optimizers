@@ -582,7 +582,7 @@ Removing the curvature, then the magnitude, leaves the bare decoupled step of \C
 \subsection{Effect of Rank and Distribution Shift}
 \label{sec:exp-taskdep}
 Two comparisons, each varying a single axis with everything else fixed on its own
-base, point the same way --- the step-speedup over Adam (\Cref{sec:exp-main}) grows
+base, point the same way. The step-speedup over Adam (\Cref{sec:exp-main}) grows
 both with rank and with distribution shift. By \emph{shift} we mean distance from the
 base model's pretraining distribution. Code is well represented there and Bengali far
 less so, making Bengali the further task.
@@ -590,7 +590,7 @@ less so, making Bengali the further task.
   \item \textbf{Rank (only $r$ changes).} Llama-3.2-1B on Math: the speedup rises from $1.48\times$ at $r = 32$ to $1.63\times$ at $r = 256$ (\Cref{fig:curves-rank}).
   \item \textbf{Task (only the data changes).} Qwen2.5-1.5B at rank $r = 256$: the speedup rises from $1.30\times$ on in-distribution code to $1.73\times$ on out-of-distribution Bengali (\Cref{tab:ood,fig:ood}).
 \end{itemize}
-Both move together --- the gain is larger when the update has more to change within
+In both comparisons, the gain is larger when the update has more to change within
 the fixed step budget, whether from a wider pretraining-to-task gap or more rank to
 fill. We report this as an empirical correlation across our settings, not a mechanism.
 
@@ -613,7 +613,7 @@ fill. We report this as an empirical correlation across our settings, not a mech
 \label{sec:exp-lrtransfer}
 Across ranks on Llama-3.2-1B finetuned on math, \methodname{}'s loss-minimizing lr stays at
 $10^{-2}$ for every $r$ while Adam's drifts $3\times10^{-4}{\to}10^{-4}$
-(\Cref{fig:lr_transfer}). The magnitude control bounds the merged update in spectral norm by $\eta$ for every $r$ (\Cref{eq:ours-prodcap}). The stable optimal lr is consistent with this $r$-independent bound, though our experiments do not establish it as the cause.
+(\Cref{fig:lr_transfer}).
 
 \begin{figure}[t]
   \centering
