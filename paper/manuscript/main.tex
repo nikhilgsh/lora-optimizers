@@ -345,14 +345,14 @@ To make the optimizer step tractable, we choose the update direction using a loc
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-Since the LMO is homogeneous, $\gamma$ only sets the scale of its solution. We use the solution as the update direction, then choose its magnitude separately so that the merged update has a controlled spectral norm.
+Since the LMO is homogeneous, $\gamma$ only sets the scale of its solution. We use the solution as the update direction. Later we will choose its magnitude separately so that the merged update has a controlled spectral norm.
 
-\paragraph{Curvature metric.}
+\paragraph{Pseudogradient proxy.}
 Since enumerating the full set of sample gradients is not tractable, we replace the sample-wise constraint by a maximum over a proxy set $\Gamma$ of pseudogradients. For a linear layer, the per-sample gradient has rank one. By the chain rule, $G_i = b_i x_i^\top$, where $x_i$ is the incoming activation and $b_i$ the backpropagated gradient of the sample loss with respect to the layer output. We therefore choose $\Gamma$ to be the set of rank-one matrices $bx^\top$ whose size is controlled by the second moment of the gradient distribution, $\Sigma = \E_i[ \mathrm{vec}(G_i) \mathrm{vec}(G_i)^\top ]$, namely
 \[
 \Gamma = \{bx^\top : \mathrm{vec}(bx^\top)^\top \Sigma^{-1} \mathrm{vec}(bx^\top) \le 1\}.
 \]
-Replacing the empirical sample gradients by this proxy set gives
+Note that the overall scale of $\Gamma$ is immaterial since it only rescales the constraint and can be directly absorbed into $\gamma$. Replacing the empirical sample gradients by this proxy set gives
 \begin{equation}
   \begin{array}{ll}
   \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
@@ -376,15 +376,11 @@ Q \in \R^{d_{\mathrm{in}} \times d_{\mathrm{in}}},
 \label{eq:ours-sigma}
 \end{equation}
 with $P$ and $Q$ positive definite, following optimizers such as K-FAC and Shampoo \cite{kfac, shampoo, klshampoo}. Under this ansatz, the pseudogradient constraint in \eqref{eq:pseudogradient-lmo} reduces to
-\[
-\sup_{bx^\top \in \Gamma} |\ip{bx^\top, U}| = \norm{P^{1/2}UQ^{1/2}}_2,
-\]
-where $\norm{\cdot}_2$ is the spectral norm (see \Cref{lem:pseudogradient-spectral}). We write this metric as
 \begin{equation}
-  \norm{U}_{P,Q}=\norm{P^{1/2}UQ^{1/2}}_2 .
-  \label{eq:ours-metric}
+\sup_{bx^\top \in \Gamma} |\ip{bx^\top, U}| = \norm{P^{1/2}UQ^{1/2}}_2,
+\label{eq:ours-metric}
 \end{equation}
-For further tractability, we restrict $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
+where $\norm{\cdot}_2$ is the spectral norm (see \Cref{lem:pseudogradient-spectral}). For further tractability, we restrict $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
 
 Let $G_A=B^\top G$ and $G_B=GA^\top$ denote the factor gradients. We estimate the diagonal factors from these gradients by applying KL-Shampoo's coupled second-moment equations under this diagonal ansatz \cite{klshampoo} (see \Cref{app:matnormal}).
 
@@ -532,7 +528,7 @@ Across every comparison only the optimizer and its learning rate vary. We set th
 We score each optimizer by its \emph{steps-to-Adam}: the number of steps it needs, at its
 tuned learning rate, to reach Adam's loss at the fixed horizon of $T$ steps. On Llama-3.2-1B
 finetuned on math at rank $r = 256$, \methodname{} reaches Adam's loss in $1.63\times$ fewer
-steps (\Cref{fig:hero}). The gain holds across base models: on code, the only task run across all four, at $r = 256$, the speedup
+steps (\Cref{fig:hero}). The gain holds across base models: on code at $r = 256$, the speedup
 ranges from $1.61\times$ on OLMo-2-1B to $1.20\times$ on the larger Llama-3-8B
 (\Cref{tab:breadth}).
 
