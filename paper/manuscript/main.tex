@@ -513,7 +513,7 @@ Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the impleme
 \label{sec:exp-setup}
 
 \paragraph{Comparison.} 
-Across every comparison only the optimizer and its learning rate vary. We set the LoRA factor $\alpha$ to the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which lets us ignore the $\alpha/r$ factor in \eqref{eq:lora}. We apply LoRA to every linear layer except the output layer, and use the standard initialization that sets $B = 0$ and $A$ random. For each method we sweep the learning rate under a constant schedule with no weight decay, and select the value with the lowest held-out eval loss. \Cref{app:exp} gives the base models, datasets, and full configuration.
+Across every comparison only the optimizer and its learning rate vary. We set the LoRA factor $\alpha$ to the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which lets us ignore the $\alpha/r$ factor in \eqref{eq:lora}. We apply LoRA to every linear layer except the output layer, and use the standard initialization that sets $B = 0$ and $A$ random \cite{lora}. For each method we sweep the learning rate under a constant schedule with no weight decay, and select the value with the lowest held-out eval loss. \Cref{app:exp} gives the base models, datasets, and full experimental configuration.
 
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:setup}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
@@ -525,8 +525,7 @@ Across every comparison only the optimizer and its learning rate vary. We set th
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}, the number of steps it needs to reach
-Adam's loss at the fixed horizon of $T$ steps (each at its tuned learning rate). On Llama-3.2-1B
+We score each optimizer by its \emph{steps-to-Adam}: how many steps its tuned run needs to match Adam's tuned loss at horizon $T$. On Llama-3.2-1B
 finetuned on math at rank $r = 256$, \methodname{} reaches Adam's loss in $1.63\times$ fewer
 steps (\Cref{fig:hero}). The gain holds across base models. On code at $r = 256$, the speedup
 ranges from $1.61\times$ on OLMo-2-1B to $1.20\times$ on the larger Llama-3-8B
@@ -569,7 +568,7 @@ We ablate on Llama-3.2-1B finetuned on math at rank $r = 256$.
   \item \textbf{Curvature} --- the two-sided diagonal metric $P,Q$ (\Cref{eq:ours-metric}).
   \item \textbf{Magnitude} --- rescale each factor step to spectral norm $\rho$ (\Cref{eq:ours-prodcap}).
 \end{itemize}
-Removing the curvature, then the magnitude, leaves the bare decoupled step of \Cref{prop:decoupled} (\Cref{fig:ablation}). That bare step ties Adam. Each control contributes about half the speedup. So the gain comes from the two controls, not from the spectral direction alone.
+Removing the curvature, then the magnitude, leaves the bare decoupled step of \Cref{prop:decoupled} (\Cref{fig:ablation}). That bare step ties Adam. Each component contributes about half the speedup. 
 
 \begin{figure}[t]
   \centering
