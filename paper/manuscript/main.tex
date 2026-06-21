@@ -28,9 +28,8 @@
 \newcommand{\algspacing}{\setlength{\@tempdima}{0pt}\renewcommand{\baselinestretch}{1.25}\selectfont}
 \makeatother
 \algrenewcommand\algorithmicrequire{\textbf{Input:}}
-% Phase header: blank line + vertical space above, bold label.
-\algnewcommand\algorithmicphase{\vspace{5pt}\textbf}
-\algnewcommand\Phase{\Statex\algorithmicphase}
+% Unnumbered bold phase labels inside algorithm blocks.
+\algnewcommand{\Phase}[1]{\Statex\textbf{#1}}
 \usepackage{enumitem}
 \usepackage{xcolor}
 \usepackage[colorlinks,citecolor=blue,urlcolor=blue]{hyperref}
@@ -49,6 +48,7 @@
 \DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator*{\argmax}{arg\,max}
 \newcommand{\smax}{\sigma_{\max}}
+\newcommand{\ip}[1]{\langle #1 \rangle}
 \DeclarePairedDelimiter{\norm}{\lVert}{\rVert}
 \newcommand{\DW}{\Delta W}
 \DeclareMathOperator{\polar}{msign}          % matrix sign (orthogonal polar factor): U\Sigma V^T -> U V^T
@@ -109,8 +109,8 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
 \rob{Pieces of introduction I found, mostly ilegible}
 \paragraph{Motivation.} Naive Muon (\Cref{lem:lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \Cref{par:coupling}).
-  \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step (\Cref{prop:ours}).
+  \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \Cref{eq:ours-klcoupling}).
+  \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step \eqref{eq:factor-directions}.
   \item[(C)] \emph{Magnitude.} Discard the LMO budget; re-pin to the operator-norm radius (\Cref{eq:ours-prodcap}).
 \end{itemize}
 Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
@@ -168,7 +168,7 @@ The key idea behind Muon is that we must control the size of the updates to the 
 \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
 \]
 where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
-The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the operator norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
+The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the spectral norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
 That is, for a given weight $W_t = W_0 + B_tA_t$ and corresponding  gradient matrix $G \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ for this layer, we minimize the local linearization of our loss, subject to a spectral ball constraint:
 \begin{align} \label{eq:muon}
     W_{t+1} &= \argmin_{W\in  \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}} \langle G_t,W-W_t\rangle \quad \mbox{subject to}\quad  \| W-W_t\|_2 \leq \eta \\
@@ -295,7 +295,7 @@ For the proof see
 The resulting update~\eqref{eq:imuon-lmo} whitens each factor gradient by the inverse Gram root of the opposite factor. This makes the step depend on the local geometry of the product \(BA\), rather than on the arbitrary scaling of the individual factors.
 
 \rob{This far}
-Finally, we have the freedom to choose $\eta_A$ and $\eta_B$.We will choose $\eta_A$ and $\eta_B$ so that the update in $A$ and $B$ have equal size in the operator norm. That is, we move equally far in either factor. Furthermore, we want to enforce that~\eqref{eq:constraint-lin-bnd} is less than $\eta$, which will be our one user selected hyper-parameter. 
+Finally, we have the freedom to choose $\eta_A$ and $\eta_B$.We will choose $\eta_A$ and $\eta_B$ so that the update in $A$ and $B$ have equal size in the spectral norm. That is, we move equally far in either factor. Furthermore, we want to enforce that~\eqref{eq:constraint-lin-bnd} is less than $\eta$, which will be our one user selected hyper-parameter. 
 
 Let $\rho = \|A_{t+1}-A_t\|_2 = \|B_{t+1}-B_t\|$ be the size of this update. Note that from~\eqref{eq:constraint-lin-bnd} 
 
@@ -305,141 +305,208 @@ Let $\rho = \|A_{t+1}-A_t\|_2 = \|B_{t+1}-B_t\|$ be the size of this update. Not
 % ===========================================================================
 \section{Method: \methodname}
 \label{sec:method}
-% MAIN STORY (outlined): the per-step DIRECTION of all three is the linear-minimization
-% oracle (LMO) of the gradient under a norm -- 3.1 spectral norm per factor, 3.2 the
-% decoupled half-split product step, 3.3 learned two-sided diagonal-curvature metric. OURS IS NOT A PURE LMO:
-% the metric P,Q is a coupled diagonal KL flip-flop (estimation, not an LMO), and the
-% MAGNITUDE is the operator-norm pin rho=eta/(smax A+smax B) (a separate rule, not the LMO
-% budget tau). Keep those three ingredients distinct in the prose.
+% NOT A PURE LMO: the metric P,Q is a coupled diagonal KL flip-flop (estimation,
+% not an LMO), and the MAGNITUDE is the operator-norm pin rho=eta/(smax A+smax B)
+% (a separate rule, not the LMO budget tau). Keep those three ingredients distinct.
 % Prose is terse here by design (author expands); the equations are the content.
 % Citation keys (verify in references.bib): kang_specgf, imuon, spectron,
 % polarexpress, soap, mua, tilde_csd (compositional steepest descent -- no arXiv).
-
-% --- setup + the steepest-descent (LMO) view (MAIN STORY) ---------------------
-% All three updates are the same step (steepest descent under a norm) under
-% different norms. Statements in body; proofs in \Cref{app:proofs}.
-
-
-
 \label{sec:method-ours}
-
-
-\paragraph{(A) The metric.} Model the gradient second moment as diagonal--Kronecker:
+Consider a single linear layer with frozen pretrained weight
+$
+W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
+$
+Following LoRA~\cite{lora}, we fine-tune this layer by learning a low-rank adapter
 \begin{equation}
-  \Sigma:=\E[\mathrm{vec}(G)\,\mathrm{vec}(G)^\top]\approx Q\otimes P,\qquad
-  P=\diag(p)\succ0\ (d_{\mathrm{out}}),\quad Q=\diag(q)\succ0\ (d_{\mathrm{in}}),
-  \label{eq:ours-sigma}
+\DW = \frac{\alpha}{r}\,BA, \qquad
+B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
+\label{eq:lora}
 \end{equation}
-the Shampoo Kronecker factorization \cite{soap} under an Adafactor diagonal restriction \cite{adafactor}. Whitening by $\Sigma^{-1/2}=Q^{-1/2}\otimes P^{-1/2}$ sends $\mathrm{vec}(G)\mapsto\mathrm{vec}(P^{-1/2}GQ^{-1/2})$ --- the matrix analogue of Adam's $1/\!\sqrt{v}$, one square root per Kronecker side. Whitening by this $-1/2$ power of the second moment is the covariance / optimal-Kronecker choice \cite{morwani,klshampoo}, equivalently Adafactor in Shampoo's eigenbasis \cite{soap}; original Shampoo uses the $-1/4$ power \cite{shampoo} --- half the whitening, from a Loewner-bound rather than a second-moment motivation. We take the spectral (operator-norm) cap in this whitened geometry, measuring the product step in
+of rank \(r\) with scaling \(\alpha\). To simplify the derivation, we suppress the scaling \(\alpha/r\) so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn adapters $A, B$ that solve
+\[
+\begin{array}{ll}
+\underset{A, B}{\mbox{minimize}}&
+\mathcal{L}(W_0 + BA),
+\end{array}
+\]
+where $\mathcal{L}$ is the task loss.
+
+\paragraph{Local model.}
+To make the optimizer step tractable, we choose the update direction using a local first-order approximation to the loss. In this local model, we want to decrease the average task loss while bounding how much the loss can change on any single sample. Additive updates $\Delta A$ and $\Delta B$ change $W$ by the first-order term $U = B \Delta A + \Delta B A$, plus a second-order term $\Delta B \Delta A$. Writing $G = \nabla_W \mathcal{L}$ for the loss gradient and $G_i$ for the gradient on sample $i$, this leads to the following linear minimization oracle (LMO)
 \begin{equation}
-  \norm{X}_{P,Q}=\norm{P^{1/2}XQ^{1/2}}_2,
+ \begin{array}{ll}
+  \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
+  \left\langle G, U \right\rangle \\[2pt]
+  \mathrm{subject\ to} &
+  \displaystyle \max_i
+  \left| \left\langle G_i, U \right\rangle \right|
+  \le \gamma ,
+  \end{array}
+  \label{eq:sample-lmo}
+\end{equation}
+Since the LMO is homogeneous, $\gamma$ only sets the scale of its solution. We use the solution as the update direction, then choose its magnitude separately so that the merged update has a controlled spectral norm.
+
+\paragraph{Curvature metric.}
+Since enumerating the full set of sample gradients is not tractable, we replace the sample-wise constraint by a maximum over a proxy set $\Gamma$ of pseudogradients. For a linear layer, the per-sample gradient has rank one: by the chain rule, $G_i = b_i x_i^\top$, where $x_i$ is the incoming activation and $b_i$ is the backpropagated gradient of the sample loss with respect to the layer output. We therefore choose $\Gamma$ to be the set of rank-one matrices $bx^\top$ whose size is controlled by the second moment of the gradient distribution, $\Sigma = \E_i[ \mathrm{vec}(G_i) \mathrm{vec}(G_i)^\top ]$, namely
+\[
+\Gamma = \{bx^\top : \mathrm{vec}(bx^\top)^\top \Sigma^{-1} \mathrm{vec}(bx^\top) \le 1\}.
+\]
+Replacing the empirical sample gradients by this proxy set gives
+\begin{equation}
+  \begin{array}{ll}
+  \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
+  \left\langle G, U \right\rangle \\[2pt]
+  \mathrm{subject\ to} &
+  \displaystyle
+  \sup_{b x^\top \in \Gamma}
+  | \ip{bx^\top, U} |
+  \le \gamma.
+  \end{array}
+  \label{eq:pseudogradient-lmo}
+  \end{equation}
+
+The matrix $\Sigma$ has size $d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}$, so the constraint is not efficiently computable without additional structure. We use a Kronecker ansatz
+\begin{equation}
+\Sigma = Q \otimes P,
+\qquad
+P \in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}},
+\quad
+Q \in \R^{d_{\mathrm{in}} \times d_{\mathrm{in}}},
+\label{eq:ours-sigma}
+\end{equation}
+with $P$ and $Q$ positive definite, following optimizers such as K-FAC and Shampoo \cite{kfac, shampoo, klshampoo}. Under this ansatz, the pseudogradient constraint in \eqref{eq:pseudogradient-lmo} reduces to
+\[
+\sup_{bx^\top \in \Gamma} |\ip{bx^\top, U}| = \norm{P^{1/2}UQ^{1/2}}_2,
+\]
+where $\norm{\cdot}_2$ is the spectral norm (see \Cref{lem:pseudogradient-spectral}). We write this metric as
+\begin{equation}
+  \norm{U}_{P,Q}=\norm{P^{1/2}UQ^{1/2}}_2 .
   \label{eq:ours-metric}
 \end{equation}
-the operator norm of $X$ after the $\Sigma^{1/2}=Q^{1/2}\otimes P^{1/2}$ change of variables ($P^{1/2}XQ^{1/2}$ is $\Sigma^{1/2}$ applied to $X$). $P=Q=I$ recovers the Euclidean spectral case of \Cref{sec:method-naive,sec:method-imuon}; the diagonals are estimated online (decay $\beta_2$) by \eqref{eq:ours-klcoupling}.
+For further tractability, we restrict $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
 
-\paragraph{Estimating the metric.}
-\label{par:coupling}
-We never form $G$. The factor gradients $G_A=B^\top G$ and $G_B=GA^\top$ are linear images of it, so their row second moments are $P,Q$ conjugated by the partner factor (\Cref{app:matnormal}):
+Let $G_A=B^\top G$ and $G_B=GA^\top$ denote the factor gradients. We estimate the diagonal factors from these gradients by applying KL-Shampoo's coupled second-moment equations under this diagonal ansatz \cite{klshampoo} (see \Cref{app:matnormal}). For the current adapters, define the contracted curvature factors
 \begin{equation}
-  C_A=B^\top P B,\qquad C_B=A\,Q\,A^\top
-  \label{eq:ours-closure}
+C_A = B^\top P B,
+\qquad
+C_B = A Q A^\top .
+\label{eq:ours-closure}
 \end{equation}
-($r\times r$, formed from the diagonals on the fly, never stored). Matching the diagonal of each factor gradient's second moment to the model \eqref{eq:ours-sigma} ($G_A$ resolves $Q$, $G_B$ resolves $P$) gives the per-coordinate estimator:
-\begin{equation}
-  q_j=\mathrm{EMA}\Big[\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
-  p_i=\mathrm{EMA}\Big[\tfrac1r\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top\Big].
-  \label{eq:ours-klcoupling}
-\end{equation}
-It is unbiased ($\E[\tfrac1r\,G_A^\top C_A^{-1}G_A]=Q$, \Cref{app:matnormal}) and couples the sides through $C_A,C_B$ ($C_A$ injects $P$, $C_B$ injects $Q$); $C_A=C_B=I$ drops to two independent Adafactor diagonals \cite{adafactor}. This is the coupled diagonal second-moment matching of \cite{klshampoo}, specialised to the LoRA factor gradients; we run one $\beta_2$-EMA alternation per step.
 
-\paragraph{(B) The step: spectral LMO in the frozen metric.} With $P,Q$ \emph{frozen} at their current estimate, cap the product step in the metric \eqref{eq:ours-metric} and maximize alignment with the negative gradient:
+\paragraph{Direction.}
+With the diagonal factors $P$ and $Q$ fixed during the step, the direction problem becomes
 \begin{equation}
-\begin{array}{llll}
-\underset{\Delta A}{\mbox{maximize}}&
-\langle B\Delta A,-G\rangle
-& \mbox{subject to} & \norm{B\Delta A}_{P,Q}\leq\tau. 
+    \begin{array}{ll}
+    \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
+    \left\langle G, B\Delta A+\Delta B A \right\rangle \\[2pt]
+    \mathrm{subject\ to} &
+    \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
+    \le \gamma .
+    \end{array}
+    \label{eq:joint-direction-lmo}
+  \end{equation}
+  
+To handle the coupling between $\Delta A$ and $\Delta B$ in $U$, we use subadditivity of the spectral norm to split the constraint into two separate budgets, one for each factor. For any $\gamma_A,\gamma_B > 0$ satisfying $\gamma_A+\gamma_B\le\gamma$, this gives two block problems:
+\begin{equation}
+\setlength{\arraycolsep}{2pt}
+\begin{array}{@{}c@{\qquad}c@{}}
+\begin{array}{ll}
+\underset{\Delta A}{\mathrm{minimize}} &
+\left\langle G_A,\Delta A \right\rangle \\[2pt]
+\mathrm{subject\ to} &
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \gamma_A ,
 \end{array}
-  \label{eq:ours-opt}
+&
+\begin{array}{ll}
+\underset{\Delta B}{\mathrm{minimize}} &
+\left\langle G_B,\Delta B \right\rangle \\[2pt]
+\mathrm{subject\ to} &
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \gamma_B .
+\end{array}
+\end{array}
+\label{eq:decoupled-direction-lmo}
 \end{equation}
-This is the spectral LMO of \Cref{lem:lmo} in the $P,Q$ metric, with $P,Q$ from (A) held fixed. Whitening both sides by $P^{-1/2},Q^{-1/2}$ reduces it to the Euclidean spectral case, giving a closed form.
-
-\begin{restatable}[Metric LMO]{proposition}{MetricLMO}\label{prop:ours}
-For $B$ of full column rank, the solution of \eqref{eq:ours-opt} is
-\begin{equation*}
-  \Delta A = -\tau C_A^{-1/2} \polar \big(C_A^{-1/2} G_A Q^{-1/2}\big) Q^{-1/2},
-  \qquad C_A=B_t^\top P B_t .
-\end{equation*}
-\end{restatable}
-\medskip
-\noindent \methodname{} uses \Cref{prop:ours} for the step \emph{direction} only, on the bias-corrected Nesterov momentum $\hat M_A$ in place of the gradient:
+As before, the budgets $\gamma_A$ and $\gamma_B$ only set the scale of the solutions. We use these solutions only to choose directions. To solve these block problems, we use the following generalized spectral-norm LMO (see \Cref{app:proofs}).
+\begin{lemma}[Generalized spectral-norm LMO]
+\label{lem:whitened-spectral-lmo}
+Let $L$ and $R$ be positive definite. Then
+\[
+\begin{aligned}
+\underset{\norm{LXR}_2\le\gamma}{\mathrm{minimize}}\,
+\left\langle M,X\right\rangle
+&\quad\text{has solution}\quad -\gamma L^{-1}
+\polar\!\left(L^{-1}MR^{-1}\right)
+R^{-1}.
+\end{aligned}
+\]
+\end{lemma}
+\noindent Using the contracted curvature factors in \eqref{eq:ours-closure}, the two constraints in \eqref{eq:decoupled-direction-lmo} can be written in the form of \Cref{lem:whitened-spectral-lmo} with $(L,R)=(C_A^{1/2},Q^{1/2})$ and $(L,R)=(P^{1/2},C_B^{1/2})$, respectively. Applying the lemma, the two block minimizers are $-\gamma_A W_A$ and $-\gamma_B W_B$, where
 \begin{equation}
-  W_A \;=\; C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\,\hat M_A\,Q^{-1/2}\big)\,Q^{-1/2},
-  \label{eq:ours-lmo}
+  \begin{aligned}
+  W_A &=
+  C_A^{-1/2}
+  \polar\!\left(C_A^{-1/2}G_AQ^{-1/2}\right)
+  Q^{-1/2},\\
+  W_B &=
+  P^{-1/2}
+  \polar\!\left(P^{-1/2}G_BC_B^{-1/2}\right)
+  C_B^{-1/2}.
+  \end{aligned}
+  \label{eq:factor-directions}
 \end{equation}
-with $W_B$ the mirror ($C_B=AQA^\top$).
+Thus the block problems determine the descent directions $-W_A$ and $-W_B$.
 
-\paragraph{(C) The magnitude: operator-norm radius.} Since $\polar(\cdot)$ has unit spectral norm, the magnitude of $W_A$ is an artifact of the whitening, not the LMO budget $\tau$ --- stage (B) fixes only the \emph{direction}. \Cref{alg:ours} \emph{discards} it and re-pins the step to the operator-norm radius $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ via $\Delta A=-\rho\,W_A/\norm{W_A}_2$, which caps the merged step independent of conditioning:
+\paragraph{Magnitude.}
+It remains to choose the step magnitude. Directly using $\gamma_A$ and $\gamma_B$ as step sizes would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, the same fixed step size for $A$ and $B$ can make the merged update arbitrarily large (see \Cref{lem:factor-radius-gauge}). We instead set the magnitude by directly bounding the first-order merged update $U$ in spectral norm by a target step size $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
-  \norm{B\Delta A+\Delta B A}_2\le\rho\big(\norm{A}_2+\norm{B}_2\big)=\eta .
-  \label{eq:ours-prodcap}
+\norm{U}_2
+=
+\norm{B\Delta A+\Delta B A}_2
+\le
+\norm{B}_2\norm{\Delta A}_2
++
+\norm{A}_2\norm{\Delta B}_2 .
+\label{eq:ours-prodcap}
 \end{equation}
-This is a second trust region, separate from (B): a Euclidean operator-norm cap on the merged step, not the $P,Q$ cap of \eqref{eq:ours-opt} (whose budget $\tau$ is discarded). It makes the method stable from the standard $B{=}0$ init (\Cref{rem:b0}).
-
-\begin{remark}[Relation to AdaPreLoRA]
-\Cref{prop:ours} caps the whitened step in operator norm, giving the polar; a Frobenius cap instead gives the linear solve $\Delta A\propto C_A^{-1}G_A Q^{-1}$ --- AdaPreLoRA \cite{adaprelora}, the same projection without the spectral cap.
-\end{remark}
+Treating $A$ and $B$ symmetrically, set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Choosing
+\begin{equation}
+\rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
+\label{eq:ours-rho}
+\end{equation}
+ensures $\norm{U}_2\le\eta$, and gives the updates
+\[
+\Delta A = -\rho\,\frac{W_A}{\norm{W_A}_2},
+\qquad
+\Delta B = -\rho\,\frac{W_B}{\norm{W_B}_2}.
+\]
+\paragraph{Implementation.}
+Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We estimate the spectral norms by power iteration (see \Cref{alg:smax}) and use damping in the curvature inverse square roots (see \Cref{app:damping}).
 
 \begin{algorithm}[t]
-\caption{\methodname{} step for one LoRA pair $(A,B)$ at iteration $t$}
+\caption{\methodname{} step for one LoRA pair $(A,B)$}
 \label{alg:ours}
 \begin{algorithmic}[1]
-\Require gradients $G_A,G_B$; momenta $M_A,M_B$; diagonals $P,Q$; decays $\beta_1,\beta_2$; rate $\eta$
-\Phase{Momentum (Nesterov, bias-corrected)}
-\State $M_A\gets\beta_1 M_A+(1-\beta_1)G_A$;\quad $\hat M_A\gets\big(\beta_1 M_A+(1-\beta_1)G_A\big)/(1-\beta_1^{t})$ \Comment{mirror for $B$}
-\Phase{Whiten, polar, unwhiten}
-\State $C_A\gets B^\top P B$;\quad $C_B\gets A Q A^\top$ \Comment{$r\times r$}
-\State $W_A\gets C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\hat M_A Q^{-1/2}\big)\,Q^{-1/2}$
-\State $W_B\gets P^{-1/2}\,\polar\!\big(P^{-1/2}\hat M_B C_B^{-1/2}\big)\,C_B^{-1/2}$
-\Phase{Operator-norm step}
-\State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$
-\State $A\gets A-\rho\,W_A/\norm{W_A}_2$;\quad $B\gets B-\rho\,W_B/\norm{W_B}_2$
-\Phase{Metric update (flip-flop, one alternation)}
-\State $Q_{jj}\gets\beta_2 Q_{jj}+\tfrac{1-\beta_2}{r}(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}$
-\State $P_{ii}\gets\beta_2 P_{ii}+\tfrac{1-\beta_2}{r}(G_B)_{i,:}C_B^{-1}(G_B)_{i,:}^\top$
+\Statex \textbf{Hyperparameters:} learning rate $\eta$, momentum decay $\beta_1$, curvature decay $\beta_2$
+\Statex
+\Phase{Nesterov Momentum}
+\State $M_A\gets\beta_1 M_A+(1-\beta_1)G_A \qquad M_B\gets\beta_1 M_B+(1-\beta_1)G_B$ \Comment{momentum buffer}
+\State $\widehat M_A\gets\beta_1M_A+(1-\beta_1)G_A \qquad \widehat M_B\gets\beta_1M_B+(1-\beta_1)G_B$ \Comment{Nesterov look-ahead}
+\Statex
+\Phase{Direction}
+\State $C_A\gets B^\top P B \qquad C_B\gets A Q A^\top$
+\State $W_A\gets C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\widehat M_AQ^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
+\State $W_B\gets P^{-1/2}\,\polar\!\big(P^{-1/2}\widehat M_BC_B^{-1/2}\big)\,C_B^{-1/2}$
+\Statex
+\Phase{Magnitude}
+\State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
+\State $A\gets A-\rho\,W_A/\norm{W_A}_2 \qquad B\gets B-\rho\,W_B/\norm{W_B}_2$
+\Statex
+\Phase{Metric Update}
+\State $Q\gets\beta_2 Q+(1-\beta_2)\diag\!\big(G_A^\top C_A^{-1}G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}
+\State $P\gets\beta_2 P+(1-\beta_2)\diag\!\big(G_B C_B^{-1}G_B^\top\big)/r$
 \end{algorithmic}
 \end{algorithm}
-\noindent Every $\norm{\cdot}_2$ above is the guarded $\smax$ estimate of \Cref{alg:smax}, and every inverse-sqrt is relative-damped (\Cref{app:damping}).
-
-\begin{remark}[Why the operator-norm step is safe at the standard $B{=}0$ initialization]
-\label{rem:b0}
-LoRA starts at $B{=}0$, where the decoupled factor step of \Cref{prop:decoupled} has no stable learning rate but the operator-norm step does.
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{The failure.} $\polar(S_B^{-1/2}G_A)$ has unit spectral norm however small $G_A$ is, and the outer $S_B^{-1/2}$ scales it by up to $1/\sigma_{\min}(B)$, so $\norm{\Delta A}_2\approx\eta/\sigma_{\min}(B)$ --- unbounded as $B\to0$, undefined at $B{=}0$. Renormalizing to a scale-free step removes the gradient's natural $\norm{G_A}\propto\sigma(B)$ protection; lowering $\eta$ does not help (it slows $B$'s escape by the same factor it shrinks the spurious step). So the decoupled spectral update --- iMuon's closed form (Cor.\ 4.1), re-derived by LoRA-Muon \cite{loramuon}, equivalent to simplified LoRA-RITE \cite{lorarite} --- has no stable rate from this init (\Cref{sec:exp}).
-  \item \textbf{The family's workarounds.} iMuon applies the metric LMO to a \emph{joint} product-space momentum $M=\Delta M_BA+B\Delta M_A$ (a different update, not the decoupled solution) and prepends warmup to grow $B$ off zero; LoRA-Muon trains from nonzero random factors and never enters the regime.
-  \item \textbf{Ours needs neither.} The operator-norm step $\Delta A=-\rho\,W_A/\norm{W_A}_2$ pins $\norm{\Delta A}_2=\rho$ at every conditioning; at $B{=}0$, $\rho=\eta/(\norm{A}_2+\norm{B}_2)=\eta/\norm{A}_2$ with $A$ a full-scale random factor --- an ordinary step. The polar discards the gradient's magnitude and the rescale re-imposes the radius, so the step size is a property of the method, not the factor conditioning.
-\end{itemize}
-\end{remark}
-
-\paragraph{Cost.} \methodname{} is \emph{lighter} than AdamW in memory and adds a small, batch-amortized compute overhead.
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Memory.} Same first moment as AdamW, but AdamW's second moment is replaced by two curvature diagonals $P,Q$ --- a factor $r$ smaller. The $r\times r$ matrices $C_A=B^\top PB$, $C_B=AQA^\top$ are formed on the fly (\Cref{alg:ours}), not stored, and the inverse-sqrt is eigh-free (no eigenbasis, no $d\times d$ state). Net state ${\approx}\tfrac12$ AdamW's (\Cref{tab:optstate}). The four operator-norm estimates (\Cref{alg:smax}) each cache one warm-start vector across steps, adding $4r$ floats/pair --- negligible against the $(r{+}1)(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ state and omitted from \Cref{tab:optstate}.
-  \item \textbf{Compute.} Per pair: $8$ matmuls of cost ${\sim}r^2d$ (forming $C_A,C_B$, whiten/un-whiten, two curvature applies), two full polars (PolarExpress \cite{polarexpress}, $K{=}8$ steps), two gram--Newton--Schulz inverse-sqrts \cite{gram_ns} (${\sim}r^3$). All $r\times r$ or $r\times d$, eigh-free; the polars dominate.
-  \item \textbf{Wall.} Near-free at our batch size, since the optimizer step's FLOPs are fixed in the batch while the forward and backward passes scale with it (\Cref{app:flops}).
-\end{itemize}
-\begin{table}[h]
-\centering\small
-\begin{tabular}{lccc}
-\toprule
-optimizer state (fp32) & floats / pair & Llama-3-8B & OLMo-2-1B \\
-\midrule
-AdamW         & $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$     & $5.37$\,GB & $1.54$\,GB \\
-\methodname{} & $(r{+}1)(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ & $2.69$\,GB & $0.77$\,GB \\
-\bottomrule
-\end{tabular}
-\caption{Optimizer state at $r = 256$, all-linear LoRA: \methodname{} keeps AdamW's first moment but replaces the second moment with two $r{\times}$-smaller diagonals $P,Q$, ${\approx}\tfrac12$ AdamW's state ($671$M LoRA params for Llama-3-8B, $193$M for OLMo-2-1B).}
-\label{tab:optstate}
-\end{table}
-
 % ===========================================================================
 \section{Experiments}
 \label{sec:exp}
@@ -518,7 +585,7 @@ Llama-3-8B & $1.20\times$ & $1.17\times$ \\
 \methodname{} composes the three stages of \Cref{sec:method} (A--C):
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
   \item[(A)] \textbf{Curvature} --- the two-sided diagonal $P,Q$ (\Cref{eq:ours-metric}).
-  \item[(B)] \textbf{Direction} --- a whiten--polar--unwhiten step in that metric (\Cref{prop:ours}).
+  \item[(B)] \textbf{Direction} --- a whiten--polar--unwhiten step in that metric \eqref{eq:factor-directions}.
   \item[(C)] \textbf{Magnitude} --- re-pin the step to the operator-norm radius $\rho$ (\Cref{eq:ours-prodcap}).
 \end{itemize}
 The ablation peels the two controls off \methodname{} --- the curvature (A) and the magnitude (C) --- leaving the bare decoupled factor step of \Cref{prop:decoupled} (\Cref{fig:ablation}). The curvature and the magnitude each carry about half the speedup. With both removed, the bare step ties AdamW, as does naive Muon.
@@ -580,6 +647,7 @@ $r$-independent cap, though our experiments do not establish it as the cause.
 
 % ===========================================================================
 \section{Prior Work}
+\label{sec:related}
 
 \rob{Some pieces of prior work mixed in with experimental setup?}
 \emph{Same operator, three independent incarnations.} The memoryless limit of LoRA-RITE \cite{lorarite} (moment accumulation stripped), iMuon's decoupled form \cite{imuon}, and the concurrent LoRA-Muon \cite{loramuon} all realize \Cref{prop:decoupled} (\Cref{app:memoryless}); \cite{loramuon} proves this equivalence. Our ablation runs this shared update's \emph{direction} as the both-controls-removed arm, with the step magnitude pinned by the unit-spectral-norm rescale of \Cref{alg:ours} (\Cref{sec:exp}); the unpinned update's factor step is uncapped ($\propto1/\sigma_{\min}$ of the partner).
@@ -857,7 +925,7 @@ LR schedule            & constant (no warmup or decay) \\
 
 \paragraph{\methodname{} configuration.} Fixed across every \methodname{} run (full step in \Cref{alg:ours}):
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item Nesterov momentum, $\beta_1{=}0.9$.
+  \item Momentum decay $\beta_1{=}0.9$.
   \item Curvature-EMA decay $0.99$ (the $\beta_2$ of \eqref{eq:ours-klcoupling}); one flip-flop alternation per step.
   \item PolarExpress and the shared Gram--Newton--Schulz at $K{=}8$ iterations each.
   \item Relative damping $\delta{=}10^{-4}$.
@@ -921,11 +989,79 @@ stated update.
 \end{proof}
 
 
+\begin{lemma}[Pseudogradient constraint under a Kronecker ansatz]
+\label{lem:pseudogradient-spectral}
+Let $U\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, let
+$P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ and
+$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ be positive definite, and set
+$\Sigma=Q\otimes P$. Define
+\[
+\Gamma=\{bx^\top:\mathrm{vec}(bx^\top)^\top\Sigma^{-1}\mathrm{vec}(bx^\top)\le1\}.
+\]
+Then
+\[
+  \sup_{bx^\top\in\Gamma}\left|\ip{bx^\top,U}\right|
+  =\norm{P^{1/2}UQ^{1/2}}_2 .
+\]
+\end{lemma}
+
+\begin{proof}
+Using the column-major vectorization convention,
+$\mathrm{vec}(bx^\top)=x\otimes b$. Therefore
+\[
+\mathrm{vec}(bx^\top)^\top(Q\otimes P)^{-1}\mathrm{vec}(bx^\top)
+=(x^\top Q^{-1}x)(b^\top P^{-1}b).
+\]
+Substitute $b=P^{1/2}u$ and $x=Q^{1/2}v$. The constraint becomes
+$\norm{u}_2^2\norm{v}_2^2\le1$, and the objective becomes
+\[
+  \left|b^\top Ux\right|
+  =\left|u^\top P^{1/2}UQ^{1/2}v\right|.
+\]
+Taking the supremum over $\norm{u}_2\norm{v}_2\le1$ gives
+$\norm{P^{1/2}UQ^{1/2}}_2$ by the definition of the spectral norm.
+\end{proof}
+
+
+\begin{proof}[Proof of \Cref{lem:whitened-spectral-lmo}]
+Set $Y=LXR$, so $X=L^{-1}YR^{-1}$. The constraint becomes
+$\norm{Y}_2\le\gamma$, and the objective becomes
+\[
+\left\langle M,X\right\rangle
+=
+\left\langle L^{-1}MR^{-1},Y\right\rangle .
+\]
+By spectral--nuclear duality, this is minimized over $\norm{Y}_2\le\gamma$ by
+\[
+Y=-\gamma\,\polar\!\left(L^{-1}MR^{-1}\right).
+\]
+Substituting back gives the stated solution.
+\end{proof}
+
+
+\begin{lemma}[Fixed factor radii under LoRA rescaling]
+\label{lem:factor-radius-gauge}
+Let $B_c=cB$ and $A_c=c^{-1}A$ for $c>0$, so that $B_cA_c=BA$. With $P,Q$ and $G$ fixed, the normalized directions obtained from \eqref{eq:factor-directions} are unchanged by this rescaling. If $\widehat W_A=W_A/\norm{W_A}_2$ and $\widehat W_B=W_B/\norm{W_B}_2$, then a fixed factor radius $\rho>0$ gives
+\[
+U_c
+=
+-\rho\left(cB\widehat W_A+c^{-1}\widehat W_BA\right).
+\]
+If either $B\widehat W_A\ne0$ or $\widehat W_BA\ne0$, then
+$\sup_{c>0}\norm{U_c}_2=\infty$.
+\end{lemma}
+
+\begin{proof}
+Under the rescaling, $G_{A,c}=B_c^\top G=cG_A$ and
+$C_{A,c}=B_c^\top PB_c=c^2C_A$, so the polar argument defining $W_A$ is unchanged and $W_{A,c}=c^{-1}W_A$. Hence $W_{A,c}/\norm{W_{A,c}}_2=W_A/\norm{W_A}_2$. Similarly, $G_{B,c}=GA_c^\top=c^{-1}G_B$ and $C_{B,c}=A_cQA_c^\top=c^{-2}C_B$, so $W_{B,c}=cW_B$ and the normalized $B$ direction is also unchanged. Therefore the fixed-radius first-order update is the displayed $U_c$. If $B\widehat W_A\ne0$, then $\norm{U_c}_2/c\to\rho\norm{B\widehat W_A}_2$ as $c\to\infty$. If $B\widehat W_A=0$ but $\widehat W_BA\ne0$, then $c\norm{U_c}_2\to\rho\norm{\widehat W_BA}_2$ as $c\to0$. In either case the supremum is infinite.
+\end{proof}
+
+
 
 \DecoupledFactorStep*
 \begin{proof}[Proof of \Cref{prop:decoupled}]
 Consider the problem w.r.t. the $A$-subproblem, and define $\Delta A := A - A_t$ and $Z:=S_B^{1/2}\Delta A$.
-By the definition of the operator norm,
+By the definition of the spectral norm,
 \[
 \|B_t \Delta A\|_{2}
 = \sqrt{\lambda_{\max}(\Delta A^\top S_B \Delta A)}
@@ -950,7 +1086,7 @@ By \Cref{lem:muon-lmo}, one update is
 \[
   \Delta A=S_B^{-1/2}Z=-\eta_A S_B^{-1/2}\polar \big(S_B^{-1/2}G_A\big).
 \]
-We assume $S_B^{-1/2}G_A\neq 0$, then its polar factor has operator norm one.
+We assume $S_B^{-1/2}G_A\neq 0$, then its polar factor has spectral norm one.
 Consequently,
 \[
   \|B_t\Delta A\|_2
@@ -963,56 +1099,13 @@ The argument for the  $B$-update is symmetric.
 
 \end{proof}
 
-\MetricLMO*
-\begin{proof}[Proof of \Cref{prop:ours}]
-Since $P\succ0$ and $B_t$ has full column rank,
-\[
-    C_A=B_t^\top P B_t\succ0.
-\]
-Set 
-\[
-Y_A:=C_A^{1/2}\Delta A Q^{1/2},
-\qquad 
-\Delta A=C_A^{-1/2}Y_A Q^{-1/2}.
-\] 
-Thus
-\[
-  \norm{B\Delta A}_{P,Q}=
-  \norm{P^{1/2}B\Delta A Q^{1/2}}_2 =
-  \sqrt{
-\lambda_{\max}(Y_A^\top C_A^{-1/2}B_t^\top
-PB_t C_A^{-1/2} Y_A)
-  }=\norm{Y_A}_2 .
-\]
-Using $G_A=B^\top G$ and trace cyclicity,
-the objective becomes
-\[
-  \langle B\Delta A,-G\rangle=\langle\Delta A,-G_A\rangle=\langle Y_A,-H_A\rangle,
-  \qquad H_A:=C_A^{-1/2}G_A Q^{-1/2}.
-\]
-So the problem reduces to 
-\[
-\begin{array}{ll}
-\underset{\norm{Y_A}_2\le\tau}{\mbox{maximize}}&
-\langle Y_A,-H_A\rangle.
-\end{array}
-\]
-By \Cref{lem:muon-lmo}, one solution is
-$Y_A=-\tau \polar(H_A)$.
-Substituting
-$\Delta A=C_A^{-1/2}Y_AQ^{-1/2}$ gives the result.
-
-% Interestingly, Frobenius norm ball constraint $\norm{Y_A}_F\le\tau$ instead gives an update $\Delta A\propto C_A^{-1}G_A Q^{-1}$, 
-% recovering AdaPreLoRA.
-\end{proof}
-
 \section{Memoryless Limits of LoRA-RITE and iMuon}
 \label{app:memoryless}
 LoRA-RITE \cite{lorarite} and iMuon \cite{imuon} both reduce to the decoupled factor step of
 \Cref{prop:decoupled} once their moment accumulation is removed. We show this below. The one
 caveat is iMuon: it is the \emph{momentum-free} algorithm that collapses, while the shipped
-momentum variant does not (last paragraph) --- the code-versus-theory gap of
-\Cref{rem:b0,sec:related}.
+momentum variant does not (last paragraph) --- the code-versus-theory gap discussed in
+\Cref{sec:related}.
 
 \paragraph{Setup.} As in \Cref{sec:method}: $G=\partial L/\partial(BA)$ is the product
 gradient, $G_A=B^\top G$ and $G_B=GA^\top$ the factor gradients, $S_A=AA^\top$ and
@@ -1085,9 +1178,9 @@ This derives the estimator \eqref{eq:ours-klcoupling} and its coupling
 \eqref{eq:ours-closure} from the second-moment model \eqref{eq:ours-sigma} alone --- no
 distributional assumption on $G$.
 
-\paragraph{Model and moment identities.} Posit that the gradient second moment is
-diagonal--Kronecker, $\Sigma=\E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]\approx Q\otimes P$,
-equivalently $\E[G_{ij}G_{kl}]=P_{ik}Q_{jl}$. The only consequence we use is the pair of
+\paragraph{Model and moment identities.} Under the diagonal--Kronecker ansatz,
+$\Sigma=\E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]=Q\otimes P$, equivalently
+$\E[G_{ij}G_{kl}]=P_{ik}Q_{jl}$. The only consequence we use is the pair of
 moment identities, obtained by contracting that entrywise form: for any
 $M\in\mathbb{R}^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ and
 $N\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
@@ -1120,7 +1213,14 @@ so $\tfrac1r\,G_A^\top C_A^{-1}G_A$ is unbiased for $Q$, and its diagonal is the
 \eqref{eq:ours-klcoupling}. The mirror with $M=A^\top C_B^{-1}A$ and
 $\operatorname{tr}(A^\top C_B^{-1}A\,Q)=\operatorname{tr}(C_B^{-1}C_B)=r$ gives
 $\E[\tfrac1r\,G_B C_B^{-1}G_B^\top]=P$. Setting $C_A=C_B=I$ decouples the sides into two
-independent Adafactor diagonals \cite{adafactor}.
+independent Adafactor diagonals \cite{adafactor}. In running ($\beta_2$-EMA) form, the
+two unbiased estimators give the per-coordinate coupled update
+\begin{equation}
+  q_j=\mathrm{EMA}\Big[\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
+  p_i=\mathrm{EMA}\Big[\tfrac1r\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top\Big],
+  \label{eq:ours-klcoupling}
+\end{equation}
+the diagonals of $Q$ and $P$ applied in \Cref{alg:ours}.
 
 \paragraph{Relation to KL-Shampoo.} The alternation --- each diagonal estimated under the
 partner's current value, one EMA step per iteration --- is the coupled two-sided
@@ -1129,7 +1229,7 @@ dense gradient (their Table~2 lists this diagonal--Kronecker form as moment matc
 
 \section{Spectral-Norm Estimation}
 \label{app:smax}
-\Cref{alg:smax} estimates every operator norm $\norm{\cdot}_2$ in \Cref{alg:ours}. The floor at the larger row/column $\ell_2$ norm (both lower-bound $\smax$) guards against under-estimation: a cold or stale power iteration can under-estimate $\smax$, and an under-estimate at the rescale $W/\norm{W}_2$ inflates the step past $\rho$ and can diverge.
+\Cref{alg:smax} estimates every spectral norm $\norm{\cdot}_2$ in \Cref{alg:ours}. The floor at the larger row/column $\ell_2$ norm (both lower-bound $\smax$) guards against under-estimation: a cold or stale power iteration can under-estimate $\smax$, and an under-estimate at the rescale $W/\norm{W}_2$ inflates the step past $\rho$ and can diverge.
 
 \begin{algorithm}[h]
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
