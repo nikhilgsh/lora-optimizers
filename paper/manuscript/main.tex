@@ -99,9 +99,9 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-LoRA \cite{lora} freezes the pretrained weight $W_0$ and trains a rank-$r$ adapter
+LoRA \cite{lora} freezes the pretrained weight $W_0$ and trains a rank-$r$ update
 $\DW=(\alpha/r)\,BA$, $A\in\R^{r\times d_{\mathrm{in}}}$,
-$B\in\R^{d_{\mathrm{out}}\times r}$. The optimizer that trains the adapter is the
+$B\in\R^{d_{\mathrm{out}}\times r}$. The optimizer that trains it is the
 under-examined lever; practice defaults to AdamW on the factors $A,B$. We introduce
 \methodname{}, a spectral-polar LoRA optimizer that reaches AdamW's eval loss in
 $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
@@ -143,14 +143,14 @@ Consider a single linear layer with frozen pretrained weight
 $
 W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
 $
-Following LoRA~\cite{lora}, we fine-tune this layer by learning a low-rank adapter
+Following LoRA~\cite{lora}, we fine-tune this layer by learning a low-rank update
 \begin{equation}
 \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-of rank \(r\) with scaling \(\alpha\). We absorb the scaling \(\alpha/r\) into \(A\) or \(B\) henceforth and write the adapter as \(BA\), so that we solve
+of rank \(r\) with scaling \(\alpha\). We absorb the scaling \(\alpha/r\) into \(A\) or \(B\) henceforth and write the update as \(BA\), so that we solve
 \[
 \begin{array}{ll}
 \underset{A, B}{\mbox{minimize}}&
@@ -316,14 +316,14 @@ Consider a single linear layer with frozen pretrained weight
 $
 W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
 $
-Following LoRA~\cite{lora}, we fine-tune this layer by learning a low-rank adapter
+Following LoRA~\cite{lora}, we fine-tune this layer by learning a low-rank update
 \begin{equation}
 \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-of rank \(r\) with scaling \(\alpha\). To simplify the derivation, we suppress the scaling \(\alpha/r\) so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn adapters $A, B$ that solve
+of rank \(r\) with scaling \(\alpha\). To simplify the derivation, we suppress the scaling \(\alpha/r\) so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn factors $A, B$ that solve
 \[
 \begin{array}{ll}
 \underset{A, B}{\mbox{minimize}}&
@@ -386,7 +386,7 @@ where $\norm{\cdot}_2$ is the spectral norm (see \Cref{lem:pseudogradient-spectr
 \end{equation}
 For further tractability, we restrict $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
 
-Let $G_A=B^\top G$ and $G_B=GA^\top$ denote the factor gradients. We estimate the diagonal factors from these gradients by applying KL-Shampoo's coupled second-moment equations under this diagonal ansatz \cite{klshampoo} (see \Cref{app:matnormal}). For the current adapters, define the contracted curvature factors
+Let $G_A=B^\top G$ and $G_B=GA^\top$ denote the factor gradients. We estimate the diagonal factors from these gradients by applying KL-Shampoo's coupled second-moment equations under this diagonal ansatz \cite{klshampoo} (see \Cref{app:matnormal}). For the current factors, define the contracted curvature factors
 \begin{equation}
 C_A = B^\top P B,
 \qquad
@@ -516,7 +516,7 @@ Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the impleme
 \label{sec:exp-setup}
 
 \paragraph{Comparison.} 
-In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which allows us to ignore the $\alpha/r$ factor in \eqref{eq:lora}. We add LoRA adapters to every linear layer except for the output layer and use the standard initialization which sets $B = 0$ and $A$ to be randomly initialized. For each method we tune the learning rate and use a constant learning rate schedule with no weight decay. \Cref{app:exp} gives the full experimental details.
+In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in accordance with best practice \cite{loralearnsless, raschka}, which allows us to ignore the $\alpha/r$ factor in \eqref{eq:lora}. We apply LoRA to every linear layer except the output layer and use the standard initialization which sets $B = 0$ and $A$ to be randomly initialized. For each method we tune the learning rate and use a constant learning rate schedule with no weight decay. \Cref{app:exp} gives the full experimental details.
 % Only the optimizer and its learning rate vary; everything else is
 % held fixed across runs --- the base model, dataset and split, LoRA rank $r$ and $\alpha{=}r$,
 % target modules (all linear), sequence length, batch size, dtype, and a constant learning rate
@@ -533,8 +533,8 @@ In our experiments we choose the LoRA factor $\alpha$ to be the rank $r$, in acc
 
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:setup}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the adapters $A$ and $B$ independently.
-  \item \textbf{Muon} \cite{muon} --- the per-adapter Muon update~\eqref{eq:naive}.
+  \item \textbf{AdamW} \cite{adamw} --- our baseline optimizer which applies the Adam update to the factors $A$ and $B$ independently.
+  \item \textbf{Muon} \cite{muon} --- the per-factor Muon update~\eqref{eq:naive}.
   \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to a momentum in the product space.\footnote{Even with momentum off, iMuon's codebase update (their App.~K) is not the decoupled step of \Cref{prop:decoupled} (their Cor.~4.1), as we show in \Cref{app:memoryless}.}
 \end{itemize}
 We report each optimizer's step-speedup over AdamW trained for a fixed horizon of $T$ steps with optimized learning rate. 
@@ -609,7 +609,7 @@ less so, making Bengali the further task.
   \item \textbf{Rank (only $r$ changes).} Llama-3.2-1B on Math: the speedup rises from $1.48\times$ at $r = 32$ to $1.63\times$ at $r = 256$ (\Cref{fig:curves-rank}).
   \item \textbf{Task (only the data changes).} Qwen2.5-1.5B at rank $r = 256$: the speedup rises from $1.30\times$ on in-distribution code to $1.73\times$ on out-of-distribution Bengali (\Cref{tab:ood,fig:ood}).
 \end{itemize}
-Both move together --- the gain is larger when the adapter has more to change within
+Both move together --- the gain is larger when the update has more to change within
 the fixed step budget, whether from a wider pretraining-to-task gap or more rank to
 fill. We report this as an empirical correlation across our settings, not a mechanism.
 
@@ -741,7 +741,7 @@ preconditioners and their eigenbases.
 
 
 \paragraph{Product-space and invariant LoRA optimizers.}
-A LoRA adapter is invariant to the change of coordinates
+The product $BA$ is invariant to the change of coordinates
 \[
     BA=(BN^{-1})(NA),
 \]
@@ -759,7 +759,7 @@ escaped-mass correction.
 
 Riemannion/RiemannLoRA \cite{riemannion} is also prior work, but it is a
 different member of the same product-space family.  It removes the
-factorization ambiguity by optimizing the adapter as a point on the
+factorization ambiguity by optimizing $BA$ as a point on the
 fixed-rank manifold.  In particular, it forms a Riemannian gradient in
 the tangent space, applies a Muon-like orthogonalization to that whole
 tangent vector, and then retracts back to the manifold.  This is not the
@@ -815,7 +815,7 @@ two-sided curvature metric,
     C_A=B^\top P B,\qquad C_B=AQA^\top ,
 \]
 which changes the polar direction, and an explicit operator-norm radius
-for the merged adapter step,
+for the merged update step,
 \begin{equation} \label{e-rho-eta-adapter-stepsize}
     \rho=\frac{\eta}{\|A\|_2+\|B\|_2},
     \qquad
@@ -838,8 +838,7 @@ key weights by the norm of the partner matrix, e.g.,
     \eta_K\propto \|W_Q\|^{-1},
 \]
 so a large key matrix slows the query update and vice versa
-\cite{quack}.  \methodname{} applies the same principle to the LoRA
-adapter product $BA$ in \eqref{e-rho-eta-adapter-stepsize}, but with a spectral rather than Frobenius radius.
+\cite{quack}.  \methodname{} applies the same principle to the product $BA$ in \eqref{e-rho-eta-adapter-stepsize}, but with a spectral rather than Frobenius radius.
 This radius is separate from the curvature metric used to choose the
 polar direction.  It makes the step magnitude independent of factor
 conditioning and allows the optimizer to start from the usual $B=0$
@@ -855,7 +854,7 @@ initialization without warmup or nonzero factor initialization.
 \section{Conclusion}
 \label{sec:conclusion}
 \methodname{} carries the fast part of spectral, curvature-aware optimization to
-LoRA adapters cheaply:
+LoRA cheaply:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
   \item A polar step in a coupled two-sided \emph{diagonal} curvature metric, sized by a per-factor operator-norm radius.
   \item $1.2$--$1.7\times$ fewer steps than AdamW across nine settings; trains from $B{=}0$; one learning rate across rank.
@@ -1323,8 +1322,8 @@ parameter per token (versus six for full fine-tuning):
   C_{\mathrm{fb}}=4N\,n_{\mathrm{tok}},
   \label{eq:flop-fb}
 \end{equation}
-with $N$ the (base $+$ adapter) parameter count and $n_{\mathrm{tok}}$ the tokens per step. The
-optimizer touches only the adapter and is independent of $n_{\mathrm{tok}}$. Per pair its step
+with $N$ the (base $+$ LoRA) parameter count and $n_{\mathrm{tok}}$ the tokens per step. The
+optimizer touches only the factors $A,B$ and is independent of $n_{\mathrm{tok}}$. Per pair its step
 (\Cref{alg:ours,alg:gramns}) is a fixed set of matmuls of two shapes:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \emph{$r\times d$ matmuls --- six per factor}, each costing $2r^2d$: the partner
