@@ -1290,41 +1290,61 @@ The normalization and the floor each follow from the step's structure.
 
 \section{FLOP Overhead of the Optimizer}
 \label{app:flops}
-The wall measurement (\Cref{sec:exp-walltime}) is hardware-specific; the FLOP count is
-its architecture-only counterpart, and shows the same near-free result.
+The wall measurement (\Cref{sec:exp-walltime}) is hardware-specific. The FLOP count is its
+architecture-only counterpart, and tells the same near-free story. We count it for one
+adapted layer, a frozen weight $W\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ with its LoRA
+pair $(A,B)$ at rank $r\ll d_{\mathrm{in}},d_{\mathrm{out}}$, and combine layers at the end.
+Here $K$ is the number of Newton--Schulz iterations and $n_{\mathrm{tok}}$ the tokens
+processed per step.
 
-\paragraph{Cost per step.} With the base weights frozen, a LoRA step skips the
-base-parameter-gradient pass, so the forward/backward costs four matmul-equivalents per
-parameter per token (versus six for full fine-tuning):
+\paragraph{Forward and backward.} With the base weight frozen, the backward pass skips its
+weight gradient, so it costs the same as the forward rather than twice it: four matmul-flops
+per parameter per token in all, against six for full fine-tuning \cite{kaplan2020scaling}.
+For one layer,
 \begin{equation}
-  C_{\mathrm{fb}}=4N\,n_{\mathrm{tok}},
+  C_{\mathrm{fwd}}=C_{\mathrm{bwd}}=2\,d_{\mathrm{in}}d_{\mathrm{out}}\,n_{\mathrm{tok}}.
   \label{eq:flop-fb}
 \end{equation}
-with $N$ the (base $+$ LoRA) parameter count and $n_{\mathrm{tok}}$ the tokens per step. The
-optimizer touches only the factors $A,B$ and is independent of $n_{\mathrm{tok}}$. Per pair its step
-(\Cref{alg:ours,alg:gramns}) is a fixed set of matmuls of two shapes:
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{$r\times d$ matmuls --- six per factor}, each costing $2r^2d$: the partner
-        Gram, the momentum whiten, the polar's Gram and its application, the un-whiten,
-        and the flip-flop curvature solve.
-  \item \emph{$r\times r$ matmuls}: the two polars and two inverse-sqrts, each a
-        $K$-step Gram--Newton--Schulz whose iteration is four $r\times r$ products
-        ($R^2$, $MQ$, $MR$, $(MR)M$), so $8r^3$ per iteration.
-\end{itemize}
-Summing both factors gives the leading-order cost
+Summed over layers this is $4N\,n_{\mathrm{tok}}$ for total parameter count $N$. The LoRA
+factors add only $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ parameters per layer, smaller by a
+factor $r/d$, and we drop them.
+
+\paragraph{Optimizer.} The optimizer step (\Cref{alg:ours}) runs on the factors $A,B$ alone
+and does not depend on $n_{\mathrm{tok}}$. Its matmuls fall into two groups. The first group
+spans the long dimension $d$: forming the curvature factors $C_A,C_B$ \eqref{eq:ours-closure},
+the whiten--polar--unwhiten directions \eqref{eq:factor-directions}, and the metric update
+\eqref{eq:ours-klcoupling}. There is a fixed number of these per factor, each costing
+$O(r^2 d)$, for $12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ in total. The second group is the
+matrix sign $\polar(\cdot)$ and the curvature inverse-square-roots, computed entirely in the
+small $r\times r$ space by the Gram Newton--Schulz of \Cref{app:gramns}, for $32\,K\,r^3$.
+Together, with no eigendecomposition anywhere,
 \begin{equation}
-  C_{\mathrm{opt}}=\sum_{\text{pairs}}\Big[
-    \underbrace{12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})}_{6\ \text{matmuls/side}\,\times\,2}
-    +\underbrace{32\,K\,r^3}_{4\ \text{calls}\,\times\,8Kr^3}\Big],
+  C_{\mathrm{opt}}=12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32\,K\,r^3 .
   \label{eq:flop-opt}
 \end{equation}
-every term $r\times r$ or $r\times d$ ($r\ll d$), eigh-free. $C_{\mathrm{opt}}$ is a
-fixed per-step cost, so the fraction $C_{\mathrm{opt}}/C_{\mathrm{fb}}\propto1/n_{\mathrm{tok}}$ shrinks
-as the batch grows: at the production setting ($r = 256$, $n_{\mathrm{tok}}{=}32768$) it is under $1\%$
-on every base model, far below the measured ${\le}5\%$ wall (\Cref{sec:exp-walltime}).
-The optimizer's overhead is thus latency-bound on its many small $r\times r$ kernels, not
-FLOP-bound; the FLOP fraction is the floor the wall approaches as the batch grows. The ${\le}4\%$ wall uses the gram-form matrix-sign, the polar on the $r{\times}r$ Gram. Running it instead on the rectangular $d{\times}r$ factor is ${\approx}1.5\times$ costlier in the optimizer step, raising the per-step overhead to $5$--$7\%$.
-% Per-model FLOP ratios at r=256, all-linear, T=32768, K=8 (computed from each config.json):
+
+\paragraph{Overhead fraction.} Dividing \eqref{eq:flop-opt} by \eqref{eq:flop-fb} gives the
+per-layer overhead in closed form,
+\begin{equation}
+  \frac{C_{\mathrm{opt}}}{C_{\mathrm{fwd}}+C_{\mathrm{bwd}}}
+  =\frac{12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32\,K\,r^3}{4\,d_{\mathrm{in}}d_{\mathrm{out}}\,n_{\mathrm{tok}}}
+  =\frac{3r^2}{n_{\mathrm{tok}}}\Big(\tfrac1{d_{\mathrm{in}}}+\tfrac1{d_{\mathrm{out}}}\Big)
+  +\underbrace{\frac{8Kr^3}{d_{\mathrm{in}}d_{\mathrm{out}}\,n_{\mathrm{tok}}}}_{\text{Gram Newton--Schulz}}.
+  \label{eq:flop-ratio}
+\end{equation}
+The fraction falls as $1/n_{\mathrm{tok}}$, so it shrinks as the batch grows. The first term is
+governed by the smaller of the two layer dimensions. The second is divided by their product,
+so relative to the first it weighs most on the square attention matrices, where the two
+dimensions are comparable, and less on the wide feed-forward matrices. The whole-model overhead is an average of these per-layer fractions weighted by layer size, so
+it is dominated by the large feed-forward matrices, which have the smallest fraction. 
+
+\paragraph{Why the Gram form.} All of the dependence on $K$ sits in the $32Kr^3$ term, the
+Gram Newton--Schulz. It computes the matrix sign and the curvature inverse-square-roots by
+iterating on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
+(\Cref{app:gramns}), which is about $d/r$ cheaper per iteration. Iterating on the factor
+instead would make the optimizer step roughly $1.5\times$ costlier, increasing its share of
+the wall (\Cref{tab:breadth}).
+% Underlying counts (computed from each config.json), all-linear, r=256, T=32768, K=8:
 %   OLMo-2-1B    C_opt 1.1e12 / C_fb 2.2e14 = 0.49%
 %   Llama-3.2-1B C_opt 1.0e12 / C_fb 1.9e14 = 0.56%
 %   Qwen2.5-1.5B C_opt 1.8e12 / C_fb 2.4e14 = 0.73%
