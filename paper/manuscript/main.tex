@@ -455,7 +455,7 @@ The two constraints in \eqref{eq:decoupled-direction-lmo} then take the form of 
 Thus the block problems determine the descent directions $-W_A$ and $-W_B$.
 
 \paragraph{Magnitude.}
-It remains to choose the step magnitude. Directly using $\gamma_A$ and $\gamma_B$ as step sizes would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, the same fixed step size for $A$ and $B$ can make the merged update arbitrarily large (see \Cref{lem:factor-radius-gauge}). We instead set the magnitude by directly bounding the first-order merged update $U$ in spectral norm by a target step size $\eta$. By the triangle inequality and submultiplicativity,
+It remains to choose the step magnitude. Using the LMO budgets $\gamma_A$ and $\gamma_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (see \Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $U$ in spectral norm by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{U}_2
 =
@@ -466,7 +466,7 @@ It remains to choose the step magnitude. Directly using $\gamma_A$ and $\gamma_B
 \norm{A}_2\norm{\Delta B}_2 .
 \label{eq:ours-prodcap}
 \end{equation}
-Treating $A$ and $B$ symmetrically, set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Choosing
+Treating $A$ and $B$ symmetrically, we use a single step size $\rho$ for both factors, setting $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Choosing
 \begin{equation}
 \rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
 \label{eq:ours-rho}
@@ -477,6 +477,7 @@ ensures $\norm{U}_2\le\eta$, and gives the updates
 \qquad
 \Delta B = -\rho\,\frac{W_B}{\norm{W_B}_2}.
 \]
+\Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
 Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We estimate the spectral norms by power iteration (see \Cref{alg:smax}) and use damping in the curvature inverse square roots (see \Cref{app:damping}).
 
@@ -525,7 +526,7 @@ Across every comparison only the optimizer and its learning rate vary. We set th
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}: the number of steps its tuned run needs to match Adam's tuned loss at the horizon $T$. Across all nine (model, dataset, rank) settings \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{fig:hero,tab:breadth}), and on Llama-3.2-1B finetuned on math it also leads Muon and iMuon (\Cref{fig:hero}).
+We score each optimizer by its \emph{steps-to-Adam}: the number of steps its tuned run needs to match Adam's tuned loss at the horizon $T$. Across all nine (model, dataset, rank) settings \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{fig:hero,tab:breadth}), and on Llama-3.2-1B finetuned on math it also leads Muon and iMuon (\Cref{fig:hero}). \Cref{app:curves} plots the learning curves for every setting.
 
 \begin{figure}[t]
   \centering
@@ -577,9 +578,7 @@ Removing both reduces \methodname{} to that step, which matches Adam. Restoring 
 \label{sec:exp-taskdep}
 To isolate the effect of rank and of the target dataset, we vary each on its own: the rank on Llama-3.2-1B finetuned on math, and the target corpus on Qwen2.5-1.5B.
 
-\paragraph{Rank.} As the rank grows, \methodname{}'s step-speedup over Adam grows with it (\Cref{fig:curves-rank}).
-
-\paragraph{Learning-rate transfer.} The same rank sweep shows learning-rate transfer. \methodname{}'s loss-minimizing learning rate is the same at every rank, while Adam's shifts with rank (\Cref{fig:lr_transfer}). \methodname{} therefore needs no per-rank retuning.
+\paragraph{Rank.} As the rank grows, \methodname{}'s step-speedup over Adam grows with it (\Cref{fig:curves-rank}). The same sweep shows learning-rate transfer. \methodname{}'s loss-minimizing learning rate is the same at every rank, while Adam's shifts with rank (\Cref{fig:lr_transfer}), so \methodname{} needs no per-rank retuning.
 
 \paragraph{Distribution shift.} By \emph{shift} we mean distance from a base model's presumed pretraining distribution. Code is heavily represented in typical pretraining data and Bengali (Aya \cite{aya}) much less so, so we treat code as in-distribution and Bengali as out-of-distribution. On Qwen2.5-1.5B the speedup is larger on Bengali than on code (\Cref{tab:ood,fig:ood}).
 
@@ -1358,11 +1357,11 @@ vs.\ \methodname{} at its best lr. The cells already drawn as curves in the body
   \label{fig:curves-rank}
 \end{figure}
 
-\section{Gauge Sensitivity and Factor Self-Balancing}
+\section{Factor Self-Balancing}
 \label{app:gauge}
-The radius is not gauge-invariant: under $(A,B)\mapsto(cA,c^{-1}B)$, $\norm{A}_2{+}\norm{B}_2$ is minimized (largest step) at $\norm{A}_2{=}\norm{B}_2$, so an imbalanced factorization changes the trajectory --- the concern raised for Spectron-style radii \cite{loramuon}.
+The step size $\rho=\eta/(\norm{A}_2{+}\norm{B}_2)$ depends on the factorization, not on the product $BA$ alone. Rescaling the factors as $(A,B)\mapsto(cA,c^{-1}B)$ leaves the product $BA$, and hence the model, unchanged, but changes $\norm{A}_2{+}\norm{B}_2$ and with it the step size $\rho$. Because $\rho$ is largest at the balanced point $\norm{A}_2=\norm{B}_2$, an imbalanced factorization takes a smaller step and alters the trajectory. LoRA-Muon raises this concern for Spectron-style step sizes \cite{loramuon}.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Self-balancing.} Under \methodname{} the factors balance: $\norm{B}_2/\norm{A}_2$ rises from the $B{=}0$ start toward $1$ and holds (\Cref{fig:gauge}), so the radius runs near its balanced optimum throughout training.
+  \item \emph{Self-balancing.} Although nothing in the update enforces it, the factors balance themselves during training. The ratio $\norm{B}_2/\norm{A}_2$ rises from zero at initialization toward $1$ and then holds (\Cref{fig:gauge}), so the factorization stays near the balanced point $\norm{A}_2=\norm{B}_2$, where the step size $\rho$ is largest.
   \item \emph{Tightens with rank.} The balance is closest to $1$ at high rank ($r = 256$) and looser at low rank ($r = 32$).
 \end{itemize}
 
