@@ -111,7 +111,7 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
   \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \Cref{eq:ours-klcoupling}).
   \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step \eqref{eq:factor-directions}.
-  \item[(C)] \emph{Magnitude.} Discard the LMO budget; re-pin to the operator-norm radius (\Cref{eq:ours-prodcap}).
+  \item[(C)] \emph{Magnitude.} Discard the LMO budget and bound the merged update in spectral norm by $\eta$ (\Cref{eq:ours-prodcap}).
 \end{itemize}
 Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
 \rob{end pieces of introduction}
@@ -129,7 +129,7 @@ Stages (A) and (B) are separate problems --- estimation, then a step under the \
 \rob{Pieces of contributions I found}
 \emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
 
- \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\Delta A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor operator-norm radius to bound it.
+ \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\Delta A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor spectral-norm bound.
 
  \rob{end pieces of contributions}
 % ===========================================================================
@@ -637,7 +637,7 @@ high-rank behavior \cite{rslora}; $\mu$A and recent LoRA scaling rules
 study how learning rates and $\alpha$ should transfer across rank
 \cite{mua,loraalpha}.  These works change the scale at which the
 factor-based optimizer operates, while \methodname{} keeps the usual
-LoRA parameterization and changes the update direction and radius.
+LoRA parameterization and changes the update direction and step size.
 
 
 \paragraph{Orthogonalized updates.}
@@ -662,8 +662,7 @@ controlling the spectral norm of the induced weight update
 \cite{spectron}.  These methods motivate spectral update, but they do
 not by themselves provide a product-aware optimizer.  \methodname{} uses the same polar
 primitive, but applies it inside a LoRA-aware curvature metric and
-then rescales the resulting factor step by a product-level operator-norm
-radius.
+then rescales the resulting factor step to bound the merged update in spectral norm.
 
 
 \paragraph{Curvature and second-moment preconditioning.}
@@ -777,8 +776,7 @@ two-sided curvature metric,
 \[
     C_A=B^\top P B,\qquad C_B=AQA^\top ,
 \]
-which changes the polar direction, and an explicit operator-norm radius
-for the merged update step,
+which changes the polar direction, and an explicit spectral-norm bound on the merged update,
 \begin{equation} \label{e-rho-eta-adapter-stepsize}
     \rho=\frac{\eta}{\|A\|_2+\|B\|_2},
     \qquad
@@ -801,8 +799,8 @@ key weights by the norm of the partner matrix, e.g.,
     \eta_K\propto \|W_Q\|^{-1},
 \]
 so a large key matrix slows the query update and vice versa
-\cite{quack}.  \methodname{} applies the same principle to the product $BA$ in \eqref{e-rho-eta-adapter-stepsize}, but with a spectral rather than Frobenius radius.
-This radius is separate from the curvature metric used to choose the
+\cite{quack}.  \methodname{} applies the same principle to the product $BA$ in \eqref{e-rho-eta-adapter-stepsize}, but in spectral rather than Frobenius norm.
+This magnitude rule is separate from the curvature metric that sets the
 polar direction.  It makes the step magnitude independent of factor
 conditioning and allows the optimizer to start from the usual $B=0$
 initialization without warmup or nonzero factor initialization.
@@ -819,7 +817,7 @@ initialization without warmup or nonzero factor initialization.
 \methodname{} carries the fast part of spectral, curvature-aware optimization to
 LoRA cheaply:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item A polar step in a coupled two-sided \emph{diagonal} curvature metric, sized by a per-factor operator-norm radius.
+  \item A polar step in a coupled two-sided \emph{diagonal} curvature metric, with each factor step set to spectral norm $\rho$.
   \item $1.2$--$1.7\times$ fewer steps than Adam across nine settings; trains from $B{=}0$; one learning rate across rank.
   \item The expensive Kronecker curvature and inner refinement it is usually bundled with add nothing.
   \item $\le 5\%$ per-step wall, ${\approx}\tfrac12$ Adam's state --- the step speedup survives in wall-clock.
@@ -1001,9 +999,9 @@ Substituting back gives the stated solution.
 \end{proof}
 
 
-\begin{lemma}[Fixed factor radii under LoRA rescaling]
+\begin{lemma}[Fixed factor step sizes under LoRA rescaling]
 \label{lem:factor-radius-gauge}
-Let $B_c=cB$ and $A_c=c^{-1}A$ for $c>0$, so that $B_cA_c=BA$. With $P,Q$ and $G$ fixed, the normalized directions obtained from \eqref{eq:factor-directions} are unchanged by this rescaling. If $\widehat W_A=W_A/\norm{W_A}_2$ and $\widehat W_B=W_B/\norm{W_B}_2$, then a fixed factor radius $\rho>0$ gives
+Let $B_c=cB$ and $A_c=c^{-1}A$ for $c>0$, so that $B_cA_c=BA$. With $P,Q$ and $G$ fixed, the normalized directions obtained from \eqref{eq:factor-directions} are unchanged by this rescaling. If $\widehat W_A=W_A/\norm{W_A}_2$ and $\widehat W_B=W_B/\norm{W_B}_2$, then a fixed factor step size $\rho>0$ gives
 \[
 U_c
 =
@@ -1015,7 +1013,7 @@ $\sup_{c>0}\norm{U_c}_2=\infty$.
 
 \begin{proof}
 Under the rescaling, $G_{A,c}=B_c^\top G=cG_A$ and
-$C_{A,c}=B_c^\top PB_c=c^2C_A$, so the polar argument defining $W_A$ is unchanged and $W_{A,c}=c^{-1}W_A$. Hence $W_{A,c}/\norm{W_{A,c}}_2=W_A/\norm{W_A}_2$. Similarly, $G_{B,c}=GA_c^\top=c^{-1}G_B$ and $C_{B,c}=A_cQA_c^\top=c^{-2}C_B$, so $W_{B,c}=cW_B$ and the normalized $B$ direction is also unchanged. Therefore the fixed-radius first-order update is the displayed $U_c$. If $B\widehat W_A\ne0$, then $\norm{U_c}_2/c\to\rho\norm{B\widehat W_A}_2$ as $c\to\infty$. If $B\widehat W_A=0$ but $\widehat W_BA\ne0$, then $c\norm{U_c}_2\to\rho\norm{\widehat W_BA}_2$ as $c\to0$. In either case the supremum is infinite.
+$C_{A,c}=B_c^\top PB_c=c^2C_A$, so the polar argument defining $W_A$ is unchanged and $W_{A,c}=c^{-1}W_A$. Hence $W_{A,c}/\norm{W_{A,c}}_2=W_A/\norm{W_A}_2$. Similarly, $G_{B,c}=GA_c^\top=c^{-1}G_B$ and $C_{B,c}=A_cQA_c^\top=c^{-2}C_B$, so $W_{B,c}=cW_B$ and the normalized $B$ direction is also unchanged. Therefore the fixed-step-size first-order update is the displayed $U_c$. If $B\widehat W_A\ne0$, then $\norm{U_c}_2/c\to\rho\norm{B\widehat W_A}_2$ as $c\to\infty$. If $B\widehat W_A=0$ but $\widehat W_BA\ne0$, then $c\norm{U_c}_2\to\rho\norm{\widehat W_BA}_2$ as $c\to0$. In either case the supremum is infinite.
 \end{proof}
 
 
@@ -1152,7 +1150,7 @@ $N\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
   \label{eq:moment-id}
 \end{equation}
 $P,Q$ are fixed only up to scale, $(P,Q)\mapsto(cP,c^{-1}Q)$, which the norm
-\eqref{eq:ours-metric} and the operator-norm rescale absorb.
+\eqref{eq:ours-metric} and the spectral-norm rescale absorb.
 
 \paragraph{Coupling: covariance of a linear image.} Each factor gradient is a linear
 image of $G$, so its row second moment is the partner side conjugated by the factor:
@@ -1268,7 +1266,7 @@ Each curvature inverse-sqrt in \Cref{alg:ours} is relative-damped: for a curvatu
 \end{equation*}
 The normalization and the floor each follow from the step's structure.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \emph{Normalize by $\lambda_{\max}$.} The whitened polar depends only on the curvature's \emph{shape}, not its scale: $\polar\!\big(C_A^{-1/2}\hat M_A Q^{-1/2}\big)$ is invariant under $X\mapsto cX$, and the operator-norm rescale $W_A/\norm{W_A}_2$ reabsorbs any global factor. The scale-free representative is the normalized spectrum $X/\lambda_{\max}\in(0,1]$.
+  \item \emph{Normalize by $\lambda_{\max}$.} The whitened polar depends only on the curvature's \emph{shape}, not its scale: $\polar\!\big(C_A^{-1/2}\hat M_A Q^{-1/2}\big)$ is invariant under $X\mapsto cX$, and the spectral-norm rescale $W_A/\norm{W_A}_2$ reabsorbs any global factor. The scale-free representative is the normalized spectrum $X/\lambda_{\max}\in(0,1]$.
   \item \emph{Floor by $\delta$.} On that spectrum $\delta$ is one conditioning knob: it caps the metric's condition number at ${\sim}1/\delta$, so a near-null curvature direction cannot amplify the step without bound.
   \item \emph{Warmup.} A still-zero factor ($\lambda_{\max}=0$) maps to $I$, so steps before the EMAs warm up are plain momentum.
 \end{itemize}
@@ -1359,16 +1357,14 @@ vs.\ \methodname{} at its best lr. The cells already drawn as curves in the body
 
 \section{Factor Self-Balancing}
 \label{app:gauge}
-The step size $\rho=\eta/(\norm{A}_2{+}\norm{B}_2)$ depends on the factorization, not on the product $BA$ alone. Rescaling the factors as $(A,B)\mapsto(cA,c^{-1}B)$ leaves the product $BA$, and hence the model, unchanged, but changes $\norm{A}_2{+}\norm{B}_2$ and with it the step size $\rho$. Because $\rho$ is largest at the balanced point $\norm{A}_2=\norm{B}_2$, an imbalanced factorization takes a smaller step and alters the trajectory. LoRA-Muon raises this concern for Spectron-style step sizes \cite{loramuon}.
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Self-balancing.} Although nothing in the update enforces it, the factors balance themselves during training. The ratio $\norm{B}_2/\norm{A}_2$ rises from zero at initialization toward $1$ and then holds (\Cref{fig:gauge}), so the factorization stays near the balanced point $\norm{A}_2=\norm{B}_2$, where the step size $\rho$ is largest.
-  \item \emph{Tightens with rank.} The balance is closest to $1$ at high rank ($r = 256$) and looser at low rank ($r = 32$).
-\end{itemize}
+By \eqref{eq:ours-rho}, \methodname{}'s step size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. Rescaling $(A,B)\mapsto(cA,c^{-1}B)$ leaves the product $BA$, and hence the model, unchanged, but changes these norms, and with them $\rho$. Among the factorizations of a given product $BA$, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style step sizes \cite{loramuon}.
+
+In our runs this does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.6\linewidth]{fig_gauge.pdf}
-  \caption{\textit{[placeholder]} Op-norm ratio $\norm{B}_2/\norm{A}_2$ over training, per rank (Llama-3.2-1B / OpenMathInstruct); factors self-balance toward $1$, tighter at higher rank.}
+  \caption{\textit{[placeholder]} Spectral-norm ratio $\norm{B}_2/\norm{A}_2$ over training, per rank (Llama-3.2-1B / OpenMathInstruct); it settles near $1$.}
   \label{fig:gauge}
 \end{figure}
 
