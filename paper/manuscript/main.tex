@@ -883,13 +883,34 @@ where set $\mathcal{G}(\Sigma)$ is defined in \eqref{eq:outgrad}.
 \end{lemma}
 
 \begin{proof}
-Consider $b x^\top \in \mathcal{G}(\Sigma)$.
-By the column-major vectorization convention,
-$\mathrm{vec}(bx^\top)=x\otimes b$. 
-Therefore
+Since $P$ and $Q$ are positive definite,
 \[
-\mathrm{vec}(bx^\top)^\top(Q\otimes P)^{-1}\mathrm{vec}(bx^\top)
-=(x^\top Q^{-1}x)(b^\top P^{-1}b).
+    \Sigma^\dagger
+    =
+    \Sigma^{-1}
+    =
+    Q^{-1}\otimes P^{-1}.
+\]
+Consider $b x^\top \in \mathcal{G}(\Sigma)$.
+Using column-major vectorization,
+\[
+    \operatorname{vec}(bx^\top)=x\otimes b.
+\]
+It follows that
+\[
+\begin{aligned}
+    \left\langle
+        \Sigma^\dagger\operatorname{vec}(bx^\top),
+        \operatorname{vec}(bx^\top)
+    \right\rangle
+    &=
+    (x\otimes b)^\top
+    (Q^{-1}\otimes P^{-1})
+    (x\otimes b) \\
+    &=
+    (x^\top Q^{-1}x)
+    (b^\top P^{-1}b).
+\end{aligned}
 \]
 Substitute $b=P^{1/2}u$ and $x=Q^{1/2}v$. The constraint becomes
 $\norm{u}_2^2\norm{v}_2^2\le1$, and the objective becomes
