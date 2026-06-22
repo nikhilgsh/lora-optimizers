@@ -151,7 +151,7 @@ Consider a single linear layer with frozen pretrained weight
 $
 W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
 $
-Following LoRA~\cite{lora}, we finetune this layer by learning a low-rank update
+Following LoRA~\cite{lora}, we finetune this layer by learning a low rank update
 \begin{equation}
 \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
@@ -181,10 +181,10 @@ The LMO approach minimizes the local linearization of our loss subject to a ball
   \end{array}
   \label{eq:lmo}
 \end{equation}
-where $\|\Delta W\|$ is a chosen norm. Given a solution $\Delta W$ to the above~\eqref{eq:lmo} we then update our parameter according to \[W \leftarrow W + \Delta W.\]
+where $\|\cdot\|$ is a chosen norm. Given a solution $\Delta W$ to problem~\eqref{eq:lmo}, we then update our parameter according to \[W \leftarrow W + \Delta W.\]
 % Since the LMO is homogeneous, $\gamma$ only sets the scale of its solution. We use the solution as the update direction. Later we will choose its magnitude separately so that the merged update has a controlled spectral norm.
 
-To define a method using~\eqref{eq:lmo} we need only choose a norm. The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
+To define a method using~\eqref{eq:lmo} we only need to choose a norm. The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
 \[ 
 \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
 \]
@@ -195,42 +195,57 @@ The spectral norm is a conservative norm over linear operators, since it focuses
 
 To be conservative with respect to every activation, we mean to enforce that no single activation results in a large change in the loss, that is we want
 \begin{equation}\label{eq:loss-diff}
-     \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \gamma, \quad \mbox{for } i=1,\ldots, n.
+     \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \gamma, \qquad  i=1,\ldots, n.
 \end{equation} 
 This would ensure stable training with no spikes or jumps in the loss. But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
-\[  \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \langle G_i, \Delta W \rangle. \]
+\[  
+\ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \langle G_i, \Delta W \rangle. 
+\]
 Using the above and~\eqref{eq:loss-diff} in the LMO~\eqref{eq:lmo} we arrive at
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
-  \left\langle G, \Delta W\right\rangle \\[2pt]
+  \left\langle G, \Delta W\right\rangle \\
   \mbox{subject to} &
   \displaystyle  
 \left\langle G_i, \Delta W \right\rangle 
-  \le \gamma, \quad \mbox{for } i=1,\ldots, n.
+  \le \gamma, \qquad i=1,\ldots, n.
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-Since we do not have direct access to the per-input gradients $G_i$, we will now find a \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the following
+Since we do not have direct access to the per-input gradients $G_i$, we will now find a \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$,
+use the following inequality
 \begin{equation} \label{eq:outgrad1}
     \max_{i=1,\ldots, n}  \left\langle G_i, \Delta W \right\rangle  \leq   \max_{G \in \mathcal{G}} \left\langle G, \Delta W \right\rangle 
 \end{equation} 
-and then impose  that the right hand side of the above is less than $\gamma.$ To build $\mathcal{G}$ we collect some standard properties of the gradient matrices in the following lemma.
+and then impose  that the right hand side of \eqref{eq:outgrad1} 
+is less than $\gamma$. 
+To build $\mathcal{G}$ we collect some standard properties of the gradient matrices in the following lemma.
 \begin{restatable}[Properties of Gradients]{lemma}{gradprop} 
   \label{lem:gradprop}
     Let $\Sigma := \frac{1}{n} \sum_{i=1}^n\mathrm{vec}(G_i) \mathrm{vec}(G_i)^\top \in \R^{d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}}$. If follows that gradients satisfy
     \begin{enumerate}
-        % \item {\bf Range containment:} $\mathrm{vec}(G_i) \in \mathrm{range}(\Sigma)$ \\[-0.5cm]
-        \item {\bf Leverage bound:} $ \dotprod{\Sigma^\dagger G_i, G_i} \leq n$ \\[-0.5cm]
-        \item {\bf Rank one:} $G_i = b_i x_i^\top$ 
+        \item {\bf Leverage bound:} $ \dotprod{\Sigma^\dagger g_i, g_i} \leq n$, \\[-0.5cm]
+        \item {\bf Rank one:} $G_i = b_i x_i^\top$,
         \end{enumerate}
     where  $x_i$ is the incoming activation and $b_i$ the backpropagated gradient of the sample loss with respect to the layer output. 
 \end{restatable}
 \begin{proof}
-    Let $g_i=\mathrm{vec}(G_i)$ and $X=[g_1,\ldots,g_n]$. First note that  $$\mathrm{range}(\Sigma)=\mathrm{range}(XX^\top)=\mathrm{range}(X)=\mathrm{span}(g_1,\ldots,g_n).$$
-    Hence $g_i\in\mathrm{range}(\Sigma)$ for every $i =1,\ldots, n$. Consequently
-$$\dotprod{\Sigma^\dagger G_i, G_i} = ng_i^\top (XX^\top)^{\dagger} g_i = n e_i^\top X^\top  (XX^\top)^{\dagger} X e_i  \leq n,$$
-where we use that $X^\top  (XX^\top)^{\dagger} X$ is an orthogonal projector. This proves the {\bf Leverage bound}. The {\bf Rank one} property follows   since $W$ encodes a linear layer $x_i \mapsto W x_i$ we have by the chain-rule that  
+Let $g_i=\mathrm{vec}(G_i)$ and $M=[g_1,\ldots,g_n]$. 
+First note that  
+\[
+\mathrm{range}(\Sigma)=\mathrm{range}(MM^\top)=\mathrm{range}(M)=\mathrm{span}(g_1,\ldots,g_n).
+\]
+Hence $g_i\in\mathrm{range}(\Sigma)$ for every $i =1,\ldots, n$. Consequently
+\[
+\dotprod{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
+\]
+where we use that $M^\top  (MM^\top)^{\dagger} M$ is an orthogonal projector
+and 
+$g_i = M e_i$ for all $i=1,\ldots, n$. 
+This proves the {\bf Leverage bound}. 
+
+The {\bf Rank one} property follows   since $W$ encodes a linear layer $x_i \mapsto W x_i$ we have by the chain-rule that  
 $\nabla \ell_{x_i}(Wx_i) =  \left. \frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i} x_i^\top$
 where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i} $ is the so called backward gradient.
 \end{proof} 
@@ -530,7 +545,7 @@ To isolate the effect of the LoRA rank and of the finetuning dataset, we vary ea
 
   
 \paragraph{LoRa and optimization of low rank factors.}
-LoRA finetuning freezes the pretrained weight matrix and trains a low-rank update
+LoRA finetuning freezes the pretrained weight matrix and trains a low rank update
 $\DW=(\alpha/r)BA$ through the factors $A$ and $B$ \cite{lora}.
 Adam is a standard optimizer choice applied independently to the two
 factors \cite{adam}.  
@@ -568,7 +583,7 @@ When Muon is applied separately to LoRa factors, spectral gradient flow exhibits
 ``equal-rate'' growth of singular values, explaining why factor-wise
 orthogonalization can behave very differently from ordinary gradient
 flow \cite{kang_specgf}.  Spectron instead uses orthogonalization and
-adaptive renormalization to stabilize native low-rank pretraining by
+adaptive renormalization to stabilize native low rank pretraining by
 controlling the spectral norm of the induced weight update
 \cite{spectron}.  These methods motivate spectral update, but they do
 not by themselves provide a product-aware optimizer.  \methodname{} uses the same polar
@@ -701,7 +716,7 @@ stabilizes the factor step from the standard $B=0$ initialization.
 Several recent works argue that the important quantity is not only the
 norm of a parameter update, but the change induced in a product of
 trained matrices.  Spectron controls the spectral norm of updates in
-native low-rank factorized weights \cite{spectron}.  QuacK controls
+native low rank factorized weights \cite{spectron}.  QuacK controls
 changes to attention logits by scaling the learning rates of query and
 key weights by the norm of the partner matrix, e.g.,
 \[
