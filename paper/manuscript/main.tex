@@ -232,17 +232,15 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
 \end{restatable}
 \begin{proof}
 Let $g_i=\mathrm{vec}(G_i)$ and $M=[g_1,\ldots,g_n]$. 
-First note that  
-\[
-\mathrm{range}(\Sigma)=\mathrm{range}(MM^\top)=\mathrm{range}(M)=\mathrm{span}(g_1,\ldots,g_n).
-\]
-Hence $g_i\in\mathrm{range}(\Sigma)$ for every $i =1,\ldots, n$. Consequently
+% First note that  
+% \[
+% \mathrm{range}(\Sigma)=\mathrm{range}(MM^\top)=\mathrm{range}(M)=\mathrm{span}(g_1,\ldots,g_n).
+% \]
+Hence $g_i = Me_i$ for every $i =1,\ldots, n$. Consequently
 \[
 \dotprod{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
 \]
-where we use that $M^\top  (MM^\top)^{\dagger} M$ is an orthogonal projector
-and 
-$g_i = M e_i$ for all $i=1,\ldots, n$. 
+where we use that $M^\top  (MM^\top)^{\dagger} M$ is an orthogonal projector. 
 This proves the {\bf Leverage bound}. 
 
 The {\bf Rank one} property follows   since $W$ encodes a linear layer $x_i \mapsto W x_i$ we have by the chain-rule that  
