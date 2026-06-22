@@ -898,22 +898,23 @@ Using column-major vectorization,
 \]
 It follows that
 \[
-\begin{aligned}
-    \left\langle
-        \Sigma^\dagger\operatorname{vec}(bx^\top),
-        \operatorname{vec}(bx^\top)
-    \right\rangle
-    &=
-    (x\otimes b)^\top
-    (Q^{-1}\otimes P^{-1})
-    (x\otimes b) \\
-    &=
-    (x^\top Q^{-1}x)
-    (b^\top P^{-1}b).
-\end{aligned}
+\left\langle
+    \Sigma^\dagger\operatorname{vec}(bx^\top),
+    \operatorname{vec}(bx^\top)
+\right\rangle
+=
+(x\otimes b)^\top
+(Q^{-1}\otimes P^{-1})
+(x\otimes b)=
+(x^\top Q^{-1}x)
+(b^\top P^{-1}b).
 \]
-Substitute $b=P^{1/2}u$ and $x=Q^{1/2}v$. The constraint becomes
-$\norm{u}_2^2\norm{v}_2^2\le1$, and the objective becomes
+Let $b=P^{1/2}u$ and $x=Q^{1/2}v$. 
+The constraint defining $\mathcal{G}(\Sigma)$ becomes
+\[
+    \|u\|_2^2\|v\|_2^2\leq n,
+\]
+and 
 \[
  b^\top \Delta W x 
   = u^\top P^{1/2} \Delta W Q^{1/2}v .
