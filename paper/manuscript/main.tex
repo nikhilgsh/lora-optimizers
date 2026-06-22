@@ -221,7 +221,7 @@ use the following inequality
 and then impose  that the right hand side of \eqref{eq:outgrad1} 
 is less than $\gamma$. 
 To build $\mathcal{G}$ we collect some standard properties of the gradient matrices in the following lemma.
-\begin{restatable}[Properties of Gradients]{lemma}{gradprop} 
+\begin{restatable}[Properties of gradients]{lemma}{gradprop} 
   \label{lem:gradprop}
     Let $\Sigma := \frac{1}{n} \sum_{i=1}^n\mathrm{vec}(G_i) \mathrm{vec}(G_i)^\top \in \R^{d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}}$. If follows that gradients satisfy
     \begin{enumerate}
@@ -230,25 +230,13 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
         \end{enumerate}
     where  $x_i$ is the incoming activation and $b_i$ the backpropagated gradient of the sample loss with respect to the layer output. 
 \end{restatable}
-\begin{proof}
-Let $g_i=\mathrm{vec}(G_i)$ and $M=[g_1,\ldots,g_n]$. 
-% First note that  
-% \[
-% \mathrm{range}(\Sigma)=\mathrm{range}(MM^\top)=\mathrm{range}(M)=\mathrm{span}(g_1,\ldots,g_n).
-% \]
-Hence $g_i = Me_i$ for every $i =1,\ldots, n$. Consequently
-\[
-\dotprod{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
-\]
-where we use that $M^\top  (MM^\top)^{\dagger} M$ is an orthogonal projector. 
-This proves the {\bf Leverage bound}. 
 
-The {\bf Rank one} property follows   since $W$ encodes a linear layer $x_i \mapsto W x_i$ we have by the chain-rule that  
-$\nabla \ell_{x_i}(Wx_i) =  \left. \frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i} x_i^\top$
-where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i} $ is the so called backward gradient.
-\end{proof} 
 The above properties suggest the following outergradient set
-\begin{equation} \label{eq:outgrad} \mathcal{G}(\Sigma) := \{ G = b x^\top \in  \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}:   \; \dotprod{\Sigma^\dagger G, G} \leq n \}.\end{equation}
+\begin{equation} 
+\label{eq:outgrad} 
+\mathcal{G}(\Sigma) := \left \{ G = b x^\top \in  \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}} ~\bigg |~  
+\dotprod{\Sigma^\dagger \mathrm{vec}(G), \mathrm{vec}(G)} \leq n \right \}.
+\end{equation}
 By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus it is a proper outer approximation.
 Thus we can use $\mathcal{G}$ in our upper bound~\eqref{eq:outgrad1}.
 The last remaining issue is that $\Sigma$ is a very large matrix, which makes it too expensive to both store and operator. To tackle this, we make use of standard kronecker factored forms of $\Sigma.$
@@ -278,7 +266,7 @@ Fortunately the above can be simplified.
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
   \left\langle G, \Delta W\right\rangle \\[2pt]
-  \mbox{subject to} &
+  \mathrm{subject~ to} &
   \displaystyle  
  \|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \gamma.
   \end{array}
@@ -286,28 +274,10 @@ Fortunately the above can be simplified.
 \end{equation}
 If $P$ and $Q$ are invertible,  the closed form solution is given by 
 \begin{equation}\label{eq:polorafull-closeform}
-    \Delta W =  P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
+    \Delta W =  -\gamma P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
-
 \end{restatable}
-\begin{proof}
-    Using~\Cref{lem:pseudogradient-spectral} we have that the constraint in~\eqref{eq:polorafull-hard} can be re-written as 
-    \[ \max_{G \in \mathcal{G}(Q \otimes P)}\left\langle G, \Delta W \right\rangle  = \| P^{1/2} \Delta W Q^{1/2}\|_2.\]
-    To arrive at~\eqref{eq:polorafull-closeform}, let $\Delta \tilde{W} = P^{1/2} \Delta W Q^{1/2}$. Using the above and substituting $\Delta \tilde{W} $ in~\eqref{eq:polorafull} gives
-        \begin{equation*}
- \begin{array}{ll}
-  \underset{ }{\mathrm{minimize}} &
-  \left\langle P^{-1/2} G Q^{-1/2}, \Delta \tilde{W} \right\rangle \\[2pt]
-  \mbox{subject to} &
-  \displaystyle  
- \| \Delta \tilde{W} \|_2 \leq \gamma.
-  \end{array} 
-\end{equation*}
-The solution to the above by~\cref{lem:whitened-spectral-lmo} is given by
-\begin{equation}
-\Delta W  =   P^{-1/2} \Delta \tilde{W} Q^{-1/2} = P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}
-\end{equation}
-\end{proof}
+
 
 \rob{This far}
 For further tractability, we restrict $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
@@ -387,9 +357,9 @@ The two constraints in \eqref{eq:decoupled-direction-lmo} then take the form of 
 Thus the block problems determine the descent directions $-W_A$ and $-W_B$.
 
 \paragraph{Magnitude.}
-It remains to choose the step magnitude. Using the LMO budgets $\gamma_A$ and $\gamma_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (see \Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $U$ in spectral norm by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+It remains to choose the step magnitude. Using the LMO budgets $\gamma_A$ and $\gamma_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (see \Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $\Delta W$ in spectral norm by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
-\norm{U}_2
+\norm{\Delta W}_2
 =
 \norm{B\Delta A+\Delta B A}_2
 \le
@@ -448,7 +418,7 @@ Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the impleme
 \paragraph{Comparison.}
 For a fixed model, dataset, and rank, only the optimizer and learning rate vary. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out eval loss.
 
-The main comparisons finetune OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}), using rank $r=256$ unless stated otherwise. \Cref{sec:exp-taskdep} varies the rank and adds a low-resource language dataset. \Cref{app:exp} gives the full experimental configuration.
+The main comparisons finetune OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}), using rank $r=256$ unless stated otherwise. Additional experiments in \Cref{sec:exp-taskdep} vary the rank as well as change the finetuning dataset to a low-resource language. \Cref{app:exp} gives the full experimental configurations.
 
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:method}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
@@ -460,7 +430,7 @@ The main comparisons finetune OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match Adam's tuned loss after $T$ steps. Across the four base models, \methodname{} reaches Adam's loss in $1.2$--$1.6\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon and iMuon, neither of which improves on Adam (\Cref{fig:hero}). \Cref{app:curves} plots the learning curves for every setting.
+We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match Adam's tuned loss after $T$ steps. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.6\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon and iMuon, neither of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
 
 \begin{figure}[t]
   \centering
@@ -873,25 +843,50 @@ stated update.
 \end{proof}
 
 
-\begin{lemma}[Pseudogradient constraint under a Kronecker ansatz]
+
+\gradprop*
+\begin{proof}
+Let $g_i=\mathrm{vec}(G_i)$ and $M=[g_1,\ldots,g_n]$. 
+Hence $g_i = Me_i$ for every $i =1,\ldots, n$. Consequently
+\[
+\dotprod{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
+\]
+since $M^\top  (MM^\top)^{\dagger} M$ is an orthogonal projector
+onto the range on $M^\top$. 
+This proves the {\bf Leverage bound}. 
+
+The {\bf Rank one} property follows since $W$ encodes a linear layer $x_i \mapsto W x_i$, and by the chain rule   
+\[
+\nabla \ell_{x_i}(Wx_i) =  \left. \frac{d }{dz} \ell_{x_i}(z)  
+\right|_{z =Wx_i} x_i^\top
+=b_i x_i^\top,
+\]
+where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i} $ is the so called backward gradient.
+\end{proof} 
+
+
+
+\begin{lemma}[Outergradient set under a Kronecker factorization]
 \label{lem:pseudogradient-spectral}
-Let $U\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, let
+Let
 $P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ and
-$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ be positive definite, and set
-$\Sigma=Q\otimes P$. Define
+$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ be symmetric positive definite, 
+and let
+$\Sigma=Q\otimes P$. 
+Then for every $\Delta W\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
+it holds
 \[
-\Gamma=\{bx^\top:\mathrm{vec}(bx^\top)^\top\Sigma^{-1}\mathrm{vec}(bx^\top)\le1\}.
+  \sup_{G \in \mathcal{G}(\Sigma)} \ip{bx^\top, \Delta W}
+  =\norm{P^{1/2}\Delta W Q^{1/2}}_2,
 \]
-Then
-\[
-  \sup_{bx^\top\in\Gamma} \ip{bx^\top,U}
-  =\norm{P^{1/2}UQ^{1/2}}_2 .
-\]
+where set $\mathcal{G}(\Sigma)$ is defined in \eqref{eq:outgrad}.
 \end{lemma}
 
 \begin{proof}
-Using the column-major vectorization convention,
-$\mathrm{vec}(bx^\top)=x\otimes b$. Therefore
+Consider $b x^\top \in \mathcal{G}(\Sigma)$.
+By the column-major vectorization convention,
+$\mathrm{vec}(bx^\top)=x\otimes b$. 
+Therefore
 \[
 \mathrm{vec}(bx^\top)^\top(Q\otimes P)^{-1}\mathrm{vec}(bx^\top)
 =(x^\top Q^{-1}x)(b^\top P^{-1}b).
@@ -899,11 +894,11 @@ $\mathrm{vec}(bx^\top)=x\otimes b$. Therefore
 Substitute $b=P^{1/2}u$ and $x=Q^{1/2}v$. The constraint becomes
 $\norm{u}_2^2\norm{v}_2^2\le1$, and the objective becomes
 \[
- b^\top Ux 
-  = u^\top P^{1/2}UQ^{1/2}v .
+ b^\top \Delta W x 
+  = u^\top P^{1/2} \Delta W Q^{1/2}v .
 \]
 Taking the supremum over $\norm{u}_2\norm{v}_2\le1$ gives
-$\norm{P^{1/2}UQ^{1/2}}_2$ by the definition of the spectral norm.
+$\norm{P^{1/2} \Delta W Q^{1/2}}_2$ by the definition of the spectral norm.
 \end{proof}
 
 
@@ -921,6 +916,28 @@ Y=-\gamma\,\polar\!\left(L^{-1}MR^{-1}\right).
 \]
 Substituting back gives the stated solution.
 \end{proof}
+
+
+\polorafull*
+\begin{proof}
+    Using~\Cref{lem:pseudogradient-spectral} we have that the constraint in~\eqref{eq:polorafull-hard} can be re-written as 
+    \[ \max_{G \in \mathcal{G}(Q \otimes P)}\left\langle G, \Delta W \right\rangle  = \| P^{1/2} \Delta W Q^{1/2}\|_2.\]
+    To arrive at~\eqref{eq:polorafull-closeform}, let $\Delta \tilde{W} = P^{1/2} \Delta W Q^{1/2}$. Using the above and substituting $\Delta \tilde{W} $ in~\eqref{eq:polorafull} gives
+        \begin{equation*}
+ \begin{array}{ll}
+  \underset{ }{\mathrm{minimize}} &
+  \left\langle P^{-1/2} G Q^{-1/2}, \Delta \tilde{W} \right\rangle \\
+  \mathrm{subject ~to} &
+  \displaystyle  
+ \| \Delta \tilde{W} \|_2 \leq \gamma.
+  \end{array} 
+\end{equation*}
+The solution to the above by~\cref{lem:whitened-spectral-lmo} is given by
+\begin{equation}
+\Delta W  =   P^{-1/2} \Delta \tilde{W} Q^{-1/2} = P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}
+\end{equation}
+\end{proof}
+
 
 
 \begin{lemma}[Fixed factor step sizes under LoRA rescaling]
