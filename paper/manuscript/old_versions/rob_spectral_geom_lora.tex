@@ -1,0 +1,169 @@
+\section{Spectral Geometry with LoRA}
+\label{sec:setup}
+
+
+
+Consider a single linear layer with frozen pretrained weight
+$
+W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
+$
+Following LoRA~\cite{lora}, we fine-tune this layer by learning a low-rank update
+\begin{equation}
+\DW = \frac{\alpha}{r}\,BA, \qquad
+B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
+\label{eq:lora}
+\end{equation}
+of rank \(r\) with scaling \(\alpha\). We absorb the scaling \(\alpha/r\) into \(A\) or \(B\) henceforth and write the update as \(BA\), so that we solve
+\[
+\begin{array}{ll}
+\underset{A, B}{\mbox{minimize}}&
+\ell(W_0 + BA),
+\end{array}
+\]
+where \(\ell\) is the task loss.
+
+
+Here we will derive a type of spectral descent method~\cite{carlson2015preconditioned, carlson2015stochastic}, that is, a variant of Muon~\cite{muon} specialized to low rank matrices. 
+For clarity, we first write the method without momentum; in practice, \(G_t\) may be replaced by a momentum buffer before applying the polar map.
+
+The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
+\[ 
+\|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
+\]
+where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
+The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the spectral norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
+That is, for a given weight $W_t = W_0 + B_tA_t$ and corresponding  gradient matrix $G \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ for this layer, we minimize the local linearization of our loss, subject to a spectral ball constraint:
+\begin{align} \label{eq:muon}
+    W_{t+1} &= \argmin_{W\in  \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}} \langle G_t,W-W_t\rangle \quad \mbox{subject to}\quad  \| W-W_t\|_2 \leq \eta \\
+    &= W_t - \eta \polar(G), \label{lem:lmo} 
+\end{align} 
+where  $\polar(G_t) := U V^\top$ and 
+$
+G_t = U \Sigma V^\top
+$
+is the reduced or thin singular value decomposition.
+
+This polar factor is the matrix sign used in Muon and can be computed efficiently by Newton--Schulz-type iterations~\cite{muon,polarexpress}.
+
+\paragraph{Naive Muon.}
+A naive way to combine Muon with a LoRA is simply to update the factors $A$ and $B$ separately using  
+\begin{equation}
+   A_{t+1} = A_t-\eta\,\polar(G_A),\qquad  B_{t+1}= B_t-\eta\,\polar(G_B),
+  \label{eq:naive}
+\end{equation}
+where $G_A \in  \R^{r\times d_{\mathrm{in}}}$ and $G_B
+\in\R^{d_{\mathrm{out}}\times r}$ are the gradients of $A$ and $B$, respectively. 
+
+
+This naive update~\eqref{eq:naive} ignores the product structure, and introduces undesired dependencies on otherwise ignored symmetries. Indeed
+the product $BA$ is invariant under $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$. However, the factor gradients transform as
+\[
+G_{A} \mapsto N^{-\top}G_{A},
+\qquad
+G_{B} \mapsto G_{B}N^\top.
+\]
+Since $\polar$ is not equivariant, the update \eqref{eq:naive} depends on the factorization, even though the product $BA$ does not~\cite{imuon}.
+
+
+\paragraph{Ideal Low Rank Muon.}
+The issue with the above naive approach, is that $A$ and $B$ alone do not encode the linear layer, but rather the product $BA$. 
+Indeed, the resulting linear layer of our model is now encoded by
+\begin{equation} \label{eq:lin-op}
+    x \mapsto W_0 \,x + BA \,x.
+\end{equation} 
+Let $W = W_0 + BA $ for shorthand.
+Applying exactly the Muon update~\eqref{eq:muon} and substituting in $W$ and $W_t$ gives
+\begin{equation}\label{eq:muon-quad}
+    \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r},
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}}} \langle G_t,BA-B_t A_t\rangle  \quad \mbox{subject to}\quad  \| BA-B_tA_t\|_2 \leq \eta,
+\end{equation} 
+  This update~\eqref{eq:muon-quad} would be the ideal spectral descent for LoRA, but it is not practical, because of the difficult nonlinear constraint. To make this practical, we will admit one approximation, and one upper bound.
+
+\paragraph{Practical Low Rank Muon.}
+Our  approximation will be to linearize the map \((B,A) \mapsto BA\) around the current iterate \((B_t,A_t)\), that is we will use the first-order approximation 
+\begin{equation} \label{eq:BA-lin}
+BA
+\approx
+B_tA_t
++
+B_t(A-A_t)
++
+(B-B_t)A_t.
+\end{equation}
+Using this linearization we have that the objective in~\eqref{eq:muon-quad} becomes
+\begin{equation}\label{eq:obj-lin}
+    \langle G, BA -B_tA_t\rangle \approx 
+\langle G, B_t(A-A_t)
++
+(B-B_t)A_t\rangle \; =\;  
+\langle G_A,A-A_t \rangle
++
+\langle G_B, B-B_t\rangle,
+\end{equation} 
+where for the equality we used  the chain-rule giving
+  \[
+  \nabla_B \ell(W_0+B_tA_t) = G_B = G_t A^\top,
+  \qquad
+  \nabla_A \ell(W_0+B_tA_t) = G_A = B_t^\top G .
+  \]
+Finally to make the constraint tractable, we will use the linearization~\eqref{eq:BA-lin} and an upper bound as follows
+\begin{align} \label{eq:constraint-lin-bnd}
+    \|BA - B_tA_t\|_2 & \approx 
+    \|B_t(A-A_t)
++
+(B-B_t)A_t\|_2 \leq     \|B_t(A-A_t)\|_2
++
+\|(B-B_t)A_t\|_2,
+\end{align}
+where we used subadditivity of the spectral norm. 
+Therefore, it is sufficient to impose separate budgets 
+\begin{equation} \label{eq:twobudget} 
+\|B_t(A-A_t)\|_2 \leq \eta_A,
+\qquad
+\|(B-B_t)A_t\|_2 \leq \eta_B,
+\qquad
+\eta_A+\eta_B \leq \eta.
+\end{equation}
+This bound was also explored in  \cite{tilde_csd}.
+Finally using~\eqref{eq:obj-lin},~\eqref{eq:twobudget} and~\eqref{eq:constraint-lin-bnd} in~\eqref{eq:muon-quad} we arrive at the following two tractable programs and their solution.
+
+\begin{restatable}[Decoupled factor step]{proposition}{DecoupledFactorStep}\label{prop:decoupled}
+Assume that \(B_t\) has full column rank and \(A_t\) has full row rank. 
+Let $S_A=A_tA_t^\top \in \R^{r \times r}$, $S_B=B_t^\top B_t \in \R^{r \times r}$.
+Using the linearization~\eqref{eq:BA-lin} and the bound~\eqref{eq:constraint-lin-bnd}
+in~\eqref{eq:muon-quad},
+we arrive at the two programs
+\begin{align}
+  A_{t+1}& =   \argmin_{ 
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}}}~ \langle G_A, A-A_t\rangle \quad \textnormal{subject to}\quad  \norm{B_t(A-A_t)}_2\le\eta_A \nonumber \\
+ B_{t+1} &=   \argmin_{B \in \mathbb{R}^{d_{\mathrm{out}} \times r}}~ \langle G_B,  B -B_t\rangle \quad \textnormal{subject to}\quad  \norm{(B-B_t) A_t}_2\le\eta_B,
+  \label{eq:imuon-lmo}
+\end{align}
+to which their solutions are  given by 
+\begin{equation*}
+ A_{t+1}= A_t-\eta_A S_B^{-1/2} \polar \big(S_B^{-1/2}G_A\big),
+ \qquad
+B_{t+1}= B_t-\eta_B \polar \big(G_B S_A^{-1/2}\big) S_A^{-1/2}.
+\end{equation*}
+Furthermore we have that 
+\begin{equation} \label{cor:imuon}
+    \norm{B_t(A_{t+1}-A_t)}_2 = \eta_A, \quad \mbox{and} \quad   \norm{(B_{t+1}-B_t) A_t}_2 = \eta_B.
+\end{equation}
+\end{restatable}
+
+For the proof see 
+(\Cref{app:proofs}, iMuon \cite{imuon}, or the half-split of compositional Muon \cite{tilde_csd}.
+
+
+The resulting update~\eqref{eq:imuon-lmo} whitens each factor gradient by the inverse Gram root of the opposite factor. This makes the step depend on the local geometry of the product \(BA\), rather than on the arbitrary scaling of the individual factors.
+
+\rob{This far}
+Finally, we have the freedom to choose $\eta_A$ and $\eta_B$.We will choose $\eta_A$ and $\eta_B$ so that the update in $A$ and $B$ have equal size in the spectral norm. That is, we move equally far in either factor. Furthermore, we want to enforce that~\eqref{eq:constraint-lin-bnd} is less than $\eta$, which will be our one user selected hyper-parameter. 
+
+Let $\rho = \|A_{t+1}-A_t\|_2 = \|B_{t+1}-B_t\|$ be the size of this update. Note that from~\eqref{eq:constraint-lin-bnd} 
+
+\[ ... \]
+
+
+% ===========================================================================
