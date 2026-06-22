@@ -344,7 +344,7 @@ As before, the budgets $\gamma_A$ and $\gamma_B$ only set the scale of the solut
 Let $L$ and $R$ be symmetric positive definite. Then
 \[
 -\gamma L^{-1}
-\polar\!\left(L^{-1}MR^{-1}\right)
+\polar\!\left(L^{-1}MR^{-1}\right) R^{-1}
 \in 
 \underset{\norm{LXR}_2\le\gamma}{\argmin}\,
 \left\langle M,X\right\rangle.
@@ -649,7 +649,7 @@ observes that the simplified QR-coordinate core of LoRA-RITE implements
 the same spectral update.  Our use of the LMO viewpoint is concurrent
 with these works; the underlying moment-free update is not new.
 
-In the memoryless spectral limit, LoRA-RITE, iMuon and LoRA-Muon reduce to the same update
+In the zero momentum spectral limit, LoRA-RITE, iMuon and LoRA-Muon reduce to the same update
 \[
   \Delta A
   =
