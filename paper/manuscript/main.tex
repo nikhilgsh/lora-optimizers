@@ -168,7 +168,7 @@ of rank \(r\) with scaling \(\alpha\). To simplify the derivation, we suppress t
 where $\mathcal{L}$ is the task loss. Our loss will be the average over a training set $\mathcal{L}(W) = \E_{x}\left[ \ell_x(W)\right]$ where $\ell_x(W)$ denotes the loss over input $x$ and parameters $W$.
 
 \paragraph{Spectral Descent.}
-Inspired by the success of Muon~\cite{muon,carlson2015preconditioned}, we develop our method using a Linear Minimization Oracle (LMO).  For now,  we ignore the particular low rank structure of our parameters, and consider $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with associated gradient $G = \nabla_W \mathcal{L}(W).$ 
+Inspired by the success of Muon~\cite{muon,carlson2015preconditioned}, we develop our method using a Linear Minimization Oracle (LMO).  For now,  we ignore the particular low rank structure of our parameters, and consider $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with associated gradient $G = \nabla_W \mathcal{L}(W)$. 
 The LMO approach minimizes the local linearization of our loss subject to a ball constraint, that is
 \begin{equation}
  \begin{array}{ll}
@@ -177,12 +177,15 @@ The LMO approach minimizes the local linearization of our loss subject to a ball
   \mbox{subject to} &
   \displaystyle  
   \left\| \Delta W   \right\|
-  \le \gamma,
+  \le \eta,
   \end{array}
   \label{eq:lmo}
 \end{equation}
-where $\|\cdot\|$ is a chosen norm. Given a solution $\Delta W$ to problem~\eqref{eq:lmo}, we then update our parameter according to \[W \leftarrow W + \Delta W.\]
-% Since the LMO is homogeneous, $\gamma$ only sets the scale of its solution. We use the solution as the update direction. Later we will choose its magnitude separately so that the merged update has a controlled spectral norm.
+where $\|\cdot\|$ is a chosen norm. Given a solution $\Delta W$ to problem~\eqref{eq:lmo}, we then update our parameter according to 
+\[
+W \leftarrow W + \Delta W.
+\]
+% Since the LMO is homogeneous, $\eta$ only sets the scale of its solution. We use the solution as the update direction. Later we will choose its magnitude separately so that the merged update has a controlled spectral norm.
 
 To define a method using~\eqref{eq:lmo} we only need to choose a norm. The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
 \[ 
@@ -191,11 +194,11 @@ To define a method using~\eqref{eq:lmo} we only need to choose a norm. The key i
 where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
 The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the spectral norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
 
-\paragraph{A new linear minimization oracle.} Inspired by this conservative view of Muon and the spectral norm, we develop a new pseudo-norm that is conservative with respect to a batch of incoming activations. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i,$ that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W),$ where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation (as opposed to an input).
+\paragraph{A new linear minimization oracle.} Inspired by this conservative view of Muon and the spectral norm, we develop a new pseudo-norm that is conservative with respect to a batch of incoming activations. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation (as opposed to an input).
 
 To be conservative with respect to every activation, we mean to enforce that no single activation results in a large change in the loss, that is we want
 \begin{equation}\label{eq:loss-diff}
-     \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \gamma, \qquad  i=1,\ldots, n.
+     \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \eta, \qquad  i=1,\ldots, n.
 \end{equation} 
 This would ensure stable training with no spikes or jumps in the loss. But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
 \[  
@@ -209,21 +212,23 @@ Using the above and~\eqref{eq:loss-diff} in the LMO~\eqref{eq:lmo} we arrive at
   \mbox{subject to} &
   \displaystyle  
 \left\langle G_i, \Delta W \right\rangle 
-  \le \gamma, \qquad i=1,\ldots, n.
+  \le \eta, \qquad i=1,\ldots, n.
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
 Since we do not have direct access to the per-input gradients $G_i$, we will now find a \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$,
 use the following inequality
 \begin{equation} \label{eq:outgrad1}
-    \max_{i=1,\ldots, n}  \left\langle G_i, \Delta W \right\rangle  \leq   \max_{G \in \mathcal{G}} \left\langle G, \Delta W \right\rangle 
+    \max_{i=1,\ldots, n}  \left\langle G_i, \Delta W \right\rangle  
+    \leq   \max_{\tilde G \in \mathcal{G}} \left\langle \tilde G, \Delta W \right\rangle 
 \end{equation} 
 and then impose  that the right hand side of \eqref{eq:outgrad1} 
-is less than $\gamma$. 
+is less than $\eta$. 
 To build $\mathcal{G}$ we collect some standard properties of the gradient matrices in the following lemma.
 \begin{restatable}[Properties of gradients]{lemma}{gradprop} 
   \label{lem:gradprop}
-    Let $\Sigma := \frac{1}{n} \sum_{i=1}^n\mathrm{vec}(G_i) \mathrm{vec}(G_i)^\top \in \R^{d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}}$. If follows that gradients satisfy
+    Let $g_i=\mathrm{vec}(G_i) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for all $i=1, \ldots, n$,
+    and $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. If follows that gradients satisfy
     \begin{enumerate}
         \item {\bf Leverage bound:} $ \dotprod{\Sigma^\dagger g_i, g_i} \leq n$, \\[-0.5cm]
         \item {\bf Rank one:} $G_i = b_i x_i^\top$,
@@ -234,17 +239,20 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
 The above properties suggest the following outergradient set
 \begin{equation} 
 \label{eq:outgrad} 
-\mathcal{G}(\Sigma) := \left \{ G = b x^\top \in  \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}} ~\bigg |~  
-\dotprod{\Sigma^\dagger \mathrm{vec}(G), \mathrm{vec}(G)} \leq n \right \}.
+\mathcal{G}(\Sigma) := \left \{ b x^\top ~\bigg |~  
+b\in\mathbb{R}^{d_{\mathrm{out}}},
+    \ x\in\mathbb{R}^{d_{\mathrm{in}}}, \
+\tilde G = b x^\top, \
+\dotprod{\Sigma^\dagger \mathrm{vec}(\tilde G), \mathrm{vec}(\tilde G)} \leq n \right \}.
 \end{equation}
 By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus it is a proper outer approximation.
 Thus we can use $\mathcal{G}$ in our upper bound~\eqref{eq:outgrad1}.
-The last remaining issue is that $\Sigma$ is a very large matrix, which makes it too expensive to both store and operator. To tackle this, we make use of standard kronecker factored forms of $\Sigma.$
+The last remaining issue is that $\Sigma$ is a very large matrix, which makes it too expensive to both store and operator. To tackle this, we make use of standard Kronecker factored forms of $\Sigma$.
 
 
 
 \paragraph{Factorizing.}
-To arrive at a computationally feasible method, we will use a Kronecker factorization of $\Sigma$, such as the  Shampoo~\cite{shampoo, klshampoo} or KFAC~\cite{kfac} approximation. Let $Q\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $P  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be positive semi-definite matrices such that
+To arrive at a computationally feasible method, we will use a Kronecker factorization of $\Sigma$, such as the  Shampoo~\cite{shampoo, klshampoo} or KFAC~\cite{kfac} approximation. Let $Q\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $P  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
      \begin{equation} \label{eq:factor}
      \Sigma  \approx Q \otimes P.\end{equation}
      Using the factorization~\eqref{eq:factor}, our outergradient set~\eqref{eq:outgrad} in~\eqref{eq:outgrad1} and~\eqref{eq:sample-lmo} we arrive at the following method
@@ -254,54 +262,98 @@ To arrive at a computationally feasible method, we will use a Kronecker factoriz
   \left\langle G, \Delta W\right\rangle \\[2pt]
   \mbox{subject to} &
   \displaystyle  
-\max_{G \in \mathcal{G}(Q \otimes P)}\left\langle G, \Delta W \right\rangle 
-  \le \gamma.
+\max_{\tilde G \in \mathcal{G}(Q \otimes P)}\left\langle \tilde G, \Delta W \right\rangle 
+  \le \eta.
   \end{array}
   \label{eq:polorafull-hard}
 \end{equation}
 Fortunately the above can be simplified.
-\begin{restatable}{lemma}{polorafull}\label{lem:polorafull}
-    The problem~\eqref{eq:polorafull-hard} can be re-written as 
-    \begin{equation}
- \begin{array}{ll}
-  \underset{\Delta W}{\mathrm{minimize}} &
-  \left\langle G, \Delta W\right\rangle \\[2pt]
-  \mathrm{subject~ to} &
-  \displaystyle  
- \|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \gamma.
-  \end{array}
-  \label{eq:polorafull}
-\end{equation}
-If $P$ and $Q$ are invertible,  the closed form solution is given by 
-\begin{equation}\label{eq:polorafull-closeform}
-    \Delta W =  -\gamma P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
-\end{equation} 
-\end{restatable}
 
+\begin{restatable}[Generalized spectral-norm LMO]{lemma}{GeneralLmoUpdate}
+\label{lem:whitened-spectral-lmo}
+Let $L$ and $R$ be symmetric positive definite. Then
+\[
+X^\star = -\eta L^{-1}
+\polar\left(L^{-1}MR^{-1}\right) R^{-1}
+\]
+is a solution of
+\[
+\begin{array}{ll}
+\underset{\|LXR\|_2\leq\eta}{\mathrm{minimize}}&
+\langle M,X\rangle.
+\end{array}
+\]
+Moreover, $X^\star$ is the unique minimizer of
+$\|LXR\|_F$ over the solution set.
+\end{restatable}
+By~\Cref{lem:pseudogradient-spectral} the constraint in~\eqref{eq:polorafull-hard} can be re-written as 
+\[ 
+\max_{G \in \mathcal{G}(Q \otimes P)}\left\langle G, \Delta W \right\rangle  
+= \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2.
+\]
+Then problem~\eqref{eq:polorafull-hard} can be re-written as 
+\begin{equation}
+\begin{array}{ll}
+\underset{\Delta W}{\mathrm{minimize}} &
+\left\langle G, \Delta W\right\rangle \\[2pt]
+\mathrm{subject~ to} &
+\displaystyle  
+\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \tilde \eta,
+\end{array}
+\label{eq:polorafull}
+\end{equation}
+where $\tilde\eta = \frac{\eta}{\sqrt{n}}$.
+By~\Cref{lem:whitened-spectral-lmo} with $(L,R)=(P^{1/2},Q^{1/2})$, a solution is given by
+\begin{equation}\label{eq:polorafull-closeform}
+    \Delta W =  -\tilde \eta P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
+\end{equation} 
 
 \rob{This far}
-For further tractability, we restrict $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
+Without loss of generality from now on we absorb the factor of 
+$\frac{1}{\sqrt{n}}$ in $\eta$.
+For further tractability, we restrict matrices 
+$P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
 
-Let $G_A=B^\top G$ and $G_B=GA^\top$ denote the factor gradients. We estimate the diagonal factors from these gradients by applying KL-Shampoo's coupled second-moment equations under this diagonal ansatz \cite{klshampoo} (see \Cref{app:matnormal}).
-
-\paragraph{Direction.}
-
-Additive updates $\Delta A$ and $\Delta B$ change $W$ by the first-order term $\Delta W = B \Delta A + \Delta B A$, plus a second-order term $\Delta B \Delta A$. 
-
-
-With the diagonal factors $P$ and $Q$ fixed during the step, the direction problem becomes
+\paragraph{LoRA update direction.}
+We now describe how to update LoRA factors from the merged 
+problem \eqref{eq:polorafull}.
+Let $G_A=B^\top G$ and $G_B=GA^\top$ denote the factor gradients.
+We update LoRA factors according to
+\[
+A \leftarrow A + \Delta A,
+\qquad
+B \leftarrow B + \Delta B.
+\]
+Then the first-order approximation of the total update is
+\[
+\Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A.
+\]
+We replace $\Delta W$ in \eqref{eq:polorafull} with its approximation above and get a problem
 \begin{equation}
     \begin{array}{ll}
     \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
     \left\langle G, B\Delta A+\Delta B A \right\rangle \\[2pt]
     \mbox{subject to} &
     \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
-    \le \gamma .
+    \le \eta .
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-  
-To handle the coupling between $\Delta A$ and $\Delta B$ in $\Delta W$, we use subadditivity of the spectral norm to split the constraint into two separate budgets, one for each factor. For any $\gamma_A,\gamma_B > 0$ satisfying $\gamma_A+\gamma_B\le\gamma$, this gives two block problems:
+Further to make the constraint tractable, we use subadditivity of the spectral norm 
+\[
+\norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
+\leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
++ \norm{P^{1/2} \Delta B AQ^{1/2}}_2.
+\]
+Therefore, it is sufficient to impose separate budgets 
+\[
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \eta_A,
+\qquad
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \eta_B,
+\qquad
+\eta_A+\eta_B \leq \eta.
+\]
+This decouples the problem \eqref{eq:joint-direction-lmo} into two block subproblems
 \begin{equation}
 \setlength{\arraycolsep}{2pt}
 \begin{array}{@{}c@{\qquad}c@{}}
@@ -309,30 +361,21 @@ To handle the coupling between $\Delta A$ and $\Delta B$ in $\Delta W$, we use s
 \underset{\Delta A}{\mathrm{minimize}} &
 \left\langle G_A,\Delta A \right\rangle \\[2pt]
 \mbox{subject to} &
-\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \gamma_A ,
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \eta_A ,
 \end{array}
 &
 \begin{array}{ll}
 \underset{\Delta B}{\mathrm{minimize}} &
 \left\langle G_B,\Delta B \right\rangle \\[2pt]
 \mbox{subject to} &
-\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \gamma_B .
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \eta_B .
 \end{array}
 \end{array}
 \label{eq:decoupled-direction-lmo}
 \end{equation}
-As before, the budgets $\gamma_A$ and $\gamma_B$ only set the scale of the solutions. To solve these block problems, we use the following generalized spectral-norm LMO (see \Cref{app:proofs}).
-\begin{lemma}[Generalized spectral-norm LMO]
-\label{lem:whitened-spectral-lmo}
-Let $L$ and $R$ be symmetric positive definite. Then
-\[
--\gamma L^{-1}
-\polar\!\left(L^{-1}MR^{-1}\right) R^{-1}
-\in 
-\underset{\norm{LXR}_2\le\gamma}{\argmin}\,
-\left\langle M,X\right\rangle.
-\]
-\end{lemma}
+As before, the budgets $\eta_A$ and $\eta_B$ only set the scale of the solutions. To solve these block problems, we use the following generalized spectral-norm LMO (see \Cref{app:proofs}).
+
+
 \noindent Define the contracted curvature factors
 \begin{equation}
 C_A = B^\top P B,
@@ -340,7 +383,17 @@ C_A = B^\top P B,
 C_B = A Q A^\top .
 \label{eq:ours-closure}
 \end{equation}
-The two constraints in \eqref{eq:decoupled-direction-lmo} then take the form of \Cref{lem:whitened-spectral-lmo} with $(L,R)=(C_A^{1/2},Q^{1/2})$ and $(L,R)=(P^{1/2},C_B^{1/2})$, respectively. Applying the lemma, the two block minimizers are $-\gamma_A W_A$ and $-\gamma_B W_B$, where
+By the definition of the spectral norm, for the $\Delta A$-block it holds
+\[
+\|P^{1/2}B\Delta A Q^{1/2}\|_{2}
+= \sqrt{\lambda_{\max}( Q^{1/2} \Delta A^\top C_A \Delta A Q^{1/2})}
+= \|C_A^{1/2} \Delta A Q^{1/2}\|_{2},
+\]
+and, similarly, for the $\Delta B$-block,
+\[
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2.
+\]
+Thus two problems in \eqref{eq:decoupled-direction-lmo} take the form of \Cref{lem:whitened-spectral-lmo} with $(L,R)=(C_A^{1/2},Q^{1/2})$ and $(L,R)=(P^{1/2},C_B^{1/2})$, respectively. By \Cref{lem:whitened-spectral-lmo}, the two block minimizers are $-\eta_A W_A$ and $-\eta_B W_B$, where
 \begin{equation}
   \begin{aligned}
   W_A &=
@@ -354,13 +407,13 @@ The two constraints in \eqref{eq:decoupled-direction-lmo} then take the form of 
   \end{aligned}
   \label{eq:factor-directions}
 \end{equation}
-Thus the block problems determine the descent directions $-W_A$ and $-W_B$.
+Hence the block subproblems \eqref{eq:decoupled-direction-lmo} determine the descent directions $-W_A$ and $-W_B$.
 
 \paragraph{Magnitude.}
-It remains to choose the step magnitude. Using the LMO budgets $\gamma_A$ and $\gamma_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (see \Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $\Delta W$ in spectral norm by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+It remains to choose the step magnitude. Using the LMO budgets $\eta_A$ and $\eta_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (see \Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $\Delta W$ in spectral norm with the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
-=
+\approx
 \norm{B\Delta A+\Delta B A}_2
 \le
 \norm{B}_2\norm{\Delta A}_2
@@ -373,7 +426,7 @@ Treating $A$ and $B$ symmetrically, we use a single step size $\rho$ for both fa
 \rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
 \label{eq:ours-rho}
 \end{equation}
-ensures $\norm{U}_2\le\eta$, and gives the updates
+ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \[
 \Delta A = -\rho\,\frac{W_A}{\norm{W_A}_2},
 \qquad
@@ -382,6 +435,8 @@ ensures $\norm{U}_2\le\eta$, and gives the updates
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
 Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We estimate the spectral norms by power iteration (see \Cref{alg:smax}) and use damping in the curvature inverse square roots (see \Cref{app:damping}).
+To estimate the diagonal factors $P$ and $Q$ we apply KL-Shampoo's \cite{klshampoo}
+coupled second-moment equations (see \Cref{app:matnormal}).
 
 \begin{algorithm}[t]
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
@@ -480,11 +535,11 @@ Removing both reduces \methodname{} to the decoupled step, which matches Adam in
 
 \subsection{Effect of Rank and Distribution Shift}
 \label{sec:exp-taskdep}
-To isolate the effect of the LoRA rank and of the finetuning dataset, we vary each separately. on its own: the rank on, and the target corpus on Qwen2.5-1.5B.
+To understand the effect of the LoRA rank and of the finetuning dataset, we vary the rank while finetuning on math and vary the dataset from code to a low-resource language underrepresented in the pretraining mix.
 
-\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, \methodname{}'s step-speedup over Adam grows with it (\Cref{fig:curves-rank}). Furthermore, we observe that \methodname{} exhibits learning rate transfer across rank. The optimal learning rate is the same at every rank, while the optimal learning rate for Adam shifts with rank (\Cref{fig:lr_transfer}).
+\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, \methodname{}'s step-speedup over Adam grows with it (\Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer across rank: the optimal learning rate is stable across rank, whereas the optimal learning rate for Adam shifts (\Cref{fig:lr_transfer}).
 
-\paragraph{Distribution shift.} By \emph{distribution shift} we loosely are referring to distance between the base model's pretraining distribution and the finetuning dataset. Since for the Qwen2.5-1.5B model code is heavily represented in its pretraining data and Bengali (Aya \cite{aya}) much less so, we refer to code as in-distribution and Bengali as out-of-distribution. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
+\paragraph{Distribution shift.} Coding data is heavily represented in the pretraining data for the Qwen2.5-1.5B model. Bengali (Aya \cite{aya}) much less so, we refer to code as in-distribution and Bengali as out-of-distribution. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
 
 \begin{figure}[t]
   \centering
@@ -512,7 +567,7 @@ To isolate the effect of the LoRA rank and of the finetuning dataset, we vary ea
 
 
   
-\paragraph{LoRa and optimization of low rank factors.}
+\paragraph{LoRA and optimization of low rank factors.}
 LoRA finetuning freezes the pretrained weight matrix and trains a low rank update
 $\DW=(\alpha/r)BA$ through the factors $A$ and $B$ \cite{lora}.
 Adam is a standard optimizer choice applied independently to the two
@@ -547,7 +602,7 @@ ball, in other words spectral descent,
 where $\polar(G)$ is the orthogonal polar factor of $G$ \cite{muon,polarexpress}.
 This spectral step controls the worst-case change of the linear operator and
 has motivated several spectrally controlled optimizers. 
-When Muon is applied separately to LoRa factors, spectral gradient flow exhibits a distinctive spectral phenomenon, 
+When Muon is applied separately to LoRA factors, spectral gradient flow exhibits a distinctive spectral phenomenon, 
 ``equal-rate'' growth of singular values, explaining why factor-wise
 orthogonalization can behave very differently from ordinary gradient
 flow \cite{kang_specgf}.  Spectron instead uses orthogonalization and
@@ -568,8 +623,8 @@ matrix
 Shampoo preconditioner eigenbasis \cite{soap}.  
 Further, a recent KL perspective
 interprets Shampoo and SOAP as structured covariance-estimation
-procedures and motivates KL-Shampoo/KL-SOAP \cite{klshampoo}, which is
-related to our metric estimator.
+procedures and motivates KL-Shampoo/KL-SOAP \cite{klshampoo}, which we use for
+estimating matrices $P$ and $Q$ in our outergradient set.
 
 Curvature-aware spectral optimizers combine this second-moment geometry
 with Muon-style orthogonalization.  SOAP-Muon first whitens with a SOAP
@@ -624,7 +679,7 @@ tangent vector, whereas the LoRA-RITE/iMuon/LoRA-Muon core solves two
 half-product subproblems.
 
 The interpretation of the invariant factor update as a spectral
-steepest-descent step, or linear minimization oracle (LMO), is
+steepest-descent step, or spectral LMO, is
 concurrent work.  iMuon \cite{imuon} gives a general intrinsic-LMO
 framework for matrix manifolds, including the fixed-rank manifold.
 LoRA-Muon \cite{loramuon} derives the LoRA specialization directly and
@@ -632,27 +687,44 @@ observes that the simplified QR-coordinate core of LoRA-RITE implements
 the same spectral update.  Our use of the LMO viewpoint is concurrent
 with these works; the underlying moment-free update is not new.
 
-In the zero momentum spectral limit, LoRA-RITE, iMuon and LoRA-Muon reduce to the same update
+Without moment accumulation, LoRA-RITE, iMuon and LoRA-Muon reduce to the same update
 \[
   \Delta A
   =
-  -\eta\,S_B^{-1/2}\,
-  \polar\!\left(S_B^{-1/2}G_A\right),
+  -\eta S_A^{-1/2}
+  \polar \left(S_A^{-1/2}G_A\right),
   \qquad
   \Delta B
   =
-  -\eta\,
-  \polar\!\left(G_BS_A^{-1/2}\right)S_A^{-1/2},
+  -\eta
+  \polar\left(G_BS_B^{-1/2}\right)S_B^{-1/2},
 \]
-with $S_A=AA^\top$, $S_B=B^\top B$, $G_A=B^\top G$, and
-$G_B=GA^\top$.  Equivalently, this is the solution of the two half-product subproblems
-\eqref{eq:imuon-lmo}.
+with $S_A=B^\top B$, $S_B=AA^\top$, $G_A=B^\top G$, and
+$G_B=GA^\top$, 
+see \Cref{app:memoryless}.  Equivalently, this is the solution of the two half-product subproblems
+\begin{equation}
+  \begin{aligned}
+  \Delta A &\in    \argmin_{ 
+\Delta A}~ \langle G_A, \Delta A \rangle \quad \textnormal{subject to}\quad  
+\norm{B \Delta A}_2\le\eta \\
+\Delta B &\in   \argmin_{\Delta B}~ \langle G_B,  \Delta B \rangle \quad \textnormal{subject to}\quad  \norm{\Delta B A}_2\le\eta.
+  \end{aligned}
+  \label{eq:imuon-lmo}
+\end{equation}
+\methodname{} on the other hand solves subproblems \eqref{eq:decoupled-direction-lmo} based on a coupled
+two-sided curvature metric,
+\[
+    C_A=B^\top P B,\qquad C_B=AQA^\top.
+\]
+Note that this reduces to half-product subproblems when we do not
+update the metric, i.e., $P=I$ and $Q=I$.
 
-
-This shared update controls the two linearized product contributions,
+However there is a problem with how LoRA-RITE, iMuon and LoRA-Muon use
+ \eqref{eq:imuon-lmo}.
+While the shared update \eqref{eq:imuon-lmo} controls the norm of the products,
 $\|B\Delta A\|_2\le \eta$ and $\|\Delta B A\|_2\le \eta$,
-and is invariant at the product level.  It does not, however, control
-the raw factor steps:
+it does not control
+the raw factor steps, since by submultiplicativity we can have
 \[
     \|\Delta A\|_2
     \sim
@@ -662,42 +734,88 @@ the raw factor steps:
     \sim
     \frac{\eta}{\sigma_{\min}(A)} .
 \]
-Thus the memoryless spectral core is singular at the standard LoRA
+Thus the spectral update without moment accumulation is singular at the standard LoRA
 initialization $B=0$ unless one uses damping, warmup, or nonzero factor
-initialization.  \methodname{} uses this shared invariant spectral core
-as the baseline direction, but adds two separate controls: a coupled
-two-sided curvature metric,
-\[
-    C_A=B^\top P B,\qquad C_B=AQA^\top ,
-\]
-which changes the polar direction, and an explicit spectral-norm bound on the merged update,
-\begin{equation} \label{e-rho-eta-adapter-stepsize}
-    \rho=\frac{\eta}{\|A\|_2+\|B\|_2},
-    \qquad
-    \|B\Delta A+\Delta B A\|_2\le \eta .
-\end{equation}
-The first control changes the geometry of the direction; the second
-stabilizes the factor step from the standard $B=0$ initialization.
+initialization. 
+Unlike these other methods, \methodname{} uses this shared invariant spectral core
+as the baseline direction, but adds 
+an explicit spectral-norm bound on the merged update
+that stabilizes the factor step.
 
 
 \paragraph{Product-step magnitude control.}
-Several recent works argue that the important quantity is not only the
-norm of a parameter update, but the change induced in a product of
-trained matrices.  Spectron controls the spectral norm of updates in
-native low rank factorized weights \cite{spectron}.  QuacK controls
-changes to attention logits by scaling the learning rates of query and
-key weights by the norm of the partner matrix, e.g.,
+Several recent works control the change induced by a product of trained
+matrices, rather than only the factor increments. Spectron controls
+updates of native low-rank factorizations in spectral norm
+\cite{spectron}. QuacK scales the query and key learning rates by the
+norm of the partner matrix,
 \[
-    \eta_Q\propto \|W_K\|^{-1},
+    \eta_Q\propto\|W_K\|^{-1},
     \qquad
-    \eta_K\propto \|W_Q\|^{-1},
+    \eta_K\propto\|W_Q\|^{-1},
 \]
-so a large key matrix slows the query update and vice versa
-\cite{quack}.  \methodname{} applies the same principle to the product $BA$ in \eqref{e-rho-eta-adapter-stepsize}, but in spectral rather than Frobenius norm.
-This magnitude rule is separate from the curvature metric that sets the
-polar direction.  It makes the step magnitude independent of factor
-conditioning and allows the optimizer to start from the usual $B=0$
-initialization without warmup or nonzero factor initialization.
+so that a large partner matrix reduces the induced product update
+\cite{quack}.
+
+LoRA-Muon~\cite{loramuon} imposes this control directly on the two components of the
+linearized LoRA update. It splits a product-space trust-region radius
+equally,
+\[
+    \|B\Delta A\|_2\leq\frac{\eta}{2},
+    \qquad
+    \|\Delta B A\|_2\leq\frac{\eta}{2},
+\]
+and hence
+\[
+    \|B\Delta A+\Delta B A\|_2
+    \leq
+    \|B\Delta A\|_2+\|\Delta B A\|_2
+    \leq\eta.
+\]
+This bounds the linearized product update, but not the
+raw factor increments; the latter can become large when $A$ or $B$ is
+poorly conditioned.
+
+\methodname{} separates the curvature-aware direction from its
+magnitude. Let $W_A$ and $W_B$ denote the factor directions, normalized
+so that
+\[
+    \|W_A\|_2\leq1,
+    \qquad
+    \|W_B\|_2\leq1,
+\]
+and set
+\begin{equation}
+\label{e-rho-eta-adapter-stepsize}
+    \Delta A=\rho W_A,
+    \qquad
+    \Delta B=\rho W_B,
+    \qquad
+    \rho=\frac{\eta}{\|A\|_2+\|B\|_2}.
+\end{equation}
+Then
+\[
+\|B\Delta A+\Delta B A\|_2
+\leq
+\|B\|_2\|\Delta A\|_2
++
+\|\Delta B\|_2\|A\|_2
+\leq
+\rho\bigl(\|A\|_2+\|B\|_2\bigr)
+=
+\eta.
+\]
+Thus both LoRA-Muon and \methodname{} bound the linearized product
+update. LoRA-Muon does so through two half-product constraints, whereas
+\methodname{} places a common bound on the raw factor increments after
+the curvature-aware direction has been computed. The latter also gives
+\[
+    \|\Delta A\|_2\leq\rho,
+    \qquad
+    \|\Delta B\|_2\leq\rho,
+\]
+preventing the factor-step magnitude from growing with the inverse
+smallest singular value of the partner factor.
 
 
 % ===========================================================================
@@ -795,27 +913,27 @@ hardware-independent.
 
 
 
-\begin{lemma}[Spectral norm linear minimization]\label{lem:muon-lmo}
+\begin{lemma}[Spectral norm LMO]\label{lem:muon-lmo}
 For $G\in\mathbb{R}^{m\times n}$ and $\eta>0$,
 \[
     \min_{\|X\|_2\leq \eta}\langle G,X\rangle
     =
     -\eta\|G\|_{\mathrm{nuc}},
 \]
-and
+and 
 \[
-    -\eta\polar(G)
-    \in
-    \argmin_{\|X\|_2\leq \eta}\,\langle G,X\rangle .
+X^\star = -\eta\polar(G)
 \]
-Consequently,
+is unique least Frobenius norm minimizer of
 \[
-    W_t-\eta\polar(G_t) \in \argmin_{\|W-W_t\|_2\leq\eta}
-    \langle G_t,W-W_t\rangle.
+\begin{array}{ll}
+\underset{\|X\|_2\leq \eta}{\mathrm{minimize}}&
+\langle G,X\rangle.
+\end{array}
 \]
 \end{lemma}
 
-\begin{proof}
+\begin{proof}[Proof of \Cref{lem:muon-lmo}]
 By duality of the spectral and nuclear norms, every feasible $X$ satisfies
 \[
     \langle G,X\rangle
@@ -837,15 +955,14 @@ is feasible and satisfies
     =
     -\eta\|G\|_{\mathrm{nuc}}.
 \]
-It therefore attains the lower bound.  
-Substituting $X=W-W_t$ gives the
-stated update.
+Thus it attains the lower bound, and therefore, is optimal. 
+The minimum-norm statement follows from Lemma C.2~\cite{parshakova2026muon}.
 \end{proof}
 
 
 
 \gradprop*
-\begin{proof}
+\begin{proof}[Proof of \Cref{lem:gradprop}]
 Let $g_i=\mathrm{vec}(G_i)$ and $M=[g_1,\ldots,g_n]$. 
 Hence $g_i = Me_i$ for every $i =1,\ldots, n$. Consequently
 \[
@@ -874,15 +991,14 @@ $Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ be symmetric positive definite,
 and let
 $\Sigma=Q\otimes P$. 
 Then for every $\Delta W\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
-it holds
 \[
-  \sup_{G \in \mathcal{G}(\Sigma)} \ip{bx^\top, \Delta W}
-  =\norm{P^{1/2}\Delta W Q^{1/2}}_2,
+  \max_{\tilde G \in \mathcal{G}(\Sigma)} \ip{ \tilde G , \Delta W}
+  =\sqrt{n}\norm{P^{1/2}\Delta W Q^{1/2}}_2,
 \]
 where set $\mathcal{G}(\Sigma)$ is defined in \eqref{eq:outgrad}.
 \end{lemma}
 
-\begin{proof}
+\begin{proof}[Proof of \Cref{lem:pseudogradient-spectral}]
 Since $P$ and $Q$ are positive definite,
 \[
     \Sigma^\dagger
@@ -916,48 +1032,37 @@ The constraint defining $\mathcal{G}(\Sigma)$ becomes
 \]
 and 
 \[
+\ip{bx^\top, \Delta W}=
  b^\top \Delta W x 
   = u^\top P^{1/2} \Delta W Q^{1/2}v .
 \]
-Taking the supremum over $\norm{u}_2\norm{v}_2\le1$ gives
-$\norm{P^{1/2} \Delta W Q^{1/2}}_2$ by the definition of the spectral norm.
+Finally,
+\[
+\max_{\tilde G  \in\mathcal{G}(\Sigma)}
+\langle \tilde G ,U\rangle
+=
+\max_{\|u\|_2\|v\|_2\leq\sqrt{n}}
+u^\top P^{1/2} \Delta W Q^{1/2}v 
+=
+\sqrt{n}
+\left\|P^{1/2} \Delta WQ^{1/2}\right\|_2.
+\]
 \end{proof}
 
-
+\GeneralLmoUpdate*
 \begin{proof}[Proof of \Cref{lem:whitened-spectral-lmo}]
 Set $Y=LXR$, so $X=L^{-1}YR^{-1}$. The constraint becomes
-$\norm{Y}_2\le\gamma$, and the objective becomes
+$\norm{Y}_2\le\eta$, and the objective becomes
 \[
 \left\langle M,X\right\rangle
 =
 \left\langle L^{-1}MR^{-1},Y\right\rangle .
 \]
-By spectral--nuclear duality, this is minimized over $\norm{Y}_2\le\gamma$ by
+By \Cref{lem:muon-lmo}, unique least Frobenius norm minimizer is
 \[
-Y=-\gamma\,\polar\!\left(L^{-1}MR^{-1}\right).
+Y=-\eta \polar \left(L^{-1}MR^{-1}\right).
 \]
 Substituting back gives the stated solution.
-\end{proof}
-
-
-\polorafull*
-\begin{proof}
-    Using~\Cref{lem:pseudogradient-spectral} we have that the constraint in~\eqref{eq:polorafull-hard} can be re-written as 
-    \[ \max_{G \in \mathcal{G}(Q \otimes P)}\left\langle G, \Delta W \right\rangle  = \| P^{1/2} \Delta W Q^{1/2}\|_2.\]
-    To arrive at~\eqref{eq:polorafull-closeform}, let $\Delta \tilde{W} = P^{1/2} \Delta W Q^{1/2}$. Using the above and substituting $\Delta \tilde{W} $ in~\eqref{eq:polorafull} gives
-        \begin{equation*}
- \begin{array}{ll}
-  \underset{ }{\mathrm{minimize}} &
-  \left\langle P^{-1/2} G Q^{-1/2}, \Delta \tilde{W} \right\rangle \\
-  \mathrm{subject ~to} &
-  \displaystyle  
- \| \Delta \tilde{W} \|_2 \leq \gamma.
-  \end{array} 
-\end{equation*}
-The solution to the above by~\cref{lem:whitened-spectral-lmo} is given by
-\begin{equation}
-\Delta W  =   P^{-1/2} \Delta \tilde{W} Q^{-1/2} = P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}
-\end{equation}
 \end{proof}
 
 
@@ -981,131 +1086,108 @@ $C_{A,c}=B_c^\top PB_c=c^2C_A$, so the polar argument defining $W_A$ is unchange
 
 
 
-% \DecoupledFactorStep*
-\begin{proof}[Proof of \Cref{prop:decoupled}]
-Consider the problem w.r.t. the $A$-subproblem, and define $\Delta A := A - A_t$ and $Z:=S_B^{1/2}\Delta A$.
-By the definition of the spectral norm,
-\[
-\|B_t \Delta A\|_{2}
-= \sqrt{\lambda_{\max}(\Delta A^\top S_B \Delta A)}
-= \|S_B^{1/2} \Delta A\|_{2}
-=\|Z\|_2.
-\]
-Moreover, since $B_t$ has full column rank, $S_B\succ 0$,
-and
-\[
-\langle G_A, \Delta A \rangle
-= \langle S_B^{-1/2}G_A, S_B^{1/2} \Delta A\rangle
-= \langle S_B^{-1/2}G_A, Z\rangle.
-\]
-Combining the above, the $A$-subproblem is equivalent to
-\[
-\begin{array}{ll}
-\underset{\|Z\|_2 \leq \eta_A}{\mbox{minimize}}&
-\langle S_B^{-1/2}G_A, Z \rangle.
-\end{array}
-\]
-By \Cref{lem:muon-lmo}, one update is
-\[
-  \Delta A=S_B^{-1/2}Z=-\eta_A S_B^{-1/2}\polar \big(S_B^{-1/2}G_A\big).
-\]
-We assume $S_B^{-1/2}G_A\neq 0$, then its polar factor has spectral norm one.
-Consequently,
-\[
-  \|B_t\Delta A\|_2
-  = \left\|S_B^{1/2}\Delta A\right\|_2
-  =\eta_A \left\| \polar \big(S_B^{-1/2}G_A\big)\right\|_2
-  = \eta_A.
-\]
-
-The argument for the  $B$-update is symmetric.
-
-\end{proof}
-
-\section{Memoryless Limits of LoRA-RITE and iMuon}
+\section{Momentum-Free LoRA-RITE, iMuon and LoRA-Muon}
 \label{app:memoryless}
-LoRA-RITE \cite{lorarite} and iMuon \cite{imuon} both reduce to the decoupled factor step of
-\Cref{prop:decoupled} once their moment accumulation is removed. We show this below.
+LoRA-RITE \cite{lorarite}, iMuon \cite{imuon} and LoRA-Muon \cite{loramuon} 
+reduce to the decoupled factor step of
+\eqref{eq:imuon-lmo} once their moment accumulation is removed. We show this below.
 
-\paragraph{iMuon implementation versus decoupled limit.}
-Our experiments benchmark the shipped iMuon optimizer from Appendix K of \cite{imuon}. This
-optimizer should not be identified with the momentum-free decoupled update in Corollary 4.1:
-even when momentum is disabled, the Appendix K update follows a different factor step. We
-derive the distinction below.
 
-\paragraph{Setup.} As in \Cref{sec:method}: $G=\partial L/\partial(BA)$ is the product
-gradient, $G_A=B^\top G$ and $G_B=GA^\top$ the factor gradients, $S_A=AA^\top$ and
-$S_B=B^\top B$ the $r\times r$ Grams. Both derivations use one fact --- the first half of a
-matrix's polar decomposition is its polar factor: for full-column-rank $M=U\Sigma V^\top$,
+\paragraph{Setup.} As in \Cref{sec:method}, 
+let $G=\nabla_W \mathcal{L}(W) \big |_{W=BA}$ be the product
+gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
+$S_B=AA^\top$ and
+$S_A=B^\top B$ be the $r\times r$ Gram matrices. 
+We will use the fact that for any matrix $M$ and its reduced SVD $M=U\Sigma V^\top$, 
+the polar factor equals
 \begin{equation}
-  M\,(M^\top M)^{-1/2}=UV^\top=\polar(M).
+  M(M^\top M)^{-1/2}=UV^\top=\polar(M).
   \label{eq:polar-id}
 \end{equation}
 
-\paragraph{LoRA-RITE.} (LoRA-RITE writes the two factors in the opposite order; we state its
-update directly for our $A,B$.) Its Alg.~1 adds three pieces of memory to a base step:
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item an EMA first moment (decay $\beta_1$);
-  \item an accumulated second moment, transported across the (changing) factor basis each step;
-  \item an ``escaped-mass'' floor added to that second moment.
-\end{itemize}
-Dropping all three --- $\beta_1{=}0$, and the second moment taken as the single-step value
-with no transport and no floor --- is the authors' momentum-free update (their Eq.~(14)),
-which in our notation reads
+\paragraph{LoRA-RITE.} LoRA-RITE writes the two factors in the opposite order; we state its
+update directly for our $A,B$. 
+Its Algorithm~1 adds three pieces of memory to a base step:
+1) an EMA first moment w.r.t. parameter $\beta_1$;
+2) an accumulated second moment, transported across the (changing) factor basis each step;
+3) an ``escaped-mass'' floor added to that second moment.
+Dropping all three, we get the authors' momentum-free update (their Eq.~(14)),
+which in our notation becomes
+\[
+  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2},
+  \qquad \widehat G_B:=G_B S_B^{-1/2}.
+\]
+With no accumulation by \eqref{eq:polar-id} the middle factor is a polar factor, so
 \begin{equation*}
-  \Delta B=-\eta\,\widehat G_B\,(\widehat G_B^\top\widehat G_B)^{-1/2}\,S_A^{-1/2},
-  \qquad \widehat G_B:=G_B S_A^{-1/2}
+  \Delta B=-\eta \polar(\widehat G_B) S_B^{-1/2}
+  =-\eta \polar \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
 \end{equation*}
-($\widehat G_B$ is the factor gradient $G_B$ whitened on the right by the other factor's Gram root $S_A^{-1/2}$).
-With no accumulation the middle factor is a polar map by \eqref{eq:polar-id}, so
-\begin{equation*}
-  \Delta B=-\eta\,\polar(\widehat G_B)\,S_A^{-1/2}
-  =-\eta\,\polar\!\big(G_B S_A^{-1/2}\big)\,S_A^{-1/2},
-\end{equation*}
-the $B$-update of \Cref{prop:decoupled}; the $A$-update is the mirror.
+the $B$-update of \eqref{eq:imuon-lmo}; same arguments hold for the $A$-update.
 
-\paragraph{iMuon, momentum-free.} iMuon uses our orientation ($X=BA$). Its fixed-rank
-intrinsic spectral LMO (their Cor.~4.1) maps any ambient matrix
+
+\paragraph{iMuon, momentum-free.} iMuon uses our order of factors $BA$. Its fixed-rank
+intrinsic spectral LMO (their Corollary~4.1) maps any ambient matrix
 $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to the factor update
 \begin{equation}
-  \Delta B(H)=\polar\!\big(HA^\top S_A^{-1/2}\big)S_A^{-1/2},\qquad
-  \Delta A(H)=S_B^{-1/2}\polar\!\big(S_B^{-1/2}B^\top H\big).
+  \Delta B(H)=\polar \big(HA^\top S_A^{-1/2}\big)S_A^{-1/2},\qquad
+  \Delta A(H)=S_B^{-1/2}\polar \big(S_B^{-1/2}B^\top H\big).
   \label{eq:imuon-lmo-ambient}
 \end{equation}
-The base algorithm (Alg.~1, no momentum) feeds the raw gradient $H=G$, so $HA^\top=G_B$ and
-$B^\top H=G_A$ --- and \eqref{eq:imuon-lmo-ambient} is \Cref{prop:decoupled} verbatim.
+The base algorithm (Algorithm~1, no momentum) uses the raw gradient $H=G$, so $HA^\top=G_B$ and
+$B^\top H=G_A$, therefore, \eqref{eq:imuon-lmo-ambient} is precisely \eqref{eq:imuon-lmo}.
 
-\paragraph{iMuon, with momentum.} The shipped momentum form (their App.~K) does \emph{not}
-feed the gradient to \eqref{eq:imuon-lmo-ambient}. It first combines the two factor
+\paragraph{iMuon implementation versus decoupled limit.}
+Our experiments benchmark the official implementation of iMuon optimizer from Appendix K of \cite{imuon}. This
+optimizer should not be identified with the momentum-free decoupled update in \eqref{eq:imuon-lmo} as stated below.
+
+\paragraph{iMuon, with momentum.} In the official implementation with momentum (their Appendix~K) does {not}
+use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
+It first combines the two factor
 look-aheads $\tilde G_A=G_A+\beta m_A$ and $\tilde G_B=G_B+\beta m_B$ (buffers $m_A,m_B$,
-decay $\beta$) into a single ambient matrix, then feeds that:
+w.r.t. parameter $\beta$) into a single ambient matrix, then uses that matrix as an input
 \begin{equation*}
   \widehat M=\tilde G_B A+B\tilde G_A .
 \end{equation*}
-Turning momentum off ($\beta{=}0$) removes the buffers but not the recombination:
+Turning momentum off ($\beta=0$) removes the buffers but not the recombination, i.e.,
 \begin{equation*}
   \widehat M=G_B A+B G_A=G\,A^\top A+BB^\top G\ \neq\ G .
 \end{equation*}
-Feeding $\widehat M$ through \eqref{eq:imuon-lmo-ambient} (using $G_A A^\top=B^\top G_B$),
+Plugging in $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top=B^\top G_B$,
 \begin{equation*}
-  \widehat M A^\top=G_B S_A+(BB^\top)G_B
+  \widehat M A^\top=G_B S_B+(BB^\top)G_B
   \quad\Longrightarrow\quad
-  \Delta B(\widehat M)=\polar\!\big(G_B S_A^{1/2}+(BB^\top)G_B S_A^{-1/2}\big)S_A^{-1/2},
+  \Delta B(\widehat M)=\polar\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
 \end{equation*}
-which carries an extra term $(BB^\top)G_B$ that the decoupled factor step
-$\Delta B=\polar(G_B S_A^{-1/2})S_A^{-1/2}$ of \Cref{prop:decoupled} does not ($\Delta A$ is symmetric).
-So switching momentum off does not recover \Cref{prop:decoupled}; that needs the recombination
-dropped as well, leaving the momentum-free base algorithm. \Cref{prop:decoupled} is the
-memoryless limit of iMuon's \emph{theory} (Cor.~4.1), not of its shipped optimizer.
+which is different from the decoupled factor step. The argument for $\Delta A$ is symmetric.
+So switching momentum off does not recover \eqref{eq:imuon-lmo}; while
+\eqref{eq:imuon-lmo} is the
+memoryless limit of iMuon's theory (Corollary~4.1), 
+it is not of its implemented optimizer.
+
+
+
+\paragraph{LoRA-Muon.}
+LoRA-Muon derives the same direction directly from two decoupled
+spectral-norm LMOs. Their momentum-free subproblems Eq. (7) and (8) are
+precisely \eqref{eq:imuon-lmo}.
+Thus LoRA-Muon has the same direction as~\eqref{eq:imuon-lmo}; the
+factor $1/2$ is only a convention for splitting the product-step
+budget between the two factor updates. LoRA-Muon also shows that this
+Gram-matrix form is equivalent to the simplified QR-coordinate core of
+LoRA-RITE~\cite{loramuon}.
+
+
 
 \section{Diagonal--Kronecker Second-Moment Estimator for the Curvature Diagonals}
 \label{app:matnormal}
-This derives the estimator \eqref{eq:ours-klcoupling} and its coupling
-\eqref{eq:ours-closure} from the second-moment model \eqref{eq:ours-sigma} alone --- no
-distributional assumption on $G$.
+This section derives the estimator \eqref{eq:ours-klcoupling} and its coupling
+\eqref{eq:ours-closure} from the second-moment model \eqref{eq:ours-sigma} alone.
 
-\paragraph{Model and moment identities.} Under the diagonal--Kronecker ansatz,
-$\Sigma=\E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]=Q\otimes P$, equivalently
+\paragraph{Model and moment identities.} Under the diagonal--Kronecker approximation,
+\[
+\Sigma=\E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]=Q\otimes P,
+\]
+equivalently
 $\E[G_{ij}G_{kl}]=P_{ik}Q_{jl}$. The only consequence we use is the pair of
 moment identities, obtained by contracting that entrywise form: for any
 $M\in\mathbb{R}^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ and
@@ -1117,6 +1199,7 @@ $N\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
 \end{equation}
 $P,Q$ are fixed only up to scale, $(P,Q)\mapsto(cP,c^{-1}Q)$, which the norm
 \eqref{eq:ours-metric} and the spectral-norm rescale absorb.
+
 
 \paragraph{Coupling: covariance of a linear image.} Each factor gradient is a linear
 image of $G$, so its row second moment is the partner side conjugated by the factor:
