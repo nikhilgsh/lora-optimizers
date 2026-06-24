@@ -252,7 +252,7 @@ The last remaining issue is that $\Sigma$ is a very large matrix, which makes it
 
 
 \paragraph{Factorizing.}
-To arrive at a computationally feasible method, we will use a Kronecker factorization of $\Sigma$, such as the  Shampoo~\cite{shampoo, klshampoo} or KFAC~\cite{kfac} approximation. Let $Q\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $P  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
+To arrive at a computationally feasible method, we will use a Kronecker factorization of $\Sigma$, such as the  Shampoo~\cite{shampoo, klshampoo} or KFAC~\cite{kfac} approximation. Let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
      \begin{equation} \label{eq:factor}
      \Sigma  \approx Q \otimes P.\end{equation}
      Using the factorization~\eqref{eq:factor}, our outergradient set~\eqref{eq:outgrad} in~\eqref{eq:outgrad1} and~\eqref{eq:sample-lmo} we arrive at the following method
@@ -562,49 +562,42 @@ To understand the effect of the LoRA rank and of the finetuning dataset, we vary
 \label{sec:related}
 
 \paragraph{LoRA and optimization of low rank factors.}
-LoRA finetuning freezes the pretrained weight matrix and trains a low rank update
-$\DW=(\alpha/r)BA$ through the factors $A$ and $B$ \cite{lora}.
-Adam is a standard optimizer choice applied independently to the two
-factors \cite{adam}.
-This is a simple and memory efficient strategy, however it introduces a problem since it
-optimizes the parameterization rather than the product.
-Specifically, the same update
-$\DW$ can be represented by $(A,B)$ or by $(NA,BN^{-1})$, while a
-factor-wise adaptive optimizer need not give the same update to $\DW$.
-Several prior work address this issue indirectly by changing
-the parameterization, initialization, or scalar learning rates.
-LoRA+
-uses different learning rates for $A$ and $B$ \cite{loraplus};
-rank-stabilized LoRA changes the $\alpha/r$ scaling to improve
-high-rank behavior \cite{rslora}; $\mu$A and recent LoRA scaling rules
-study how learning rates and $\alpha$ should transfer across rank
-\cite{mua,loraalpha}.  These works change the scale at which the
-factor-based optimizer operates, while \methodname{} keeps the usual
-LoRA parameterization and changes the update direction and step size.
+LoRA freezes the pretrained weight and trains the low-rank update~\eqref{eq:lora}
+through factors $A$ and $B$, typically using Adam independently on the two factors
+\cite{lora,adam}. Several recent methods improve this baseline by changing
+scalar choices while preserving the same factor-wise Adam geometry. LoRA+
+assigns a larger learning rate to $B$ than to $A$, motivated by large-width
+scaling arguments for feature learning \cite{loraplus}. Rank-stabilized LoRA
+replaces the $\alpha/r$ adapter scale with $\alpha/\sqrt{r}$ to avoid the
+rank-dependent shrinkage that can make high-rank adapters hard to train
+\cite{rslora}. $\mu$A studies how LoRA learning rates should scale across
+ranks and transfer toward full finetuning \cite{mua}, while related work
+isolates the effect of the $\alpha$ scaling factor itself \cite{loraalpha}.
+These methods tune scalar hyperparameters around the standard factor-wise Adam
+update. In contrast, \methodname{} changes the update geometry by computing
+factor directions in a curvature-aware metric and setting their magnitude by
+the induced change in the merged weight.
 
 
-\paragraph{Spectral, curvature-aware updates.}
-Muon~\cite{muon} is spectral descent --- steepest descent over the spectral-norm
-ball, $\Delta W=-\eta\,\polar(G)$, the orthogonal polar factor of $G$
-\cite{muon,polarexpress} (\Cref{lem:muon-lmo}).  Applied separately to LoRA factors,
-spectral gradient flow exhibits ``equal-rate'' growth of singular values \cite{kang_specgf},
-and Spectron uses orthogonalization with adaptive renormalization to stabilize native
-low rank pretraining \cite{spectron}.  On the curvature side, Adam and Adafactor use
-diagonal or factored second moments \cite{adam,adafactor}; Shampoo approximates full
-matrix Adagrad with a Kronecker-factored preconditioner \cite{shampoo}; SOAP applies Adam
-in the Shampoo eigenbasis \cite{soap}; and a KL perspective recasts both as covariance
-estimation, motivating KL-Shampoo/KL-SOAP \cite{klshampoo}, which we use to estimate the
-matrices $P$ and $Q$.  Curvature-aware spectral optimizers combine the two: SOAP-Muon
-whitens with a SOAP preconditioner and then applies Muon~\cite{soapmuon}, and
-Mousse~\cite{mousse} runs the polar step in a Shampoo-whitened metric, a spectral
-steepest-descent step in an anisotropic trust region (dense form in \Cref{app:memoryless}).
-\methodname{} is the LoRA member of this family: its whiten--polar--unwhiten step has the
-same form, but the curvature seen by a LoRA pair collapses to the small matrices
+\paragraph{Spectral and curvature-aware updates.}
+Muon takes the spectral-norm LMO step for a dense weight matrix, the polar
+factor of the gradient \cite{muon,polarexpress} (\Cref{lem:muon-lmo}).
+That spectral step can also be taken in a learned curvature metric. Shampoo
+estimates the needed Kronecker factors from second moments \cite{shampoo},
+SOAP applies Adam in the Shampoo eigenbasis \cite{soap}, and KL-Shampoo casts
+the estimate as Kronecker-structured covariance estimation \cite{klshampoo}.
+Mousse uses these matrix statistics to take a dense whitened polar step
+\cite{mousse} (\Cref{app:related-spectral}). \methodname{} derives the
+corresponding LoRA factor step from the LMO itself. The per-sample
+outergradient constraint becomes a spectral-norm constraint on the merged
+update, and pushing it through $\Delta W \approx B\Delta A+\Delta B A$
+contracts the dense curvature into the small factor-side matrices
 \[
-    C_A=B^\top P B,\qquad C_B=AQA^\top ,
+C_A=B^\top P B,\qquad C_B=AQA^\top ,
 \]
-together with coupled diagonal side factors $P$ and $Q$, avoiding dense $d\times d$
-preconditioners and their eigenbases.
+with $P,Q$ the Kronecker factors of the gradient covariance. \methodname{}
+thus keeps the curvature-aware spectral direction while avoiding dense
+$d\times d$ preconditioners and eigenbases.
 
 
 \paragraph{Product-space and invariant LoRA optimizers.}
@@ -1013,6 +1006,40 @@ LoRA-RITE~\cite{loramuon}.
 
 
 
+\section{Extended Related Work: Spectral and Curvature-Aware Optimizers}
+\label{app:related-spectral}
+We expand the body's placement of \methodname{} among spectral and curvature-aware
+optimizers (\Cref{sec:related}).
+
+\paragraph{Mousse and the whitening power.}
+Mousse fixes its trust region by a Shampoo curvature $H\approx(R\otimes L)^{1/2}$, with
+$L,R$ the moving averages of $GG^\top$ and $G^\top G$. Whitening by
+$H^{1/2}=(R\otimes L)^{1/4}$ gives the dense update
+\[
+  \Delta W=-L^{-1/4}\,\polar\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
+\]
+\methodname{} instead uses the full gradient covariance $\Sigma\approx Q\otimes P$ as its
+metric, whitening by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse-square-root
+rather than Mousse's fourth-root power; the first-order LoRA product map then contracts
+these dense factors to $C_A=B^\top P B$ and $C_B=AQA^\top$.
+
+\paragraph{SOAP-Muon.}
+SOAP-Muon whitens the gradient with a SOAP preconditioner and then orthogonalizes the
+result \cite{soapmuon}.
+
+\paragraph{Kang et al.}
+For spectral gradient flow in a simplified matrix-factorization model,
+Kang et al.~\cite{kang_specgf} prove that the singular values of the merged adapter
+product grow at a nearly uniform rate even though the two factors are orthogonalized
+independently.
+
+\paragraph{Spectron.}
+Spectron \cite{spectron} bounds the induced product update by rescaling orthogonalized
+factor steps with the current factor norms, in native low-rank pretraining. It is close in
+spirit to \methodname{}'s magnitude rule but is not curvature-aware and does not derive
+from a single LoRA LMO.
+
+% ===========================================================================
 \section{Diagonal--Kronecker Second-Moment Estimator for the Curvature Diagonals}
 \label{app:matnormal}
 This section derives the estimator \eqref{eq:ours-klcoupling} and its coupling
