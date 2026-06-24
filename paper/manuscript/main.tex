@@ -601,38 +601,40 @@ $d\times d$ preconditioners and eigenbases.
 
 
 \paragraph{Product-space and invariant LoRA optimizers.}
-The product $BA$ is invariant to the change of coordinates $BA=(BN^{-1})(NA)$ for any
-invertible $N\in\mathbb{R}^{r\times r}$, so an optimizer should ideally act on the product
-$BA$, not on the individual factors.  LoRA-RITE \cite{lorarite} makes this explicit through
-rank-side preconditioning that cancels the change of basis $(A,B)\mapsto(NA,BN^{-1})$; its
-full algorithm also transports first and second moments and adds an escaped-mass correction.
-Riemannion/RiemannLoRA \cite{riemannion} instead removes the ambiguity by optimizing $BA$ as
-a point on the fixed-rank manifold, orthogonalizing one tangent vector and retracting.
-Reading this invariant update as a spectral LMO is concurrent work: iMuon \cite{imuon} gives
-a general intrinsic-LMO framework, and LoRA-Muon \cite{loramuon} derives the LoRA
-specialization and shows the QR-coordinate core of LoRA-RITE implements the same update.
-Without moment accumulation, LoRA-RITE, iMuon and LoRA-Muon reduce to one memoryless
-spectral update \eqref{eq:imuon-lmo} (\Cref{app:memoryless}); \methodname{} solves the
-analogous subproblems \eqref{eq:decoupled-direction-lmo} with a coupled two-sided curvature
-metric (the $C_A,C_B$ above), recovering theirs when $P=Q=I$.  That shared update controls
-the products $\norm{B\Delta A}_2,\norm{\Delta B A}_2\le\eta$ but not the raw factor steps:
-by submultiplicativity $\norm{\Delta A}_2\sim\eta/\sigma_{\min}(B)$, singular at the standard
-initialization $B=0$ unless one uses damping, warmup, or nonzero factor initialization.
-\methodname{} uses this invariant core as its baseline direction but adds an explicit
-spectral-norm bound on the merged update that stabilizes the factor step.
+The product $BA$ is unchanged by the rank-coordinate change
+$(A,B)\mapsto(NA,BN^{-1})$ for any invertible $N$, so factor updates should not
+depend on the chosen coordinates. LoRA-RITE preconditions each factor update by
+the $r\times r$ Gram matrix of the other factor, which cancels this coordinate
+change \cite{lorarite}, while Riemannion optimizes $BA$ directly on the
+fixed-rank matrix manifold \cite{riemannion}. Concurrent work identifies the
+same invariant direction as a spectral LMO: iMuon gives the general manifold
+form \cite{imuon}, and LoRA-Muon derives the LoRA specialization
+\cite{loramuon}. In their memoryless LMO cores, LoRA-RITE, iMuon, and
+LoRA-Muon reduce to the same spectral update \eqref{eq:imuon-lmo}, derived in
+\Cref{app:memoryless}. \methodname{} generalizes this direction by replacing
+the Euclidean product metric with the curvature metric above, and recovers it
+when $P=Q=I$.
 
 
 \paragraph{Product-step magnitude control.}
-Several works bound the change induced by a product of trained matrices rather than the
-factor increments.  QuacK scales each factor's learning rate by the norm of its partner
-\cite{quack}; LoRA-Muon \cite{loramuon} splits a product-space trust-region radius equally
-between the two factor updates.  Both bound the linearized product update but not the raw
-factor increments, which can become large when $A$ or $B$ is poorly conditioned.
-\methodname{} instead separates the curvature-aware direction from its magnitude, bounding
-the merged update \emph{and} capping both factor steps through the single rescale
-$\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{sec:method}, \eqref{eq:ours-rho}); this also gives
-$\norm{\Delta A}_2,\norm{\Delta B}_2\le\rho$, preventing the factor-step magnitude from
-growing with the inverse smallest singular value of the partner factor.
+The shared spectral update bounds the product terms $\norm{B\Delta A}_2$ and
+$\norm{\Delta B A}_2$ but not the factor steps. Its closed form applies
+$(B^\top B)^{-1/2}$, so $\norm{\Delta A}_2$ can scale like
+$\eta/\sigma_{\min}(B)$, singular at $B=0$. Other methods also set magnitudes
+by controlling a product update. For attention, QuacK scales the query and key
+learning rates by the inverse norm of the other weight \cite{quack}. LoRA-Muon
+splits a product-space trust-region budget between the two factor updates
+\cite{loramuon}. Spectron rescales orthogonalized factor updates by
+$\rho=\eta/(\norm{A}_2+\norm{B}_2+1)$ to bound the induced product update in
+low-rank pretraining \cite{spectron}.
+
+Our magnitude rule \eqref{eq:ours-rho} drops the $+1$ because it bounds the
+first-order merged update $B\Delta A+\Delta B A$, not the quadratic term
+$\Delta B\Delta A$. That term is second order in the factor radius, scaling as
+$\rho^2$. The rule sets $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ and applies this
+rescale to the curvature-aware direction rather than Spectron's Euclidean
+direction. This bounds the first-order merged update and caps both factor steps,
+removing the $\eta/\sigma_{\min}(B)$ factor from the step magnitude.
 
 
 % ===========================================================================
@@ -1038,6 +1040,29 @@ Spectron \cite{spectron} bounds the induced product update by rescaling orthogon
 factor steps with the current factor norms, in native low-rank pretraining. It is close in
 spirit to \methodname{}'s magnitude rule but is not curvature-aware and does not derive
 from a single LoRA LMO.
+
+\paragraph{Negligibility of the quadratic term.}
+Our magnitude rule \eqref{eq:ours-rho} bounds the first-order merged update
+$B\Delta A+\Delta B A$ and drops the quadratic term $\Delta B\Delta A$. Dropping
+it shifts the step by only $O(\eta)$. The merged update is
+\[
+  \Delta W = B\Delta A+\Delta B A+\Delta B\Delta A .
+\]
+With the per-factor cap $\norm{\Delta A}_2,\norm{\Delta B}_2\le\rho$ and
+$s=\norm{A}_2+\norm{B}_2$, the triangle inequality and submultiplicativity give
+\[
+  \norm{\Delta W}_2 \le \rho s + \rho^2 .
+\]
+Bounding the full right-hand side by $\eta$ gives the step
+\[
+  \rho^\star = \bigl(-s+\sqrt{s^2+4\eta}\bigr)/2
+  = \frac{\eta}{s}-\frac{\eta^2}{s^3}+O(\eta^3/s^5),
+\]
+while dropping $\rho^2$ gives our $\rho=\eta/s$. The quadratic term thus shifts
+the step by a relative $(\rho-\rho^\star)/\rho=\eta/s^2$. At standard
+initialization $A$ has independent entries of variance $\Theta(1/d_{\mathrm{in}})$
+and $B=0$, so $s=\norm{A}_2=\Theta(1)$ with high probability. The shift
+$\eta/s^2$ is then $O(\eta)$, decreasing as $s$ grows.
 
 % ===========================================================================
 \section{Diagonal--Kronecker Second-Moment Estimator for the Curvature Diagonals}
