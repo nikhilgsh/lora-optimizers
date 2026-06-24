@@ -628,13 +628,12 @@ splits a product-space trust-region budget between the two factor updates
 $\rho=\eta/(\norm{A}_2+\norm{B}_2+1)$ to bound the induced product update in
 low-rank pretraining \cite{spectron}.
 
-Our magnitude rule \eqref{eq:ours-rho} drops the $+1$ because it bounds the
-first-order merged update $B\Delta A+\Delta B A$, not the quadratic term
-$\Delta B\Delta A$. That term is second order in the factor radius, scaling as
-$\rho^2$. The rule sets $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ and applies this
-rescale to the curvature-aware direction rather than Spectron's Euclidean
-direction. This bounds the first-order merged update and caps both factor steps,
-removing the $\eta/\sigma_{\min}(B)$ factor from the step magnitude.
+Our rule \eqref{eq:ours-rho} sets $\rho=\eta/(\norm{A}_2+\norm{B}_2)$, omitting
+Spectron's $+1$ because it bounds the first-order merged update
+$B\Delta A+\Delta B A$ and not the quadratic $\Delta B\Delta A$, which is
+negligible (\Cref{app:related-spectral}). This gives $\norm{\Delta W}_2\le\eta$
+and $\norm{\Delta A}_2,\norm{\Delta B}_2\le\rho$, removing the
+$\eta/\sigma_{\min}(B)$ blowup at $B=0$.
 
 
 % ===========================================================================
