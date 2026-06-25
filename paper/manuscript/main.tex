@@ -196,11 +196,11 @@ The spectral norm is a conservative norm over linear operators, since it focuses
 
 \paragraph{A new linear minimization oracle.} Inspired by this conservative view of Muon and the spectral norm, we develop a new pseudo-norm that is conservative with respect to a batch of incoming activations. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation (as opposed to an input).
 
-To be conservative with respect to every activation, we mean to enforce that no single activation results in a large change in the loss, that is we want
+To be conservative with respect to every activation, we enforce that no single activation results in a large change in the loss, that is we want
 \begin{equation}\label{eq:loss-diff}
      \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \eta, \qquad  i=1,\ldots, n.
 \end{equation} 
-This would ensure stable training with no spikes or jumps in the loss. But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
+This would ensure stable training with no spikes or jumps in the loss. \nikhil{is this really true? because on a disjoint batch the loss might spike?} But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
 \[  
 \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \langle G_i, \Delta W \rangle. 
 \]
@@ -216,11 +216,11 @@ Using the above and~\eqref{eq:loss-diff} in the LMO~\eqref{eq:lmo} we arrive at
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-Since we do not have direct access to the per-input gradients $G_i$, we will now find a \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$,
+Since we do not have efficient direct access to the per-input gradients $G_i$, we will now define a \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$,
 use the following inequality
 \begin{equation} \label{eq:outgrad1}
     \max_{i=1,\ldots, n}  \left\langle G_i, \Delta W \right\rangle  
-    \leq   \max_{\tilde G \in \mathcal{G}} \left\langle \tilde G, \Delta W \right\rangle 
+    \leq   \max_{\tilde G \in \mathcal{G}} \left\langle \tilde G, \Delta W \right\rangle,
 \end{equation} 
 and then impose  that the right hand side of \eqref{eq:outgrad1} 
 is less than $\eta$. 
@@ -228,37 +228,31 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
 \begin{restatable}[Properties of gradients]{lemma}{gradprop} 
   \label{lem:gradprop}
     Let $g_i=\mathrm{vec}(G_i) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for all $i=1, \ldots, n$,
-    and $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. If follows that gradients satisfy
+    and $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. It follows that the gradients satisfy
     \begin{enumerate}
         \item {\bf Leverage bound:} $ \dotprod{\Sigma^\dagger g_i, g_i} \leq n$, \\[-0.5cm]
         \item {\bf Rank one:} $G_i = b_i x_i^\top$,
         \end{enumerate}
-    where  $x_i$ is the incoming activation and $b_i$ the backpropagated gradient of the sample loss with respect to the layer output. 
+    for some $x_i \in \R^{d_{\mathrm{in}}}$ and $b_i \in \R^{d_{\mathrm{out}}}$.
 \end{restatable}
 
 The above properties suggest the following outergradient set
 \begin{equation} 
 \label{eq:outgrad} 
-\mathcal{G}(\Sigma) := \left \{ b x^\top ~\bigg |~  
+\mathcal{G}(\Sigma) := \left \{ \tilde G = b x^\top ~\bigg |~  
 b\in\mathbb{R}^{d_{\mathrm{out}}},
     \ x\in\mathbb{R}^{d_{\mathrm{in}}}, \
-\tilde G = b x^\top, \
 \dotprod{\Sigma^\dagger \mathrm{vec}(\tilde G), \mathrm{vec}(\tilde G)} \leq n \right \}.
 \end{equation}
-By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus it is a proper outer approximation.
-Thus we can use $\mathcal{G}$ in our upper bound~\eqref{eq:outgrad1}.
-The last remaining issue is that $\Sigma$ is a full covariance over all entries
-of the gradient matrices. It is too large to store or apply directly, so we
-replace it with a structured approximation.
-
-
+By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus we can use this $\mathcal{G}$ in our upper bound~\eqref{eq:outgrad1}.
+The last remaining issue is that $\Sigma$ is too large of a matrix to store or use directly. To address this issue we replace $\Sigma$ with a structured approximation.
 
 \paragraph{Kronecker approximation.}
 Following the Kronecker-factored approximations used by Shampoo~\cite{shampoo, klshampoo}
 and KFAC~\cite{kfac}, let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
      \begin{equation} \label{eq:pq-factor}
      \Sigma  \approx Q \otimes P.\end{equation}
-     Using the factorization~\eqref{eq:pq-factor}, our outergradient set~\eqref{eq:outgrad} in~\eqref{eq:outgrad1} and~\eqref{eq:sample-lmo} we arrive at the following method
+     Using the factorization above, if we use our outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following method
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -270,8 +264,24 @@ and KFAC~\cite{kfac}, let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ a
   \end{array}
   \label{eq:polorafull-hard}
 \end{equation}
-Fortunately the above can be simplified.
-
+Fortunately the above can be simplified. By~\Cref{lem:pseudogradient-spectral} the constraint in~\eqref{eq:polorafull-hard} can be re-written using the identity 
+\[ 
+\max_{G \in \mathcal{G}(Q \otimes P)}\left\langle G, \Delta W \right\rangle  
+= \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2.
+\]
+Then problem~\eqref{eq:polorafull-hard} can be re-written as 
+\begin{equation}
+\begin{array}{ll}
+\underset{\Delta W}{\mathrm{minimize}} &
+\left\langle G, \Delta W\right\rangle \\[2pt]
+\mathrm{subject~ to} &
+\displaystyle  
+\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \tilde \eta,
+\end{array}
+\label{eq:polorafull}
+\end{equation}
+where $\tilde\eta = \frac{\eta}{\sqrt{n}}$.
+This problem can be cast as an instance of the following LMO.
 \begin{restatable}[Generalized spectral-norm LMO]{lemma}{GeneralLmoUpdate}
 \label{lem:whitened-spectral-lmo}
 Let $L$ and $R$ be symmetric positive definite. Then
@@ -289,33 +299,12 @@ is a solution of
 Moreover, $X^\star$ is the unique minimizer of
 $\|LXR\|_F$ over the solution set.
 \end{restatable}
-By~\Cref{lem:pseudogradient-spectral} the constraint in~\eqref{eq:polorafull-hard} can be re-written as 
-\[ 
-\max_{G \in \mathcal{G}(Q \otimes P)}\left\langle G, \Delta W \right\rangle  
-= \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2.
-\]
-Then problem~\eqref{eq:polorafull-hard} can be re-written as 
-\begin{equation}
-\begin{array}{ll}
-\underset{\Delta W}{\mathrm{minimize}} &
-\left\langle G, \Delta W\right\rangle \\[2pt]
-\mathrm{subject~ to} &
-\displaystyle  
-\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \tilde \eta,
-\end{array}
-\label{eq:polorafull}
-\end{equation}
-where $\tilde\eta = \frac{\eta}{\sqrt{n}}$.
-By~\Cref{lem:whitened-spectral-lmo} with $(L,R)=(P^{1/2},Q^{1/2})$, a solution is given by
-\begin{equation}\label{eq:polorafull-closeform}
+Applying the lemma above with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq:polorafull} is given by
+\begin{equation}\label{eq:polorafull-update}
     \Delta W =  -\tilde \eta P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
 
 \rob{This far}
-Without loss of generality from now on we absorb the factor of 
-$\frac{1}{\sqrt{n}}$ in $\eta$.
-For further tractability, we restrict matrices 
-$P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
 
 \paragraph{LoRA update direction.}
 We now describe how to update LoRA factors from the merged 
@@ -441,8 +430,8 @@ ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \]
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
-Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We estimate the spectral norms by power iteration (\Cref{alg:smax}) and use damping in the curvature inverse square roots (\Cref{app:damping}).
-To estimate the diagonal factors $P$ and $Q$ we apply KL-Shampoo's \cite{klshampoo}
+Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We estimate the spectral norms by power iteration (\Cref{alg:smax}) and use damping in the curvature inverse square roots (\Cref{app:damping}). For further tractability, we restrict matrices 
+$P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}. To estimate the diagonal factors $P$ and $Q$ we apply KL-Shampoo's \cite{klshampoo}
 coupled second moment equations (\Cref{app:matnormal}).
 
 \begin{algorithm}[t]
