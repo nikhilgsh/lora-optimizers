@@ -113,9 +113,9 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
 \rob{Pieces of introduction I found, mostly ilegible}
 \paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \Cref{eq:ours-klcoupling}).
+  \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second-moment matching \cite{klshampoo}; \eqref{eq:ours-klcoupling}).
   \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step \eqref{eq:factor-directions}.
-  \item[(C)] \emph{Magnitude.} Discard the LMO budget and bound the merged update in spectral norm by $\eta$ (\Cref{eq:ours-prodcap}).
+  \item[(C)] \emph{Magnitude.} Discard the LMO budget and bound the merged update in spectral norm by $\eta$~\eqref{eq:ours-prodcap}.
 \end{itemize}
 Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
 \rob{end pieces of introduction}
@@ -253,9 +253,9 @@ The last remaining issue is that $\Sigma$ is a very large matrix, which makes it
 
 \paragraph{Factorizing.}
 To arrive at a computationally feasible method, we will use a Kronecker factorization of $\Sigma$, such as the  Shampoo~\cite{shampoo, klshampoo} or KFAC~\cite{kfac} approximation. Let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
-     \begin{equation} \label{eq:factor}
+     \begin{equation} \label{eq:pq-factor}
      \Sigma  \approx Q \otimes P.\end{equation}
-     Using the factorization~\eqref{eq:factor}, our outergradient set~\eqref{eq:outgrad} in~\eqref{eq:outgrad1} and~\eqref{eq:sample-lmo} we arrive at the following method
+     Using the factorization~\eqref{eq:pq-factor}, our outergradient set~\eqref{eq:outgrad} in~\eqref{eq:outgrad1} and~\eqref{eq:sample-lmo} we arrive at the following method
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -272,10 +272,10 @@ Fortunately the above can be simplified.
 \begin{restatable}[Generalized spectral-norm LMO]{lemma}{GeneralLmoUpdate}
 \label{lem:whitened-spectral-lmo}
 Let $L$ and $R$ be symmetric positive definite. Then
-\[
+\begin{equation}\label{e-gen-spectral-lmo-update}
 X^\star = -\eta L^{-1}
 \polar\left(L^{-1}MR^{-1}\right) R^{-1}
-\]
+\end{equation}
 is a solution of
 \[
 \begin{array}{ll}
@@ -317,7 +317,11 @@ $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}.
 \paragraph{LoRA update direction.}
 We now describe how to update LoRA factors from the merged 
 problem \eqref{eq:polorafull}.
-Let $G_A=B^\top G$ and $G_B=GA^\top$ denote the factor gradients.
+Let 
+\begin{equation}\label{e-grad-wrt-factors}
+G_A=B^\top G, \qquad G_B=GA^\top
+\end{equation}
+denote the factor gradients.
 We update LoRA factors according to
 \[
 A \leftarrow A + \Delta A,
@@ -450,16 +454,16 @@ coupled second-moment equations (see \Cref{app:matnormal}).
 \Statex
 \Phase{Direction}
 \State $C_A\gets B^\top P B, \qquad C_B\gets A Q A^\top$
-\State $W_A\gets C_A^{-1/2}\,\polar\!\big(C_A^{-1/2}\widehat M_AQ^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
-\State $W_B\gets P^{-1/2}\,\polar\!\big(P^{-1/2}\widehat M_BC_B^{-1/2}\big)\,C_B^{-1/2}$
+\State $W_A\gets C_A^{-1/2}\polar \big(C_A^{-1/2}\widehat M_AQ^{-1/2}\big) Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
+\State $W_B\gets P^{-1/2} \polar \big(P^{-1/2}\widehat M_BC_B^{-1/2}\big) C_B^{-1/2}$
 \Statex
 \Phase{Magnitude}
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
-\State $A\gets A-\rho\,W_A/\norm{W_A}_2, \qquad B\gets B-\rho\,W_B/\norm{W_B}_2$
+\State $A\gets A-\rho W_A/\norm{W_A}_2, \qquad B\gets B-\rho W_B/\norm{W_B}_2$
 \Statex
 \Phase{Metric Update}
-\State $Q\gets\beta_2 Q+(1-\beta_2)\diag\!\big(G_A^\top C_A^{-1}G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}
-\State $P\gets\beta_2 P+(1-\beta_2)\diag\!\big(G_B C_B^{-1}G_B^\top\big)/r$
+\State $Q\gets\beta_2 Q+(1-\beta_2)\diag\big(G_A^\top C_A^{-1}G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}
+\State $P\gets\beta_2 P+(1-\beta_2)\diag\big(G_B C_B^{-1}G_B^\top\big)/r$
 \end{algorithmic}
 \end{algorithm}
 % ===========================================================================
@@ -478,7 +482,7 @@ The main comparisons finetune OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:method}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Adam} \cite{adam} --- our baseline, applied independently to the two factors $A$ and $B$.
-  \item \textbf{Muon} \cite{muon} --- the per-factor Muon update~\eqref{eq:naive}.
+  \item \textbf{Muon} \cite{muon} --- the Muon update~\eqref{e-gen-spectral-lmo-update} (with $L=I_{d_{\mathrm{out}}}$, $R=I_{d_{\mathrm{in}}}$) applied independently to each factor.
   \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to momentum in the product space.
 \end{itemize}
 
@@ -504,7 +508,7 @@ unchanged.
 \centering\small
 \begin{tabular}{lrr}
 \toprule
-model (code, $r = 256$) & step speedup & wall-clock speedup \\
+base model & step speedup & wall-clock speedup \\
 \midrule
 OLMo-2-1B & $1.61\times$ & $1.55\times$ \\
 Llama-3.2-1B & $1.55\times$ & $1.49\times$ \\
@@ -512,16 +516,16 @@ Qwen2.5-1.5B & $1.30\times$ & $1.25\times$ \\
 Llama-3-8B & $1.20\times$ & $1.17\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across model families} (code, $r = 256$). Step speedup is the steps to reach Adam's final loss; wall-clock speedup discounts it by \methodname{}'s ${\le}4\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins on all four, by the smallest margin at $8$B.}
+\caption{\textbf{\methodname{} speedup over Adam across model families.} All four models are finetuned on code generation (OpenCoder \cite{opencoder}) at rank $r=256$. Only the base model varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by \methodname{}'s ${\le}4\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins on all four, by the smallest margin at $8$B.}
 \label{tab:breadth}
 \end{table}
 
 \subsection{Component Ablation}
 \label{sec:exp-ablation}
-We perform ablations on Llama-3.2-1B finetuned on math to isolate the effect of the two components that distinguish \methodname{} from the decoupled step of \Cref{prop:decoupled}:
+We perform ablations on Llama-3.2-1B finetuned on math to isolate the effect of the two components that distinguish \methodname{} from the decoupled step of \eqref{eq:decoupled-lora-lmo}:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Curvature} --- the adaptively estimated diagonal metric $P, Q$ (\Cref{eq:ours-metric}).
-  \item \textbf{Magnitude} --- the per-factor update rescaling to spectral norm $\rho$ (\Cref{eq:ours-rho}).
+  \item \textbf{Curvature} --- the adaptively estimated diagonal metric $P$ and $Q$ \eqref{eq:ours-klcoupling}.
+  \item \textbf{Magnitude} --- the per-factor update rescaling to spectral norm $\rho$ \eqref{eq:ours-rho}.
 \end{itemize}
 Removing both reduces \methodname{} to the decoupled step, which matches Adam in terms of performance. Restoring the curvature metric and then the magnitude rule each recovers about half of \methodname{}'s speedup (\Cref{fig:ablation}, right panel). 
 
@@ -561,44 +565,36 @@ To understand the effect of the LoRA rank and of the finetuning dataset, we vary
 \section{Prior Work}
 \label{sec:related}
 
-\paragraph{LoRA and optimization of low rank factors.}
-LoRA freezes the pretrained weight and trains the low-rank update~\eqref{eq:lora}
-through factors $A$ and $B$, typically using Adam independently on the two factors
-\cite{lora,adam}. Several recent methods improve this baseline by changing
-scalar choices while preserving the same factor-wise Adam geometry. LoRA+
-assigns a larger learning rate to $B$ than to $A$, motivated by large-width
-scaling arguments for feature learning \cite{loraplus}. Rank-stabilized LoRA
-replaces the $\alpha/r$ adapter scale with $\alpha/\sqrt{r}$ to avoid the
-rank-dependent shrinkage that can make high-rank adapters hard to train
-\cite{rslora}. $\mu$A studies how LoRA learning rates should scale across
-ranks and transfer toward full finetuning \cite{mua}, while related work
-isolates the effect of the $\alpha$ scaling factor itself \cite{loraalpha}.
-These methods tune scalar hyperparameters around the standard factor-wise Adam
-update. In contrast, \methodname{} changes the update geometry by computing
-factor directions in a curvature-aware metric and setting their magnitude by
-the induced change in the merged weight.
-
+\paragraph{LoRA and optimization of low-rank factors.}
+LoRA~\cite{lora} enables parameter-efficient finetuning by freezing the pretrained
+weights and training only a low-rank update~\eqref{eq:lora} through factors $A$ and
+$B$, typically optimized with Adam~\cite{adam}. Several recent methods refine this
+approach by rescaling hyperparameters such as the learning rates, adapter scale, or
+initialization variance to account for the low-rank structure. Motivated by large-width
+feature-learning arguments, LoRA+~\cite{loraplus} assigns $B$ a larger learning rate
+than $A$, and follow-up work~\cite{hayou2024initialization, li2025beyond} extends this
+to other initializations. Rank-stabilized LoRA~\cite{rslora} replaces the $\alpha/r$
+adapter scale with $\alpha/\sqrt{r}$ to avoid the rank-dependent shrinkage that makes
+high-rank adapters hard to train, and $\mu$A~\cite{mua} studies how these
+hyperparameters should scale with rank to keep the optimal learning rate stable. In
+contrast, \methodname{} changes the update geometry itself, computing factor update
+directions in a curvature-aware metric and scaling them to control the induced change
+in the merged weight.
 
 \paragraph{Spectral and curvature-aware updates.}
-Muon takes the spectral-norm LMO step for a dense weight matrix, the polar
-factor of the gradient \cite{muon,polarexpress} (\Cref{lem:muon-lmo}).
-That spectral step can also be taken in a learned curvature metric. Shampoo
-estimates the needed Kronecker factors from second moments \cite{shampoo},
-SOAP applies Adam in the Shampoo eigenbasis \cite{soap}, and KL-Shampoo casts
-the estimate as Kronecker-structured covariance estimation \cite{klshampoo}.
-Mousse uses these matrix statistics to take a dense whitened polar step
-\cite{mousse} (\Cref{app:related-spectral}). \methodname{} derives the
-corresponding LoRA factor step from the LMO itself. The per-sample
-outergradient constraint becomes a spectral-norm constraint on the merged
-update, and pushing it through $\Delta W \approx B\Delta A+\Delta B A$
-contracts the dense curvature into the small factor-side matrices
-\[
-C_A=B^\top P B,\qquad C_B=AQA^\top ,
-\]
-with $P,Q$ the Kronecker factors of the gradient covariance. \methodname{}
-thus keeps the curvature-aware spectral direction while avoiding dense
-$d\times d$ preconditioners and eigenbases.
+Recently, optimizers that operate at the matrix level, rather than treating parameters as
+a flattened vector, have attracted attention for their gains over Adam~\cite{liu2025muon,
+qiu2026hyperparameter, wen2025fantastic}. Muon~\cite{muon} solves the spectral-norm LMO
+for a dense weight, producing an update equal to the polar factor of the momentum
+gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
+SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
+Kronecker-factored second moments, and Mousse~\cite{mousse} uses such an estimate to
+whiten the gradient before the polar step, yielding a curvature-aware spectral update
+(\Cref{app:related-spectral}). Mousse directly borrows the curvature metric from Shampoo. In contrast,
+\methodname{} derives a related update from first principles, by requiring that no single
+input in the batch change the loss too much. 
 
+\nikhil{up till here}
 
 \paragraph{Product-space and invariant LoRA optimizers.}
 The product $BA$ is unchanged by the rank-coordinate change
@@ -610,7 +606,7 @@ fixed-rank matrix manifold \cite{riemannion}. Concurrent work identifies the
 same invariant direction as a spectral LMO: iMuon gives the general manifold
 form \cite{imuon}, and LoRA-Muon derives the LoRA specialization
 \cite{loramuon}. In their memoryless LMO cores, LoRA-RITE, iMuon, and
-LoRA-Muon reduce to the same spectral update \eqref{eq:imuon-lmo}, derived in
+LoRA-Muon reduce to the same spectral update \eqref{eq:decoupled-lora-lmo}, derived in
 \Cref{app:memoryless}. \methodname{} generalizes this direction by replacing
 the Euclidean product metric with the curvature metric above, and recovers it
 when $P=Q=I$.
@@ -683,7 +679,7 @@ rate and select the run with the lowest held-out eval loss.
   \item Loss is computed on response tokens only (prompt and padding masked), so eval loss is not comparable to a full-sequence LM loss.
 \end{itemize}
 
-\paragraph{Fixed training configuration.} Identical across every optimizer and setting.
+\paragraph{Fixed training configuration.} Identical across every optimizer and setting (\Cref{tab:config}).
 \begin{table}[h]
 \centering\small
 \begin{tabular}{@{}ll@{}}
@@ -704,6 +700,8 @@ max gradient norm      & $1.0$ \\
 LR schedule            & constant (no warmup or decay) \\
 \bottomrule
 \end{tabular}
+\caption{Fixed training configuration, held identical across every optimizer and setting.}
+\label{tab:config}
 \end{table}
 
 \paragraph{Learning-rate sweep.}
@@ -908,7 +906,7 @@ $C_{A,c}=B_c^\top PB_c=c^2C_A$, so the polar argument defining $W_A$ is unchange
 \label{app:memoryless}
 LoRA-RITE \cite{lorarite}, iMuon \cite{imuon} and LoRA-Muon \cite{loramuon} 
 reduce to the decoupled factor step of
-\eqref{eq:imuon-lmo} once their moment accumulation is removed. We show this below.
+\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed. We show this below.
 
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
@@ -923,7 +921,7 @@ The decoupled factor step is the solution of the two half-product subproblems
 \norm{B \Delta A}_2\le\eta \\
 \Delta B &\in   \argmin_{\Delta B}~ \langle G_B,  \Delta B \rangle \quad \textnormal{subject to}\quad  \norm{\Delta B A}_2\le\eta,
   \end{aligned}
-  \label{eq:imuon-lmo}
+  \label{eq:decoupled-lora-lmo}
 \end{equation}
 equivalently $\Delta A=-\eta\,S_A^{-1/2}\polar(S_A^{-1/2}G_A)$ and
 $\Delta B=-\eta\,\polar(G_BS_B^{-1/2})S_B^{-1/2}$.
@@ -951,7 +949,7 @@ With no accumulation by \eqref{eq:polar-id} the middle factor is a polar factor,
   \Delta B=-\eta \polar(\widehat G_B) S_B^{-1/2}
   =-\eta \polar \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
 \end{equation*}
-the $B$-update of \eqref{eq:imuon-lmo}; same arguments hold for the $A$-update.
+the $B$-update of \eqref{eq:decoupled-lora-lmo}; same arguments hold for the $A$-update.
 
 
 \paragraph{iMuon, momentum-free.} iMuon uses our order of factors $BA$. Its fixed-rank
@@ -963,11 +961,11 @@ $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to the factor update
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 The base algorithm (Algorithm~1, no momentum) uses the raw gradient $H=G$, so $HA^\top=G_B$ and
-$B^\top H=G_A$, therefore, \eqref{eq:imuon-lmo-ambient} is precisely \eqref{eq:imuon-lmo}.
+$B^\top H=G_A$, therefore, \eqref{eq:imuon-lmo-ambient} is precisely \eqref{eq:decoupled-lora-lmo}.
 
 \paragraph{iMuon implementation versus decoupled limit.}
 Our experiments benchmark the official implementation of iMuon optimizer from Appendix K of \cite{imuon}. This
-optimizer should not be identified with the momentum-free decoupled update in \eqref{eq:imuon-lmo} as stated below.
+optimizer should not be identified with the momentum-free decoupled update in \eqref{eq:decoupled-lora-lmo} as stated below.
 
 \paragraph{iMuon, with momentum.} In the official implementation with momentum (their Appendix~K) does {not}
 use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
@@ -988,8 +986,8 @@ Plugging in $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top
   \Delta B(\widehat M)=\polar\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
 \end{equation*}
 which is different from the decoupled factor step. The argument for $\Delta A$ is symmetric.
-So switching momentum off does not recover \eqref{eq:imuon-lmo}; while
-\eqref{eq:imuon-lmo} is the
+So switching momentum off does not recover \eqref{eq:decoupled-lora-lmo}; while
+\eqref{eq:decoupled-lora-lmo} is the
 memoryless limit of iMuon's theory (Corollary~4.1), 
 it is not of its implemented optimizer.
 
@@ -998,8 +996,8 @@ it is not of its implemented optimizer.
 \paragraph{LoRA-Muon.}
 LoRA-Muon derives the same direction directly from two decoupled
 spectral-norm LMOs. Their momentum-free subproblems Eq. (7) and (8) are
-precisely \eqref{eq:imuon-lmo}.
-Thus LoRA-Muon has the same direction as~\eqref{eq:imuon-lmo}; the
+precisely \eqref{eq:decoupled-lora-lmo}.
+Thus LoRA-Muon has the same direction as~\eqref{eq:decoupled-lora-lmo}; the
 factor $1/2$ is only a convention for splitting the product-step
 budget between the two factor updates. LoRA-Muon also shows that this
 Gram-matrix form is equivalent to the simplified QR-coordinate core of
@@ -1007,14 +1005,14 @@ LoRA-RITE~\cite{loramuon}.
 
 
 
-\section{Extended Related Work: Spectral and Curvature-Aware Optimizers}
+\section{Extended Prior Work: Spectral and Curvature-Aware Optimizers}
 \label{app:related-spectral}
 We expand the body's placement of \methodname{} among spectral and curvature-aware
 optimizers (\Cref{sec:related}).
 
 \paragraph{Mousse and the whitening power.}
 Mousse fixes its trust region by a Shampoo curvature $H\approx(R\otimes L)^{1/2}$, with
-$L,R$ the moving averages of $GG^\top$ and $G^\top G$. Whitening by
+$L$ and $R$ being the moving averages of $GG^\top$ and $G^\top G$. Whitening by
 $H^{1/2}=(R\otimes L)^{1/4}$ gives the dense update
 \[
   \Delta W=-L^{-1/4}\,\polar\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
@@ -1037,7 +1035,7 @@ independently.
 \paragraph{Spectron.}
 Spectron \cite{spectron} bounds the induced product update by rescaling orthogonalized
 factor steps with the current factor norms, in native low-rank pretraining. It is close in
-spirit to \methodname{}'s magnitude rule but is not curvature-aware and does not derive
+spirit to \methodname{}'s magnitude rule but is not curvature-aware and is not derived
 from a single LoRA LMO.
 
 \paragraph{Negligibility of the quadratic term.}
@@ -1064,63 +1062,109 @@ and $B=0$, so $s=\norm{A}_2=\Theta(1)$ with high probability. The shift
 $\eta/s^2$ is then $O(\eta)$, decreasing as $s$ grows.
 
 % ===========================================================================
-\section{Diagonal--Kronecker Second-Moment Estimator for the Curvature Diagonals}
+\section{Diagonal Kronecker Second-Moment Estimator for the Curvature Diagonals}
 \label{app:matnormal}
-This section derives the estimator \eqref{eq:ours-klcoupling} and its coupling
-\eqref{eq:ours-closure} from the second-moment model \eqref{eq:ours-sigma} alone.
+In this section we derive the estimator \eqref{eq:ours-klcoupling} and its coupling
+\eqref{eq:ours-closure} from the second-moment model \eqref{eq:pq-factor} alone.
 
-\paragraph{Model and moment identities.} Under the diagonal--Kronecker approximation,
+\paragraph{Model and moment identities.} 
+Let 
+$G\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ 
+be stochastic merged-weight gradient.
+We use the diagonal Kronecker approximation of \eqref{eq:pq-factor} as follows
 \[
-\Sigma=\E[\mathrm{vec}(G)\mathrm{vec}(G)^\top]=Q\otimes P,
+\Sigma
+=\mathbb{E}[\operatorname{vec}(G)\operatorname{vec}(G)^\top]
+\approx Q\otimes P,
+\qquad
+P=\diag(p)\succ0,
+\quad
+Q=\diag(q)\succ0,
 \]
-equivalently
-$\E[G_{ij}G_{kl}]=P_{ik}Q_{jl}$. The only consequence we use is the pair of
-moment identities, obtained by contracting that entrywise form: for any
-$M\in\mathbb{R}^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ and
-$N\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
+where $p\in\mathbb{R}^{d_{\mathrm{out}}}$ and $q\in\mathbb{R}^{d_{\mathrm{in}}}$. Thus
+$\mathbb{E}[G_{ij}^2]\approx p_iq_j$.
+For the $\Sigma$ to be a covariance model we further assume $\E[G]=0$.
+By \eqref{e-grad-wrt-factors} and \eqref{eq:ours-closure},
+\[
+\operatorname{vec}(G_A)=(I_{d_{\mathrm{in}}}\otimes B^\top)\operatorname{vec}(G),
+\qquad \operatorname{vec}(G_B)=(A\otimes I_{d_{\mathrm{out}}})\operatorname{vec}(G),
+\]
+therefore, covariance model gives
+\[
+\mathbb{E}[\operatorname{vec}(G_A)\operatorname{vec}(G_A)^\top]\approx Q\otimes C_A,
+\qquad
+\mathbb{E}[\operatorname{vec}(G_B)\operatorname{vec}(G_B)^\top]\approx C_B\otimes P.
+\]
+Note that the rescaling
+$(P,Q)\mapsto(cP,c^{-1}Q)$ leaves  $Q\otimes P$ 
+unchanged.
+
+\paragraph{Conditional KL equations.}
+Hold $C_A\succ0$ fixed and fit the covariance  of $G_A$ by
+$Q\otimes C_A$, with $Q=\operatorname{Diag}(q)$. As in \cite{klshampoo}, up to constants,
+we minimize the KL divergence between two Gaussian distributions
+to get $q$
+\[
+ \begin{array}{ll}
+  \underset{q}{\mathrm{minimize}} &
+  \frac12\sum_{j=1}^{d_{\mathrm{in}}}
+    \left(
+        r\log q_j
+        +\frac{1}{q_j}
+          \mathbb{E}[(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}]
+    \right)
+  \end{array}
+\]
+The objective is strictly convex in $\log q$ and is minimized coordinatewise. Applying the
+same calculation to $G_B$ gives
 \begin{equation}
-  \E[G\,M\,G^\top]=\mathrm{tr}(MQ)\,P,\qquad
-  \E[G^\top N\,G]=\mathrm{tr}(NP)\,Q.
-  \label{eq:moment-id}
+\begin{aligned}
+    q_j
+    &=\frac1r\,
+      \mathbb{E}[(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}],
+    &&j=1,\ldots,d_{\mathrm{in}},\\
+    p_i
+    &=\frac1r\,
+      \mathbb{E}[(G_B)_{i,:}C_B^{-1}(G_B)_{i,:}^\top],
+    &&i=1,\ldots,d_{\mathrm{out}}.
+\end{aligned}
+\label{eq:diag-kron-population}
 \end{equation}
-$P,Q$ are fixed only up to scale, $(P,Q)\mapsto(cP,c^{-1}Q)$, which the norm
-\eqref{eq:ours-metric} and the spectral-norm rescale absorb.
+For fixed $C_A$ or $C_B$, these are the diagonal specialization of the
+conditional two-sided KL-Shampoo equations \cite{klshampoo}. They are coupled
+because $C_A$ contains $P$, while $C_B$ contains $Q$.
 
-
-\paragraph{Coupling: covariance of a linear image.} Each factor gradient is a linear
-image of $G$, so its row second moment is the partner side conjugated by the factor:
-\begin{equation*}
-  \mathrm{Cov}\,\mathrm{vec}(G_A)=(I\otimes B^\top)(Q\otimes P)(I\otimes B)
-  =Q\otimes\underbrace{B^\top P B}_{C_A},\qquad C_B=A\,Q\,A^\top,
-\end{equation*}
-which is \eqref{eq:ours-closure}. The partner $C_A$ carries the current $P$ and $C_B$ the
-current $Q$; that shared dependence is the coupling between the sides.
-
-\paragraph{Estimator: method of moments.} Put $N=B\,C_A^{-1}B^\top$ in the second
-identity of \eqref{eq:moment-id} and use the trace collapse
-$\mathrm{tr}(B C_A^{-1}B^\top P)=\mathrm{tr}(C_A^{-1}B^\top P B)=\mathrm{tr}(C_A^{-1}C_A)=r$:
-\begin{equation*}
-  \E\!\big[\tfrac1r\,G_A^\top C_A^{-1}G_A\big]
-  =\E\!\big[\tfrac1r\,G^\top(B C_A^{-1}B^\top)G\big]
-  =\tfrac1r\mathrm{tr}(B C_A^{-1}B^\top P)\,Q=Q,
-\end{equation*}
-so $\tfrac1r\,G_A^\top C_A^{-1}G_A$ is unbiased for $Q$, and its diagonal is the $q_j$ of
-\eqref{eq:ours-klcoupling}. The mirror with $M=A^\top C_B^{-1}A$ and
-$\mathrm{tr}(A^\top C_B^{-1}A\,Q)=\mathrm{tr}(C_B^{-1}C_B)=r$ gives
-$\E[\tfrac1r\,G_B C_B^{-1}G_B^\top]=P$. Setting $C_A=C_B=I$ decouples the sides into two
-independent Adafactor diagonals \cite{adafactor}. In running ($\beta_2$-EMA) form, the
-two unbiased estimators give the per-coordinate coupled update
+If diagonal Kronecker model is exact and $C_A,C_B\succ0$, then
 \begin{equation}
-  q_j=\mathrm{EMA}\Big[\tfrac1r\,(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
-  p_i=\mathrm{EMA}\Big[\tfrac1r\,(G_B)_{i,:}\,C_B^{-1}(G_B)_{i,:}^\top\Big],
+    \mathbb{E}[G_A^\top C_A^{-1}G_A]=rQ,
+    \qquad
+    \mathbb{E}[G_BC_B^{-1}G_B^\top]=rP.
+    \label{eq:diag-kron-unbiased}
+\end{equation}
+Indeed, the first identity is
+$\operatorname{tr}(C_A^{-1}C_A)Q=rQ$; the second is identical. This proves the
+factor $1/r$ in \eqref{eq:diag-kron-population}.
+
+
+XXX will edit below XXX
+\paragraph{Online update.}
+In practice we use exponentially moving average (EMA) with parameter $\beta_2$ to get metric update.
+Specifically, 
+update \eqref{eq:diag-kron-population} becomes
+\begin{equation}
+  q_j=\mathrm{EMA}\Big[\tfrac1r (G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
+  p_i=\mathrm{EMA}\Big[\tfrac1r (G_B)_{i,:} C_B^{-1}(G_B)_{i,:}^\top\Big],
   \label{eq:ours-klcoupling}
 \end{equation}
-the diagonals of $Q$ and $P$ applied in \Cref{alg:ours}.
+as outlined in \Cref{alg:ours}.
+
 
 \paragraph{Relation to KL-Shampoo.} The alternation --- each diagonal estimated under the
 partner's current value, one EMA step per iteration --- is the coupled two-sided
 estimator of \cite{klshampoo}, run on the factor gradients $G_A,G_B$ rather than the
-dense gradient (their Table~2 lists this diagonal--Kronecker form as moment matching).
+dense gradient (their Table~2 lists this diagonal Kronecker form as moment matching).
+
+
 
 \section{Spectral-Norm Estimation}
 \label{app:smax}
@@ -1133,16 +1177,16 @@ dense gradient (their Table~2 lists this diagonal--Kronecker form as moment matc
 \Require matrix $M$; warm-start vector $v$ (cached across steps); iterations $K$
 \Statex
 
-\State $l \gets\max\!\big(\max_i\norm{M_{i,:}}_2,\ \max_j\norm{M_{:,j}}_2\big)$
+\State $l \gets\max\big(\max_i\norm{M_{i,:}}_2,\ \max_j\norm{M_{:,j}}_2\big)$
 \Statex
 
 \For{$k=1,\dots,K$} \Comment{power iteration on $M^\top M$}
   \State $w\gets Mv$
-  \State $v\gets M^\top w \,/\, \norm{M^\top w}_2$
+  \State $v\gets M^\top w /\norm{M^\top w}_2$
 \EndFor
 \Statex
 
-\State \Return $\max\!\big(\norm{Mv}_2,\ l\big)$ \Comment{$l$ floor}
+\State \Return $\max\big(\norm{Mv}_2,\ l\big)$ \Comment{$l$ floor}
 \end{algorithmic}
 \end{algorithm}
 
