@@ -278,11 +278,11 @@ Then problem~\eqref{eq:polorafull-hard} can be re-written as
 \left\langle G, \Delta W\right\rangle \\[2pt]
 \mathrm{subject~ to} &
 \displaystyle  
-\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \tilde \tau,
+\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq  \tau,
 \end{array}
 \label{eq:polorafull}
 \end{equation}
-where $\tilde\tau = \frac{\tau}{\sqrt{n}}$.
+where we have absorbed a $1/\sqrt{n}$ into $\tau$, that is $\tau \leftarrow \frac{\tau}{\sqrt{n}}$.
 This problem can be cast as an instance of the following Preconditioned LMO.
 \begin{restatable}[Preconditioned spectral-norm LMO]{lemma}{GeneralLmoUpdate}
 \label{lem:whitened-spectral-lmo}
@@ -308,7 +308,11 @@ Applying the lemma above with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq
 
 
 \paragraph{Direction.}
-So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt this update to LoRA~\eqref{eq:lora}, computing its \emph{direction} and its \emph{magnitude} separately. The spectral LMO gives the direction, and we then set the magnitude by bounding the merged update $\Delta W$ in spectral norm. If we update LoRA factors according to
+So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt this update to LoRA~\eqref{eq:lora}, computing its \emph{direction} and its \emph{magnitude} separately. 
+To set the direction, we will adapt  the preconditioned spectral 
+  LMO~\eqref{eq:polorafull} gives the direction. Later we will set the magnitude.
+  
+  If we update LoRA factors according to
 \[
 A \leftarrow A + \Delta A,
 \qquad
@@ -325,28 +329,30 @@ If we replace $\Delta W$ in \eqref{eq:polorafull} with the approximation above t
     \left\langle G, B\Delta A+\Delta B A \right\rangle \\[2pt]
     \mbox{subject to} &
     \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
-    \le \tilde\tau.
+    \le \tau.
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
+  Since we will set the magnitude later, the reader can ignore the exact value of $\tau$.
 The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
 \[
 \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
 \leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
 + \norm{P^{1/2} \Delta B A Q^{1/2}}_2,
 \]
-so bounding each factor step bounds the merged update. We therefore impose one spectral-norm constraint per factor,
-\[
-\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau_A,
-\qquad
-\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B ,
-\]
-which splits the problem into two independent subproblems, one per factor.
-If we denote the factor gradients as 
+so bounding each factor step bounds the merged update. Using the above upper bound in~\eqref{eq:joint-direction-lmo}
+% We therefore impose one spectral-norm constraint per factor,
+% \[
+% \norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau_A,
+% \qquad
+% \norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B ,
+% \]
+ splits the problem into two independent subproblems, one per factor.
+That is, if we denote the factor gradients as 
 \begin{equation}\label{e-grad-wrt-factors}
 G_A=B^\top G, \qquad G_B=GA^\top,
 \end{equation}
-then the problem \eqref{eq:joint-direction-lmo} decouples into two block subproblems
+then the problem \eqref{eq:joint-direction-lmo} decouples into two  subproblems
 \begin{equation}
 \setlength{\arraycolsep}{2pt}
 \begin{array}{@{}c@{\qquad}c@{}}
@@ -354,14 +360,14 @@ then the problem \eqref{eq:joint-direction-lmo} decouples into two block subprob
 \underset{\Delta A}{\mathrm{minimize}} &
 \left\langle G_A,\Delta A \right\rangle \\[2pt]
 \mbox{subject to} &
-\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau_A ,
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau ,
 \end{array}
 &
 \begin{array}{ll}
 \underset{\Delta B}{\mathrm{minimize}} &
 \left\langle G_B,\Delta B \right\rangle \\[2pt]
 \mbox{subject to} &
-\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B .
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau .
 \end{array}
 \end{array}
 \label{eq:decoupled-direction-lmo}
@@ -379,7 +385,7 @@ By definition of the spectral norm, and using the above definitions of $C_A$ and
 \qquad
 \norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2 .
 \end{equation}
-Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo} it is now clear that each of the two subproblems is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ subproblem and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ subproblem. Thus the two minimizers are $-\tau_A D_A$ and $-\tau_B D_B$, where
+Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo} it is now clear that each of the two subproblems is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ subproblem and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ subproblem. Thus the two minimizers are $-\tau D_A$ and $-\tau D_B$, where
 \begin{equation}
   \begin{aligned}
   D_A &=
@@ -393,15 +399,16 @@ Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo} it is
   \end{aligned}
   \label{eq:factor-directions}
 \end{equation}
-The minimizers scale linearly with the budgets, $\Delta A=-\tau_A D_A$ and $\Delta B=-\tau_B D_B$, so $\tau_A$ and $\tau_B$ set only the magnitude while the directions $D_A$ and $D_B$ are fixed independently of them. We therefore leave the budgets free and set the step magnitude directly through the learning rate $\eta$.
+The minimizers scale linearly with the budgets, $\Delta A=-\tau D_A$ and $\Delta B=-\tau D_B$, so $\tau$ controls the magnitude while the directions are given by $D_A$ and $D_B$.  
+% We therefore leave the budgets free and set the step magnitude directly through the learning rate $\eta$.
 
-\rob{Awkward that we introduce $\tau$ earlier on, then ask that $\tau_A + \tau _B \leq \tau$, then completely ignore this.}
 \paragraph{Magnitude.}
 %\rob{This commented out text is not clear enough. I think it add more confusion}
 % It remains to choose the step magnitude. 
 % Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. 
 % Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (\Cref{lem:factor-radius-gauge}).
-We will now set the magnitude for updating each factor with two constraints in mind: our first constraint is that the linear approximation of the total update $\Delta W$ is bounded in  spectral norm by a user specified learning rate $\eta$; our second constraint is that the update for each factor $\Delta A$ and $\Delta B$ have the same magnitude in spectral norm.
+We now choose the update magnitudes for the two factors subject to two constraints. First, the linearized total update $\Delta W$ should have spectral norm at most the user-specified learning rate $\eta$. Second, the factor updates $\Delta A$ and $\Delta B$ should have equal spectral-norm magnitude.
+
 By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
@@ -484,7 +491,8 @@ We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned
   \centering
   \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
   \caption{\textbf{\methodname{} outperforms baselines during training.} Evaluation loss across
-  training step on Llama-3.2-1B finedtuned on math with $r = 256$. \methodname{} vs.\ Adam, iMuon, Muon; $1.63\times$ fewer steps to Adam's final loss. Per-setting learning curves in \Cref{app:curves}.}
+  training steps for Llama-3.2-1B finetuned on math dataset at rank $r = 256$. \methodname{} outperforms Adam, iMuon, Muon and reaches Adam's final loss in $1.63\times$ fewer steps.  Per-setting learning 
+  curves available in \Cref{app:curves}.}
   \label{fig:hero}
 \end{figure}
 
@@ -522,7 +530,7 @@ Removing both reduces \methodname{} to the decoupled step, which matches Adam in
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig2_ablation.pdf}
-  \caption{\textit{[placeholder]} Component ablation (Llama-3.2-1B / OpenMathInstruct / $r = 256$). The left panel shows loss curves as the curvature and then the magnitude are peeled from \methodname{} down to the bare decoupled factor step. The right panel shows speedup-over-Adam bars.}
+  \caption{\textbf{Curvature and magnitude components boost \methodname{}'s performance.} Component ablation of Llama-3.2-1B finetuned on math dataset at rank  $r = 256$. The left panel shows loss curves as the curvature and then the magnitude are peeled from \methodname{} down to the bare decoupled factor step. The right panel shows speedup-over-Adam bars.}
   \label{fig:ablation}
 \end{figure}
 
@@ -531,21 +539,25 @@ Removing both reduces \methodname{} to the decoupled step, which matches Adam in
 \label{sec:exp-taskdep}
 To understand the effect of the LoRA rank and of the finetuning dataset, we vary the rank while finetuning on math and vary the dataset from code to a low-resource language underrepresented in the pretraining mix.
 
-\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, \methodname{}'s step-speedup over Adam grows with it (\Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer across rank: the optimal learning rate is stable across rank, whereas the optimal learning rate for Adam shifts (\Cref{fig:lr_transfer}).
+\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, \methodname{}'s step-speedup over Adam grows too (\Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer across rank: the optimal learning rate is stable across rank, whereas the optimal learning rate for Adam shifts (\Cref{fig:lr_transfer}).
 
-\paragraph{Distribution shift.} Coding data is heavily represented in the pretraining data for the Qwen2.5-1.5B model. Bengali (Aya \cite{aya}) much less so, we refer to code as in-distribution and Bengali as out-of-distribution. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
+\paragraph{Distribution shift.} Coding data is heavily represented in the pretraining data for the Qwen2.5-1.5B model. Bengali (Aya \cite{aya}) much less so, therefore, we refer to code as in-distribution and Bengali as out-of-distribution datasets. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig3_lr_transfer.pdf}
-  \caption{\textit{[placeholder]} Final loss vs.\ lr at each rank (Llama-3.2-1B / OpenMathInstruct, $r\in\{32,64,128,256\}$); \methodname{}'s loss-minimizing lr stays at $10^{-2}$, Adam's drifts.}
+  \caption{\textbf{\methodname{} exhibits learning rate transfer.} Final loss versus learning rate of Llama-3.2-1B finetuned on math dataset at each rank $r\in\{32,64,128,256\}$.
+  \methodname{}'s optimal learning rate stays at $10^{-2}$ across ranks, while Adam's drifts.}
   \label{fig:lr_transfer}
 \end{figure}
 
 \begin{figure}[h]
   \centering
   \includegraphics[width=\linewidth]{fig_ood.pdf}
-  \caption{\textit{[placeholder]} Task pair (Qwen2.5-1.5B / $r = 256$): eval loss vs.\ step, Adam vs.\ \methodname{}, on in-distribution code (left) and out-of-distribution Bengali (right).}
+  \caption{\textbf{\methodname{} has more speedup on out-of-distribution dataset.} 
+  Evaluation loss over training steps on Qwen2.5-1.5B at rank $r = 256$.
+  Adam vs. \methodname{} on in-distribution code dataset (left) 
+  and out-of-distribution Bengali dataset (right).}
   \label{fig:ood}
 \end{figure}
 
@@ -590,7 +602,6 @@ optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMu
 LoRA-Muon derive the invariant update from a spectral-norm
 LMO~\cite{imuon,loramuon}. As discussed in \Cref{app:memoryless}, in their momentum-free forms the LoRA-RITE, LoRA-Muon,
 and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}) which leads us to believe that this invariance is not crucial.
-
 
 \paragraph{Magnitude control for low-rank products.}
 The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or $B$ has a small singular value. Spectron and QuacK, which have updates different from the LMO, explicitly control the factor steps by scaling them with the factor norms: Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{app:related-spectral}).
@@ -1063,7 +1074,7 @@ Let
 $G\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ 
 be stochastic merged-weight gradient.
 We use the diagonal Kronecker approximation of \eqref{eq:pq-factor} as follows
-\[
+\begin{equation}\label{e-diag-kron-second-mom-model}
 \Sigma
 =\mathbb{E}[\operatorname{vec}(G)\operatorname{vec}(G)^\top]
 \approx Q\otimes P,
@@ -1071,16 +1082,15 @@ We use the diagonal Kronecker approximation of \eqref{eq:pq-factor} as follows
 P=\diag(p)\succ0,
 \quad
 Q=\diag(q)\succ0,
-\]
+\end{equation}
 where $p\in\mathbb{R}^{d_{\mathrm{out}}}$ and $q\in\mathbb{R}^{d_{\mathrm{in}}}$. Thus
 $\mathbb{E}[G_{ij}^2]\approx p_iq_j$.
-For the $\Sigma$ to be a covariance model we further assume $\E[G]=0$.
 By \eqref{e-grad-wrt-factors} and \eqref{eq:ours-closure},
 \[
 \operatorname{vec}(G_A)=(I_{d_{\mathrm{in}}}\otimes B^\top)\operatorname{vec}(G),
 \qquad \operatorname{vec}(G_B)=(A\otimes I_{d_{\mathrm{out}}})\operatorname{vec}(G),
 \]
-therefore, covariance model gives
+therefore, second moment model gives
 \[
 \mathbb{E}[\operatorname{vec}(G_A)\operatorname{vec}(G_A)^\top]\approx Q\otimes C_A,
 \qquad
@@ -1091,10 +1101,10 @@ $(P,Q)\mapsto(cP,c^{-1}Q)$ leaves  $Q\otimes P$
 unchanged.
 
 \paragraph{Conditional KL equations.}
-Hold $C_A\succ0$ fixed and fit the covariance  of $G_A$ by
-$Q\otimes C_A$, with $Q=\operatorname{Diag}(q)$. As in \cite{klshampoo}, up to constants,
-we minimize the KL divergence between two Gaussian distributions
-to get $q$
+Hold $C_A\succ0$ fixed and fit the second moment of $G_A$ by
+$Q\otimes C_A$, where $Q=\operatorname{Diag}(q)$. As in \cite{klshampoo}, 
+we get $q$ using divergence-based projection over Kronecker-structured 
+symmetric positive definite matrices
 \[
  \begin{array}{ll}
   \underset{q}{\mathrm{minimize}} &
@@ -1125,7 +1135,8 @@ For fixed $C_A$ or $C_B$, these are the diagonal specialization of the
 conditional two-sided KL-Shampoo equations \cite{klshampoo}. They are coupled
 because $C_A$ contains $P$, while $C_B$ contains $Q$.
 
-If diagonal Kronecker model is exact and $C_A,C_B\succ0$, then
+If diagonal Kronecker model \eqref{e-diag-kron-second-mom-model} 
+is exact, then
 \begin{equation}
     \mathbb{E}[G_A^\top C_A^{-1}G_A]=rQ,
     \qquad
