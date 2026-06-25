@@ -483,7 +483,8 @@ We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
-  \caption{\textbf{\methodname{} speedup over Adam during training.} Eval loss vs.\ step (Llama-3.2-1B / OpenMathInstruct / $r = 256$); \methodname{} vs.\ Adam, iMuon, Muon; $1.63\times$ fewer steps to Adam's final loss. Per-setting learning curves in \Cref{app:curves}.}
+  \caption{\textbf{\methodname{} outperforms baselines during training.} Evaluation loss across
+  training step on Llama-3.2-1B finedtuned on math with $r = 256$. \methodname{} vs.\ Adam, iMuon, Muon; $1.63\times$ fewer steps to Adam's final loss. Per-setting learning curves in \Cref{app:curves}.}
   \label{fig:hero}
 \end{figure}
 
