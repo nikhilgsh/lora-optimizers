@@ -696,7 +696,7 @@ hardware-independent.
 \section{Proofs}
 \label{app:proofs}
 
-
+\subsection{Direction}
 
 \begin{lemma}[Spectral norm LMO]\label{lem:muon-lmo}
 For $G\in\mathbb{R}^{m\times n}$ and $\eta>0$,
@@ -852,6 +852,8 @@ Substituting back gives the stated solution.
 
 
 
+\subsection{Magnitude}
+
 \begin{lemma}[Fixed factor step sizes under LoRA rescaling]
 \label{lem:factor-radius-gauge}
 Fix $P$, $Q$, and the product gradient $G$, and let
@@ -871,7 +873,7 @@ If $B\widehat D_A\ne0$ or $\widehat D_B A\ne0$, then $\sup_{c>0}\norm{U_c}_2=\in
 \end{lemma}
 
 \begin{proof}
-\emph{The normalized directions are gauge-invariant.} Under the rescaling, the
+\emph{The normalized directions are rescaling-invariant.} Under the rescaling, the
 $A$-block factor gradient and contracted curvature scale as
 \[
   G_{A,c}=B_c^\top G=c\,G_A,\qquad
@@ -1163,7 +1165,7 @@ as outlined in \Cref{alg:ours}.
 Further, by \eqref{eq:diag-kron-unbiased}
 if the Kronecker model is exact and XXX
 
-\section{Numerical Primitives for the Step}
+\section{Numerical Primitives}
 \label{app:primitives}
 
 \subsection{Spectral-Norm Estimation}
