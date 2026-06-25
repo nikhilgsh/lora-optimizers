@@ -593,12 +593,7 @@ and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodna
 
 
 \paragraph{Magnitude control for low-rank products.}
-The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$
-but does not bound the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or
-$B$ has small singular values. Spectron controls this in low-rank pretraining, rescaling both
-steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$ (\Cref{app:related-spectral}). QuacK
-controls it in attention, scaling the query and key learning rates by the inverse norm of the
-other weight. \methodname{} bounds both the factor steps and the merged update in spectral norm.
+The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or $B$ has a small singular value. Spectron and QuacK, which have updates different from the LMO, explicitly control the factor steps by scaling them with the factor norms: Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{app:related-spectral}).
 
 % ===========================================================================
 \section{Conclusion}
