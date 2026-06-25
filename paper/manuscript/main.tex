@@ -604,7 +604,7 @@ LMO~\cite{imuon,loramuon}. As discussed in \Cref{app:memoryless}, in their momen
 and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}) which leads us to believe that this invariance is not crucial.
 
 \paragraph{Magnitude control for low-rank products.}
-The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or $B$ has a small singular value. Spectron and QuacK, which have updates different from the LMO, explicitly control the factor steps by scaling them with the factor norms: Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{app:related-spectral}).
+The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or $B$ has a small singular value. Spectron and QuacK, which have updates different from the LMO, explicitly control the factor steps by scaling them with the factor norms: Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
 
 % ===========================================================================
 \section{Conclusion}
@@ -902,6 +902,29 @@ $c\to\infty$; otherwise, if $\widehat D_B A\ne0$, the second forces
 $\norm{U_c}_2\to\infty$ as $c\to0$. In either case $\sup_{c>0}\norm{U_c}_2=\infty$.
 \end{proof}
 
+\begin{remark}[Negligibility of the quadratic term]
+\label{rem:quadratic}
+Our magnitude rule \eqref{eq:ours-rho} bounds the first-order merged update
+$B\Delta A+\Delta B A$ and drops the quadratic term $\Delta B\Delta A$. Dropping
+it shifts the step by only $O(\eta)$. The merged update is
+\[
+  \Delta W = B\Delta A+\Delta B A+\Delta B\Delta A .
+\]
+With the per-factor cap $\norm{\Delta A}_2,\norm{\Delta B}_2\le\rho$ and
+$s=\norm{A}_2+\norm{B}_2$, the triangle inequality and submultiplicativity give
+$\norm{\Delta W}_2 \le \rho s + \rho^2$. Bounding this full right-hand side by
+$\eta$ gives the step
+\[
+  \rho^\star = \bigl(-s+\sqrt{s^2+4\eta}\bigr)/2
+  = \frac{\eta}{s}-\frac{\eta^2}{s^3}+O(\eta^3/s^5),
+\]
+while dropping $\rho^2$ gives our $\rho=\eta/s$. The quadratic term thus shifts
+the step by a relative $(\rho-\rho^\star)/\rho=\eta/s^2$. At standard
+initialization $A$ has independent entries of variance $\Theta(1/d_{\mathrm{in}})$
+and $B=0$, so $s=\norm{A}_2=\Theta(1)$ with high probability. The shift
+$\eta/s^2$ is then $O(\eta)$, decreasing as $s$ grows.
+\end{remark}
+
 
 
 \section{Momentum-Free LoRA-RITE, iMuon and LoRA-Muon}
@@ -1039,29 +1062,6 @@ Spectron \cite{spectron} bounds the induced product update by rescaling orthogon
 factor steps with the current factor norms, in native low-rank pretraining. It is close in
 spirit to \methodname{}'s magnitude rule but is not curvature-aware and is not derived
 from a single LoRA LMO.
-
-\paragraph{Negligibility of the quadratic term.}
-Our magnitude rule \eqref{eq:ours-rho} bounds the first-order merged update
-$B\Delta A+\Delta B A$ and drops the quadratic term $\Delta B\Delta A$. Dropping
-it shifts the step by only $O(\eta)$. The merged update is
-\[
-  \Delta W = B\Delta A+\Delta B A+\Delta B\Delta A .
-\]
-With the per-factor cap $\norm{\Delta A}_2,\norm{\Delta B}_2\le\rho$ and
-$s=\norm{A}_2+\norm{B}_2$, the triangle inequality and submultiplicativity give
-\[
-  \norm{\Delta W}_2 \le \rho s + \rho^2 .
-\]
-Bounding the full right-hand side by $\eta$ gives the step
-\[
-  \rho^\star = \bigl(-s+\sqrt{s^2+4\eta}\bigr)/2
-  = \frac{\eta}{s}-\frac{\eta^2}{s^3}+O(\eta^3/s^5),
-\]
-while dropping $\rho^2$ gives our $\rho=\eta/s$. The quadratic term thus shifts
-the step by a relative $(\rho-\rho^\star)/\rho=\eta/s^2$. At standard
-initialization $A$ has independent entries of variance $\Theta(1/d_{\mathrm{in}})$
-and $B=0$, so $s=\norm{A}_2=\Theta(1)$ with high probability. The shift
-$\eta/s^2$ is then $O(\eta)$, decreasing as $s$ grows.
 
 % ===========================================================================
 \section{Diagonal Kronecker Second Moment Estimator for the Curvature Diagonals}
