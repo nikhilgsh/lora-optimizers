@@ -379,21 +379,21 @@ By definition of the spectral norm, and using the above definitions of $C_A$ and
 \qquad
 \norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2 .
 \end{equation}
-Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo} it is now clear that each of the two subproblems is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ subproblem and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ subproblem. Thus the two minimizers are $-\tau_A W_A$ and $-\tau_B W_B$, where
+Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo} it is now clear that each of the two subproblems is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ subproblem and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ subproblem. Thus the two minimizers are $-\tau_A D_A$ and $-\tau_B D_B$, where
 \begin{equation}
   \begin{aligned}
-  W_A &=
+  D_A &=
   C_A^{-1/2}\,
   \polar\!\left(C_A^{-1/2}\,G_A\,Q^{-1/2}\right)
   \,Q^{-1/2},\\
-  W_B &=
+  D_B &=
   P^{-1/2}\,
   \polar\!\left(P^{-1/2}\,G_B\,C_B^{-1/2}\right)
   \,C_B^{-1/2}.
   \end{aligned}
   \label{eq:factor-directions}
 \end{equation}
-The minimizers scale linearly with the budgets, $\Delta A=-\tau_A W_A$ and $\Delta B=-\tau_B W_B$, so $\tau_A$ and $\tau_B$ set only the magnitude while the directions $W_A$ and $W_B$ are fixed independently of them. We therefore leave the budgets free and set the step magnitude directly through the learning rate $\eta$.
+The minimizers scale linearly with the budgets, $\Delta A=-\tau_A D_A$ and $\Delta B=-\tau_B D_B$, so $\tau_A$ and $\tau_B$ set only the magnitude while the directions $D_A$ and $D_B$ are fixed independently of them. We therefore leave the budgets free and set the step magnitude directly through the learning rate $\eta$.
 
 \rob{Awkward that we introduce $\tau$ earlier on, then ask that $\tau_A + \tau _B \leq \tau$, then completely ignore this.}
 \paragraph{Magnitude.}
@@ -421,9 +421,9 @@ Treating $A$ and $B$ symmetrically, we use a single step size $\rho$ for both fa
 \end{equation}
 ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \[
-\Delta A = -\rho\,\frac{W_A}{\norm{W_A}_2},
+\Delta A = -\rho\,\frac{D_A}{\norm{D_A}_2},
 \qquad
-\Delta B = -\rho\,\frac{W_B}{\norm{W_B}_2}.
+\Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
 \]
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
@@ -443,12 +443,12 @@ coupled second moment equations (\Cref{app:matnormal}).
 \Statex
 \Phase{Direction}
 \State $C_A\gets B^\top\,P\,B, \qquad C_B\gets A\,Q\,A^\top$
-\State $W_A\gets C_A^{-1/2}\,\polar \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
-\State $W_B\gets P^{-1/2}\,\polar \big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
+\State $D_A\gets C_A^{-1/2}\,\polar \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
+\State $D_B\gets P^{-1/2}\,\polar \big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
 \Statex
 \Phase{Magnitude}
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
-\State $A\gets A-\rho W_A/\norm{W_A}_2, \qquad B\gets B-\rho W_B/\norm{W_B}_2$
+\State $A\gets A-\rho D_A/\norm{D_A}_2, \qquad B\gets B-\rho D_B/\norm{D_B}_2$
 \Statex
 \Phase{Metric Update}
 \State $Q\gets\beta_2 Q+(1-\beta_2)\diag\big(G_A^\top\,C_A^{-1}\,G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}
@@ -464,7 +464,7 @@ coupled second moment equations (\Cref{app:matnormal}).
 \label{sec:exp-setup}
 
 \paragraph{Comparison.}
-For a fixed model, dataset, and rank, only the optimizer and learning rate vary. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out eval loss.
+For every model, dataset, and rank, we only vary the optimizer and learning rate. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out eval loss.
 
 The main comparisons finetune OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}), using rank $r=256$ unless stated otherwise. Additional experiments in \Cref{sec:exp-taskdep} vary the rank as well as change the finetuning dataset to a low-resource language. \Cref{app:exp} gives the full experimental configurations.
 
@@ -483,7 +483,7 @@ We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
-  \caption{\textit{[placeholder]} Eval loss vs.\ step (Llama-3.2-1B / OpenMathInstruct / $r = 256$); \methodname{} vs.\ Adam, iMuon, Muon; $1.63\times$ fewer steps to Adam's final loss. Per-setting learning curves in \Cref{app:curves}.}
+  \caption{\textbf{\methodname{} speedup over Adam during training.} Eval loss vs.\ step (Llama-3.2-1B / OpenMathInstruct / $r = 256$); \methodname{} vs.\ Adam, iMuon, Muon; $1.63\times$ fewer steps to Adam's final loss. Per-setting learning curves in \Cref{app:curves}.}
   \label{fig:hero}
 \end{figure}
 
@@ -848,7 +848,7 @@ Substituting back gives the stated solution.
 \begin{lemma}[Fixed factor step sizes under LoRA rescaling]
 \label{lem:factor-radius-gauge}
 Fix $P$, $Q$, and the product gradient $G$, and let
-$\widehat W_A=W_A/\norm{W_A}_2$ and $\widehat W_B=W_B/\norm{W_B}_2$ be the
+$\widehat D_A=D_A/\norm{D_A}_2$ and $\widehat D_B=D_B/\norm{D_B}_2$ be the
 normalized directions from \eqref{eq:factor-directions}. For $c>0$, rescale the
 factors by
 \[
@@ -858,9 +858,9 @@ which leaves the product fixed, $B_cA_c=BA$. These normalized directions are
 invariant under the rescaling, so a common factor step size $\rho>0$ gives the
 first-order merged update
 \[
-  U_c=-\rho\bigl(cB\,\widehat W_A+c^{-1}\widehat W_B A\bigr).
+  U_c=-\rho\bigl(cB\,\widehat D_A+c^{-1}\widehat D_B A\bigr).
 \]
-If $B\widehat W_A\ne0$ or $\widehat W_B A\ne0$, then $\sup_{c>0}\norm{U_c}_2=\infty$.
+If $B\widehat D_A\ne0$ or $\widehat D_B A\ne0$, then $\sup_{c>0}\norm{U_c}_2=\infty$.
 \end{lemma}
 
 \begin{proof}
@@ -874,24 +874,24 @@ so the polar argument in \eqref{eq:factor-directions} is unchanged,
 \[
   C_{A,c}^{-1/2}G_{A,c}\,Q^{-1/2}=C_A^{-1/2}G_A\,Q^{-1/2}.
 \]
-Hence $W_{A,c}=c^{-1}W_A$, and normalizing removes the scalar:
-$\widehat W_{A,c}=\widehat W_A$. Symmetrically,
+Hence $D_{A,c}=c^{-1}D_A$, and normalizing removes the scalar:
+$\widehat D_{A,c}=\widehat D_A$. Symmetrically,
 \[
   G_{B,c}=G A_c^\top=c^{-1}G_B,\qquad
   C_{B,c}=A_cQA_c^\top=c^{-2}C_B,
 \]
-give $W_{B,c}=cW_B$ and $\widehat W_{B,c}=\widehat W_B$. With both directions
+give $D_{B,c}=cD_B$ and $\widehat D_{B,c}=\widehat D_B$. With both directions
 fixed, the merged update is the stated $U_c$.
 
 \emph{The merged update is unbounded.} The two terms of $U_c$ scale oppositely
 in $c$:
 \[
-  \frac{\norm{U_c}_2}{c}\to\rho\norm{B\widehat W_A}_2\ \ (c\to\infty),
+  \frac{\norm{U_c}_2}{c}\to\rho\norm{B\widehat D_A}_2\ \ (c\to\infty),
   \qquad
-  c\,\norm{U_c}_2\to\rho\norm{\widehat W_B A}_2\ \ (c\to0).
+  c\,\norm{U_c}_2\to\rho\norm{\widehat D_B A}_2\ \ (c\to0).
 \]
-If $B\widehat W_A\ne0$, the first limit forces $\norm{U_c}_2\to\infty$ as
-$c\to\infty$; otherwise, if $\widehat W_B A\ne0$, the second forces
+If $B\widehat D_A\ne0$, the first limit forces $\norm{U_c}_2\to\infty$ as
+$c\to\infty$; otherwise, if $\widehat D_B A\ne0$, the second forces
 $\norm{U_c}_2\to\infty$ as $c\to0$. In either case $\sup_{c>0}\norm{U_c}_2=\infty$.
 \end{proof}
 
@@ -1243,7 +1243,7 @@ Each curvature inverse-sqrt in \Cref{alg:ours} is relative-damped: for a curvatu
 \end{equation*}
 The normalization and the floor each follow from the step's structure.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \emph{Normalize by $\lambda_{\max}$.} The whitened polar depends only on the curvature's \emph{shape}, not its scale: $\polar\!\big(C_A^{-1/2}\hat M_A Q^{-1/2}\big)$ is invariant under $X\mapsto cX$, and the spectral-norm rescale $W_A/\norm{W_A}_2$ reabsorbs any global factor. The scale-free representative is the normalized spectrum $X/\lambda_{\max}\in(0,1]$.
+  \item \emph{Normalize by $\lambda_{\max}$.} The whitened polar depends only on the curvature's \emph{shape}, not its scale: $\polar\!\big(C_A^{-1/2}\hat M_A Q^{-1/2}\big)$ is invariant under $X\mapsto cX$, and the spectral-norm rescale $D_A/\norm{D_A}_2$ reabsorbs any global factor. The scale-free representative is the normalized spectrum $X/\lambda_{\max}\in(0,1]$.
   \item \emph{Floor by $\delta$.} On that spectrum $\delta$ is one conditioning knob: it caps the metric's condition number at ${\sim}1/\delta$, so a near-null curvature direction cannot amplify the step without bound.
   \item \emph{Warmup.} A still-zero factor ($\lambda_{\max}=0$) maps to $I$, so steps before the EMAs warm up are plain momentum.
 \end{itemize}
