@@ -177,7 +177,7 @@ The LMO approach minimizes the local linearization of our loss subject to a ball
   \mbox{subject to} &
   \displaystyle  
   \left\| \Delta W   \right\|
-  \le \eta,
+  \le \tau,
   \end{array}
   \label{eq:lmo}
 \end{equation}
@@ -198,7 +198,7 @@ The spectral norm is a conservative norm over linear operators, since it focuses
 
 To be conservative with respect to every activation, we enforce that no single activation results in a large change in the loss, that is we want
 \begin{equation}\label{eq:loss-diff}
-     \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \eta, \qquad  i=1,\ldots, n.
+     \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
 This would ensure stable training with no spikes or jumps in the loss. \nikhil{is this really true? because on a disjoint batch the loss might spike?} But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
 \[  
@@ -212,7 +212,7 @@ Using the above and~\eqref{eq:loss-diff} in the LMO~\eqref{eq:lmo} we arrive at
   \mbox{subject to} &
   \displaystyle  
 \left\langle G_i, \Delta W \right\rangle 
-  \le \eta, \qquad i=1,\ldots, n.
+  \le \tau, \qquad i=1,\ldots, n.
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
@@ -260,7 +260,7 @@ and KFAC~\cite{kfac}, let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ a
 \mbox{subject to} &
   \displaystyle  
 \max_{\tilde G \in \mathcal{G}(Q \otimes P)}\left\langle \tilde G, \Delta W \right\rangle 
-  \le \eta.
+  \le \tau.
   \end{array}
   \label{eq:polorafull-hard}
 \end{equation}
@@ -276,23 +276,23 @@ Then problem~\eqref{eq:polorafull-hard} can be re-written as
 \left\langle G, \Delta W\right\rangle \\[2pt]
 \mathrm{subject~ to} &
 \displaystyle  
-\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \tilde \eta,
+\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \tilde \tau,
 \end{array}
 \label{eq:polorafull}
 \end{equation}
-where $\tilde\eta = \frac{\eta}{\sqrt{n}}$.
+where $\tilde\tau = \frac{\tau}{\sqrt{n}}$.
 This problem can be cast as an instance of the following LMO.
 \begin{restatable}[Generalized spectral-norm LMO]{lemma}{GeneralLmoUpdate}
 \label{lem:whitened-spectral-lmo}
 Let $L$ and $R$ be symmetric positive definite. Then
 \begin{equation}\label{e-gen-spectral-lmo-update}
-X^\star = -\eta L^{-1}
+X^\star = -\tau L^{-1}
 \polar\left(L^{-1}MR^{-1}\right) R^{-1}
 \end{equation}
 is a solution of
 \[
 \begin{array}{ll}
-\underset{\|LXR\|_2\leq\eta}{\mathrm{minimize}}&
+\underset{\|LXR\|_2\leq\tau}{\mathrm{minimize}}&
 \langle M,X\rangle.
 \end{array}
 \]
@@ -301,20 +301,13 @@ $\|LXR\|_F$ over the solution set.
 \end{restatable}
 Applying the lemma above with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq:polorafull} is given by
 \begin{equation}\label{eq:polorafull-update}
-    \Delta W =  -\tilde \eta P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
+    \Delta W =  -\tilde \tau P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
 
 \rob{This far}
 
-\paragraph{LoRA update direction.}
-We now describe how to update LoRA factors from the merged 
-problem \eqref{eq:polorafull}.
-Let 
-\begin{equation}\label{e-grad-wrt-factors}
-G_A=B^\top G, \qquad G_B=GA^\top
-\end{equation}
-denote the factor gradients.
-We update LoRA factors according to
+\paragraph{Direction.}
+So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt this update to LoRA~\eqref{eq:lora}, computing its \emph{direction} and its \emph{magnitude} separately. The spectral LMO gives the direction, and we then set the magnitude by bounding the merged update $\Delta W$ in spectral norm. If we update LoRA factors according to
 \[
 A \leftarrow A + \Delta A,
 \qquad
@@ -324,32 +317,36 @@ Then the first-order approximation of the total update is
 \[
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A.
 \]
-We replace $\Delta W$ in \eqref{eq:polorafull} with its approximation above and get a problem
+If we replace $\Delta W$ in \eqref{eq:polorafull} with its approximation above then we get the problem
 \begin{equation}
     \begin{array}{ll}
     \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
     \left\langle G, B\Delta A+\Delta B A \right\rangle \\[2pt]
     \mbox{subject to} &
     \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
-    \le \eta .
+    \le \tau.
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-Further to make the constraint tractable, we use subadditivity of the spectral norm 
+To make the constraint tractable, we use subadditivity of the spectral norm 
 \[
 \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
 \leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
-+ \norm{P^{1/2} \Delta B AQ^{1/2}}_2.
++ \norm{P^{1/2} \Delta B AQ^{1/2}}_2,
 \]
-Therefore, it is sufficient to impose separate budgets 
+and impose separate budgets 
 \[
-\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \eta_A,
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau_A,
 \qquad
-\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \eta_B,
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B,
 \qquad
-\eta_A+\eta_B \leq \eta.
+\tau_A + \tau_B \leq \tilde{\tau}.
 \]
-This decouples the problem \eqref{eq:joint-direction-lmo} into two block subproblems
+If we denote the factor gradients as 
+\begin{equation}\label{e-grad-wrt-factors}
+G_A=B^\top G, \qquad G_B=GA^\top,
+\end{equation}
+then the problem \eqref{eq:joint-direction-lmo} decouples into two block subproblems
 \begin{equation}
 \setlength{\arraycolsep}{2pt}
 \begin{array}{@{}c@{\qquad}c@{}}
@@ -357,56 +354,49 @@ This decouples the problem \eqref{eq:joint-direction-lmo} into two block subprob
 \underset{\Delta A}{\mathrm{minimize}} &
 \left\langle G_A,\Delta A \right\rangle \\[2pt]
 \mbox{subject to} &
-\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \eta_A ,
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau_A ,
 \end{array}
 &
 \begin{array}{ll}
 \underset{\Delta B}{\mathrm{minimize}} &
 \left\langle G_B,\Delta B \right\rangle \\[2pt]
 \mbox{subject to} &
-\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \eta_B .
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B .
 \end{array}
 \end{array}
 \label{eq:decoupled-direction-lmo}
 \end{equation}
-As before, the budgets $\eta_A$ and $\eta_B$ only set the scale of the solutions. To solve these block problems, we use the following generalized spectral-norm LMO (\Cref{app:proofs}).
-
-
-\noindent Define the contracted curvature factors
+Define the $r\times r$ matrices
 \begin{equation}
 C_A = B^\top P B,
 \qquad
 C_B = A Q A^\top .
 \label{eq:ours-closure}
 \end{equation}
-By the definition of the spectral norm, for the $\Delta A$-block it holds
+By definition of the spectral norm, these collapse the two constraints in \eqref{eq:decoupled-direction-lmo} to
 \[
-\|P^{1/2}B\Delta A Q^{1/2}\|_{2}
-= \sqrt{\lambda_{\max}( Q^{1/2} \Delta A^\top C_A \Delta A Q^{1/2})}
-= \|C_A^{1/2} \Delta A Q^{1/2}\|_{2},
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2=\norm{C_A^{1/2}\Delta A Q^{1/2}}_2,
+\qquad
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2 .
 \]
-and, similarly, for the $\Delta B$-block,
-\[
-\norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2.
-\]
-Thus two problems in \eqref{eq:decoupled-direction-lmo} take the form of \Cref{lem:whitened-spectral-lmo} with $(L,R)=(C_A^{1/2},Q^{1/2})$ and $(L,R)=(P^{1/2},C_B^{1/2})$, respectively. By \Cref{lem:whitened-spectral-lmo}, the two block minimizers are $-\eta_A W_A$ and $-\eta_B W_B$, where
+Each is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ constraint and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ constraint. The two minimizers are $-\tau_A W_A$ and $-\tau_B W_B$, where
 \begin{equation}
   \begin{aligned}
   W_A &=
-  C_A^{-1/2}
-  \polar\!\left(C_A^{-1/2}G_AQ^{-1/2}\right)
-  Q^{-1/2},\\
+  C_A^{-1/2}\,
+  \polar\!\left(C_A^{-1/2}\,G_A\,Q^{-1/2}\right)
+  \,Q^{-1/2},\\
   W_B &=
-  P^{-1/2}
-  \polar\!\left(P^{-1/2}G_BC_B^{-1/2}\right)
-  C_B^{-1/2}.
+  P^{-1/2}\,
+  \polar\!\left(P^{-1/2}\,G_B\,C_B^{-1/2}\right)
+  \,C_B^{-1/2}.
   \end{aligned}
   \label{eq:factor-directions}
 \end{equation}
-Hence the block subproblems \eqref{eq:decoupled-direction-lmo} determine the descent directions $-W_A$ and $-W_B$.
+The LMO thus fixes only the directions $W_A$ and $W_B$. The budgets $\tau_A$ and $\tau_B$ merely rescale them, and we set the magnitude next.
 
 \paragraph{Magnitude.}
-It remains to choose the step magnitude. Using the LMO budgets $\eta_A$ and $\eta_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (\Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $\Delta W$ in spectral norm with the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+It remains to choose the step magnitude. Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (\Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $\Delta W$ in spectral norm with the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
 \approx
@@ -445,17 +435,17 @@ coupled second moment equations (\Cref{app:matnormal}).
 \State $\widehat M_A\gets\beta_1M_A+(1-\beta_1)G_A, \qquad \widehat M_B\gets\beta_1M_B+(1-\beta_1)G_B$ \Comment{Nesterov look-ahead}
 \Statex
 \Phase{Direction}
-\State $C_A\gets B^\top P B, \qquad C_B\gets A Q A^\top$
-\State $W_A\gets C_A^{-1/2}\polar \big(C_A^{-1/2}\widehat M_AQ^{-1/2}\big) Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
-\State $W_B\gets P^{-1/2} \polar \big(P^{-1/2}\widehat M_BC_B^{-1/2}\big) C_B^{-1/2}$
+\State $C_A\gets B^\top\,P\,B, \qquad C_B\gets A\,Q\,A^\top$
+\State $W_A\gets C_A^{-1/2}\,\polar \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
+\State $W_B\gets P^{-1/2}\,\polar \big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
 \Statex
 \Phase{Magnitude}
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
 \State $A\gets A-\rho W_A/\norm{W_A}_2, \qquad B\gets B-\rho W_B/\norm{W_B}_2$
 \Statex
 \Phase{Metric Update}
-\State $Q\gets\beta_2 Q+(1-\beta_2)\diag\big(G_A^\top C_A^{-1}G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}
-\State $P\gets\beta_2 P+(1-\beta_2)\diag\big(G_B C_B^{-1}G_B^\top\big)/r$
+\State $Q\gets\beta_2 Q+(1-\beta_2)\diag\big(G_A^\top\,C_A^{-1}\,G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}
+\State $P\gets\beta_2 P+(1-\beta_2)\diag\big(G_B\,C_B^{-1}\,G_B^\top\big)/r$
 \end{algorithmic}
 \end{algorithm}
 % ===========================================================================
@@ -586,7 +576,7 @@ with a Shampoo curvature metric (\Cref{app:related-spectral}). In contrast,
 \methodname{} derives its metric from first principles, by requiring that no single
 input in the batch change the loss too much. 
 
-\paragraph{Invariant LoRA optimizers.}
+\paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
 change of basis $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$. Since Adam is not invariant
 to this transformation, a line of work has proposed LoRA optimizers that are. LoRA-RITE
@@ -597,20 +587,13 @@ LMO~\cite{imuon,loramuon}. As discussed in \Cref{app:memoryless}, in their momen
 and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}).
 
 
-\paragraph{Product-step magnitude control.}
+\paragraph{Magnitude contorl for low-rank products.}
 The LMO step \eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$
 but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or
 $B$ has small singular values. Spectron controls this in low-rank pretraining, rescaling both
 steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$ (\Cref{app:related-spectral}). QuacK
 controls it in attention, scaling the query and key learning rates by the inverse norm of the
 other weight. \methodname{} bounds both the factor steps and the merged update in spectral norm.
-
-\nikhil{up till here}
-
-% ===========================================================================
-\section{Limitations}
-\label{sec:limitations}
-\PLACEHOLDER{Limitations.}
 
 % ===========================================================================
 \section{Conclusion}
@@ -860,19 +843,52 @@ Substituting back gives the stated solution.
 
 \begin{lemma}[Fixed factor step sizes under LoRA rescaling]
 \label{lem:factor-radius-gauge}
-Let $B_c=cB$ and $A_c=c^{-1}A$ for $c>0$, so that $B_cA_c=BA$. With $P,Q$ and $G$ fixed, the normalized directions obtained from \eqref{eq:factor-directions} are unchanged by this rescaling. If $\widehat W_A=W_A/\norm{W_A}_2$ and $\widehat W_B=W_B/\norm{W_B}_2$, then a fixed factor step size $\rho>0$ gives
+Fix $P$, $Q$, and the product gradient $G$, and let
+$\widehat W_A=W_A/\norm{W_A}_2$ and $\widehat W_B=W_B/\norm{W_B}_2$ be the
+normalized directions from \eqref{eq:factor-directions}. For $c>0$, rescale the
+factors by
 \[
-U_c
-=
--\rho\left(cB\widehat W_A+c^{-1}\widehat W_BA\right).
+  B_c=cB,\qquad A_c=c^{-1}A,
 \]
-If either $B\widehat W_A\ne0$ or $\widehat W_BA\ne0$, then
-$\sup_{c>0}\norm{U_c}_2=\infty$.
+which leaves the product fixed, $B_cA_c=BA$. These normalized directions are
+invariant under the rescaling, so a common factor step size $\rho>0$ gives the
+first-order merged update
+\[
+  U_c=-\rho\bigl(cB\,\widehat W_A+c^{-1}\widehat W_B A\bigr).
+\]
+If $B\widehat W_A\ne0$ or $\widehat W_B A\ne0$, then $\sup_{c>0}\norm{U_c}_2=\infty$.
 \end{lemma}
 
 \begin{proof}
-Under the rescaling, $G_{A,c}=B_c^\top G=cG_A$ and
-$C_{A,c}=B_c^\top PB_c=c^2C_A$, so the polar argument defining $W_A$ is unchanged and $W_{A,c}=c^{-1}W_A$. Hence $W_{A,c}/\norm{W_{A,c}}_2=W_A/\norm{W_A}_2$. Similarly, $G_{B,c}=GA_c^\top=c^{-1}G_B$ and $C_{B,c}=A_cQA_c^\top=c^{-2}C_B$, so $W_{B,c}=cW_B$ and the normalized $B$ direction is also unchanged. Therefore the fixed-step-size first-order update is the displayed $U_c$. If $B\widehat W_A\ne0$, then $\norm{U_c}_2/c\to\rho\norm{B\widehat W_A}_2$ as $c\to\infty$. If $B\widehat W_A=0$ but $\widehat W_BA\ne0$, then $c\norm{U_c}_2\to\rho\norm{\widehat W_BA}_2$ as $c\to0$. In either case the supremum is infinite.
+\emph{The normalized directions are gauge-invariant.} Under the rescaling, the
+$A$-block factor gradient and contracted curvature scale as
+\[
+  G_{A,c}=B_c^\top G=c\,G_A,\qquad
+  C_{A,c}=B_c^\top P B_c=c^2C_A,
+\]
+so the polar argument in \eqref{eq:factor-directions} is unchanged,
+\[
+  C_{A,c}^{-1/2}G_{A,c}\,Q^{-1/2}=C_A^{-1/2}G_A\,Q^{-1/2}.
+\]
+Hence $W_{A,c}=c^{-1}W_A$, and normalizing removes the scalar:
+$\widehat W_{A,c}=\widehat W_A$. Symmetrically,
+\[
+  G_{B,c}=G A_c^\top=c^{-1}G_B,\qquad
+  C_{B,c}=A_cQA_c^\top=c^{-2}C_B,
+\]
+give $W_{B,c}=cW_B$ and $\widehat W_{B,c}=\widehat W_B$. With both directions
+fixed, the merged update is the stated $U_c$.
+
+\emph{The merged update is unbounded.} The two terms of $U_c$ scale oppositely
+in $c$:
+\[
+  \frac{\norm{U_c}_2}{c}\to\rho\norm{B\widehat W_A}_2\ \ (c\to\infty),
+  \qquad
+  c\,\norm{U_c}_2\to\rho\norm{\widehat W_B A}_2\ \ (c\to0).
+\]
+If $B\widehat W_A\ne0$, the first limit forces $\norm{U_c}_2\to\infty$ as
+$c\to\infty$; otherwise, if $\widehat W_B A\ne0$, the second forces
+$\norm{U_c}_2\to\infty$ as $c\to0$. In either case $\sup_{c>0}\norm{U_c}_2=\infty$.
 \end{proof}
 
 
