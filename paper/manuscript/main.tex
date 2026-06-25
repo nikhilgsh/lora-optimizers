@@ -471,7 +471,7 @@ The main comparisons finetune OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:method}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Adam} \cite{adam} --- our baseline, applied independently to the two factors $A$ and $B$.
-  \item \textbf{Muon} \cite{muon} --- the Muon update~\eqref{e-gen-spectral-lmo-update} (with $L=I_{d_{\mathrm{out}}}$, $R=I_{d_{\mathrm{in}}}$) applied independently to each factor.
+  \item \textbf{Muon} \cite{muon} --- the Muon update~\eqref{eq:lmo} applied independently to each factor.
   \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to momentum in the product space.
 \end{itemize}
 
