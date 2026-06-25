@@ -158,7 +158,7 @@ B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-of rank \(r\) with scaling \(\alpha\). To simplify the derivation, we suppress the scaling \(\alpha/r\) so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn factors $A, B$ that solve
+of rank \(r\) with scaling \(\alpha\). To simplify the derivation, we suppress the scaling \(\alpha/r\) so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn factors $A$ and $B$ that solve
 \[
 \begin{array}{ll}
 \underset{A, B}{\mbox{minimize}}&
@@ -200,7 +200,9 @@ To be conservative with respect to every activation, we enforce that no single a
 \begin{equation}\label{eq:loss-diff}
      \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
-This would ensure stable training with no spikes or jumps in the loss. \nikhil{is this really true? because on a disjoint batch the loss might spike?} But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
+This would ensure stable training with no spikes or jumps in the loss. \nikhil{is this really true? because on a disjoint batch the loss might spike?}
+\rob{But on the next batch, we would again enforce this for that batch. So we would never observe a significant spike in the loss, if we could actually implement the above.}
+But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
 \[  
 \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \langle G_i, \Delta W \rangle. 
 \]
@@ -281,8 +283,8 @@ Then problem~\eqref{eq:polorafull-hard} can be re-written as
 \label{eq:polorafull}
 \end{equation}
 where $\tilde\tau = \frac{\tau}{\sqrt{n}}$.
-This problem can be cast as an instance of the following LMO.
-\begin{restatable}[Generalized spectral-norm LMO]{lemma}{GeneralLmoUpdate}
+This problem can be cast as an instance of the following Preconditioned LMO.
+\begin{restatable}[Preconditioned spectral-norm LMO]{lemma}{GeneralLmoUpdate}
 \label{lem:whitened-spectral-lmo}
 Let $L$ and $R$ be symmetric positive definite. Then
 \begin{equation}\label{e-gen-spectral-lmo-update}
@@ -304,20 +306,19 @@ Applying the lemma above with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq
     \Delta W =  -\tilde \tau P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
 
-\rob{This far}
 
 \paragraph{Direction.}
 So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt this update to LoRA~\eqref{eq:lora}, computing its \emph{direction} and its \emph{magnitude} separately. The spectral LMO gives the direction, and we then set the magnitude by bounding the merged update $\Delta W$ in spectral norm. If we update LoRA factors according to
 \[
 A \leftarrow A + \Delta A,
 \qquad
-B \leftarrow B + \Delta B.
+B \leftarrow B + \Delta B,
 \]
-Then the first-order approximation of the total update is
+then the first-order approximation of the total update is
 \[
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A.
 \]
-If we replace $\Delta W$ in \eqref{eq:polorafull} with its approximation above then we get the problem
+If we replace $\Delta W$ in \eqref{eq:polorafull} with the approximation above then we get the problem
 \begin{equation}
     \begin{array}{ll}
     \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
@@ -373,13 +374,13 @@ C_A = B^\top P B,
 C_B = A Q A^\top .
 \label{eq:ours-closure}
 \end{equation}
-By definition of the spectral norm, these collapse the two constraints in \eqref{eq:decoupled-direction-lmo} to
-\[
+By definition of the spectral norm, and using the above definitions of $C_A$ and $C_B$,  the left hand side of the two constraints in \eqref{eq:decoupled-direction-lmo} can be re-written as
+\begin{equation} \label{eq:collapse-constraint}
 \norm{P^{1/2}B\Delta A Q^{1/2}}_2=\norm{C_A^{1/2}\Delta A Q^{1/2}}_2,
 \qquad
 \norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2 .
-\]
-Each is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ constraint and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ constraint. The two minimizers are $-\tau_A W_A$ and $-\tau_B W_B$, where
+\end{equation}
+Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo} it is now clear that each of the two subproblems is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ subproblem and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ subproblem. Thus the two minimizers are $-\tau_A W_A$ and $-\tau_B W_B$, where
 \begin{equation}
   \begin{aligned}
   W_A &=
@@ -393,10 +394,17 @@ Each is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},
   \end{aligned}
   \label{eq:factor-directions}
 \end{equation}
-The LMO thus fixes only the directions $W_A$ and $W_B$. The budgets $\tau_A$ and $\tau_B$ merely rescale them, and we set the magnitude next.
+The LMO thus fixes only the directions $W_A$ and $W_B$. 
+Next we determine how to scale the magnitude of these two updates by choosing $\tau_A$ and $\tau_B$.
 
+\rob{Awkward that we introduce $\tau$ earlier on, then ask that $\tau_A + \tau _B \leq \tau$, then completely ignore this.}
 \paragraph{Magnitude.}
-It remains to choose the step magnitude. Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (\Cref{lem:factor-radius-gauge}). We instead set the magnitude by bounding the first-order merged update $\Delta W$ in spectral norm with the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+%\rob{This commented out text is not clear enough. I think it add more confusion}
+% It remains to choose the step magnitude. 
+% Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. 
+% Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (\Cref{lem:factor-radius-gauge}).
+We will now set the magnitude for updating each factor with two constraints in mind: our first constraint is that the linear approximation of the total update $\Delta W$ is bounded in  spectral norm by a user specified learning rate $\eta$; our second constraint is that the update for each factor $\Delta A$ and $\Delta B$ have the same magnitude in spectral norm.
+By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
 \approx
@@ -407,6 +415,7 @@ It remains to choose the step magnitude. Using the LMO budgets $\tau_A$ and $\ta
 \norm{A}_2\norm{\Delta B}_2 .
 \label{eq:ours-prodcap}
 \end{equation}
+
 Treating $A$ and $B$ symmetrically, we use a single step size $\rho$ for both factors, setting $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Choosing
 \begin{equation}
 \rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
@@ -571,10 +580,7 @@ for a dense weight, producing an update equal to the polar factor of the momentu
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such an estimate to
-whiten the gradient before the polar step, yielding a curvature-aware spectral update
-with a Shampoo curvature metric (\Cref{app:related-spectral}). In contrast,
-\methodname{} derives its metric from first principles, by requiring that no single
-input in the batch change the loss too much. 
+whiten the gradient before a polar step (\Cref{app:related-spectral}). \methodname{} similarly uses an update which applies a polar step to a whitened gradient, however the update is derived by requiring that no single input in the batch change the loss too much. Furthermore, \methodname{} adapts this to LoRA training and adds magnitude control which allows for efficient training without the need for learning rate grafting \cite{shi2023distributed, mousse}.
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
@@ -584,12 +590,12 @@ removes the basis dependence with an adaptive preconditioner~\cite{lorarite}, wh
 optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMuon and
 LoRA-Muon derive the invariant update from a spectral-norm
 LMO~\cite{imuon,loramuon}. As discussed in \Cref{app:memoryless}, in their momentum-free forms the LoRA-RITE, LoRA-Muon,
-and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}).
+and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}) which leads us to believe that this invariance is not crucial.
 
 
 \paragraph{Magnitude control for low-rank products.}
-The LMO step \eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$
-but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or
+The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$
+but does not bound the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or
 $B$ has small singular values. Spectron controls this in low-rank pretraining, rescaling both
 steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$ (\Cref{app:related-spectral}). QuacK
 controls it in attention, scaling the query and key learning rates by the inverse norm of the
