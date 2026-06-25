@@ -420,7 +420,7 @@ ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \]
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
-Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We estimate the spectral norms by power iteration (\Cref{alg:smax}) and use damping in the curvature inverse square roots (\Cref{app:damping}). For further tractability, we restrict matrices 
+Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We compute the matrix sign and inverse square roots by Gram Newton--Schulz iterations (\Cref{app:gramns}), estimate the spectral norms by power iteration (\Cref{alg:smax}), and use damping in the curvature inverse square roots (\Cref{app:damping}). For further tractability, we restrict matrices 
 $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}. To estimate the diagonal factors $P$ and $Q$ we apply KL-Shampoo's \cite{klshampoo}
 coupled second moment equations (\Cref{app:matnormal}).
 
@@ -1157,7 +1157,10 @@ dense gradient (their Table~2 lists this diagonal Kronecker form as moment match
 
 
 
-\section{Spectral-Norm Estimation}
+\section{Numerical Primitives for the Step}
+\label{app:primitives}
+
+\subsection{Spectral-Norm Estimation}
 \label{app:smax}
 \Cref{alg:smax} estimates every spectral norm $\norm{\cdot}_2$ in \Cref{alg:ours}. The floor at the larger row/column $\ell_2$ norm (both lower-bound $\smax$) guards against under-estimation: a cold or stale power iteration can under-estimate $\smax$, and an under-estimate at the rescale $W/\norm{W}_2$ inflates the step past $\rho$ and can diverge.
 
@@ -1181,7 +1184,7 @@ dense gradient (their Table~2 lists this diagonal Kronecker form as moment match
 \end{algorithmic}
 \end{algorithm}
 
-\section{Matrix-Sign and Inverse-Sqrt via Gram Newton--Schulz}
+\subsection{Matrix-Sign and Inverse-Sqrt via Gram Newton--Schulz}
 \label{app:gramns}
 Both spectral primitives of \Cref{alg:ours} --- the matrix sign $\polar(\cdot)$ (the
 orthogonal polar factor, \Cref{sec:method}) and the curvature inverse-sqrt $C^{-1/2}$ ---
@@ -1228,7 +1231,7 @@ Production uses $K{=}8$ iterations.
 \end{algorithmic}
 \end{algorithm}
 
-\section{Relative Damping}
+\subsection{Relative Damping}
 \label{app:damping}
 Each curvature inverse-sqrt in \Cref{alg:ours} is relative-damped: for a curvature factor $X$ with top eigenvalue $\lambda_{\max}$,
 \begin{equation*}
