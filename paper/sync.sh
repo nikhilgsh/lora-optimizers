@@ -4,8 +4,9 @@
 # directly in the Overleaf project, a pull grabs the editor's edits. There is
 # no manual sync step on the Overleaf side.
 #
-#   ./paper/sync.sh push ["commit message"]   # local paper/manuscript -> Overleaf (direct)
-#   ./paper/sync.sh pull                       # Overleaf editor edits   -> local paper/manuscript
+#   ./paper/sync.sh push ["commit message"]    # local paper/manuscript -> Overleaf (direct)
+#   ./paper/sync.sh pull                        # Overleaf editor edits   -> local paper/manuscript
+#   ./paper/sync.sh publish ["commit message"]  # push HEAD to origin + Overleaf in one call
 #
 # WHY NOT `git subtree`:
 #   lora-paper's history was created by Overleaf's GitHub bridge, not by
@@ -121,8 +122,24 @@ do_pull() {
   fi
 }
 
+do_publish() {
+  local msg="${1:-}"
+  # publish ships HEAD:$PREFIX (like push), so refuse if the prefix has
+  # uncommitted edits that would be silently left behind.
+  if [ -n "$(git status --porcelain -- "$PREFIX")" ]; then
+    echo "refusing to publish: $PREFIX has uncommitted changes (publish ships HEAD:$PREFIX)."
+    echo "Commit them first:  git add $PREFIX && git commit"
+    exit 1
+  fi
+  echo "==> push $BRANCH -> origin (GitHub)"
+  git push origin "$BRANCH"
+  echo "==> push $PREFIX -> $REMOTE (Overleaf)"
+  do_push "$msg"   # refuses with pull-first guidance if Overleaf advanced; re-run publish after pull+commit
+}
+
 case "${1:-}" in
-  push) shift; do_push "${1:-}" ;;
-  pull) do_pull ;;
-  *)    echo "usage: $0 {push [\"commit message\"]|pull}   (run from anywhere in the lora repo)"; exit 1 ;;
+  push)    shift; do_push "${1:-}" ;;
+  pull)    do_pull ;;
+  publish) shift; do_publish "${1:-}" ;;
+  *)       echo "usage: $0 {push [\"msg\"]|pull|publish [\"msg\"]}   (run from anywhere in the lora repo)"; exit 1 ;;
 esac

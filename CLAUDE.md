@@ -51,7 +51,7 @@ Default local conda environment: `ffcv-pl`. Always set `WANDB_MODE=offline` for 
 
 The paper lives in `paper/manuscript/` (main file `main.tex`), synced to the Overleaf project's git bridge via the `overleaf` remote (`https://git.overleaf.com/<id>`) — direct, no GitHub middleman. A normal `git push origin` does **NOT** update Overleaf. `./paper/sync.sh` is **not** `git subtree`; it syncs the `paper/manuscript/` tree directly with `git commit-tree`/`git merge-tree` (see the script header).
 
-- **Commit manuscript edits first** — `./paper/sync.sh push` ships `HEAD:paper/manuscript` (the committed tree), not the working tree. Then `git push origin main` separately.
+- **Commit manuscript edits first** — `./paper/sync.sh push` ships `HEAD:paper/manuscript` (the committed tree), not the working tree. Then `git push origin main` separately, or use **`./paper/sync.sh publish`** to do both pushes in one call (it refuses if `paper/manuscript/` is dirty, or — like `push` — if Overleaf advanced).
 - `push` refuses if Overleaf advanced since the last sync (`refs/sync/overleaf-main` ≠ `overleaf/main`) — run **`./paper/sync.sh pull`** first.
 - `pull` does a 3-way merge and **overwrites the working `paper/manuscript/` tree** (no `git merge`, so no `MERGE_HEAD`; conflicts are textual markers only) and advances the sync ref to the Overleaf tip. You **must** then `git add paper/manuscript && git commit` the merged tree — otherwise the next `push` reverts Overleaf's edits.
 - Compile from `paper/manuscript/` with `conda run -n texlive tectonic --keep-intermediates --synctex main.tex`. Figure PDFs under `figs/` are tracked (Overleaf needs them); `main.pdf` and LaTeX build artifacts are gitignored.
