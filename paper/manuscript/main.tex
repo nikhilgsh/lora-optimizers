@@ -325,24 +325,23 @@ If we replace $\Delta W$ in \eqref{eq:polorafull} with the approximation above t
     \left\langle G, B\Delta A+\Delta B A \right\rangle \\[2pt]
     \mbox{subject to} &
     \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
-    \le \tau.
+    \le \tilde\tau.
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-To make the constraint tractable, we use subadditivity of the spectral norm 
+The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
 \[
 \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
 \leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
-+ \norm{P^{1/2} \Delta B AQ^{1/2}}_2,
++ \norm{P^{1/2} \Delta B A Q^{1/2}}_2,
 \]
-and impose separate budgets 
+so bounding each factor step bounds the merged update. We therefore impose one spectral-norm constraint per factor,
 \[
 \norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau_A,
 \qquad
-\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B,
-\qquad
-\tau_A + \tau_B \leq \tilde{\tau}.
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B ,
 \]
+which splits the problem into two independent subproblems, one per factor.
 If we denote the factor gradients as 
 \begin{equation}\label{e-grad-wrt-factors}
 G_A=B^\top G, \qquad G_B=GA^\top,
@@ -394,8 +393,7 @@ Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo} it is
   \end{aligned}
   \label{eq:factor-directions}
 \end{equation}
-The LMO thus fixes only the directions $W_A$ and $W_B$. 
-Next we determine how to scale the magnitude of these two updates by choosing $\tau_A$ and $\tau_B$.
+The minimizers scale linearly with the budgets, $\Delta A=-\tau_A W_A$ and $\Delta B=-\tau_B W_B$, so $\tau_A$ and $\tau_B$ set only the magnitude while the directions $W_A$ and $W_B$ are fixed independently of them. We therefore leave the budgets free and set the step magnitude directly through the learning rate $\eta$.
 
 \rob{Awkward that we introduce $\tau$ earlier on, then ask that $\tau_A + \tau _B \leq \tau$, then completely ignore this.}
 \paragraph{Magnitude.}
