@@ -1100,10 +1100,11 @@ Note that the rescaling
 $(P,Q)\mapsto(cP,c^{-1}Q)$ leaves  $Q\otimes P$ 
 unchanged.
 
-\paragraph{Conditional KL equations.}
-Hold $C_A\succ0$ fixed and fit the second moment of $G_A$ by
+\paragraph{Divergence-based projection.}
+We fix $C_A\succ0$ and fit the second moment of $G_A$ by
 $Q\otimes C_A$, where $Q=\operatorname{Diag}(q)$. As in \cite{klshampoo}, 
-we get $q$ using divergence-based projection over Kronecker-structured 
+we get $q$ using by projecting the second moment of $G_A$ w.r.t. 
+KL divergence onto Kronecker-structured 
 symmetric positive definite matrices
 \[
  \begin{array}{ll}
@@ -1148,9 +1149,9 @@ $\operatorname{tr}(C_A^{-1}C_A)Q=rQ$; the second is identical. This proves the
 factor $1/r$ in \eqref{eq:diag-kron-population}.
 
 
-XXX will edit below XXX
 \paragraph{Online update.}
-In practice we use exponentially moving average (EMA) with parameter $\beta_2$ to get metric update.
+We track the population equations \eqref{eq:diag-kron-population} by an
+exponential moving average (EMA) with parameter $\beta_2$. 
 Specifically, 
 update \eqref{eq:diag-kron-population} becomes
 \begin{equation}
@@ -1159,14 +1160,8 @@ update \eqref{eq:diag-kron-population} becomes
   \label{eq:ours-klcoupling}
 \end{equation}
 as outlined in \Cref{alg:ours}.
-
-
-\paragraph{Relation to KL-Shampoo.} The alternation --- each diagonal estimated under the
-partner's current value, one EMA step per iteration --- is the coupled two-sided
-estimator of \cite{klshampoo}, run on the factor gradients $G_A,G_B$ rather than the
-dense gradient (their Table~2 lists this diagonal Kronecker form as moment matching).
-
-
+Further, by \eqref{eq:diag-kron-unbiased}
+if the Kronecker model is exact and XXX
 
 \section{Numerical Primitives for the Step}
 \label{app:primitives}
