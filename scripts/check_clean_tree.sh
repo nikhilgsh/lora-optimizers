@@ -26,6 +26,18 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$REPO_DIR"
 
+# The global watcher (slurm-pending-watchd) runs submit-pending -> this script in
+# a conda-less systemd environment where bare `python` is not on PATH, so every
+# cycle died at "python: command not found" and was misread as a dirty tree.
+# Activate the project env when python is absent. No-op when called from an
+# already-active env (e.g. slurm_scripts/submit.sh). set +u around activate:
+# conda-forge activate.d scripts reference unbound vars and abort under set -u.
+if ! command -v python >/dev/null 2>&1; then
+    set +u
+    source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl
+    set -u
+fi
+
 # Sanity-check pending sbatches before the load-bearing-cleanliness check:
 # refuse if any sbatch declares --ntasks=N while its disBatch task block
 # generates a different number of tasks. Catches the "inherited ntasks from
