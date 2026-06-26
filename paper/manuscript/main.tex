@@ -177,11 +177,8 @@ Now using the above and~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo} w
   \end{aligned}
   \label{eq:decoupled-lora-lmo} 
 \end{equation}
-where $G_A := \nabla_A \mathcal{L}(W_0+BA) = B^\top G$ a
-let $G=\nabla_W \mathcal{L}(W) \big |_{W=BA}$ be the product
-gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
-and $S_B=AA^\top$ and
-$S_A=B^\top B$ be the $r\times r$ Gram matrices.
+where we used that $G_A := \nabla_A \mathcal{L}(W_0+BA) = B^\top G$ and $G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top$ are the factor gradients.
+
 The decoupled factor step is the solution of the two  subproblems
 equivalently 
 \begin{align} 
