@@ -168,7 +168,26 @@ If we now use this linear approximation~\eqref{eq:DeltaW-lin} for $\Delta W$ in~
   \le \tau.\]
 This constraint couples the two unknowns $\Delta A $ and $\Delta B.$ To decouple these to unknowns, we make use of the following upper bound
 \[  \left\| B \Delta A + \Delta B A   \right\| \; \leq\ ;  \left\| B \Delta A \right\| + \left\|\Delta B A   \right\| .\]
-Now using the above and~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo} we arrive at the following \emph{product spectral descent met}
+Now using the above and~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo} we arrive at the following \emph{product spectral descent} method:
+
+let $G=\nabla_W \mathcal{L}(W) \big |_{W=BA}$ be the product
+gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
+and $S_B=AA^\top$ and
+$S_A=B^\top B$ be the $r\times r$ Gram matrices.
+The decoupled factor step is the solution of the two  subproblems
+\begin{equation}
+  \begin{aligned}
+  \Delta A &\in    \argmin_{\Delta A}~ \langle G_A, \Delta A \rangle \quad \textnormal{subject to}\quad
+\norm{B \Delta A}_2\le\eta \\
+\Delta B &\in   \argmin_{\Delta B}~ \langle G_B,  \Delta B \rangle \quad \textnormal{subject to}\quad  \norm{\Delta B A}_2\le\eta,
+  \end{aligned}
+  \label{eq:decoupled-lora-lmo-app} 
+\end{equation}
+equivalently 
+\begin{align} 
+    \Delta A &=-\eta\,S_A^{-1/2}\polar(S_A^{-1/2}G_A) \nonumber \\
+    \Delta B &=-\eta\,\polar(G_BS_B^{-1/2})S_B^{-1/2}   \label{eq:decoupled-lora-lmo-closed}
+\end{align}
 
 \rob{Pieces of introduction I found}
 \paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
@@ -527,7 +546,6 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ \\
 \label{sec:exp-ablation}
 
 \methodname{} can be decomposed into three components
-  % \label{eq:decoupled-lora-lmo} \label{app:memoryless}
 % from the decoupled  LMO step of \eqref{eq:decoupled-lora-lmo}:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
 \item \textbf{Spectral LMO} --- the use of LMO in the spectral norm.  
@@ -988,7 +1006,7 @@ The decoupled factor step is the solution of the two  subproblems
 \norm{B \Delta A}_2\le\eta \\
 \Delta B &\in   \argmin_{\Delta B}~ \langle G_B,  \Delta B \rangle \quad \textnormal{subject to}\quad  \norm{\Delta B A}_2\le\eta,
   \end{aligned}
-  \label{eq:decoupled-lora-lmo} 
+  \label{eq:decoupled-lora-lmo-app} 
 \end{equation}
 equivalently 
 \begin{align} 
@@ -1064,7 +1082,7 @@ Plugging in $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top
 \end{equation*}
 which is different from the decoupled factor step. The argument for $\Delta A$ is symmetric.
 So switching momentum off does not recover \eqref{eq:decoupled-lora-lmo}; while
-\eqref{eq:decoupled-lora-lmo} is the
+\eqref{eq:decoupled-lora-lmo-app} is the
 memoryless limit of iMuon's theory (Corollary~4.1), 
 it is not of its implemented optimizer.
 
@@ -1159,9 +1177,10 @@ unchanged.
 \paragraph{Divergence-based projection.}
 We fix $C_A\succ0$ and fit the second moment of $G_A$ by
 $Q\otimes C_A$, where $Q=\operatorname{Diag}(q)$. As in \cite{klshampoo}, 
-we get $q$ using by projecting the second moment of $G_A$ w.r.t. 
-KL divergence onto Kronecker-structured 
+we get $q$ by projecting the second moment of $G_A$  onto Kronecker-structured 
 symmetric positive definite matrices
+w.r.t. 
+KL divergence
 \[
  \begin{array}{ll}
   \underset{q}{\mathrm{minimize}} &
@@ -1173,7 +1192,7 @@ symmetric positive definite matrices
     \right)
   \end{array}
 \]
-The objective is strictly convex in $\log q$ and is coordinatewise separable. Applying the
+The objective above is strictly convex in $\log q$ and is coordinatewise separable. Applying the
 same calculation to $G_B$ gives
 \begin{equation}
 \begin{aligned}
@@ -1420,7 +1439,7 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 We use relative damping for each inverse square root computation in \Cref{alg:ours}.
 On the normalized spectrum, the damping parameter $\delta$ has a fixed
 meaning.  If $X = U\operatorname{diag}(\lambda_i)U^\top$ is the eigendecomposition of $X$,
-then
+then inverse square root of $X$ with relative damping is defined as
 \[
     H_\delta(X)
     =
