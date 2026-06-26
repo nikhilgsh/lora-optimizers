@@ -163,8 +163,10 @@ Updating the factors has the following affect on the total update
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A ,
 \end{equation}
 where in the last approximation we have dropped the only nonlinear term $\Delta B\Delta A$.
-If we now use this linear approximation 
-
+If we now use this linear approximation~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo}, the spectral constraint would be given by
+\[  \left\| B \Delta A + \Delta B A   \right\|
+  \le \tau.\]
+This constraint couples the two unknowns $\Delta A $ and $\Delta B$
 \rob{Pieces of introduction I found}
 \paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
@@ -1409,6 +1411,68 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 \Comment{used for $\polar(\cdot)$, or post-scaled for $C^{-1/2}$}
 \end{algorithmic}
 \end{algorithm}
+
+
+\paragraph{Relative damping.}
+We use relative damping for each inverse square root computation in \Cref{alg:ours}.
+On the normalized spectrum, the damping parameter $\delta$ has a fixed
+meaning.  If $X = U\operatorname{diag}(\lambda_i)U^\top$ is the eigendecomposition of $X$,
+then
+\[
+    H_\delta(X)
+    =
+    U\operatorname{diag}
+    \left(
+        \left(\frac{\lambda_i}{\lambda_{\max}}+\delta\right)^{-1/2}
+    \right)
+    U^\top .
+\]
+The damped eigenvalues lie in
+\[
+    \frac{\lambda_i}{\lambda_{\max}}+\delta
+    \in [\delta,1+\delta]
+    ~\implies~
+    \kappa\left(
+        \frac{X}{\lambda_{\max}}+\delta I
+    \right)
+    \leq
+    \frac{1+\delta}{\delta}.
+\]
+Equivalently,
+\[
+    \|H_\delta(X)\|_2 \leq \delta^{-1/2}.
+\]
+Thus $\delta$  prevents directions with
+nearly zero curvature from being amplified without bound.
+
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+\item \textbf{Relation to ordinary damping.}
+Since
+\[
+    \frac{X}{\lambda_{\max}}+\delta I
+    =
+    \frac{1}{\lambda_{\max}}
+    \left(X+\delta\lambda_{\max}I\right),
+\]
+we have
+\[
+    H_\delta(X)
+    =
+    \lambda_{\max}^{1/2}
+    \left(X+\delta\lambda_{\max}I\right)^{-1/2}.
+\]
+Thus relative damping is ordinary damping with floor
+$\delta\lambda_{\max}$, up to a global scalar.  That scalar is harmless
+because the subsequent polar and spectral-normalization steps are
+scale-invariant.
+
+\item \textbf{Warmup.}
+At the beginning of training, an EMA curvature factor may still be zero.
+When $\lambda_{\max}=0$, we set $H_\delta(X)=I$.  The corresponding
+side is then unpreconditioned, so the update reduces to the plain
+momentum direction until the curvature estimate becomes nonzero.
+\end{itemize}
+
 
 \subsection{Relative Damping}
 \label{app:damping}
