@@ -14,7 +14,7 @@ AlgoPerf-style performance profile across the 16 (model, dataset, rank) workload
 | canonical variant | coverage | robustness_score | mean ratio-to-best |
 |---|---|---|---|
 | `AdamW` | 16/16 | 0.823 | 1.508 |
-| `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8` | 9/16 | 0.990 | 1.016 |
+| `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8` | 10/16 | 0.988 | 1.021 |
 | `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95` | 7/16 | 0.993 | 1.008 |
 | `chord-tight ns=5 k=1 (abs=1e-6)` | 7/16 | 0.973 | 1.063 |
 | `chord-tight ns=8 k=1 (abs=1e-6)` | 7/16 | 0.940 | 1.169 |
@@ -105,6 +105,7 @@ AdamW speed target (best-lr final loss): **0.3964**  ·  horizon 9000 steps
 | KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.78× | 1.29× |
 | KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3766 | 1.77× | 1.42× |
 | KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3773 | 1.76× | 1.41× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 3e-02 | 0.3780 | 1.74× | 1.50× |
 | diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.73× | 1.37× |
 | chord-tight ns=8 k=1 (abs=1e-6) | 3e-02 | 0.3788 | 1.60× | 1.50× |
 | chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.3820 | 1.55× | 1.40× |

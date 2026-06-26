@@ -103,50 +103,6 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-LoRA \cite{lora} freezes the pretrained weight $W_0$ and trains a rank-$r$ update
-$\DW=(\alpha/r)\,BA$, $A\in\R^{r\times d_{\mathrm{in}}}$,
-$B\in\R^{d_{\mathrm{out}}\times r}$. The optimizer that trains it is the
-under-examined lever; practice defaults to Adam on the factors $A,B$. We introduce
-\methodname{}, a spectral-polar LoRA optimizer that reaches Adam's eval loss in
-$1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
-
-\rob{Pieces of introduction I found, mostly ilegible}
-\paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
-\begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second moment matching \cite{klshampoo}; \eqref{eq:ours-klcoupling}).
-  \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step \eqref{eq:factor-directions}.
-  \item[(C)] \emph{Magnitude.} Discard the LMO budget and bound the merged update in spectral norm by $\eta$~\eqref{eq:ours-prodcap}.
-\end{itemize}
-Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
-\rob{end pieces of introduction}
-
-
-\paragraph{Contributions.}
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \PLACEHOLDER{A fast, cheap LoRA optimizer.}
-  \item \PLACEHOLDER{Operator-norm magnitude control; stable lr across rank.}
-  \item \PLACEHOLDER{Ablations: which component carries the gain.}
-  \item \PLACEHOLDER{A LoRA-optimizer speedup benchmark.}
-\end{itemize}
-
-
-\rob{Pieces of contributions I found}
-\emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
-
- \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\Delta A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor spectral-norm bound.
-
- \rob{end pieces of contributions}
-% ===========================================================================
-
-\section{Spectral Geometry with LoRA}
-\label{sec:method}
-% NOT A PURE LMO: the metric P,Q is a coupled diagonal KL flip-flop (estimation,
-% not an LMO), and the MAGNITUDE is the operator-norm pin rho=eta/(smax A+smax B)
-% (a separate rule, not the LMO budget tau). Keep those three ingredients distinct.
-% Prose is terse here by design (author expands); the equations are the content.
-% Citation keys (verify in references.bib): kang_specgf, imuon, spectron,
-% polarexpress, soap, mua, tilde_csd (compositional steepest descent -- no arXiv).
-\label{sec:method-ours}
 Consider a single linear layer with frozen pretrained weight
 $
 W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
@@ -158,7 +114,7 @@ B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-of rank \(r\) with scaling \(\alpha\). To simplify the derivation, we suppress the scaling \(\alpha/r\) so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn factors $A$ and $B$ that solve
+of rank $r$ with scaling $\alpha$. To simplify the derivation, we suppress the scaling $\alpha/r$ so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn factors $A$ and $B$ that solve
 \[
 \begin{array}{ll}
 \underset{A, B}{\mbox{minimize}}&
@@ -193,15 +149,54 @@ To define a method using~\eqref{eq:lmo} we only need to choose a norm. The key i
 \]
 where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
 The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the spectral norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
+ 
+ We introduce
+\methodname{}, a spectral-polar LoRA optimizer that reaches Adam's eval loss in
+$1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
 
-\paragraph{A new linear minimization oracle.} Inspired by this conservative view of Muon and the spectral norm, we develop a new pseudo-norm that is conservative with respect to a batch of incoming activations. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation (as opposed to an input).
+\rob{Pieces of introduction I found}
+\paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
+\begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
+  \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second moment matching \cite{klshampoo}; \eqref{eq:ours-klcoupling}).
+  \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step \eqref{eq:factor-directions}.
+  \item[(C)] \emph{Magnitude.} Discard the LMO budget and bound the merged update in spectral norm by $\eta$~\eqref{eq:ours-prodcap}.
+\end{itemize}
+Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
+\rob{end pieces of introduction}
+
+
+\paragraph{Contributions.}
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \PLACEHOLDER{A fast, cheap LoRA optimizer.}
+  \item \PLACEHOLDER{A sensitivity viewpoint, that results leads to both spectral and preconditioned update?}
+  \item \PLACEHOLDER{Operator-norm magnitude control; stable lr across rank.}
+  \item \PLACEHOLDER{Ablations: which component carries the gain.}
+  \item \PLACEHOLDER{A LoRA-optimizer speedup benchmark.}
+\end{itemize}
+
+
+\rob{Pieces of contributions I found}
+\emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
+
+ \emph{The gap we close.} The raw factor step is uncontrolled --- $\norm{\Delta A}_2$ scales as $\eta/\sigma_{\min}(B)$ --- with no per-factor spectral-norm bound.
+
+ \rob{end pieces of contributions}
+% ===========================================================================
+
+\section{PoLoRA: Preconditioned Operator norm Lora}
+
+
+
+\label{sec:method}
+
+
+Inspired by the conservative view of Muon and the spectral norm, we develop a new pseudo-norm that is conservative with respect to a batch of incoming activations. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation (as opposed to an input).
 
 To be conservative with respect to every activation, we enforce that no single activation results in a large change in the loss, that is we want
 \begin{equation}\label{eq:loss-diff}
      \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
-This would ensure stable training with no spikes or jumps in the loss. \nikhil{is this really true? because on a disjoint batch the loss might spike?}
-\rob{But on the next batch, we would again enforce this for that batch. So we would never observe a significant spike in the loss, if we could actually implement the above.}
+This would ensure stable training with no spikes or jumps for the current batch loss.  
 But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
 \[  
 \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \langle G_i, \Delta W \rangle. 
@@ -407,7 +402,7 @@ The minimizers scale linearly with the budgets, $\Delta A=-\tau D_A$ and $\Delta
 % It remains to choose the step magnitude. 
 % Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. 
 % Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (\Cref{lem:factor-radius-gauge}).
-We now choose the update magnitudes for the two factors subject to two constraints. First, the linearized total update $\Delta W$ should have spectral norm at most the user-specified learning rate $\eta$. Second, the factor updates $\Delta A$ and $\Delta B$ should have equal spectral-norm magnitude.
+We now choose the update magnitudes for the two factors subject to two constraints. First, the linearized total update $\Delta W$ should have a spectral norm bounded by a user-specified learning rate $\eta$. Second, the factor updates $\Delta A$ and $\Delta B$ should have equal spectral-norm magnitude.
 
 By the triangle inequality and submultiplicativity,
 \begin{equation}
@@ -466,6 +461,7 @@ coupled second moment equations (\Cref{app:matnormal}).
 \section{Experiments}
 \label{sec:exp}
 
+Here we perform an extensive ablation, comparing \methodname{} to several competitive baselines in~\Cref{sec:exp-main}, investigating which design choices of \methodname{} are responsible for its efficacy in~\Cref{sec:exp-ablation}, and testing sensitivity to changing rank   and finetuning on an out-of-distribution task in~\Cref{sec:exp-taskdep}.
 
 \subsection{Setup}
 \label{sec:exp-setup}
@@ -473,7 +469,7 @@ coupled second moment equations (\Cref{app:matnormal}).
 \paragraph{Comparison.}
 For every model, dataset, and rank, we only vary the optimizer and learning rate. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out eval loss.
 
-The main comparisons finetune OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}), using rank $r=256$ unless stated otherwise. Additional experiments in \Cref{sec:exp-taskdep} vary the rank as well as change the finetuning dataset to a low-resource language. \Cref{app:exp} gives the full experimental configurations.
+The main comparisons finetune OLMo-2-1B~\cite{??}, Llama-3.2-1B~\cite{??}, Qwen2.5-1.5B~\cite{??}, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}), using rank $r=256$ unless stated otherwise. Additional experiments in \Cref{sec:exp-taskdep} vary the rank as well as change the finetuning dataset to a low-resource language. \Cref{app:exp} gives the full experimental configurations.
 
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:method}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
@@ -496,11 +492,11 @@ We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned
   \label{fig:hero}
 \end{figure}
 
-\paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer step's FLOPs are independent of the batch size, while the forward
-and backward passes scale with it (\Cref{app:flops}), so its share of per-step time shrinks
+\paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer step  FLOPs are independent of the batch size, while the forward
+and backward passes scale with batch size (\Cref{app:flops}). Thus the  relative per-step time of the the optimizer shrinks
 as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $3\%$ over Adam on
 all four base models (\Cref{tab:breadth}), and the step-count speedup carries to wall-clock almost
-unchanged.
+unchanged. \rob{This is specific to \methodname{}, right?  It sounds like we are talking about a generic optimizer }
 
 \begin{table}[t]
 \centering\small
@@ -520,12 +516,24 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ \\
 
 \subsection{Component Ablation}
 \label{sec:exp-ablation}
-We perform ablations on Llama-3.2-1B finetuned on math to isolate the effect of the two components that distinguish \methodname{} from the decoupled step of \eqref{eq:decoupled-lora-lmo}:
+
+\methodname{} can be decomposed into three components
+  % \label{eq:decoupled-lora-lmo} \label{app:memoryless}
+% from the decoupled  LMO step of \eqref{eq:decoupled-lora-lmo}:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
+\item \textbf{Spectral LMO} --- the use of LMO in the spectral norm.  
   \item \textbf{Curvature} --- the adaptively estimated diagonal metric $P$ and $Q$ \eqref{eq:ours-klcoupling}.
   \item \textbf{Magnitude} --- the per-factor update rescaling to spectral norm $\rho$ \eqref{eq:ours-rho}.
 \end{itemize}
-Removing both reduces \methodname{} to the decoupled step, which matches Adam in terms of performance. Restoring the curvature metric and then the magnitude rule each recovers about half of \methodname{}'s speedup (\Cref{fig:ablation}, right panel). 
+% \rob{We are always changing the name of this "decoupled set" , "subproblem LMO" ...etc The reader will have no idea what we mean. Let's call it instead baseline iMuon? We also using forward references to ~\eqref{eq:decoupled-lora-lmo}}
+\tanya{the update of iMuon is the followup of Lora-rite, so not sure if we want to call it iMuon}
+\rob{So maybe just mention LoraMuon and LoRA-RITE here? Or introduce a consistent name for this update in the main text. }
+\tanya{iMuon has official implementation and we are using it as a baseline, if we mention lora-rite then why didnt we benchmark against it? we should just call that problem somehow and keep referring to it in the same way}
+\rob{ok, lets chat about this. }
+For the first component, if we switch off preconditioning ($P = I_{\mathrm{out}}$ and  $Q=I_{\mathrm{in}}$) and the magnitude rescaling, then \methodname{} coincides with several recent methods such as LoraMuon, iMuon (baseline something?) and LoRA-RITE (with no momentum), see~\Cref{app:memoryless}.  
+
+We perform ablations on Llama-3.2-1B finetuned on math to isolate the benefit of the two components that distinguish \methodname{} namely the use of curvature and our magnitude, see \Cref{fig:ablation}.
+Removing both  curvature and our magnitude the gains over Adam  are lost, see the  right panel of~\Cref{fig:ablation}. Restoring the curvature and then the magnitude rule each recovers about half of \methodname{}'s speedup (\Cref{fig:ablation}, right panel). 
 
 \begin{figure}[t]
   \centering
@@ -595,9 +603,13 @@ to other initializations. Rank-stabilized LoRA~\cite{rslora} replaces the $\alph
 adapter scale with $\alpha/\sqrt{r}$ to avoid the rank-dependent shrinkage that makes
 high-rank adapters hard to train, and $\mu$A~\cite{mua} studies how these
 hyperparameters should scale with rank to keep the optimal learning rate stable. In
-contrast, \methodname{} changes the update geometry itself, computing factor update
-directions in a curvature-aware metric and scaling them to control the induced change
-in the merged weight.
+contrast, \methodname{} ensures each factor receives an update of equal size in the operator norm, while simultaneously ensuring the total update to the weight is also bounded in operator norm. 
+
+% changes the update geometry itself, computing factor update
+% directions in a curvature-aware metric
+% and 
+% scaling them to control the induced change
+% in the merged weight.
 
 \paragraph{Matrix-aware updates.}
 Recently, optimizers that operate at the matrix level, rather than treating parameters as
@@ -606,8 +618,9 @@ qiu2026hyperparameter, wen2025fantastic}. Muon~\cite{muon} solves the spectral-n
 for a dense weight, producing an update equal to the polar factor of the momentum
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
-Kronecker-factored second moments. Mousse~\cite{mousse} uses such an estimate to
-whiten the gradient before a polar step (\Cref{app:related-spectral}). \methodname{} similarly uses an update which applies a polar step to a whitened gradient, however the update is derived by requiring that no single input in the batch change the loss too much. Furthermore, \methodname{} adapts this to LoRA training and adds magnitude control which allows for efficient training without the need for learning rate grafting \cite{shi2023distributed, mousse}.
+Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
+whiten the gradient before a polar step (\Cref{app:related-spectral}). \methodname{} similarly uses an update which applies a polar step to a whitened gradient, however the update is derived by requiring that
+the loss over every single input in the batch does not increase too much. Furthermore, \methodname{} adapts this to LoRA training and adds magnitude control which allows for efficient training without the need for learning rate grafting \cite{shi2023distributed, mousse}.
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
@@ -620,7 +633,8 @@ LMO~\cite{imuon,loramuon}. As discussed in \Cref{app:memoryless}, in their momen
 and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}) which leads us to believe that this invariance is not crucial.
 
 \paragraph{Magnitude control for low-rank products.}
-The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$, which blow up when $A$ or $B$ has a small singular value. Spectron and QuacK, which have updates different from the LMO, explicitly control the factor steps by scaling them with the factor norms: Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
+The LMO step \eqref{eq:decoupled-lora-lmo} at the core of methods like LoRA-Muon bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when  $A$ or $B$ have small singular values, the updates $\Delta A$ and $\Delta B$ can be very large, which can destabilze training. Spectron~\cite{???} and QuacK~\cite{??}, which are not based on the LMO step~\eqref{eq:decoupled-lora-lmo},  
+explicitly control the factor steps by scaling them with the factor norms: Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
 
 % ===========================================================================
 \section{Conclusion}
@@ -948,43 +962,51 @@ $\eta/s^2$ is then $O(\eta)$, decreasing as $s$ grows.
 \section{Momentum-Free LoRA-RITE, iMuon and LoRA-Muon}
 \label{app:memoryless}
 LoRA-RITE \cite{lorarite}, iMuon \cite{imuon} and LoRA-Muon \cite{loramuon} 
-reduce to the decoupled factor step of
+reduce to the decoupled LMO factor step given in
 \eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed. We show this below.
 
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
 let $G=\nabla_W \mathcal{L}(W) \big |_{W=BA}$ be the product
 gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
-$S_B=AA^\top$ and
+and $S_B=AA^\top$ and
 $S_A=B^\top B$ be the $r\times r$ Gram matrices.
-The decoupled factor step is the solution of the two half-product subproblems
+The decoupled factor step is the solution of the two  subproblems
 \begin{equation}
   \begin{aligned}
   \Delta A &\in    \argmin_{\Delta A}~ \langle G_A, \Delta A \rangle \quad \textnormal{subject to}\quad
 \norm{B \Delta A}_2\le\eta \\
 \Delta B &\in   \argmin_{\Delta B}~ \langle G_B,  \Delta B \rangle \quad \textnormal{subject to}\quad  \norm{\Delta B A}_2\le\eta,
   \end{aligned}
-  \label{eq:decoupled-lora-lmo}
+  \label{eq:decoupled-lora-lmo} 
 \end{equation}
-equivalently $\Delta A=-\eta\,S_A^{-1/2}\polar(S_A^{-1/2}G_A)$ and
-$\Delta B=-\eta\,\polar(G_BS_B^{-1/2})S_B^{-1/2}$.
-We will use the fact that for any matrix $M$ and its reduced SVD $M=U\Sigma V^\top$,
+equivalently 
+\begin{align} 
+    \Delta A &=-\eta\,S_A^{-1/2}\polar(S_A^{-1/2}G_A) \nonumber \\
+    \Delta B &=-\eta\,\polar(G_BS_B^{-1/2})S_B^{-1/2}   \label{eq:decoupled-lora-lmo-closed}
+\end{align}
+We will use the fact that for any matrix $M$ with full row rank, with reduced SVD $M=U\Sigma V^\top$,
 the polar factor equals
 \begin{equation}
-  M(M^\top M)^{-1/2}=UV^\top=\polar(M).
+  % Not true unless we assume full rank
+  M(M^\top M)^{-1/2}=
+  UV^\top=\polar(M).
   \label{eq:polar-id}
 \end{equation}
 
-\paragraph{LoRA-RITE.} LoRA-RITE writes the two factors in the opposite order; we state its
-update directly for our $A,B$. 
-Its Algorithm~1 adds three pieces of memory to a base step:
+\paragraph{LoRA-RITE.} 
+% LoRA-RITE writes the two factors in the opposite order; we state its
+% update directly for our $A,B$.  %% This adds more confusion than clarifies
+LoRA-RITE given in Algorithm~1 in~\cite{lorarite} adds three pieces of memory to a base step:
 1) an EMA first moment w.r.t. parameter $\beta_1$;
 2) an accumulated second moment, transported across the (changing) factor basis each step;
-3) an ``escaped-mass'' floor added to that second moment.
+3) an ``escaped-mass'' floor added to that second moment. 
+\rob{This first part is incomprehensible. Just say "dropping the momentum estimates and their xx trick?" Otherwise we need to explain better}
+
 Dropping all three, we get the authors' momentum-free update (their Eq.~(14)),
 which in our notation becomes
 \[
-  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2},
+  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}, \quad \mbox{where}
   \qquad \widehat G_B:=G_B S_B^{-1/2}.
 \]
 With no accumulation by \eqref{eq:polar-id} the middle factor is a polar factor, so
@@ -992,27 +1014,29 @@ With no accumulation by \eqref{eq:polar-id} the middle factor is a polar factor,
   \Delta B=-\eta \polar(\widehat G_B) S_B^{-1/2}
   =-\eta \polar \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
 \end{equation*}
-the $B$-update of \eqref{eq:decoupled-lora-lmo}; same arguments hold for the $A$-update.
+which is equal to the $B$-update given in~\eqref{eq:decoupled-lora-lmo-closed}. Analogous arguments hold for the $A$-update.
 
 
-\paragraph{iMuon, momentum-free.} iMuon uses our order of factors $BA$. Its fixed-rank
-intrinsic spectral LMO (their Corollary~4.1) maps any ambient matrix
-$H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ to the factor update
+\paragraph{iMuon, momentum-free.}
+% \Rob{We just don't need to tell the reader this}
+% iMuon uses our order of factors $BA$.
+iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which plays the role of the .... \rob{Need something here, like "the signal from the full space?"}
+The update for iMuon
+ (the intrinsic spectral LMO of Corollary~4.1) maps this ambient matrix to the factor updates as follows
 \begin{equation}
-  \Delta B(H)=\polar \big(HA^\top S_A^{-1/2}\big)S_A^{-1/2},\qquad
-  \Delta A(H)=S_B^{-1/2}\polar \big(S_B^{-1/2}B^\top H\big).
+  \Delta B(H) =\polar \big(HA^\top S_A^{-1/2}\big)S_A^{-1/2},\qquad
+  \Delta A(H) =S_B^{-1/2}\polar \big(S_B^{-1/2}B^\top H\big).
   \label{eq:imuon-lmo-ambient}
 \end{equation}
-The base algorithm (Algorithm~1, no momentum) uses the raw gradient $H=G$, so $HA^\top=G_B$ and
-$B^\top H=G_A$, therefore, \eqref{eq:imuon-lmo-ambient} is precisely \eqref{eq:decoupled-lora-lmo}.
+For the base Algorithm 1 in~\cite{imuon} , the ambient matrix is simply the raw gradient $G$, and thus~\eqref{eq:imuon-lmo-ambient} 
+ is again equivalent to \eqref{eq:decoupled-lora-lmo-closed}. Note that our
+% \paragraph{iMuon implementation versus decoupled limit.} 
+ experiments benchmark the official implementation of iMuon optimizer from Appendix K of \cite{imuon}. This
+optimizer should not be identified with the momentum-free decoupled update in \eqref{eq:imuon-lmo-ambient} as stated above.
 
-\paragraph{iMuon implementation versus decoupled limit.}
-Our experiments benchmark the official implementation of iMuon optimizer from Appendix K of \cite{imuon}. This
-optimizer should not be identified with the momentum-free decoupled update in \eqref{eq:decoupled-lora-lmo} as stated below.
-
-\paragraph{iMuon, with momentum.} In the official implementation with momentum (their Appendix~K) does {not}
+\paragraph{iMuon, with momentum.} The official implementation of iMuon with momentum (their Appendix~K) does {not}
 use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
-It first combines the two factor
+It instead first combines the two factor
 look-aheads $\tilde G_A=G_A+\beta m_A$ and $\tilde G_B=G_B+\beta m_B$ (buffers $m_A,m_B$,
 w.r.t. parameter $\beta$) into a single ambient matrix, then uses that matrix as an input
 \begin{equation*}
@@ -1037,12 +1061,15 @@ it is not of its implemented optimizer.
 
 
 \paragraph{LoRA-Muon.}
-LoRA-Muon derives the same direction directly from two decoupled
-spectral-norm LMOs. Their momentum-free subproblems Eq. (7) and (8) are
+The more recent, and concurrent work,
+LoRA-Muon~\cite{loramuon} also arrive at the  two decoupled
+spectral-norm LMO updates~\eqref{eq:decoupled-lora-lmo}
+Specifically, their momentum-free subproblems Eq. (7) and (8) in~\cite{loramuon} are
 precisely \eqref{eq:decoupled-lora-lmo}.
-Thus LoRA-Muon has the same direction as~\eqref{eq:decoupled-lora-lmo}; the
-factor $1/2$ is only a convention for splitting the product-step
-budget between the two factor updates. LoRA-Muon also shows that this
+% Thus LoRA-Muon has the same direction as~\eqref{eq:decoupled-lora-lmo}; the
+% factor $1/2$ is only a convention for splitting the product-step
+% budget between the two factor updates.
+LoRA-Muon also shows that this
 Gram-matrix form is equivalent to the simplified QR-coordinate core of
 LoRA-RITE~\cite{loramuon}.
 
@@ -1050,7 +1077,8 @@ LoRA-RITE~\cite{loramuon}.
 
 \section{Extended Prior Work: Spectral and Curvature-Aware Optimizers}
 \label{app:related-spectral}
-We expand the body's placement of \methodname{} among spectral and curvature-aware
+Here we will better contextualize how
+ \methodname{} relates to other spectral and curvature-aware
 optimizers (\Cref{sec:related}).
 
 \paragraph{Mousse and the whitening power.}
@@ -1178,80 +1206,202 @@ update \eqref{eq:diag-kron-population} becomes
   \label{eq:ours-klcoupling}
 \end{equation}
 as outlined in \Cref{alg:ours}.
-Further, by \eqref{eq:diag-kron-unbiased}
-if the Kronecker model is exact and XXX
+% Further, by \eqref{eq:diag-kron-unbiased}
+% if the Kronecker model is exact and XXX
 
 \section{Numerical Primitives}
 \label{app:primitives}
 
 \subsection{Spectral-Norm Estimation}
 \label{app:smax}
-\Cref{alg:smax} estimates every spectral norm $\norm{\cdot}_2$ in \Cref{alg:ours}. The floor at the larger row/column $\ell_2$ norm (both lower-bound $\smax$) guards against under-estimation: a cold or stale power iteration can under-estimate $\smax$, and an under-estimate at the rescale $W/\norm{W}_2$ inflates the step past $\rho$ and can diverge.
+\Cref{alg:ours} requires repeated estimates of spectral norms.  
+We
+estimate each norm with a warm-started power iteration, summarized in
+\Cref{alg:smax}.
+The vector $v$ is cached for each matrix and reused
+across optimizer steps, so after the first few steps the power iteration
+is typically already close to the leading right singular vector.
+Floor $l$ is an important safeguard.
+Both the largest row norm and the largest column norm are lower bounds on
+$\|M\|_2$, since
+\[
+    \|M_{i,:}\|_2 = \|M^\top e_i\|_2 \leq \|M\|_2,
+    \qquad
+    \|M_{:,j}\|_2 = \|M e_j\|_2 \leq \|M\|_2 .
+\]
+which
+prevents severe under-estimation from a cold or stale power iteration.
+This matters because the optimizer rescales by the estimated norm.  If
+$\|M\|_2$ is underestimated by $\widehat{\sigma}(M)$, then $M/\widehat{\sigma}(M)$ is too
+large, and the induced product step can exceed the intended radius
+$\rho$, which may destabilize training.
 
 \begin{algorithm}[h]
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
 \label{alg:smax}
 \begin{algorithmic}[1]
 \Require matrix $M$; warm-start vector $v$ (cached across steps); iterations $K$
-\Statex
+% \Statex
 
-\State $l \gets\max\big(\max_i\norm{M_{i,:}}_2,\ \max_j\norm{M_{:,j}}_2\big)$
-\Statex
+\State $l \gets\max\big\{\max_i\norm{M_{i,:}}_2,\ \max_j\norm{M_{:,j}}_2\big \}$
+% \Statex
 
 \For{$k=1,\dots,K$} \Comment{power iteration on $M^\top M$}
   \State $w\gets Mv$
   \State $v\gets M^\top w /\norm{M^\top w}_2$
 \EndFor
-\Statex
+% \Statex
 
-\State \Return $\max\big(\norm{Mv}_2,\ l\big)$ \Comment{$l$ floor}
+\State \Return $\max\big\{\norm{Mv}_2,\ l\big\}$ \Comment{$l$ floor}
 \end{algorithmic}
 \end{algorithm}
 
-\subsection{Matrix-Sign and Inverse-Sqrt via Gram Newton--Schulz}
+\subsection{Matrix Sign and Inverse Square Root via Gram Newton--Schulz}
 \label{app:gramns}
-Both spectral primitives of \Cref{alg:ours} --- the matrix sign $\polar(\cdot)$ (the
-orthogonal polar factor, \Cref{sec:method}) and the curvature inverse-sqrt $C^{-1/2}$ ---
-run as one degree-$5$ Newton--Schulz iteration on the $r\times r$ Gram matrix, sharing a
-single coefficient family and using no eigendecomposition (\Cref{alg:gramns}).
 
-\paragraph{Coefficients.} Each iteration applies the odd quintic
-$p_t(x)=a_t x+b_t x^3+c_t x^5$, the minimax polynomial that pushes the singular values
-toward $1$; composing the $p_t$ carries the whole spectrum to $1$. These are the
-PolarExpress coefficients \cite{polarexpress}, computed once at startup and reused at
-every step and call site.
+\Cref{alg:ours} uses two spectral primitives:
+the sign of a matrix $\polar(\cdot)$ and the inverse square root
+$C^{-1/2}$ of a rank-side curvature matrix.  We compute both with the
+same Gram Newton--Schulz routine.  The routine uses only $r\times r$
+matrix multiplications and does not require an eigendecomposition or an
+SVD (\Cref{alg:gramns}).
 
-\paragraph{Gram iteration.} Since $r\ll d$, both maps iterate on the $r\times r$ Gram
-$R$ rather than the rectangular factor \cite{gram_ns} --- about $d/r$ cheaper. With
-accumulator $Q$, each step applies
-\begin{equation*}
-  M_t=a_t I+b_t R+c_t R^2,\qquad Q\gets M_t Q,\qquad R\gets M_t R\,M_t .
-\end{equation*}
-Both maps run this same iteration, and the accumulator $Q$ is the product of the $M_t$;
-they differ only in the seed $R_0$ and what is returned:
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Matrix sign} $\polar(X)$ --- seed $R$ from the Gram of the normalized input, return $Q\tilde X$.
-  \item \textbf{Inverse-sqrt} $C^{-1/2}$ --- seed $R$ from the normalized, damped curvature (\Cref{app:damping}), return a rescaled $Q$.
+\paragraph{Quintic Newton--Schulz map.}
+Each iteration applies an odd degree-five polynomial
+\[
+    p_t(s)
+    =
+    a_t s + b_t s^3 + c_t s^5 .
+\]
+The coefficients $(a_t,b_t,c_t)$ are the PolarExpress coefficients
+\cite{polarexpress}.  They are chosen so that repeated composition of the
+maps $p_t$ drives singular values toward $1$.  The coefficients are
+computed once at startup and reused for every optimizer step.
+
+
+\paragraph{Gram iteration.}
+Rather than iterating on a rectangular matrix, we iterate on its
+$r\times r$ Gram matrix \cite{gram_ns}.  Suppose the current Gram matrix is
+\[
+    R_t = Y_t Y_t^\top \in \mathbb{R}^{r \times r},
+\]
+where $Y_t$ is the current rectangular iterate on the small side.  If
+we update
+\[
+    Y_{t+1}
+    =
+    M_t Y_t,
+    \qquad
+    M_t
+    =
+    a_t I + b_t R_t + c_t R_t^2,
+\]
+then
+\[
+    R_{t+1}
+    =
+    Y_{t+1}Y_{t+1}^\top
+    =
+    M_t R_t M_t .
+\]
+Thus the entire iteration can be run on the Gram matrix $R_t$.  If $s_t$ is a singular value of $Y_t$, then
+corresponding eigenvalue of $R_t$ is $\lambda_t=s_t^2$, and the singular value evolves as
+\[
+    s_{t+1}
+    =
+    \left(a_t+b_t s_t^2+c_t s_t^4\right)s_t
+    =
+    p_t(s_t).
+\]
+Therefore the Gram update implements the same quintic Newton--Schulz map
+on singular values, but costs only $r\times r$ matrix multiplications.
+
+\paragraph{Shared accumulator.}
+The method also maintains an accumulator $Q_t$.  Starting from
+$Q_0=I$, each step sets
+\[
+    Q_{t+1}=M_t Q_t,
+    \qquad
+    R_{t+1}=M_t R_t M_t .
+\]
+Hence by induction we can show that
+\[
+    R_t = Q_t R_0 Q_t^\top .
+\]
+At the end of the iteration, $Q_K$ is the accumulated matrix.
+The two call sites differ only in how $R_0$ is initialized and how
+$Q_K$ is interpreted.
+
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+    \item \textbf{Matrix sign.}
+    For a rectangular matrix $X$, first normalize
+    \[
+        \widetilde X = X/\alpha,
+        \qquad
+        \alpha \geq \|X\|_2 
+    \]
+    to ensure that the singular values lie in the range $[0, 1]$.  Using the small-side Gram
+    \[
+        R_0 = \widetilde X\widetilde X^\top ,
+    \]
+    the algorithm returns $Q_K$, and the matrix sign is approximated by
+    \[
+        \polar(X)
+        =
+        \polar(\widetilde X)
+        \approx
+        Q_K\widetilde X .
+    \]
+    If the small-side Gram is instead $\widetilde X^\top\widetilde X$,
+    the same formula is used on the transpose, returning
+    $\widetilde X Q_K$.
+
+    \item \textbf{Inverse square root.}
+    For a damped curvature matrix $C$, first normalize
+    \[
+        \widetilde C = C/\alpha,
+    \]
+    where the damping is described in \Cref{app:damping}.  We set
+    $R_0=\widetilde C$.  The same algorithm returns
+    $Q_K\approx \widetilde C^{-1/2}$, so
+    \[
+        C^{-1/2}
+        =
+        \alpha^{-1/2}\widetilde C^{-1/2}
+        \approx
+        \alpha^{-1/2} Q_K .
+    \]
 \end{itemize}
 
-\paragraph{Stability and precision.} The coefficients grow quickly across iterations,
-so a spurious negative eigenvalue of $R$ can blow up; a restart at iteration $\tau$
-re-anchors $R$ from the current iterate \cite{gram_ns}. The iteration runs in fp32 ---
-bf16 diverges near the damping floor --- which is cheap on $r\times r$ matrices.
-Production uses $K{=}8$ iterations.
+
+
+\paragraph{Stability and precision.}
+We run the Gram Newton--Schulz iteration in fp32.  This is cheap because
+all matrices are only $r\times r$, and it avoids the bf16 instability
+we observed near the damping floor.  The main numerical risk is loss of
+positive semidefiniteness: later coefficients can be large, so a small
+spurious negative eigenvalue of $R$ may be amplified.  We therefore
+optionally re-anchor the Gram matrix once, at iteration $\tau$, by
+recomputing it from the accumulated map.
+In exact arithmetic this is the same Gram matrix as the recursive update
+$R\gets MRM$; in finite precision it removes accumulated drift
+\cite{gram_ns}.  We use $K=8$ iterations.
+
 
 \begin{algorithm}[h]
-\caption{Gram Newton--Schulz (shared by $\polar$ and the inverse-sqrt)}
+\caption{Gram Newton--Schulz iteration}
 \label{alg:gramns}
 \begin{algorithmic}[1]
-\Require Gram/curvature $R_0$ (SPD, $r\times r$); coefficients $\{(a_t,b_t,c_t)\}_{t=1}^{K}$; restart $\tau$
+\Require normalized Gram $R_0 \in \mathbb{R}^{r \times r}$, coefficients $\{(a_t,b_t,c_t)\}_{t=1}^{K}$, restart time $\tau$
 \State $R\gets R_0$;\quad $Q\gets I$
 \For{$t=1,\dots,K$}
   \If{$t=\tau{+}1$} \State $R_0\gets Q R_0 Q^\top$;\quad $R\gets R_0$;\quad $Q\gets I$ \Comment{re-anchor} \EndIf
   \State $M\gets a_t I+b_t R+c_t R^2$
   \State $Q\gets M Q$;\quad $R\gets M R M$
 \EndFor
-\State \Return $Q$ \Comment{$\to$ polar factor (post-multiply $\tilde X$), or inverse-sqrt (post-scale)}
+\State \Return $Q$ 
+% \Comment{$\to$ polar factor (post-multiply $\tilde X$), or inverse-sqrt (post-scale)}
+\Comment{used for $\polar(\cdot)$, or post-scaled for $C^{-1/2}$}
 \end{algorithmic}
 \end{algorithm}
 
@@ -1332,36 +1482,40 @@ the wall (\Cref{tab:breadth}).
 
 \section{Per-Setting Learning Curves}
 \label{app:curves}
-Loss-vs-step for the settings the body reports only numerically ---
-\Cref{tab:breadth} (model families, \Cref{fig:curves-breadth}) and the rank ladder
-(\Cref{fig:curves-rank}), with the same annotation as \Cref{fig:hero}. Each panel is Adam
-vs.\ \methodname{} at its best lr. The cells already drawn as curves in the body
+\Cref{tab:breadth} shows steps-to-Adam across model families.
+\Cref{fig:curves-breadth} complements this by plotting the evaluation
+loss over the training steps.
+\Cref{fig:curves-rank} shows the evaluation loss over training steps across different ranks. 
+Each panel shows Adam
+and \methodname{} at their optimal learning rates. The cells already drawn as curves in the main text
 (\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated here.
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{figA_breadth.pdf}
-  \caption{\textit{[placeholder]} Across models (code / $r = 256$): OLMo-2-1B, Llama-3.2-1B, Llama-3-8B (Qwen/code is \Cref{fig:ood}). Adam vs.\ \methodname{}.}
+  \caption{\textbf{\methodname{} speedup over Adam across model families.} Evaluation loss over training steps across OLMo-2-1B, Llama-3.2-1B, Llama-3-8B (Qwen2.5-1.5B is in \Cref{fig:ood}) models
+  finetuned on code dataset at rank $r = 256$. }
   \label{fig:curves-breadth}
 \end{figure}
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{figA_rank.pdf}
-  \caption{\textit{[placeholder]} Across ranks (Llama-3.2-1B / Math): $r\in\{32,64,128\}$ ($r = 256$ is \Cref{fig:hero}). Adam vs.\ \methodname{}.}
+  \caption{\textbf{\methodname{} speedup over Adam across different ranks.} Evaluation loss over training steps on Llama-3.2-1B finetuned on math dataset at each rank $r\in\{32,64,128\}$ ($r = 256$ is in \Cref{fig:hero}).}
   \label{fig:curves-rank}
 \end{figure}
 
 \section{Factor Self-Balancing}
 \label{app:gauge}
-By \eqref{eq:ours-rho}, \methodname{}'s step size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. Rescaling $(A,B)\mapsto(cA,c^{-1}B)$ leaves the product $BA$, and hence the model, unchanged, but changes these norms, and with them $\rho$. Among the factorizations of a given product $BA$, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style step sizes \cite{loramuon}.
+By \eqref{eq:ours-rho}, \methodname{}'s step size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. Rescaling $(A,B)\mapsto(cA,c^{-1}B)$ leaves the product $BA$, and hence the model, unchanged, but changes these norms, and with them $\rho$. Among scalar rescalings $(A,B)\mapsto(cA,c^{-1}B)$ of a fixed 
+factorization $BA$, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style step sizes \cite{loramuon}.
 
-In our runs this does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
+In our runs this problem does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.6\linewidth]{fig_gauge.pdf}
-  \caption{\textit{[placeholder]} Spectral-norm ratio $\norm{B}_2/\norm{A}_2$ over training, per rank (Llama-3.2-1B / OpenMathInstruct); it settles near $1$.}
+  \caption{\textbf{Factor norm self-balancing in \methodname{}.} Spectral-norm ratio $\norm{B}_2/\norm{A}_2$ over training steps for Llama-3.2-1B finetuned on math dataset at each rank; it settles near $1$.}
   \label{fig:gauge}
 \end{figure}
 
