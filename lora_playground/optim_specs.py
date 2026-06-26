@@ -384,3 +384,8 @@ spec("adafactor", build=_build_adafactor)
 spec("sgd", build=_sgd_builder(0.0))
 spec("sgd-m", build=_sgd_builder(0.9))
 spec("imuon-lora", build=_build_imuon)
+# LoRA-RITE (Yen et al., ICLR'25): adaptive transformation-invariant LoRA
+# baseline. Generic path: `betas`->(config.beta1, config.beta2); the README
+# recipe knobs (clip_unmagnified_grad=1.0, apply_escape=False, ...) are the
+# class defaults, so no `fixed` is needed.
+spec("lora-rite", _optim.LoRARite)

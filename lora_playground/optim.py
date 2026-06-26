@@ -21,6 +21,7 @@ from .utils import (
 )
 from ._step_timer import maybe_time
 from .optim_diagnostics import factor_diagnostics
+from .lora_rite import LoRARite  # noqa: F401  (registered via optim_specs as "lora-rite")
 
 
 # Init parameters that are construction inputs, not algorithmic state — the
@@ -667,6 +668,7 @@ OPTIMIZER_CHOICES = {
     "adamuon-lora",
     "muon-lora",
     "imuon-lora",
+    "lora-rite",
     "product-muon-lora",
     "adam-muon-lora",
     "adam-product-muon-lora",
