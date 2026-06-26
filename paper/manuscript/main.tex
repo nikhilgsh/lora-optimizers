@@ -166,7 +166,10 @@ where in the last approximation we have dropped the only nonlinear term $\Delta 
 If we now use this linear approximation~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo}, the spectral constraint would be given by
 \[  \left\| B \Delta A + \Delta B A   \right\|
   \le \tau.\]
-This constraint couples the two unknowns $\Delta A $ and $\Delta B$
+This constraint couples the two unknowns $\Delta A $ and $\Delta B.$ To decouple these to unknowns, we make use of the following upper bound
+\[  \left\| B \Delta A + \Delta B A   \right\| \; \leq\ ;  \left\| B \Delta A \right\| + \left\|\Delta B A   \right\| .\]
+Now using the above and~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo} we arrive at the following \emph{product spectral descent met}
+
 \rob{Pieces of introduction I found}
 \paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
@@ -1413,7 +1416,7 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 \end{algorithm}
 
 
-\paragraph{Relative damping.}
+\subsection{Relative Damping}
 We use relative damping for each inverse square root computation in \Cref{alg:ours}.
 On the normalized spectrum, the damping parameter $\delta$ has a fixed
 meaning.  If $X = U\operatorname{diag}(\lambda_i)U^\top$ is the eigendecomposition of $X$,
@@ -1473,19 +1476,6 @@ side is then unpreconditioned, so the update reduces to the plain
 momentum direction until the curvature estimate becomes nonzero.
 \end{itemize}
 
-
-\subsection{Relative Damping}
-\label{app:damping}
-Each curvature inverse-sqrt in \Cref{alg:ours} is relative-damped: for a curvature factor $X$ with top eigenvalue $\lambda_{\max}$,
-\begin{equation*}
-  X^{-1/2}\ \longmapsto\ \big(X/\lambda_{\max}+\delta I\big)^{-1/2},\qquad \delta>0 .
-\end{equation*}
-The normalization and the floor each follow from the step's structure.
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \emph{Normalize by $\lambda_{\max}$.} The whitened polar depends only on the curvature's \emph{shape}, not its scale: $\polar\!\big(C_A^{-1/2}\hat M_A Q^{-1/2}\big)$ is invariant under $X\mapsto cX$, and the spectral-norm rescale $D_A/\norm{D_A}_2$ reabsorbs any global factor. The scale-free representative is the normalized spectrum $X/\lambda_{\max}\in(0,1]$.
-  \item \emph{Floor by $\delta$.} On that spectrum $\delta$ is one conditioning knob: it caps the metric's condition number at ${\sim}1/\delta$, so a near-null curvature direction cannot amplify the step without bound.
-  \item \emph{Warmup.} A still-zero factor ($\lambda_{\max}=0$) maps to $I$, so steps before the EMAs warm up are plain momentum.
-\end{itemize}
 
 
 
