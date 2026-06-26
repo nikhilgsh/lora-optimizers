@@ -148,11 +148,22 @@ To define a method using~\eqref{eq:lmo} we only need to choose a norm. The key i
 \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
 \]
 where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
-The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the spectral norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.
- 
- We introduce
-\methodname{}, a spectral-polar LoRA optimizer that reaches Adam's eval loss in
-$1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
+The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the spectral norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}. To make this spectral desecnt compatible with LoRA, we need to take the product structure of LoRA into account.
+
+
+\paragraph{Product Spectral Descent.}
+Consider now any method that updates the two factors of LoRA as follows
+\[
+A \leftarrow A + \Delta A,
+\qquad
+B \leftarrow B + \Delta B.
+\]
+Updating the factors has the following affect on the total update
+\begin{equation} \label{eq:DeltaW-lin}
+\Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A ,
+\end{equation}
+where in the last approximation we have dropped the only nonlinear term $\Delta B\Delta A$.
+If we now use this linear approximation 
 
 \rob{Pieces of introduction I found}
 \paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
@@ -167,7 +178,9 @@ Stages (A) and (B) are separate problems --- estimation, then a step under the \
 
 \paragraph{Contributions.}
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \PLACEHOLDER{A fast, cheap LoRA optimizer.}
+  \item \PLACEHOLDER{A fast, cheap LoRA optimizer.}  We introduce
+\methodname{}, a spectral-polar LoRA optimizer that reaches Adam's eval loss in
+$1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings.
   \item \PLACEHOLDER{A sensitivity viewpoint, that results leads to both spectral and preconditioned update?}
   \item \PLACEHOLDER{Operator-norm magnitude control; stable lr across rank.}
   \item \PLACEHOLDER{Ablations: which component carries the gain.}
@@ -307,17 +320,8 @@ So far we have described an update for the full weight matrix $W \in \R^{d_{\mat
 To set the direction, we will adapt  the preconditioned spectral 
   LMO~\eqref{eq:polorafull} gives the direction. Later we will set the magnitude.
   
-  If we update LoRA factors according to
-\[
-A \leftarrow A + \Delta A,
-\qquad
-B \leftarrow B + \Delta B,
-\]
-then the first-order approximation of the total update is
-\[
-\Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A.
-\]
-If we replace $\Delta W$ in \eqref{eq:polorafull} with the approximation above then we get the problem
+ 
+If we replace $\Delta W$ in \eqref{eq:polorafull} with its local linearization~\eqref{eq:DeltaW-lin}   then we get the problem
 \begin{equation}
     \begin{array}{ll}
     \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
@@ -530,6 +534,7 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ \\
 \rob{So maybe just mention LoraMuon and LoRA-RITE here? Or introduce a consistent name for this update in the main text. }
 \tanya{iMuon has official implementation and we are using it as a baseline, if we mention lora-rite then why didnt we benchmark against it? we should just call that problem somehow and keep referring to it in the same way}
 \rob{ok, lets chat about this. }
+\nikhil{i'll just run lora-rite, they released code.}
 For the first component, if we switch off preconditioning ($P = I_{\mathrm{out}}$ and  $Q=I_{\mathrm{in}}$) and the magnitude rescaling, then \methodname{} coincides with several recent methods such as LoraMuon, iMuon (baseline something?) and LoRA-RITE (with no momentum), see~\Cref{app:memoryless}.  
 
 We perform ablations on Llama-3.2-1B finetuned on math to isolate the benefit of the two components that distinguish \methodname{} namely the use of curvature and our magnitude, see \Cref{fig:ablation}.
@@ -985,7 +990,7 @@ equivalently
     \Delta A &=-\eta\,S_A^{-1/2}\polar(S_A^{-1/2}G_A) \nonumber \\
     \Delta B &=-\eta\,\polar(G_BS_B^{-1/2})S_B^{-1/2}   \label{eq:decoupled-lora-lmo-closed}
 \end{align}
-We will use the fact that for any matrix $M$ with full row rank, with reduced SVD $M=U\Sigma V^\top$,
+We will use the fact that for any matrix $M$ with full row rank, with reduced SVD being $M=U\Sigma V^\top$,
 the polar factor equals
 \begin{equation}
   % Not true unless we assume full rank
@@ -1376,7 +1381,7 @@ $Q_K$ is interpreted.
 
 
 \paragraph{Stability and precision.}
-We run the Gram Newton--Schulz iteration in fp32.  This is cheap because
+We run the Gram Newton--Schulz iteration in fp32, which is cheap because
 all matrices are only $r\times r$, and it avoids the bf16 instability
 we observed near the damping floor.  The main numerical risk is loss of
 positive semidefiniteness: later coefficients can be large, so a small
@@ -1417,6 +1422,8 @@ The normalization and the floor each follow from the step's structure.
   \item \emph{Floor by $\delta$.} On that spectrum $\delta$ is one conditioning knob: it caps the metric's condition number at ${\sim}1/\delta$, so a near-null curvature direction cannot amplify the step without bound.
   \item \emph{Warmup.} A still-zero factor ($\lambda_{\max}=0$) maps to $I$, so steps before the EMAs warm up are plain momentum.
 \end{itemize}
+
+
 
 \section{FLOP Overhead of the Optimizer}
 \label{app:flops}
