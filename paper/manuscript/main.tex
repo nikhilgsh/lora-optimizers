@@ -177,7 +177,12 @@ Now using the above and~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo} w
   \end{aligned}
   \label{eq:decoupled-lora-lmo} 
 \end{equation}
-where 
+where $G_A := \nabla_A \mathcal{L}(W_0+BA) = B^\top G$ a
+let $G=\nabla_W \mathcal{L}(W) \big |_{W=BA}$ be the product
+gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
+and $S_B=AA^\top$ and
+$S_A=B^\top B$ be the $r\times r$ Gram matrices.
+The decoupled factor step is the solution of the two  subproblems
 equivalently 
 \begin{align} 
     \Delta A &=-\eta\,S_A^{-1/2}\polar(S_A^{-1/2}G_A) \nonumber \\
@@ -1027,10 +1032,9 @@ LoRA-RITE given in Algorithm~1 in~\cite{lorarite} adds three pieces of memory to
 \rob{This first part is incomprehensible. Just say "dropping the momentum estimates and their xx trick?" Otherwise we need to explain better}
 
 Dropping all three, we get the authors' momentum-free update (their Eq.~(14)),
-which in our notation for $G_B:=G_B S_B^{-1/2}$ becomes
+which in our notation for $ \widehat G_B=G_B S_B^{-1/2}$ becomes
 \[
-  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}, \quad \mbox{where}
-  \qquad \widehat .
+  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}.
 \]
 With no accumulation by \eqref{eq:polar-id} the middle factor is a polar factor, so
 \begin{equation*}
