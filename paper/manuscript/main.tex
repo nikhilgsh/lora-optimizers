@@ -543,7 +543,7 @@ Qwen2.5-1.5B & $1.30\times$ & $1.27\times$ & $1.64\times$ & $1.60\times$ \\
 Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} All four base models are finetuned at rank $r=256$ on code generation (OpenCoder \cite{opencoder}) and on math (OpenMathInstruct-2 \cite{openmathinstruct2}). Only the base model varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by \methodname{}'s ${\le}3\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins in every cell, with a larger speedup on math than on code.}
+\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} All four base models are finetuned at rank $r=256$ on code and math datasets. Only the base model varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by \methodname{}'s ${\le}3\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins in every cell, with a larger speedup on math than on code.}
 \label{tab:breadth}
 \end{table}
 
