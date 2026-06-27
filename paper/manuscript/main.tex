@@ -543,7 +543,7 @@ Qwen2.5-1.5B & $1.30\times$ & $1.27\times$ & $1.64\times$ & $1.60\times$ \\
 Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} All four base models are finetuned at rank $r=256$ on code and math datasets. Only the base model varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by \methodname{}'s ${\le}3\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins in every cell, with a larger speedup on math than on code.}
+\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} Four base models at rank $r=256$, finetuned on code and math. Step speedup is the steps to reach Adam's final loss. The wall-clock column discounts it by \methodname{}'s ${\le}3\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins everywhere, by a wider margin on math than code.}
 \label{tab:breadth}
 \end{table}
 
@@ -1571,7 +1571,7 @@ the wall (\Cref{tab:breadth}).
 evaluation loss over the training steps on each corpus.
 \Cref{fig:curves-rank} shows the evaluation loss over training steps across different ranks.
 Each panel shows Adam
-and \methodname{} at their optimal learning rates. The cells already drawn as curves in the main text
+and \methodname{} at their optimal learning rates. The settings already drawn as curves in the main text
 (\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated here.
 
 \begin{figure}[H]
