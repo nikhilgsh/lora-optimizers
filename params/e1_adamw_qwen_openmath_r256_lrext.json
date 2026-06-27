@@ -1,0 +1,8 @@
+{
+  "lr": ["1e-5"],
+  "optimizer": ["adamw"],
+  "seed": ["0"],
+  "model": ["Qwen/Qwen2.5-1.5B"],
+  "data_dir": ["data/openmath_instruct_2_2m_packed_seq2048_qwen25"],
+  "lora_r": ["256"]
+}

@@ -1,0 +1,10 @@
+{
+  "lr": ["3e-2", "1e-1"],
+  "optimizer": ["kl-diag-polar-lora"],
+  "seed": ["0"],
+  "precond_delta": ["1e-4"],
+  "beta1": ["0.9"],
+  "model": ["Qwen/Qwen2.5-1.5B"],
+  "data_dir": ["data/openmath_instruct_2_2m_packed_seq2048_qwen25"],
+  "lora_r": ["256"]
+}

@@ -1,14 +1,18 @@
 """Generate the paper's experiment figures + speedup table from the workload registry.
 
 Design (locked with the user, conventions from Mousse/SPlus/LoRA+ in docs/papers/):
-  fig1_hero.pdf          — Figure 1: loss-vs-steps showcase at Llama-3.2-1B openmath r256 (AdamW vs
-                           PoLoRA vs iMuon when present), dashed line at AdamW's final
-                           loss, drop-line at the interpolated crossing, speedup printed.
-  tab1_speedup.tex       — Table 1: per-cell speedup-to-AdamW (best-lr), iMuon
-                           rows where run. SPlus-style numeric companion to fig 1.
-  figA_breadth.pdf       — appendix: per-setting loss curves behind tab_breadth (model
-  figA_rank.pdf            families, code r256) and tab_rank (Llama Math rank ladder),
-                           each excluding the cells already drawn as curves in the body.
+  fig1_hero.pdf          — Figure 1: loss-vs-steps showcase at Llama-3.2-1B openmath r256
+                           (AdamW vs iMuon vs LoRA-RITE vs Muon vs PoLoRA), dashed line at
+                           AdamW's final loss, drop-line at PoLoRA's interpolated crossing.
+  tab_breadth.tex        — speedup-to-AdamW step tables: model breadth on code
+  tab_breadth_math.tex     (tab_breadth) and math (tab_breadth_math), the Llama openmath
+  tab_rank.tex             rank ladder (tab_rank), and the Qwen code-vs-Bengali pair
+  tab_ood.tex              (tab_ood). The merged code+math tab:breadth in the manuscript
+                           pairs these step numbers with bench-measured wall-clock.
+  figA_breadth.pdf       — appendix: per-setting loss curves behind the table cells --
+  figA_breadth_math.pdf    model breadth on code (figA_breadth) and math (figA_breadth_math),
+  figA_rank.pdf            and the Llama Math rank ladder (figA_rank), each excluding the
+                           cells already drawn as curves in the body.
   fig2_ablation.pdf      — E2 basins at Llama openmath r256: PoLoRA vs
                            "w/o curvature control" vs "w/o magnitude control"; ringed minima.
   fig3_lr_transfer.pdf   — E3 basins across the openmath rank ladder, shared log-x so
@@ -61,17 +65,24 @@ plt.rcParams.update({
 NAME_CURV = "w/o curvature"
 NAME_MAGN = "w/o magnitude"
 NAME_NAIVE = "Muon"            # raw per-factor polar = Muon on the factors (sec 3.1)
-# Both-controls-removed ablation arm = the bare partner-Gram polar direction (iMuon's
-# explicit decoupled update; the memoryless limit of LoRA-RITE; the compositional-Muon
-# half-split). Named subtractively, NOT "LoRA-Muon step": (a) it reads as PoLoRA
-# minus two controls, and (b) it does not over-credit the concurrent LoRA-Muon for an
-# update that pre-dates it. The lineage citation lives in the fig2 caption.
+# Both-controls-removed ablation arm = the decoupled update with identity metric and no
+# spectral-norm magnitude rescale (iMuon's explicit decoupled update; the memoryless
+# limit of LoRA-RITE; the compositional-Muon half-split). Named subtractively, NOT
+# "LoRA-Muon step": (a) it reads as PoLoRA minus two controls, and (b) it does not
+# over-credit the concurrent LoRA-Muon for an update that pre-dates it. The lineage
+# citation lives in the fig2 caption.
 NAME_LM = "w/o curvature + magnitude"
+# The hero (fig1) stacks AdamW against three baselines that converge near AdamW's final
+# loss. All curves are SOLID (SSO Fig 8); they separate by colour + weight: AdamW is the
+# dark, thick reference (lw 2.0); the three baselines are THIN (lw 1.3) in clearly
+# separated hues (gold / vermillion / purple); PoLoRA is the thickest blue. (The fig2
+# ablation arms keep their dashed/dotted styles -- they are not in fig1.)
 STYLE = {
-    "AdamW":      dict(color="#666666", marker="o", ls="-",  lw=1.9),
-    "PoLoRA": dict(color="#0072B2", marker="s", ls="-",  lw=2.2),
-    NAME_NAIVE:   dict(color="#D55E00", marker="v", ls="--", lw=1.6),
-    "iMuon":      dict(color="#E69F00", marker="^", ls="--", lw=1.6),
+    "AdamW":      dict(color="#333333", marker="o", ls="-",  lw=2.0),
+    "PoLoRA": dict(color="#0072B2", marker="s", ls="-",  lw=2.4),
+    NAME_NAIVE:   dict(color="#CB5A4C", marker="v", ls="-",  lw=1.7),  # muted brick (warm)
+    "iMuon":      dict(color="#E0A33D", marker="^", ls="-",  lw=1.7),  # muted amber (warm)
+    "LoRA-RITE":  dict(color="#8E6BAE", marker=">", ls="-",  lw=1.7),  # muted purple (cool) -- distinct from Muon
     NAME_LM:      dict(color="#CC79A7", marker="P", ls="--", lw=1.6),
     NAME_CURV:    dict(color="#009E73", marker="D", ls="--", lw=1.6),
     NAME_MAGN:    dict(color="#882255", marker="X", ls=":",  lw=1.6),
@@ -113,14 +124,16 @@ def ablation_variant_key(cfg: dict) -> str | None:
 
 def arm_key(cfg: dict) -> str | None:
     """Full comparison/ablation labeling for the hero (fig1) and the all-ablations
-    basin figure (fig2): the incremental climb naive -> bare partner-Gram polar
-    (w/o curvature + magnitude) -> +pin (w/o curvature) -> PoLoRA, plus the
-    AdamW/iMuon references."""
+    basin figure (fig2): the incremental climb naive -> decoupled update with
+    identity metric and no magnitude rescale (w/o curvature + magnitude) -> +pin
+    (w/o curvature) -> PoLoRA, plus the AdamW/iMuon references."""
     o = cfg.get("optimizer")
     if o == "adamw":
         return "AdamW"
     if o == "imuon-lora":
         return "iMuon"
+    if o == "lora-rite":
+        return "LoRA-RITE"
     if o == "muon-lora" and cfg.get("polar_method") == "polar_express":
         return NAME_NAIVE
     if _is_proto(cfg):
@@ -129,9 +142,9 @@ def arm_key(cfg: dict) -> str | None:
         if not nc and not up:
             return "PoLoRA"
         if nc and not up:
-            return NAME_CURV          # partner-Gram polar + pin, no curvature
+            return NAME_CURV          # identity metric + pin, no learned curvature
         if nc and up:
-            return NAME_LM            # bare partner-Gram polar: no pin, no curvature
+            return NAME_LM            # identity metric, no pin, no learned curvature
     return None
 
 
@@ -163,42 +176,46 @@ def _paper_cells():
     return out
 
 
-def _annotate_speedup(ax, cross, horizon, target, speed, color, drop_from):
-    """Draw the step-speedup annotation on a loss-vs-step axis: the crossing dot, the
-    drop-line down to PoLoRA's loss, the horizontal <-> arrow along the AdamW-final
-    line, and the 'N x fewer steps' label.
+def _annotate_speedup(ax, cross, horizon, target, speed, color, drop_from=None,
+                      proto_xy=None, show_speedup=True):
+    """Mark the steps saved at the reference (Adam-final) loss, SPlus/SSO style: a dot
+    where the protagonist first reaches that loss and a HORIZONTAL dashed line in the
+    protagonist's colour from the crossing out to the horizon -- its length IS the steps
+    saved. There is no full-width reference line; only this blue span is emphasized, so
+    the eye reads the saved steps rather than the loss gap. With show_speedup, add a
+    small boxed 'N x fewer steps' callout beside the span (SSO Fig 8 convention).
 
-    DURABLE RULE (no text overlap, no masking box): the label sits just above the
-    <-> arrow, in the band between the AdamW target line and any higher curve. It is
-    lifted to clear the tail that hugs the target line (AdamW), but NOT lifted above
-    curves that run far above the band (e.g. iMuon) -- otherwise it floats up and
-    reads as labeling that curve. So the scan ignores any curve more than `band` above
-    the target. No bbox; never hand-place bare text or paper over an overlap."""
+    drop_from / proto_xy are unused (kept for caller compatibility)."""
     ax.relim(); ax.autoscale_view()
     off = ax.get_ylim()[1] - ax.get_ylim()[0]
-    ax.plot([cross], [target], marker="o", ms=5, color=color, zorder=6)
-    ax.vlines(cross, ymin=drop_from, ymax=target, color=color, ls=(0, (2, 2)),
-              lw=1.0, zorder=4)
-    ax.annotate("", xy=(horizon, target + 0.02 * off),
-                xytext=(cross, target + 0.02 * off),
-                arrowprops=dict(arrowstyle="<->", color="#333333", lw=1.0), zorder=5)
-    # Clear only the near-target tail (AdamW); ignore curves > `band` above the target
-    # (iMuon) so the label stays in the AdamW-to-iMuon gap, not up by iMuon.
-    mid = (cross + horizon) / 2
-    x0, x1 = ax.get_xlim(); half = 0.16 * (x1 - x0)
-    band = 0.15 * off
-    top = target + 0.02 * off                      # the arrow height
-    for ln in ax.get_lines():
-        ys = [y for x, y in zip(ln.get_xdata(), ln.get_ydata())
-              if (mid - half) <= x <= (mid + half) and y == y and y <= target + band]
-        if ys:
-            top = max(top, max(ys))
-    ax.text(mid, top + 0.03 * off, rf"${speed:.2f}\times$ fewer steps",
-            ha="center", va="bottom", fontsize=9, zorder=7)
+    ax.plot([cross, horizon], [target, target], color=color, ls=(0, (2, 2)),
+            lw=1.7, zorder=5)
+    if show_speedup:
+        # SSO Fig 8 boxed callout, kept OFF every curve by construction: anchor its right
+        # edge at the crossing and its top just below the span. Left of the crossing the
+        # protagonist sits at or above the reference loss, so a box hanging below that
+        # level there clears the protagonist; the baselines run far higher. No curve is
+        # masked regardless of the rendered box width (which varies per panel).
+        x_anchor = cross - 0.13 * horizon
+        t = ax.text(x_anchor, target - 0.02 * off,
+                    rf"${speed:.2f}\times$ fewer steps",
+                    ha="right", va="top", fontsize=8.5, zorder=7,
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=color, lw=0.8))
+        # Keep the callout inside the axes: if the box would spill past the left spine,
+        # nudge it right just enough to fit (its right edge stays left of the crossing, so
+        # it remains clear of the curve).
+        try:
+            ax.figure.canvas.draw()
+            xmin, xmax = ax.get_xlim()
+            x_left = ax.transData.inverted().transform((t.get_window_extent().x0, 0))[0]
+            if x_left < xmin:
+                t.set_x(x_anchor + (xmin - x_left) + 0.015 * (xmax - xmin))
+        except Exception:
+            pass
 
 
 # ───────────────────────────── Figure 1: showcase ─────────────────────────────
-def fig1():
+def fig1(show_speedup=True):
     wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)   # primary hero (PLAN.md)
     labeled = labeled_completed_runs(
         workload_runs(wl), arm_key, horizon=wl.horizon)
@@ -207,11 +224,13 @@ def fig1():
 
     fig, ax = plt.subplots(figsize=(5.4, 3.4))
     finals = {}
-    # AdamW reference, the named spectral rival iMuon, raw Muon on the factors, and
-    # ours. Muon ties AdamW but its dashed warm hue reads distinctly from the gray
-    # AdamW line. (The bare partner-Gram polar -- which would overlap Muon -- stays in
-    # the fig2 ablation, not here.)
-    for v in ("AdamW", "iMuon", NAME_NAIVE, "PoLoRA"):
+    proto_xy = None
+    # AdamW reference (dark, thick), the spectral rival iMuon, the adaptive baseline
+    # LoRA-RITE, raw Muon on the factors (the three baselines thin solid in separated
+    # hues so they stay legible where they converge near AdamW's final loss), and ours.
+    # (The decoupled identity-metric/no-rescale arm -- which would overlap Muon -- stays
+    # in the fig2 ablation, not here.)
+    for v in ("AdamW", "iMuon", "LoRA-RITE", NAME_NAIVE, "PoLoRA"):
         if v not in rows:
             continue
         lr = rows[v]["best_lr"]
@@ -219,13 +238,15 @@ def fig1():
         ax.plot(xs, ys, color=STYLE[v]["color"], ls=STYLE[v]["ls"],
                 lw=STYLE[v].get("lw", 1.6), label=v)
         finals[v] = ys[-1]
+        if v == "PoLoRA":
+            proto_xy = (xs, ys)
 
-    ax.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
     frac = rows["PoLoRA"]["frac_best_lr"]
     cross = frac * wl.horizon
     speed = speedup_from_frac(frac)
     _annotate_speedup(ax, cross, wl.horizon, target, speed,
-                      STYLE["PoLoRA"]["color"], finals["PoLoRA"])
+                      STYLE["PoLoRA"]["color"], finals["PoLoRA"], proto_xy=proto_xy,
+                      show_speedup=show_speedup)
 
     ax.set_xlabel("Training Step")
     ax.set_ylabel("Eval Loss")
@@ -302,6 +323,15 @@ def table1():
         "tab_breadth.tex", r"model (code, $r{=}256$) & speedup",
         [f"{m} & {_x(b)}" for m, (b, _a) in breadth])
 
+    # Breadth: math @ r256 across the SAME model families -- the Math columns of the
+    # merged tab:breadth in the manuscript (step speedup only; the wall-clock column
+    # there divides each by the same per-(model,r256) overhead delta as the code column,
+    # delta being dataset-independent at fixed tokens/step). Row order matches the code
+    # table (code-descending), so the math values are read against their code partners.
+    _write_tabular(
+        "tab_breadth_math.tex", r"model (math, $r{=}256$) & speedup",
+        [f"{m} & {_x(sp[(m, 'Math', 256)][0])}" for m, _ in breadth if (m, "Math", 256) in sp])
+
     # Rank ladder: Llama-3.2-1B Math, ascending rank.
     rank_rows = [(r, sp[("Llama-3.2-1B", "Math", r)]) for r in (32, 64, 128, 256)
                  if ("Llama-3.2-1B", "Math", r) in sp]
@@ -336,6 +366,7 @@ def fig_ood(figsize=(7.4, 3.3)):
         rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
         rows = {r["variant"]: r for r in rows}
         finals = {}
+        proto_xy = None
         for v in ("AdamW", "PoLoRA"):
             if v not in rows:
                 continue
@@ -344,12 +375,13 @@ def fig_ood(figsize=(7.4, 3.3)):
             ax.plot(xs, ys, color=STYLE[v]["color"], ls=STYLE[v]["ls"],
                     lw=STYLE[v].get("lw", 1.6), label=v)
             finals[v] = ys[-1]
-        ax.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
+            if v == "PoLoRA":
+                proto_xy = (xs, ys)
         frac = rows["PoLoRA"]["frac_best_lr"]
         cross = frac * wl.horizon
         speed = speedup_from_frac(frac)
         _annotate_speedup(ax, cross, wl.horizon, target, speed,
-                          STYLE["PoLoRA"]["color"], finals["PoLoRA"])
+                          STYLE["PoLoRA"]["color"], finals["PoLoRA"], proto_xy=proto_xy)
         ax.set_title(title)
         ax.set_xlabel("Training Step")
         ax.set_xlim(0, wl.horizon * 1.03)
@@ -380,6 +412,7 @@ def _appendix_curves(specs, outname, figsize):
         rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
         rows = {r["variant"]: r for r in rows}
         finals = {}
+        proto_xy = None
         for v in ("AdamW", "PoLoRA"):
             if v not in rows:
                 continue
@@ -388,12 +421,13 @@ def _appendix_curves(specs, outname, figsize):
             ax.plot(xs, ys, color=STYLE[v]["color"], ls=STYLE[v]["ls"],
                     lw=STYLE[v].get("lw", 1.6), label=v)
             finals[v] = ys[-1]
-        ax.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
+            if v == "PoLoRA":
+                proto_xy = (xs, ys)
         frac = rows["PoLoRA"]["frac_best_lr"]
         cross = frac * wl.horizon
         speed = speedup_from_frac(frac)
         _annotate_speedup(ax, cross, wl.horizon, target, speed,
-                          STYLE["PoLoRA"]["color"], finals["PoLoRA"])
+                          STYLE["PoLoRA"]["color"], finals["PoLoRA"], proto_xy=proto_xy)
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("Training Step")
         ax.set_xlim(0, wl.horizon * 1.03)
@@ -426,6 +460,17 @@ def figA_rank(figsize=(9.8, 3.0)):
         "figA_rank", figsize)
 
 
+def figA_breadth_math(figsize=(9.8, 3.0)):
+    """Model-breadth curves (math, r=256) behind the Math columns of tab_breadth -- the
+    three model families NOT already shown as curves in the body (Llama-3.2-1B/math is
+    the hero, fig1)."""
+    return _appendix_curves(
+        [("allenai/OLMo-2-0425-1B", "openmath", 256, "OLMo-2-1B"),
+         ("Qwen/Qwen2.5-1.5B", "openmath", 256, "Qwen2.5-1.5B"),
+         ("meta-llama/Meta-Llama-3-8B", "openmath", 256, "Llama-3-8B")],
+        "figA_breadth_math", figsize)
+
+
 # ─────────────────────────── Figs 2–3: lr basins ───────────────────────────
 def _basin(ax, labeled, variants, star_minima=True, star_ms=12):
     for v in variants:
@@ -450,8 +495,8 @@ def fig2():
     """Two-panel component ablation at the anchor (Llama openmath r256), subtractive
     from PoLoRA.
       (left)  loss curves for the three arms that separate as trajectories --
-              -curvature+magnitude (bare partner-Gram polar) -> -curvature ->
-              PoLoRA -- each at its best lr, AdamW's final loss as the dashed
+              -curvature+magnitude (identity metric, no magnitude rescale) ->
+              -curvature -> PoLoRA -- each at its best lr, AdamW's final loss as the dashed
               target (curve crossings = the speedups).
       (right) speedup-over-AdamW bars for ALL arms, including naive Muon, which ties
               AdamW (reads cleanly as a bar where it would overlap as a curve). Bar
@@ -469,7 +514,7 @@ def fig2():
         1, 2, figsize=(9.4, 3.4), gridspec_kw={"width_ratios": [1.45, 1.0]})
 
     # ── left: loss curves of the three arms that separate (Muon ties AdamW and
-    #    coincides with the bare partner-Gram polar -> moved to the appendix) ──
+    #    coincides with the identity-metric/no-rescale arm -> moved to the appendix) ──
     print("── fig2 (left) ablation curves (openmath r256) ──")
     for v in (NAME_LM, NAME_CURV, "PoLoRA"):
         if v not in rows:

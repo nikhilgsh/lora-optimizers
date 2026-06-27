@@ -503,20 +503,17 @@ The main comparisons finetune OLMo-2-1B~\cite{olmo2}, Llama-3.2-1B~\cite{llama3}
   \item \textbf{iMuon} \cite{imuon} --- the spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to momentum in the product space.
   \item \textbf{LoRA-RITE} \cite{lorarite} --- an adaptive, transformation-invariant LoRA optimizer that preconditions the factor gradients in a rotation-invariant basis. We run the authors' official PyTorch implementation at its default configuration; following their recommendation, gradient clipping is performed inside the optimizer in the invariant coordinates and the global gradient-norm clip is disabled, since a raw-gradient-norm clip is not transformation-invariant.
 \end{itemize}
-% TODO(nikhil): once the LoRA-RITE hero-cell run lands (Llama-3.2-1B / math / r=256),
-% add its curve to fig:hero and fold it into the "outperforms Adam, iMuon, Muon"
-% statement in sec:exp-main and the fig:hero caption.
 
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match Adam's tuned loss after $T$ steps. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.6\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon and iMuon, neither of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
+We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match Adam's tuned loss after $T$ steps. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
   \caption{\textbf{\methodname{} outperforms baselines during training.} Evaluation loss across
-  training steps for Llama-3.2-1B finetuned on math dataset at rank $r = 256$. \methodname{} outperforms Adam, iMuon, Muon and reaches Adam's final loss in $1.63\times$ fewer steps.  Per-setting learning 
+  training steps for Llama-3.2-1B finetuned on math dataset at rank $r = 256$. \methodname{} outperforms Adam, iMuon, Muon, and LoRA-RITE and reaches Adam's final loss in $1.63\times$ fewer steps.  Per-setting learning
   curves available in \Cref{app:curves}.}
   \label{fig:hero}
 \end{figure}
@@ -527,19 +524,29 @@ as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $3\%$ ove
 all four base models (\Cref{tab:breadth}), and the step-count speedup carries to wall-clock almost
 unchanged. \rob{This is specific to \methodname{}, right?  It sounds like we are talking about a generic optimizer }
 
+% Code columns: per-model step speedup (lora_playground leaderboard frac_best_lr ->
+%   speedup_from_frac); wall = step/(1+delta), delta the per-(model,r256) overhead
+%   measured via the polora bench at production-fastest settings.
+% Math columns: step (loader-verified) OLMo 1.74 / Llama 1.63 / Qwen 1.64 / 8B 1.59;
+%   wall = step/(1+delta) reusing the SAME per-(model,r256) delta (delta is dataset-
+%   independent at our fixed 32768 tok/step) -> OLMo 1.70 / Llama 1.58 / Qwen 1.60 /
+%   8B 1.56. Llama math row matches tab:rank r256 (1.63/1.58). Rows in code-descending
+%   order so each math value sits beside its code value.
 \begin{table}[t]
 \centering\small
-\begin{tabular}{lrr}
+\begin{tabular}{lrrrr}
 \toprule
-base model & step speedup & wall-clock speedup \\
+ & \multicolumn{2}{c}{Code} & \multicolumn{2}{c}{Math} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+base model & step & wall-clock & step & wall-clock \\
 \midrule
-OLMo-2-1B & $1.61\times$ & $1.57\times$ \\
-Llama-3.2-1B & $1.55\times$ & $1.51\times$ \\
-Qwen2.5-1.5B & $1.30\times$ & $1.27\times$ \\
-Llama-3-8B & $1.20\times$ & $1.18\times$ \\
+OLMo-2-1B & $1.61\times$ & $1.57\times$ & $1.74\times$ & $1.70\times$ \\
+Llama-3.2-1B & $1.55\times$ & $1.51\times$ & $1.63\times$ & $1.58\times$ \\
+Qwen2.5-1.5B & $1.30\times$ & $1.27\times$ & $1.64\times$ & $1.60\times$ \\
+Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across model families.} All four models are finetuned on code generation (OpenCoder \cite{opencoder}) at rank $r=256$. Only the base model varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by \methodname{}'s ${\le}3\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins on all four, by the smallest margin at $8$B.}
+\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} All four base models are finetuned at rank $r=256$ on code generation (OpenCoder \cite{opencoder}) and on math (OpenMathInstruct-2 \cite{openmathinstruct2}). Only the base model varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by \methodname{}'s ${\le}3\%$ per-step overhead (\Cref{app:flops}). \methodname{} wins in every cell, with a larger speedup on math than on code.}
 \label{tab:breadth}
 \end{table}
 
@@ -1563,10 +1570,10 @@ the wall (\Cref{tab:breadth}).
 
 \section{Per-Setting Learning Curves}
 \label{app:curves}
-\Cref{tab:breadth} shows steps-to-Adam across model families.
-\Cref{fig:curves-breadth} complements this by plotting the evaluation
-loss over the training steps.
-\Cref{fig:curves-rank} shows the evaluation loss over training steps across different ranks. 
+\Cref{tab:breadth} shows steps-to-Adam across model families on code and math.
+\Cref{fig:curves-breadth,fig:curves-breadth-math} complement this by plotting the
+evaluation loss over the training steps on each corpus.
+\Cref{fig:curves-rank} shows the evaluation loss over training steps across different ranks.
 Each panel shows Adam
 and \methodname{} at their optimal learning rates. The cells already drawn as curves in the main text
 (\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated here.
@@ -1574,9 +1581,17 @@ and \methodname{} at their optimal learning rates. The cells already drawn as cu
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{figA_breadth.pdf}
-  \caption{\textbf{\methodname{} speedup over Adam across model families.} Evaluation loss over training steps across OLMo-2-1B, Llama-3.2-1B, Llama-3-8B (Qwen2.5-1.5B is in \Cref{fig:ood}) models
+  \caption{\textbf{\methodname{} speedup over Adam across model families (code).} Evaluation loss over training steps across OLMo-2-1B, Llama-3.2-1B, Llama-3-8B (Qwen2.5-1.5B is in \Cref{fig:ood}) models
   finetuned on code dataset at rank $r = 256$. }
   \label{fig:curves-breadth}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figA_breadth_math.pdf}
+  \caption{\textbf{\methodname{} speedup over Adam across model families (math).} Evaluation loss over training steps across OLMo-2-1B, Qwen2.5-1.5B, Llama-3-8B (Llama-3.2-1B is in \Cref{fig:hero}) models
+  finetuned on math (OpenMathInstruct-2) at rank $r = 256$. }
+  \label{fig:curves-breadth-math}
 \end{figure}
 
 \begin{figure}[H]

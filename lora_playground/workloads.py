@@ -147,10 +147,12 @@ WORKLOADS: list[Workload] = [
     Workload("meta-llama/Llama-3.2-1B", "openmath", 256, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     # ── Qwen2.5-1.5B ─────────────────────────────────────────────────────────
     Workload("Qwen/Qwen2.5-1.5B", "opc", 256, "Qwen2.5-1.5B", _OPC_DISPLAY, 9000, _SIGMA, True),
+    Workload("Qwen/Qwen2.5-1.5B", "openmath", 256, "Qwen2.5-1.5B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     Workload("Qwen/Qwen2.5-1.5B", "bengali", 256, "Qwen2.5-1.5B", _BENGALI_DISPLAY, 9000, _SIGMA, True),
     # ── Meta-Llama-3-8B (scale-up; model_display gives label "Meta/..." so it
     #    does not collide with Llama-3.2-1B's "Llama/..." cross-setting key) ────
     Workload("meta-llama/Meta-Llama-3-8B", "opc", 256, "Meta-Llama-3-8B", _OPC_DISPLAY, 9000, _SIGMA, True),
+    Workload("meta-llama/Meta-Llama-3-8B", "openmath", 256, "Meta-Llama-3-8B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     # ── Qwen3-0.6B-Base (continued PRETRAINING on OpenWebMath; tanya-style
     #    polar-family sweep — all-token loss, not instruction tuning) ──────────
     Workload("Qwen/Qwen3-0.6B-Base", "openwebmath", 64, "Qwen3-0.6B", _OPENWEBMATH_DISPLAY, 9000, _SIGMA, True),
