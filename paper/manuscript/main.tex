@@ -103,52 +103,44 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-LoRA~\cite{lora} adapts a pretrained model by freezing each weight $W_0$ and
-training a low-rank update,
-\begin{equation}
-\DW = \frac{\alpha}{r}\,BA, \qquad
-B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
-A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
-\label{eq:lora}
-\end{equation}
-The model only sees the product $BA$, but the optimizer acts on the two factors
-$A$ and $B$. In practice these factors are usually trained with Adam applied
-independently to each factor. This default is simple and strong, but it ignores
-the matrix structure of the adapter update.
+Foundation models are trained on broad data at scale and adapted to many
+downstream tasks~\cite{foundation_models}. As their capabilities improve,
+practitioners want one shared base model to support agentic coding, mathematical
+reasoning, multilingual assistance, private data, and product-specific
+workflows. Fully finetuning a separate copy for each application is a costly way
+to represent these updates. Training stores dense gradients and optimizer state
+for the whole model, and deployment must store, load, and serve many dense
+variants.
 
-Recent matrix-aware optimizers suggest that this structure matters. Muon-style
-methods use spectral-norm or polar updates to control a matrix as a linear
-operator~\cite{muon,polarexpress}. Other LoRA optimizers make the update
-product-aware or invariant to equivalent factorizations of $BA$~\cite{lorarite,imuon,loramuon}.
-A parallel line of work uses Kronecker-factored second moments to precondition
-matrix updates~\cite{kfac,shampoo,klshampoo,mousse}. These ingredients are
-promising, but they are often bundled together with expensive machinery, making
-it unclear which parts are responsible for faster adaptation and whether the
-useful part can improve wall-clock time rather than only step count.
+LoRA addresses this bottleneck by keeping the base model fixed and learning a
+small task-specific adapter~\cite{lora,qlora}. Adapters are especially useful
+when one base model supports many downstream variants, since they reduce
+training memory and make multi-tenant serving practical~\cite{punica,bitdelta,schulman2025lora}.
 
-We introduce \methodname{}, a preconditioned orthogonalized optimizer for LoRA.
-\methodname{} keeps the spectral-polar update, but computes it in a learned
-two-sided diagonal metric and then sets the factor-step magnitude to control the
-spectral norm of the induced merged-weight update. The direction is a
-whiten--polar--unwhiten step using curvature factors $P$ and $Q$. The magnitude
-uses a single factor radius
-\[
-\rho = \frac{\eta}{\norm{A}_2+\norm{B}_2},
-\]
-so both factors receive equal spectral-norm steps while the linearized update to
-$BA$ remains bounded. This separates three decisions that are often entangled:
-the metric defining the update direction, the product-aware factor update, and
-the magnitude of the merged update.
+The standard LoRA recipe applies Adam independently to the two adapter factors.
+This choice is simple and strong, but it ignores the matrix structure of the
+adapter update. Recent work on matrix-aware optimization has shown that
+orthogonalized and matrix-preconditioned updates can improve over Adam in
+language-model training~\cite{liu2025muon,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}.
+The same principle should be useful for LoRA, where each adapter is itself a
+matrix update.
 
-Our derivation starts from a per-sample sensitivity view. Rather than bounding
-the weight change in a fixed norm, we ask for an update whose linearized loss
-increase is bounded for every example in the batch. A second-moment model of
-the per-example gradients turns this constraint into a preconditioned
-spectral-norm linear minimization oracle (LMO). Under a Kronecker approximation
-to the gradient covariance, the full-weight solution is a whitened polar step.
-Applying the same idea to the local linearization of the LoRA product yields
-independent factor subproblems, and the spectral magnitude rule turns their
-directions into the \methodname{} update.
+For LoRA, however, matrix-aware optimization is not just a matter of applying a
+matrix optimizer to each factor. The model is changed by the product of the two
+factors, so per-factor orthogonalization can miss the geometry of the adapter
+update. Concurrent LoRA optimizers make this product structure explicit through
+invariant or product-aware updates~\cite{imuon,loramuon,tilde_csd}. In our
+experiments, product awareness alone did not consistently beat Adam.
+Performance also depends on how the direction is preconditioned and how the
+individual factor steps are scaled.
+
+We introduce \methodname{}, a LoRA optimizer that combines product-aware
+orthogonalization with lightweight curvature information and explicit control of
+the two factor-step sizes. We derive the update from a local sensitivity
+constraint on the loss, obtaining a curvature-aware direction and a separate
+rule for scaling the two factor steps. Its iterative routines use only matrix
+multiplications, keeping optimizer overhead small enough for step-count gains to
+translate into wall-clock speedups.
 
 Empirically, \methodname{} reaches Adam's final held-out loss in
 $1.2$--$1.7\times$ fewer steps across our model, dataset, and rank settings.
@@ -178,8 +170,28 @@ Our contributions are:
 
 \label{sec:method}
 
+A LoRA adapter is optimized through two factor matrices, but it changes the
+model through their product. This section derives an update that treats the
+adapter as a matrix update while still operating on the factors. We first recall
+the dense matrix problem, where spectral descent chooses a polar direction under
+an operator-norm budget. We then impose the same viewpoint on a LoRA product,
+which shows why independent per-factor orthogonalization is not the right
+object. The final update incorporates a lightweight sensitivity metric into
+this product-aware direction and uses a separate scaling rule to keep the two
+factor steps balanced.
 
-\subsection{Spectral Descent}
+LoRA~\cite{lora} adapts a pretrained model by freezing each weight $W_0$ and
+training a low-rank update,
+\begin{equation}
+\DW = \frac{\alpha}{r}\,BA, \qquad
+B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
+\label{eq:lora}
+\end{equation}
+where the model sees only the product $BA$ but the optimizer acts on the two
+factors $A$ and $B$.
+
+\subsection{Dense Spectral Descent}
 
 We first recall the spectral descent view behind Muon~\cite{muon,carlson2015preconditioned}. For a dense weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, a linear minimization oracle minimizes the local linearization of the loss subject to a ball constraint:
 \begin{equation}
@@ -664,7 +676,7 @@ contrast, \methodname{} ensures each factor receives an update of equal size in 
 \paragraph{Matrix-aware updates.}
 Recently, optimizers that operate at the matrix level, rather than treating parameters as
 a flattened vector, have attracted attention for their gains over Adam~\cite{liu2025muon,
-qiu2026hyperparameter, wen2025fantastic}. Muon~\cite{muon} solves the spectral-norm LMO
+qiu2026hyperparameter, benchmark_practices}. Muon~\cite{muon} solves the spectral-norm LMO
 for a dense weight, producing an update equal to the polar factor of the momentum
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as

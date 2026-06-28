@@ -67,6 +67,13 @@ PEFT convention throughout — A: (r, d_in), B: (d_out, r), adapter output = `(a
 
 Terminology discipline: use **gauge** only for the exact LoRA reparameterization invariance / product-map kernel, e.g. transformations that leave `B @ A` unchanged or first-order factor updates in `ker(d(B @ A))`. Do not use "gauge" as a loose synonym for low-support, low-singular-value, weakly conditioned, or hard-to-interpret factor directions; name the measured quantity instead.
 
+Paper prose must not use internal ablation shorthand such as "bare partner-Gram",
+"partner-Gram polar", or "partner-Gram-only whitening". State the actual controls
+instead: identity metric (`P=Q=I`) vs learned diagonal metric, and whether the
+spectral-norm magnitude rescale is present. For the both-controls-removed arm,
+write "the decoupled update with identity metric and no magnitude rescale" or
+refer directly to `\Cref{prop:decoupled}` when the proposition is in scope.
+
 When reasoning about LoRA factor-step scaling, do not reduce the objective to
 the product output alone. The model sees `(B + dB)(A + dA)`, but optimization
 happens in the factor coordinates: conditioning, row/column subspaces,
