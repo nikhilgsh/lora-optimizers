@@ -103,118 +103,73 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-Consider a single linear layer with frozen pretrained weight
-$
-W_0 \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.
-$
-Following LoRA~\cite{lora}, we finetune this layer by learning a low rank update
+LoRA~\cite{lora} adapts a pretrained model by freezing each weight $W_0$ and
+training a low-rank update,
 \begin{equation}
 \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-of rank $r$ with scaling $\alpha$. To simplify the derivation, we suppress the scaling $\alpha/r$ so that the merged weight $W = W_0 + BA$. This simplification matches our experimental setting in \Cref{sec:exp}, where $\alpha = r$. The goal is to learn factors $A$ and $B$ that solve
+The model only sees the product $BA$, but the optimizer acts on the two factors
+$A$ and $B$. In practice these factors are usually trained with Adam applied
+independently to each factor. This default is simple and strong, but it ignores
+the matrix structure of the adapter update.
+
+Recent matrix-aware optimizers suggest that this structure matters. Muon-style
+methods use spectral-norm or polar updates to control a matrix as a linear
+operator~\cite{muon,polarexpress}. Other LoRA optimizers make the update
+product-aware or invariant to equivalent factorizations of $BA$~\cite{lorarite,imuon,loramuon}.
+A parallel line of work uses Kronecker-factored second moments to precondition
+matrix updates~\cite{kfac,shampoo,klshampoo,mousse}. These ingredients are
+promising, but they are often bundled together with expensive machinery, making
+it unclear which parts are responsible for faster adaptation and whether the
+useful part can improve wall-clock time rather than only step count.
+
+We introduce \methodname{}, a preconditioned orthogonalized optimizer for LoRA.
+\methodname{} keeps the spectral-polar update, but computes it in a learned
+two-sided diagonal metric and then sets the factor-step magnitude to control the
+spectral norm of the induced merged-weight update. The direction is a
+whiten--polar--unwhiten step using curvature factors $P$ and $Q$. The magnitude
+uses a single factor radius
 \[
-\begin{array}{ll}
-\underset{A, B}{\mbox{minimize}}&
-\mathcal{L}(W_0 + BA),
-\end{array}
+\rho = \frac{\eta}{\norm{A}_2+\norm{B}_2},
 \]
-where $\mathcal{L}$ is the task loss. Our loss will be the average over a training set $\mathcal{L}(W) = \E_{x}\left[ \ell_x(W)\right]$ where $\ell_x(W)$ denotes the loss over input $x$ and parameters $W$.
+so both factors receive equal spectral-norm steps while the linearized update to
+$BA$ remains bounded. This separates three decisions that are often entangled:
+the metric defining the update direction, the product-aware factor update, and
+the magnitude of the merged update.
 
-\paragraph{Spectral Descent.}
-Inspired by the success of Muon~\cite{muon,carlson2015preconditioned}, we develop our method using a Linear Minimization Oracle (LMO).  For now,  we ignore the particular low rank structure of our parameters, and consider $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with associated gradient $G = \nabla_W \mathcal{L}(W)$. 
-The LMO approach minimizes the local linearization of our loss subject to a ball constraint, that is
-\begin{equation}
- \begin{array}{ll}
-  \underset{\Delta W}{\mathrm{minimize}} &
-  \left\langle G, \Delta W \right\rangle \\[2pt]
-  \mbox{subject to} &
-  \displaystyle  
-  \left\| \Delta W   \right\|
-  \le \tau,
-  \end{array}
-  \label{eq:lmo}
-\end{equation}
-where $\|\cdot\|$ is a chosen norm. Given a solution $\Delta W$ to problem~\eqref{eq:lmo}, we then update our parameter according to 
-\[
-W \leftarrow W + \Delta W.
-\]
-% Since the LMO is homogeneous, $\eta$ only sets the scale of its solution. We use the solution as the update direction. Later we will choose its magnitude separately so that the merged update has a controlled spectral norm.
+Our derivation starts from a per-sample sensitivity view. Rather than bounding
+the weight change in a fixed norm, we ask for an update whose linearized loss
+increase is bounded for every example in the batch. A second-moment model of
+the per-example gradients turns this constraint into a preconditioned
+spectral-norm linear minimization oracle (LMO). Under a Kronecker approximation
+to the gradient covariance, the full-weight solution is a whitened polar step.
+Applying the same idea to the local linearization of the LoRA product yields
+independent factor subproblems, and the spectral magnitude rule turns their
+directions into the \methodname{} update.
 
-To define a method using~\eqref{eq:lmo} we only need to choose a norm. The key idea behind Muon is that we must control the size of the updates to the weight matrices in the spectral norm:
-\[ 
-\|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
-\]
-where $x\in \R^{d_{\mathrm{in}}}$ and $\|x\|_2 = \sqrt{\sum_{i=1}^{d_{\mathrm{in}}} x_i^2}$ is the standard Euclidean norm.
-The spectral norm is a conservative norm over linear operators, since it focuses on the \emph{worst-case} possible input $x$, that will give the largest output. Thus constraining against a large change in the spectral norm, can lead to more stable training and feature learning~\cite{yang2023spectral,bernstein2025modular}.  To make this spectral descent compatible with LoRA, we need to take the product structure of LoRA into account.
+Empirically, \methodname{} reaches Adam's final held-out loss in
+$1.2$--$1.7\times$ fewer steps across our model, dataset, and rank settings.
+Its extra per-step cost is at most $3\%$ at our training batch size, so the
+step-count gains translate almost directly into wall-clock gains. On
+Llama-3.2-1B finetuned on math, \methodname{} also outperforms Adam, Muon,
+iMuon, and LoRA-RITE.
 
-
-\paragraph{Product Spectral Descent.}
-Consider now any method that updates the two factors of LoRA as follows
-\[
-A \leftarrow A + \Delta A,
-\qquad
-B \leftarrow B + \Delta B.
-\]
-Updating the factors has the following affect on the total update
-\begin{equation} \label{eq:DeltaW-lin}
-\Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A ,
-\end{equation}
-where in the last approximation we have dropped the only nonlinear term $\Delta B\Delta A$.
-If we now use this linear approximation~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo}, the spectral constraint would be given by
-\[  \left\| B \Delta A + \Delta B A   \right\|
-  \le \tau.\]
-This constraint couples the two unknowns $\Delta A $ and $\Delta B.$ To decouple these to unknowns, we make use of the following upper bound
-\[  \left\| B \Delta A + \Delta B A   \right\| \; \leq\;  \left\| B \Delta A \right\| + \left\|\Delta B A   \right\| .\]
-Now using the above and~\eqref{eq:DeltaW-lin} for $\Delta W$ in~\eqref{eq:lmo} we arrive at the following \emph{product LMO} method:
-\begin{equation}
-  \begin{aligned}
-  \Delta A &\in    \argmin_{\Delta A}~ \langle G_A, \Delta A \rangle \quad \textnormal{subject to}\quad
-\norm{B \Delta A}\le\tau \\
-\Delta B &\in   \argmin_{\Delta B}~ \langle G_B,  \Delta B \rangle \quad \textnormal{subject to}\quad  \norm{\Delta B A}\le\tau,
-  \end{aligned}
-  \label{eq:decoupled-lora-lmo} 
-\end{equation}
-where we used that the gradients of the factors are given by 
-\begin{equation}\label{e-grad-wrt-factors}
-    G_A := \nabla_A \mathcal{L}(W_0+BA) = B^\top G,
-    \qquad 
-    G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
-\end{equation} 
-When using the spectral norm, we refer to~\eqref{eq:decoupled-lora-lmo} as the spectral product LMO.
-There have been a number of recent work that have independently, or also concurrently, proposed methods that are variants of the spectral product LMO~\eqref{eq:decoupled-lora-lmo}, including composed Muon~\cite{keigwin2026compositional} and LoRa-Muon~\cite{loramuon}. Though in our extensive background search (see~\Cref{app:memoryless}) we find that resulting updates from the spectral product LMO  already appears in LoRA-RITE \cite{lorarite}, and iMuon \cite{imuon}, though the interpretation we present in~\eqref{eq:decoupled-lora-lmo} is new, having only appeared concurrently in~\cite{keigwin2026compositional,loramuon}.
-
-In parallel to this, there is a line of research that develops left and right preconditioners for matrix valued loss, including KFAC~\cite{kfac}, Shampoo~\cite{shampoo,klshampoo} and very recently Mousse~\cite{mousse}.
-
-Leveraging ideas from spectral descent and Muon, we design a new LMO method that naturally combines preconditioning and spectral product LMO. 
-
-% \rob{Pieces of introduction I found}
-% \paragraph{Motivation.} Naive Muon (\Cref{lem:muon-lmo}) and iMuon (\Cref{prop:decoupled}) are the same spectral LMO under the Euclidean inner product, differing only in what they cap. \methodname{} keeps a spectral LMO for the \emph{direction} but measures it in a learned two-sided metric, and sets the \emph{magnitude} by a separate rule. Three stages:
-% \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-%   \item[(A)] \emph{Curvature.} Estimate diagonal $P,Q$ online as the Kronecker factors of the gradient second moment (coupled diagonal second moment matching \cite{klshampoo}; \eqref{eq:ours-klcoupling}).
-%   \item[(B)] \emph{Direction.} Spectral-norm LMO of the loss in that metric --- a whiten--polar--unwhiten step \eqref{eq:factor-directions}.
-%   \item[(C)] \emph{Magnitude.} Discard the LMO budget and bound the merged update in spectral norm by $\eta$~\eqref{eq:ours-prodcap}.
-% \end{itemize}
-% Stages (A) and (B) are separate problems --- estimation, then a step under the \emph{frozen} estimate --- composed by alternation, not one objective.
-% \rob{end pieces of introduction}
-
-
-\paragraph{Contributions.}
+Our contributions are:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item  We introduce a highly efficient method for LoRa finetuning called
-\methodname{} (Preconditioned Orthogonalized LoRA),  that reaches Adam's eval loss in
-$1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings, and in less time.
-  \item  We provide a new LMO perspective in~\Cref{sec:method} , where the constraints aims to bound the change in the per element loss. \methodname{} arises as an approximation to this new LMO method.
-  \item We introduce a simple procedure  for balancing the magnitude of the updates to each factor which is also based on the spectral norm. Using our magnitude balancing we find that the optimal learning rate of \methodname{} transfers across different choices of rank for the factors, see~\Cref{fig:lr_transfer}.
-  \item We run extensive abalations comparing \methodname{}  against xxx on models xxx data set xxx ranks xxx
+  \item We introduce \methodname{}, a LoRA optimizer that combines a
+  diagonal-curvature polar direction with explicit spectral-norm control of the
+  merged update.
+  \item We derive the update from a per-sample sensitivity constraint, yielding
+  a preconditioned spectral LMO and a product-aware LoRA approximation.
+  \item We show that curvature and magnitude control each contribute to the
+  speedup, while the full method adds at most $3\%$ per-step overhead over Adam.
+  \item We evaluate across model families, datasets, and LoRA ranks, finding
+  $1.2$--$1.7\times$ fewer steps to Adam's final loss and stable learning-rate
+  transfer across rank.
 \end{itemize}
-
-
-% \rob{Pieces of contributions I found}
-% \emph{Same operator, other compositions.} Compositional Muon applies it to the attention products $W_QW_K^\top$ and $W_OW_V$ \cite{tilde_csd}.
-%  \rob{end pieces of contributions}
 % ===========================================================================
 
 \section{\texorpdfstring{\methodname{}}{PoLoRA}: Preconditioned Orthogonalized LoRA}
@@ -224,7 +179,74 @@ $1.2$--$1.7\times$ fewer steps across nine (model, dataset, rank) settings, and 
 \label{sec:method}
 
 
-Inspired by the conservative view of Muon and the spectral norm, we develop a new pseudo-norm that is conservative with respect to a batch of incoming activations. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation (as opposed to an input).
+\subsection{Spectral Descent}
+
+We first recall the spectral descent view behind Muon~\cite{muon,carlson2015preconditioned}. For a dense weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, a linear minimization oracle minimizes the local linearization of the loss subject to a ball constraint:
+\begin{equation}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \left\langle G, \Delta W \right\rangle \\[2pt]
+  \mbox{subject to} &
+  \displaystyle
+  \left\| \Delta W \right\|
+  \le \tau,
+  \end{array}
+  \label{eq:lmo}
+\end{equation}
+where $\|\cdot\|$ is a chosen norm. A solution $\Delta W$ then gives the update direction for $W$.
+
+Muon chooses the spectral norm,
+\[
+\|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
+\]
+which controls the worst-case amplification of a linear operator. With this choice, the LMO direction is the polar factor of the gradient, up to sign and scale (\Cref{lem:muon-lmo}). Bounding the spectral norm of the update can therefore stabilize training and feature learning~\cite{yang2023spectral,bernstein2025modular}. To make this spectral descent view compatible with LoRA, we must account for the product structure in~\eqref{eq:lora}.
+
+\subsection{Spectral Descent for LoRA Products}
+
+Consider a LoRA step that updates the two factors by
+\[
+A \leftarrow A + \Delta A,
+\qquad
+B \leftarrow B + \Delta B.
+\]
+The induced update to the merged weight is
+\begin{equation} \label{eq:DeltaW-lin}
+\Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
+\end{equation}
+where we dropped the nonlinear term $\Delta B\Delta A$. If we substitute this linear approximation into~\eqref{eq:lmo}, the spectral constraint becomes
+\[
+\left\| B \Delta A + \Delta B A \right\|
+\le \tau.
+\]
+This constraint couples the two unknowns $\Delta A$ and $\Delta B$. We decouple them with the upper bound
+\[
+\left\| B \Delta A + \Delta B A \right\|
+\le
+\left\| B \Delta A \right\| + \left\|\Delta B A \right\|.
+\]
+Using this bound gives the product LMO
+\begin{equation}
+  \begin{aligned}
+  \Delta A &\in \argmin_{\Delta A}~ \langle G_A, \Delta A \rangle
+  \quad \textnormal{subject to}\quad
+  \norm{B \Delta A}\le\tau, \\
+  \Delta B &\in \argmin_{\Delta B}~ \langle G_B, \Delta B \rangle
+  \quad \textnormal{subject to}\quad
+  \norm{\Delta B A}\le\tau,
+  \end{aligned}
+  \label{eq:decoupled-lora-lmo}
+\end{equation}
+where the factor gradients are
+\begin{equation}\label{e-grad-wrt-factors}
+    G_A := \nabla_A \mathcal{L}(W_0+BA) = B^\top G,
+    \qquad
+    G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
+\end{equation}
+When the norm is spectral, we refer to~\eqref{eq:decoupled-lora-lmo} as the spectral product LMO. \methodname{} builds on this product-aware object, but changes both the metric used for the direction and the rule used to set the factor-step magnitude.
+
+\subsection{A Per-Sample Sensitivity Metric}
+
+We now derive a preconditioned metric for the spectral update. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation rather than a full input.
 
 To be conservative with respect to every activation, we enforce that no single activation results in a large change in the loss, that is we want
 \begin{equation}\label{eq:loss-diff}
