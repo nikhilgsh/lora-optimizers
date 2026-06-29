@@ -105,16 +105,16 @@ The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two fa
 However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works try to address this by making the update product-aware~\cite{imuon,loramuon,tilde_csd}, but we find that this alone does not consistently improve over Adam. 
 
 This motivates \methodname{}, which is also derived using a product-aware viewpoint, but differs in how the step is chosen. Our contributions are:
-\begin{itemize}
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
     \item \textbf{Curvature-aware direction.} We derive a curvature-preconditioned update direction by controlling the per-sample loss change across a batch, with a product-aware version for LoRA.
     
     \item \textbf{Magnitude control.} Unlike other product-aware updates, we control the factor update sizes in addition to the size of the merged weight update.
 
     \item \textbf{Component ablation.} We isolate the effect of the previous two contributions and show each provides a meaningful speedup.
 
-    \item \textbf{Learning-rate transfer.} We demonstrate empirically that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less learning rate sensitive.
+    \item \textbf{Learning-rate transfer.} We show that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less sensitive to learning rate.
 
-    \item \textbf{Empirical Performance.} Across a range of base models and datasets, \methodname{} reaches Adam's held-out loss in $1.2$–$1.7\times$ fewer steps, while adding at most 3\% per-step overhead.
+    \item \textbf{Empirical performance.} Across a range of base models and datasets, \methodname{} reaches Adam's held-out loss in $1.2$–$1.7\times$ fewer steps, while adding at most 3\% per-step overhead.
 \end{itemize}
 
 % \nikhil{I think we want the contributions to be more concise and punchy.}
