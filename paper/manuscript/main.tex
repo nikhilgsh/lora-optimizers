@@ -90,36 +90,12 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-Foundation models are trained on broad data at scale and adapted to many
-downstream tasks~\cite{foundation_models}. As their capabilities improve,
-practitioners want one shared base model to support agentic coding, mathematical
-reasoning, multilingual assistance, private data, and product-specific
-workflows. Fully finetuning a separate copy for each application is a costly way
-to represent these updates. Training stores dense gradients and optimizer state
-for the whole model, and deployment must store, load, and serve many dense
-variants.
+Large-scale models are pretrained on a wide variety of data and can be adapted to solve many downstream tasks~\cite{foundation_models}. However, finetuning a separate copy each time is costly. Training requires enough available GPU memory for computing full model gradients and storing the optimizer state, and the overhead for storing and serving multiple finetuned variants poses a real challenge. Low-rank adaptation (LoRA~\cite{lora}) addresses these issues by keeping the base model fixed and learning a
+small task-specific adapter~\cite{punica,bitdelta,schulman2025lora}.
 
-LoRA addresses this bottleneck by keeping the base model fixed and learning a
-small task-specific adapter~\cite{lora,qlora}. Adapters are especially useful
-when one base model supports many downstream variants, since they reduce
-training memory and make multi-tenant serving practical~\cite{punica,bitdelta,schulman2025lora}.
-
-The standard LoRA recipe applies Adam independently to the two adapter factors.
-This choice is simple and strong, but it ignores the matrix structure of the
-adapter update. Recent work on matrix-aware optimization has shown that
-orthogonalized and matrix-preconditioned updates can improve over Adam in
-language-model training~\cite{liu2025muon,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}.
-The same principle should be useful for LoRA, where each adapter is itself a
-matrix update.
-
-For LoRA, however, matrix-aware optimization is not just a matter of applying a
-matrix optimizer to each factor. The model is changed by the product of the two
-factors, so per-factor orthogonalization can miss the geometry of the adapter
-update. Concurrent LoRA optimizers make this product structure explicit through
-invariant or product-aware updates~\cite{imuon,loramuon,tilde_csd}. In our
-experiments, product awareness alone did not consistently beat Adam.
-Performance also depends on how the direction is preconditioned and how the
-individual factor steps are scaled.
+The standard LoRA optimization recipe straightforwardly applies Adam~\cite{adam} independently to the two adapter factors. Although this is an effective baseline, this update ignores the matrix structure of the adapter. In past years, matrix-aware optimizers have demonstrated significant promise in language-model pretraining~\cite{liu2025muon,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter} and have demonstrated gains over the default choice of Adam. Therefore, it is natural to ask if similar gains can be made in the LoRA finetuning setting.
+\nikhil{till here}
+Naively applying matrix-aware updates to the LoRA factors independently turns out to be insufficient to provide a benefit over Adam. Several LoRA optimizers have concurrently with this work made the observation that it is important to actually account for the product structure explicitly~\cite{imuon,loramuon,tilde_csd}. However we find that even taking into account the product structure is not sufficient for a performant optimizer.
 
 We introduce \methodname{}, a LoRA optimizer that combines product-aware
 orthogonalization with a diagonal curvature metric and explicit control of
