@@ -95,15 +95,16 @@ many downstream tasks~\cite{foundation_models}. Finetuning a separate full
 copy for each task is expensive, because training must hold gradients and
 optimizer state for the whole model, and deploying each task means storing and
 serving its own full-size model. Low-rank adaptation (LoRA~\cite{lora}) avoids
-both costs by freezing the base weight $W_0$ and learning a small low-rank
+both costs by freezing the base weight $W_0$ and adding a small low-rank
 update,
 \begin{equation}
 \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
-A \in \mathbb{R}^{r \times d_{\mathrm{in}}}.
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-Because only the adapter is trained and the base model stays shared, finetuning
+so the adapted weight is $W_0 + \DW$. Because only the adapter is trained and
+the base model stays shared, finetuning
 runs on nearly the same hardware as inference, and one server can serve many
 adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
@@ -120,18 +121,13 @@ Adam, because what changes the model is the product $BA$, not either factor
 alone. Concurrent LoRA optimizers instead make this product structure
 explicit~\cite{imuon,loramuon,tilde_csd}. We find, however, that product
 structure alone is still not enough. A consistent gain also requires adapting
-the update to the loss curvature and controlling the size of the merged weight
-step.
+the update to the loss curvature and controlling the size of the merged update.
 
-We introduce \methodname{}, a LoRA optimizer built around three ideas.
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item It forms the update from the product $BA$ rather than from each factor
-  separately.
-  \item It adapts that update to the local curvature of the loss.
-  \item It explicitly bounds the size of the merged update.
-\end{itemize}
-Every step reduces to matrix multiplications and stays cheap, so step-count
-savings turn directly into wall-clock speedups.
+We introduce \methodname{}, a LoRA optimizer that combines all three: it forms
+the update from the product $BA$ rather than from each factor separately, adapts
+that update to the local curvature of the loss, and explicitly bounds the size
+of the merged update. Every step reduces to matrix multiplications and stays
+cheap, so step-count savings turn directly into wall-clock speedups.
 
 Empirically, \methodname{} reaches Adam's final held-out loss in
 $1.2$--$1.7\times$ fewer steps across our model, dataset, and rank settings,
@@ -141,9 +137,6 @@ and LoRA-RITE.
 
 Our contributions are:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item We introduce \methodname{}, a LoRA optimizer that combines a
-  diagonal-curvature polar direction with explicit spectral-norm control of the
-  merged update.
   \item We derive the curvature metric from a per-sample loss-change constraint,
   yielding a preconditioned spectral-norm linear minimization oracle and a
   product-aware LoRA approximation.
