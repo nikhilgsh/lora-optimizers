@@ -103,21 +103,24 @@ B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-so the adapted weight is $W_0 + \DW$. Because only the adapter is trained and
-the base model stays shared, finetuning
-runs on nearly the same hardware as inference, and one server can serve many
-adapters at once~\cite{punica,bitdelta,schulman2025lora}.
+so the adapted weight is $W = W_0 + \DW$. With only the adapter trained,
+finetuning runs on nearly the same hardware as inference, and the shared base
+lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
-The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two \emph{factors} $A$ and
-$B$ independently. But the model is changed only through their \emph{product}
-$BA$, so optimizing the factors separately ignores the matrix structure of the
-update they produce. In language-model pretraining, optimizers such as Muon and Shampoo that account for matrix structure have been shown to outperform
-Adam~\cite{liu2025muon,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains can carry over to LoRA training.
+The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two
+factors $A$ and $B$. Adam treats all the parameters as a single flat vector,
+ignoring matrix structure. In language-model pretraining, matrix-aware
+optimizers such as Muon and Shampoo exploit this matrix structure and outperform
+Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter},
+so it is natural to ask whether the same gains carry over to LoRA.
 
-However, naively applying a matrix-aware optimizer to each factor independently does not improve on Adam. Several concurrent works have tried to address this by accounting for the product structure
-explicitly~\cite{imuon,loramuon,tilde_csd}. We find, however, that product
-structure alone is still not enough. A consistent gain also requires adapting
-the update to the loss curvature and controlling the size of the merged update.
+However, applying a matrix-aware optimizer to each factor does not improve on
+Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the
+\emph{factors} $A$ and $B$ individually. Several concurrent works instead make
+the update product-aware, coupling the two factor updates rather than computing
+each separately~\cite{imuon,loramuon,tilde_csd}. We find that product-awareness
+alone is still not enough, but that adding curvature adaptation and a bound on
+the size of the merged update yields a consistent gain.
 
 We introduce \methodname{}, a LoRA optimizer that combines all three: it forms
 the update from the product $BA$ rather than from each factor separately, adapts
