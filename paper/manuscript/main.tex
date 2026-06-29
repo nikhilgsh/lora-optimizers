@@ -108,18 +108,14 @@ the base model stays shared, finetuning
 runs on nearly the same hardware as inference, and one server can serve many
 adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
-The standard recipe applies Adam~\cite{adam} to the two \emph{factors} $A$ and
+The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two \emph{factors} $A$ and
 $B$ independently. But the model is changed only through their \emph{product}
 $BA$, so optimizing the factors separately ignores the matrix structure of the
-update they produce. In language-model pretraining, optimizers that account for
-this matrix structure now outperform
-Adam~\cite{liu2025muon,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}.
-It is natural to ask whether the same gains carry over to LoRA.
+update they produce. In language-model pretraining, optimizers such as Muon and Shampoo that account for matrix structure have been shown to outperform
+Adam~\cite{liu2025muon,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains can carry over to LoRA training.
 
-Applying a matrix-aware optimizer to each factor on its own does not improve on
-Adam, because what changes the model is the product $BA$, not either factor
-alone. Concurrent LoRA optimizers instead make this product structure
-explicit~\cite{imuon,loramuon,tilde_csd}. We find, however, that product
+However, naively applying a matrix-aware optimizer to each factor independently does not improve on Adam. Several concurrent works have tried to address this by accounting for the product structure
+explicitly~\cite{imuon,loramuon,tilde_csd}. We find, however, that product
 structure alone is still not enough. A consistent gain also requires adapting
 the update to the loss curvature and controlling the size of the merged update.
 
