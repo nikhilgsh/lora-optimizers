@@ -90,31 +90,18 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-Large-scale models are pretrained on a wide variety of data and adapted to
-many downstream tasks~\cite{foundation_models}. Finetuning a separate full
-copy for each task is expensive, because training must hold gradients and
-optimizer state for the whole model, and deploying each task means storing and
-serving its own full-size model. Low-rank adaptation (LoRA~\cite{lora}) avoids
-both costs by freezing the base weight $W_0$ and adding a small low-rank
-update,
+Large-scale models nowadays are pretrained on a wide variety of data and adapted to many different downstream tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized model. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
 \begin{equation}
 \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-so the adapted weight is $W = W_0 + \DW$. With only the adapter trained,
-finetuning runs on nearly the same hardware as inference, and the shared base
-lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
+to each layer, so the adapted weight is $W = W_0 + \DW$. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
-The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two
-factors $A$ and $B$. Adam treats all the parameters as a single flat vector,
-ignoring matrix structure. In language-model pretraining, matrix-aware
-optimizers such as Muon and Shampoo exploit this matrix structure and outperform
-Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter},
-so it is natural to ask whether the same gains carry over to LoRA.
+The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon and Shampoo treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA.
 
-However, applying a matrix-aware optimizer to each factor does not improve on
+However, naively applying a matrix-aware optimizer to each factor does not improve on
 Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the
 \emph{factors} $A$ and $B$ individually. Several concurrent works instead make
 the update product-aware, coupling the two factor updates rather than computing
@@ -123,20 +110,21 @@ alone is still not enough, but that adding curvature adaptation and a bound on
 the size of the merged update yields a consistent gain.
 
 We introduce \methodname{}, a LoRA optimizer that combines all three: it forms
-the update from the product $BA$ rather than from each factor separately, adapts
+the update taking into account the product $BA$ rather than treating each factor separately,
+adapts
 that update to the local curvature of the loss, and explicitly bounds the size
-of the merged update. Every step reduces to matrix multiplications and stays
-cheap, so step-count savings turn directly into wall-clock speedups.
+of the merged update. Every step reduces to matrix multiplications and thus remains 
+cheap and GPU friendly, so step-count savings translate directly into wall-clock speedups.
 
 Empirically, \methodname{} reaches Adam's final held-out loss in
 $1.2$--$1.7\times$ fewer steps across our model, dataset, and rank settings,
 while adding at most $3\%$ to the per-step cost at our training batch size. On
-Llama-3.2-1B finetuned on math, the method also outperforms Adam, Muon, iMuon,
-and LoRA-RITE.
+Llama-3.2-1B finetuned on math, the method also outperforms Adam, Muon, iMuon\cite{imuon},
+and LoRA-RITE\cite{lorarite}.
 
 Our contributions are:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item We derive the curvature metric from a per-sample loss-change constraint,
+  \item We derive a new curvature metric from a per-sample loss-change constraint,
   yielding a preconditioned spectral-norm linear minimization oracle and a
   product-aware LoRA approximation.
   \item We show that curvature and magnitude control each contribute to the
