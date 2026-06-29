@@ -90,7 +90,7 @@
 %   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
 %   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
-Large-scale models nowadays are pretrained on a wide variety of data and adapted to many different downstream tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized model. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
+Large-scale models are pretrained on a wide variety of data and adapted to many different downstream tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized models. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
 \begin{equation}
 \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
@@ -101,37 +101,26 @@ to each layer, so the adapted weight is $W = W_0 + \DW$. With only the adapter t
 
 The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon and Shampoo treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA.
 
-However, naively applying a matrix-aware optimizer to each factor does not improve on
-Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the
-\emph{factors} $A$ and $B$ individually. Several concurrent works instead make
-the update product-aware, coupling the two factor updates rather than computing
-each separately~\cite{imuon,loramuon,tilde_csd}. We find that product-awareness
-alone is still not enough, but that adding curvature adaptation and a bound on
-the size of the merged update yields a consistent gain.
+However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works instead make the update product-aware, coupling the two factor updates~\cite{imuon,loramuon,tilde_csd}. We find that product-awareness alone still does not consistently improve over Adam. 
 
-We introduce \methodname{}, a LoRA optimizer that combines all three: it forms
-the update taking into account the product $BA$ rather than treating each factor separately,
-adapts
-that update to the local curvature of the loss, and explicitly bounds the size
-of the merged update. Every step reduces to matrix multiplications and thus remains 
-cheap and GPU friendly, so step-count savings translate directly into wall-clock speedups.
+This motivates \methodname{}, which keeps the product-aware view but changes how the step is chosen. \methodname{} adapts the update to the local curvature of the loss and controls both the factor updates and the merged weight update. This combination yields consistent step savings over Adam, and since each update uses only matrix multiplications, those savings translate directly into wall-clock speedups.
 
 Empirically, \methodname{} reaches Adam's final held-out loss in
 $1.2$--$1.7\times$ fewer steps across our model, dataset, and rank settings,
 while adding at most $3\%$ to the per-step cost at our training batch size. On
 Llama-3.2-1B finetuned on math, the method also outperforms Adam, Muon, iMuon\cite{imuon},
-and LoRA-RITE\cite{lorarite}.
+and LoRA-RITE\cite{lorarite}. 
 
-Our contributions are:
+\noindent Our contributions are:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item We derive a new curvature metric from a per-sample loss-change constraint,
-  yielding a preconditioned spectral-norm linear minimization oracle and a
-  product-aware LoRA approximation.
-  \item We show that curvature and magnitude control each contribute to the
-  speedup, while the full method adds at most $3\%$ per-step overhead over Adam.
-  \item We evaluate across model families, datasets, and LoRA ranks, finding
-  $1.2$--$1.7\times$ fewer steps to Adam's final loss and stable learning-rate
-  transfer across rank.
+\item We give a new viewpoint for motivating spectral methods (like Muon) that  also incorporates curvature preconditioning. Instead of using a spectral constraint on the update, we introduce a sensitivity constraint. Our sensitivity constraint imposes that the change in the per-sample loss is bounded. Preconditioner spectral descent naturally arises from using this constraint, after also introducing approximations to make it tractable
+% \rob{This current explanation is incomprehensible}
+%   \item We derive a new curvature metric from a per-sample loss-change constraint,
+%   yielding a preconditioned spectral-norm linear minimization oracle and a
+%   product-aware LoRA approximation.
+\item We introduce a form of magnitude control that enforces that each factor take the same update length in spectral norm, while also enforcing that the change in they product be bounded. 
+  \item We isolate the two main components of \methodname{}—curvature preconditioning and spectral-norm magnitude balancing—and ablate them separately, showing that each independently contributes to the observed speedup over Adam while their combination gives the strongest performance. 
+  \item We validated \methodname{} across four pretrained base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—and three instruction-tuning corpora: code, math, and Bengali. In total, our experiments cover nine model--dataset settings, together with additional rank sweeps, component ablations, and learning-rate sweeps, with each training run using a single GPU for 9000 steps. Across this broad evaluation, \methodname{} consistently reaches Adam's final held-out loss in $1.2$--$1.7\times$ fewer steps while adding only a small per-step overhead. Furthermore  \methodname{} adds at most $3\%$ per-step overhead over Adam.
 \end{itemize}
 % ===========================================================================
 
@@ -153,7 +142,7 @@ factor steps balanced.
 
 \subsection{Muon}
 
-Muon chooses the polar factor of a matrix gradient as its update direction~\cite{muon,carlson2015preconditioned}. This direction solves a spectral-norm linear minimization oracle (LMO). For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, an LMO minimizes the local linearization of the loss subject to a ball constraint.
+Muon chooses the polar factor of a matrix gradient as its update direction~\cite{muon,carlson2015preconditioned}. This direction solves a spectral-norm linear minimization oracle (LMO). For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, an LMO minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -175,17 +164,19 @@ controls the worst-case amplification of a linear operator. With this choice, th
 
 \subsection{Product Muon}
 
-Consider a LoRA step that updates the two factors by
+Consider a LoRA step that updates the two factors by a given matrix $\Delta A$ and $\Delta B$ as follows
 \[
 A \leftarrow A + \Delta A,
 \qquad
 B \leftarrow B + \Delta B.
 \]
-The induced update to the merged weight has the linearized product update
+Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$. But what matters is the resulting product $BA$. Indeed, 
+the update to the merged weight has the linearized product update
 \begin{equation} \label{eq:DeltaW-lin}
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
 \end{equation}
-where we dropped the nonlinear term $\Delta B\Delta A$. Product Muon applies the same spectral-norm LMO to this linearized product update. Substituting~\eqref{eq:DeltaW-lin} into~\eqref{eq:lmo}, the spectral constraint becomes
+where we dropped the nonlinear term $\Delta B\Delta A$. 
+To take into account the resulting product, a spectral norm bound should be applied to thus linearized product update. Substituting~\eqref{eq:DeltaW-lin} into~\eqref{eq:lmo}, the spectral constraint becomes
 \[
 \left\| B \Delta A + \Delta B A \right\|
 \le \tau.
@@ -196,7 +187,7 @@ This constraint couples the two unknowns $\Delta A$ and $\Delta B$. We decouple 
 \le
 \left\| B \Delta A \right\| + \left\|\Delta B A \right\|.
 \]
-Using this bound gives the Product Muon LMO
+With this bound we get the \emph{Product Muon} LMO
 \begin{equation}
   \begin{aligned}
   \Delta A &\in \argmin_{\Delta A}~ \langle G_A, \Delta A \rangle
