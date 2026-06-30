@@ -61,7 +61,7 @@ plt.rcParams.update({
 #   ours        -> saturated blue, SOLID, thick (the protagonist stands out)
 #   AdamW       -> neutral gray, SOLID, thin (the reference baseline)
 #   Muon family -> distinct warm hues, DASHED (the spectral baselines: Muon, iMuon)
-#   ablation    -> green/pink, DASHED (w/o curvature; w/o curvature + magnitude)
+#   ablation    -> green/pink, SOLID thin (w/o curvature; w/o curvature or magnitude)
 NAME_CURV = "w/o curvature"
 NAME_MAGN = "w/o magnitude"
 NAME_NAIVE = "Muon"            # raw per-factor polar = Muon on the factors (sec 3.1)
@@ -71,20 +71,20 @@ NAME_NAIVE = "Muon"            # raw per-factor polar = Muon on the factors (sec
 # "LoRA-Muon step": (a) it reads as PoLoRA minus two controls, and (b) it does not
 # over-credit the concurrent LoRA-Muon for an update that pre-dates it. The lineage
 # citation lives in the fig2 caption.
-NAME_LM = "w/o curvature + magnitude"
+NAME_LM = "w/o curvature or magnitude"
 # The hero (fig1) stacks AdamW against three baselines that converge near AdamW's final
 # loss. All curves are SOLID (SSO Fig 8); they separate by colour + weight: AdamW is the
 # dark, thick reference (lw 2.0); the three baselines are THIN (lw 1.3) in clearly
 # separated hues (gold / vermillion / purple); PoLoRA is the thickest blue. (The fig2
-# ablation arms keep their dashed/dotted styles -- they are not in fig1.)
+# ablation arms are SOLID too, separated by colour + weight -- they are not in fig1.)
 STYLE = {
     "AdamW":      dict(color="#333333", marker="o", ls="-",  lw=2.0),
     "PoLoRA": dict(color="#0072B2", marker="s", ls="-",  lw=2.4),
     NAME_NAIVE:   dict(color="#CB5A4C", marker="v", ls="-",  lw=1.7),  # muted brick (warm)
     "iMuon":      dict(color="#E0A33D", marker="^", ls="-",  lw=1.7),  # muted amber (warm)
     "LoRA-RITE":  dict(color="#8E6BAE", marker=">", ls="-",  lw=1.7),  # muted purple (cool) -- distinct from Muon
-    NAME_LM:      dict(color="#CC79A7", marker="P", ls="--", lw=1.6),
-    NAME_CURV:    dict(color="#009E73", marker="D", ls="--", lw=1.6),
+    NAME_LM:      dict(color="#CC79A7", marker="P", ls="-",  lw=1.6),
+    NAME_CURV:    dict(color="#009E73", marker="D", ls="-",  lw=1.6),
     NAME_MAGN:    dict(color="#882255", marker="X", ls=":",  lw=1.6),
 }
 
@@ -498,20 +498,22 @@ def fig2():
               -curvature+magnitude (identity metric, no magnitude rescale) ->
               -curvature -> PoLoRA -- each at its best lr, AdamW's final loss as the dashed
               target (curve crossings = the speedups).
-      (right) speedup-over-AdamW bars for ALL arms, including naive Muon, which ties
-              AdamW (reads cleanly as a bar where it would overlap as a curve). Bar
-              labels carry the numbers, so no separate table is needed.
+      (right) speedup-over-AdamW bars for the same three arms. Bar labels carry the
+              numbers, so no separate table is needed.
     AdamW appears only as a reference (the target line / the 1.0x baseline), not as a
     competing trajectory (that is the hero's job)."""
     wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)
     labeled = labeled_completed_runs(workload_runs(wl), arm_key, horizon=wl.horizon)
     rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
     rows = {r["variant"]: r for r in rows}
-    labels = {NAME_NAIVE: "Muon", NAME_LM: "w/o curvature\n+ magnitude",
+    labels = {NAME_NAIVE: "Muon", NAME_LM: "w/o curvature\nor magnitude",
               NAME_CURV: "w/o curvature", "PoLoRA": "PoLoRA (ours)"}
 
+    # Native width == printed \linewidth (6.5in, letterpaper 1in margins) so fonts
+    # render at their true pt instead of being shrunk ~0.7x by includegraphics.
+    LAB, TICK, LEG, ANN = 9.5, 8.5, 8.5, 8.0
     fig, (axL, axR) = plt.subplots(
-        1, 2, figsize=(9.4, 3.4), gridspec_kw={"width_ratios": [1.45, 1.0]})
+        1, 2, figsize=(6.5, 2.5), gridspec_kw={"width_ratios": [1.45, 1.0]})
 
     # ── left: loss curves of the three arms that separate (Muon ties AdamW and
     #    coincides with the identity-metric/no-rescale arm -> moved to the appendix) ──
@@ -525,11 +527,12 @@ def fig2():
                  lw=STYLE[v].get("lw", 1.6), label=labels[v].replace("\n", " "))
         print(f"  {v:24s} best_lr {lr:g}  final {ys[-1]:.4f}")
     axL.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
-    axL.text(250, target, "AdamW", fontsize=8, va="bottom", ha="left", color="#666666")
-    axL.set_xlabel("Training Step")
-    axL.set_ylabel("Eval Loss")
+    axL.text(250, target, "AdamW", fontsize=ANN, va="bottom", ha="left", color="#666666")
+    axL.set_xlabel("Training Step", fontsize=LAB)
+    axL.set_ylabel("Eval Loss", fontsize=LAB)
     axL.set_xlim(0, 9300)
-    axL.legend(frameon=False, fontsize=8.5, loc="upper right")
+    axL.tick_params(labelsize=TICK)
+    axL.legend(frameon=False, fontsize=LEG, loc="upper right")
     axL.spines[["top", "right"]].set_visible(False)
 
     # ── right: speedup bars for the same three arms ──
@@ -544,15 +547,16 @@ def fig2():
         axR.barh(y, val, height=0.62, color=STYLE[v]["color"],
                  alpha=0.92 if crossed else 0.40,
                  hatch=None if crossed else "//", edgecolor=STYLE[v]["color"])
-        axR.text(val + 0.015, y, f"{s:.2f}$\\times$" if crossed else "ties",
-                 va="center", ha="left", fontsize=8.5)
+        axR.text(val + 0.03, y, f"{s:.2f}$\\times$" if crossed else "ties",
+                 va="center", ha="left", fontsize=ANN)
         print(f"  {v:24s} speedup {('x%.2f' % s) if crossed else 'no crossing (ties)'}")
     axR.axvline(1.0, color="#666666", ls=(0, (4, 3)), lw=1.0)
-    axR.text(1.0, len(arms) - 0.30, "AdamW", fontsize=8, ha="center", va="bottom",
+    axR.text(1.0, len(arms) - 0.30, "AdamW", fontsize=ANN, ha="center", va="bottom",
              color="#666666")
     axR.set_yticks(range(len(arms)))
-    axR.set_yticklabels([labels[v] for v in arms], fontsize=8.5)
-    axR.set_xlabel("speedup over AdamW")
+    axR.set_yticklabels([labels[v] for v in arms], fontsize=TICK)
+    axR.set_xlabel("speedup over AdamW", fontsize=LAB)
+    axR.tick_params(axis="x", labelsize=TICK)
     axR.set_xlim(0, 1.9)
     axR.set_ylim(-0.6, len(arms) - 0.25)
     axR.spines[["top", "right"]].set_visible(False)
