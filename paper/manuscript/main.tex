@@ -100,18 +100,47 @@ A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \end{equation}
 to each layer. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
-The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon and Shampoo treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA.
+
+The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon and Shampoo treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA. 
 
 However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works try to address this by proposing updates that are variants of a product-aware~\cite{imuon,loramuon,tilde_csd} Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}). In our experiments, we find that the Product Muon step is also unable to consistently improve over Adam. 
 
-This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update. Our contributions are:
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-    \item \textbf{Component ablation.} We isolate the effect of the curvature-aware direction and magnitude control and show each provides a meaningful speedup.
 
-    \item \textbf{Learning-rate transfer.} We show that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less sensitive to the learning rate.
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
+  \caption{\textbf{\methodname{} outperforms baselines during training.} Evaluation loss across
+  training steps for Llama-3.2-1B finetuned on math dataset at rank $r = 256$. \methodname{} outperforms Adam, iMuon, Muon, and LoRA-RITE and reaches Adam's final loss in $1.63\times$ fewer steps.  Per-setting learning
+  curves available in \Cref{app:curves}.}
+  \label{fig:hero}
+\end{figure}
 
-    \item \textbf{Empirical performance.} Across a range of base models and datasets, \methodname{} reaches Adam's held-out loss in $1.2$–$1.7\times$ fewer steps, while adding at most 3\% per-step overhead.
-\end{itemize}
+This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. In the terminology of the community working on variant of Muon, \methodname{} is LMO (Linear Minimization Oracle) based method, with a new constraint on the change in the per-sample loss. This formulation gives as a solution a curvature-preconditioned update 
+
+with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update.
+
+We evaluate \methodname{} through an extensive numerical study spanning multiple base models, datasets, adapter ranks, and learning-rate settings. As previewed in \Cref{fig:hero}, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines, reaching Adam's final held-out loss in $1.2$--$1.7\times$ fewer steps across our different settings, with only a less than 3\% cost increase of each step as compared to Adam. We complement these comparisons with component ablations that separate the effects of the curvature-aware direction and magnitude controls we introduce, showing that both contribute to the overall speedup of \methodname{} over our baselines.
+ Finally, we find that \methodname{} is  easier to tune than Adam: its optimal learning rate is stable across rank, and performance is less sensitive to the learning rate.
+
+
+% This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update.
+% Our contributions are:
+% \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+%     \item \textbf{Component ablation.} We isolate the effect of the curvature-aware direction and magnitude control and show each provides a meaningful speedup.
+
+%     \item \textbf{Learning-rate transfer.} We show that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less sensitive to the learning rate.
+
+%     \item \textbf{Empirical performance.} Across a range of base models and datasets, \methodname{} reaches Adam's held-out loss in $1.2$–$1.7\times$ fewer steps, while adding at most 3\% per-step overhead.
+% \end{itemize}
+
+\noindent
+Our open source implementation is available at:
+\begin{quote}\centering
+{\color{blue}\url{https://github.com/XXX}}
+\end{quote}
+
+
+The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname{}. We first review Muon as a spectral-norm linear minimization oracle in \Cref{sec:muon}. We then adapt this view to LoRA products in \Cref{sec:product-muon} to arrive . \Cref{sec:sample-loss-lmo} derives our curvature-aware update from a per-sample loss-change constraint and turns it into a practical factor update with magnitude control. \Cref{sec:exp} evaluates the method. The main comparison in \Cref{sec:exp-main} measures step and wall-clock speedups over Adam, with the headline behavior shown in \Cref{fig:hero} and the full breadth summarized in \Cref{tab:breadth}. \Cref{sec:exp-ablation} separates the roles of curvature and magnitude control, while \Cref{sec:exp-taskdep} studies rank transfer and distribution shift. Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.
 
 % \nikhil{I think we want the contributions to be more concise and punchy.}
 % \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
@@ -502,14 +531,7 @@ We use the authors' official implementations for iMuon and LoRA-RITE, and detail
 \label{sec:exp-main}
 We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match Adam's tuned loss after $T$ steps. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
-  \caption{\textbf{\methodname{} outperforms baselines during training.} Evaluation loss across
-  training steps for Llama-3.2-1B finetuned on math dataset at rank $r = 256$. \methodname{} outperforms Adam, iMuon, Muon, and LoRA-RITE and reaches Adam's final loss in $1.63\times$ fewer steps.  Per-setting learning
-  curves available in \Cref{app:curves}.}
-  \label{fig:hero}
-\end{figure}
+
 
 \paragraph{Wall-clock.}\label{sec:exp-walltime} The total FLOPs of each step of \methodname{}   are independent of the batch size, while the forward
 and backward passes scale with batch size (\Cref{app:flops}). Thus the  relative per-step time of \methodname{}  shrinks
@@ -689,7 +711,7 @@ The per-sample loss-control view suggests several possible follow-up directions.
 \crefalias{subsection}{appendix}
 \section{Experimental Details}
 \label{app:exp}
-In this section we describe the setup of \Cref{sec:exp-setup} in full. For each model, dataset and rank we only vary the optimizer and its learning rate. For each setting and optimizer, we sweep the learning
+In this section we describe the setup of \Cref{sec:exp-setup} in full. For each model, dataset, and rank we only vary the optimizer and its learning rate. For each setting and optimizer, we sweep the learning
 rate and select the run with the lowest held-out evaluation loss.
 
 \paragraph{Models.} Four general pretrained base models, each adapted with LoRA: OLMo-2-1B \cite{olmo2}, Llama-3.2-1B \cite{llama3}, Qwen2.5-1.5B \cite{qwen25}, and Llama-3-8B \cite{llama3}.
@@ -733,17 +755,18 @@ LR schedule            & constant (no warmup or decay) \\
   \item \textbf{Grid} (per optimizer): $\{3{\times}10^{-5},\ 10^{-4},\ 3{\times}10^{-4},\ 10^{-3},\ 3{\times}10^{-3},\ 10^{-2},\ 3{\times}10^{-2},\ 10^{-1}\}$.
   \item \textbf{Selection}: best per optimizer and setting on held-out eval loss (never training loss).
   \item \textbf{Adam}: betas $(0.9,0.999)$, $\varepsilon = 10^{-8}$.
-  \item \textbf{Muon}: momentum $\beta_1 = 0.9$, matrix sign via PolarExpress ($8$ iterations), no $B$-side learning-rate multiplier.
+  \item \textbf{Muon}: momentum $\beta_1 = 0.9$, matrix sign via PolarExpress ($8$ iterations).
   \item \textbf{iMuon}: the authors' reference implementation (their Appendix~K momentum form), with momentum $0.95$, Nesterov, and $5$ Newton--Schulz steps.
   \item \textbf{LoRA-RITE}: the authors' official PyTorch implementation, with betas $(0.9,0.999)$, $\varepsilon = 10^{-6}$, in-optimizer gradient clip $1.0$ in the invariant coordinates (escape-mass term disabled, as in the reference), and the trainer's global gradient-norm clip disabled because a raw-gradient-norm clip is not transformation-invariant.
 \end{itemize}
 
 \paragraph{\methodname{} configuration.} Fixed across every \methodname{} run (full step in \Cref{alg:ours}):
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item Momentum decay $\beta_1{=}0.9$.
-  \item Curvature-EMA decay $0.99$ (the $\beta_2$ of \eqref{eq:ours-klcoupling}); one flip-flop alternation per step.
-  \item PolarExpress and the shared Gram--Newton--Schulz at $K{=}8$ iterations each.
-  \item Relative damping $\delta{=}10^{-4}$.
+  \item Momentum decay $\beta_1 = 0.9$.
+  \item Curvature-EMA decay $0.99$ (the $\beta_2$ of \eqref{eq:ours-klcoupling}).
+  
+  \item PolarExpress and the shared Gram--Newton--Schulz at $K = 8$ iterations each.
+  \item Relative damping $\delta = 10^{-4}$.
 \end{itemize}
 
 \paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime})
@@ -912,6 +935,8 @@ Substituting back gives the stated solution.
 
 \subsection{Magnitude}
 
+\nikhil{need to reevaluate if this section is worth it.}
+
 \begin{lemma}[A constant per-factor step does not control the merged update]
 \label{lem:factor-radius-gauge}
 Fix $P$, $Q$, and the product gradient $G$, let $\widehat D_A=D_A/\norm{D_A}_2$ and
@@ -1013,7 +1038,6 @@ the matrix sign equals
 
 \paragraph{LoRA-RITE.}
 Algorithm~1 of LoRA-RITE~\cite{lorarite} adds three pieces of memory to a base step. These are an EMA first moment with parameter $\beta_1$, an accumulated second moment transported across the changing factor basis, and an ``escaped-mass'' floor added to that second moment.
-
 Dropping all three, we get the authors' momentum-free update (their Eq.~(14)),
 which in our notation for $ \widehat G_B=G_B S_B^{-1/2}$ becomes
 \[
@@ -1412,9 +1436,7 @@ $Q_K$ is interpreted.
 Take $R_0=\widetilde C$, equivalently
 $Y_0=\widetilde C^{1/2}$.  The same iteration gives
 \[
-    Q_K\widetilde C^{1/2}
-    =
-    Y_K
+    Y_K=Q_K\widetilde C^{1/2}
     \approx
     \msign(\widetilde C^{1/2})
     =
@@ -1428,9 +1450,9 @@ We recover the inverse square root as
 \[
     C^{-1/2}
     \approx
-    \alpha^{-1/2}\widetilde C^{-1/2}
+    \frac{1}{\sqrt{\alpha}}\widetilde C^{-1/2}
     \approx
-    \alpha^{-1/2}Q_K .
+    \frac{1}{\sqrt{\alpha}}Q_K .
 \]
     
 \end{itemize}
@@ -1546,10 +1568,10 @@ the preconditioned polar directions \eqref{eq:factor-directions}, and the metric
 \eqref{eq:ours-klcoupling}. There is a fixed number of these per factor, each costing
 $O(r^2 d)$, for $12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ in total. The second group is the
 matrix sign $\msign(\cdot)$ and the curvature inverse-square-roots, computed entirely in the
-small $r\times r$ space by the Gram Newton--Schulz of \Cref{app:gramns}, for $32\,K\,r^3$.
+small $r\times r$ space by the Gram Newton--Schulz of \Cref{app:gramns}, for $32 K r^3$.
 Together, with no eigendecomposition anywhere,
 \begin{equation}
-  C_{\mathrm{opt}}=12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32\,K\,r^3 .
+  C_{\mathrm{opt}}=12 r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32 K r^3 .
   \label{eq:flop-opt}
 \end{equation}
 
@@ -1557,9 +1579,9 @@ Together, with no eigendecomposition anywhere,
 per-layer overhead in closed form,
 \begin{equation}
   \frac{C_{\mathrm{opt}}}{C_{\mathrm{fwd}}+C_{\mathrm{bwd}}}
-  =\frac{12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32\,K\,r^3}{4\,d_{\mathrm{in}}d_{\mathrm{out}}\,n_{\mathrm{tok}}}
+  =\frac{12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32 K r^3}{4 d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}}}
   =\frac{3r^2}{n_{\mathrm{tok}}}\Big(\tfrac1{d_{\mathrm{in}}}+\tfrac1{d_{\mathrm{out}}}\Big)
-  +\underbrace{\frac{8Kr^3}{d_{\mathrm{in}}d_{\mathrm{out}}\,n_{\mathrm{tok}}}}_{\text{Gram Newton--Schulz}}.
+  +\underbrace{\frac{8Kr^3}{d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}}}}_{\text{Gram Newton--Schulz}}.
   \label{eq:flop-ratio}
 \end{equation}
 The fraction falls as $1/n_{\mathrm{tok}}$, so it shrinks as the batch grows. The first term is
