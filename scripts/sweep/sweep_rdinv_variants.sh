@@ -11,7 +11,7 @@
 #
 # Positional args (must match params JSON key order):
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir
-#   8: lora_r  9: precond_method  10: rdinv_variant
+#   8: lora_r  9: precond_method  10: rdinv_variant  11: rdinv_delta (OPTIONAL; empty=coupled to precond_delta)
 lr=${1:-3e-2}
 optimizer=${2:-kl-diag-polar-lora}
 seed=${3:-0}
@@ -22,9 +22,16 @@ data_dir=${7:-data/openmath_instruct_2_2m_packed_seq2048_llama32}
 lora_r=${8:-256}
 precond_method=${9:-gram_ns}
 rdinv_variant=${10:-A}
+rdinv_delta=${11:-none}
 
 precond_args=()
 [ -n "$precond_method" ] && precond_args=(--precond_method "$precond_method" --higham_iters "${HIGHAM_ITERS:-8}")
+
+# Decoupled diagonal-metric floor. Sentinel "none" (or empty) -> fall through to train.py
+# default None -> coupled to precond_delta. ("none" default keeps generate_task_file able to
+# register this positional, which needs a non-empty default.)
+rdinv_delta_args=()
+[ -n "$rdinv_delta" ] && [ "$rdinv_delta" != "none" ] && rdinv_delta_args=(--rdinv_delta "$rdinv_delta")
 
 # Per-task torch.compile cache dir ($$ = task PID) so concurrent disBatch tasks
 # don't corrupt a shared inductor/AOTAutograd cache.
@@ -73,6 +80,7 @@ python train_lora.py \
     --cw_picard_iters 1 \
     --cw_nesterov \
     --rdinv_variant "$rdinv_variant" \
+    "${rdinv_delta_args[@]}" \
     "${precond_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \

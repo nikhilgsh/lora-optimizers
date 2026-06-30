@@ -683,6 +683,12 @@ def make_parser():
                              "matrix Adafactor (x+δ·Tr(partner))^{-1/2}, trace-scaled. "
                              "δ is op-norm-relative for A/B but trace-relative for VN. "
                              "Only 'A' reproduces the paper figures.")
+    parser.add_argument("--rdinv_delta", type=float, default=None,
+                        help="Decoupled damping floor for the _rdinv (P,Q diagonal) "
+                             "metric. Default None = use --precond_delta (coupled, which "
+                             "also floors the small-side C_A/C_B inverse-sqrt). Set it to "
+                             "sweep the diagonal floor alone (e.g. VN trace-δ) while "
+                             "holding the curvature-inverse floor at --precond_delta.")
     parser.add_argument("--cw_nesterov", action="store_true",
                         help="Use Nesterov-lookahead momentum (ĝ + β₁·m, Muon "
                              "convention) into the CurvatureWhitenLoRA whiten→polar "
@@ -1273,6 +1279,7 @@ def main():
         cw_factor_a=args.cw_factor_a,
         cw_factor_b=args.cw_factor_b,
         rdinv_variant=args.rdinv_variant,
+        rdinv_delta=args.rdinv_delta,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,

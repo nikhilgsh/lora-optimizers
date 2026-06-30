@@ -1104,7 +1104,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
                  cw_unpinned=False, cw_factor_a=0.0, cw_factor_b=0.0,
-                 rdinv_variant="A"):
+                 rdinv_variant="A", rdinv_delta=None):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1175,6 +1175,11 @@ class CurvatureWhitenLoRA(Optimizer):
                              "diag_metric=True (the D_in/D_out diagonal metric whose "
                              "partner traces it references).")
         self.rdinv_variant = str(rdinv_variant)
+        # rdinv_delta DECOUPLES the _rdinv (P,Q diagonal-metric) damping floor from
+        # self.delta (which also sets the small-side C_A/C_B gram_ns inverse-sqrt floor).
+        # None -> use self.delta (coupled, original behavior). Set it to vary the
+        # diagonal floor (e.g. VN's δ·Tr) while holding the curvature-inverse floor fixed.
+        self.rdinv_delta = None if rdinv_delta is None else float(rdinv_delta)
         # diag_metric reuses the D_in/D_out EMAs as the single global diagonal metric.
         # With kl_coupled=True those diagonals are the KL coupled fixed point (Prop 4);
         # with kl_coupled=False they are plain grad-energy EMAs (the diag-shampoo arm).
@@ -1301,16 +1306,17 @@ class CurvatureWhitenLoRA(Optimizer):
         comparable across variants — for A/B it is relative to the op-norm, for VN
         relative to the trace, so VN's floor is ~Tr/x_max larger at the same δ."""
         v = self.rdinv_variant
+        d = self.delta if self.rdinv_delta is None else self.rdinv_delta
         xmax = x.amax(dim=-1, keepdim=True)
         if v == "B":
-            out = (x + self.delta * xmax).clamp_min(1e-30).rsqrt()
+            out = (x + d * xmax).clamp_min(1e-30).rsqrt()
         elif v == "VN":
             if partner_trace is None:
-                out = (x + self.delta * xmax).clamp_min(1e-30).rsqrt()
+                out = (x + d * xmax).clamp_min(1e-30).rsqrt()
             else:
-                out = (x + self.delta * partner_trace).clamp_min(1e-30).rsqrt()
+                out = (x + d * partner_trace).clamp_min(1e-30).rsqrt()
         else:  # "A" — shipped / paper protagonist
-            out = (x / xmax.clamp_min(1e-30) + self.delta).rsqrt()
+            out = (x / xmax.clamp_min(1e-30) + d).rsqrt()
         return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
     def _cw_diag_record(self, *, A_post, B_post, A_pre, B_pre, dA, dB,
@@ -11540,6 +11546,7 @@ def build_optimizer(
     cw_factor_a: float = 0.0,
     cw_factor_b: float = 0.0,
     rdinv_variant: str = "A",
+    rdinv_delta: float | None = None,
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,

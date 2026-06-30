@@ -81,6 +81,11 @@ class OptimizerConfig:
     # NOT comparable across variants (op-norm-relative for A/B, trace-relative for
     # VN). Only "A" reproduces the paper figures; B/VN are the investigation.
     rdinv_variant: str = "A"
+    # Decouples the _rdinv (P,Q diagonal-metric) damping floor from precond_delta
+    # (which also sets the small-side C_A/C_B inverse-sqrt floor). None -> use
+    # precond_delta (coupled). Set it to sweep the diagonal floor alone (e.g. VN's
+    # trace-relative δ) while holding the curvature-inverse floor fixed.
+    rdinv_delta: float | None = None
     cw_picard_iters: int = 1
     cw_nesterov: bool = False
     cw_no_radius: bool = False
