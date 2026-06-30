@@ -173,7 +173,7 @@ A \leftarrow A + \Delta A,
 \qquad
 B \leftarrow B + \Delta B.
 \]
-Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$. But what matters is the resulting product $BA$. Indeed, 
+Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$. But what matters is the resulting product $BA$, and a separate bound on $\Delta A$ and $\Delta B$ does not control it (\Cref{lem:factor-radius-gauge}). Indeed, 
 the update to the merged weight is, after linearizing the product,
 \begin{equation} \label{eq:DeltaW-lin}
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
@@ -414,9 +414,8 @@ The minimizers scale linearly with the budgets, $\Delta A=-\tau D_A$ and $\Delta
 
 \paragraph{Magnitude.}
 % It remains to choose the step magnitude. 
-% Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update. 
-% Under an equivalent rescaling of the LoRA factors, a fixed per-factor magnitude can make the merged update arbitrarily large (\Cref{lem:factor-radius-gauge}).
-We now choose the update magnitudes for the two factors subject to two constraints. First, the linearized total update $\Delta W$ should have a spectral norm bounded by a user-specified learning rate $\eta$. Second, the factor updates $\Delta A$ and $\Delta B$ should have equal spectral-norm magnitude.
+% Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update.
+We now choose the update magnitudes for the two factors subject to two constraints. First, the linearized merged update $\Delta W$ should have a spectral norm bounded by a user-specified learning rate $\eta$. Second, the factor updates $\Delta A$ and $\Delta B$ should have equal spectral-norm magnitude.
 
 By the triangle inequality and submultiplicativity,
 \begin{equation}
@@ -441,6 +440,7 @@ ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \qquad
 \Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
 \]
+Accounting for the quadratic term $\Delta B\Delta A$ dropped in~\eqref{eq:DeltaW-lin} would change $\rho$ by only $O(\eta)$ (\Cref{rem:quadratic}).
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
 Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. 
@@ -461,7 +461,7 @@ coupled second moment equations (\Cref{app:matnormal}).
 \Statex
 \Phase{Direction}
 \State $C_A\gets B^\top\,P\,B, \qquad C_B\gets A\,Q\,A^\top$
-\State $D_A\gets C_A^{-1/2}\,\msign \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
+\State $D_A\gets C_A^{-1/2}\,\msign \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{preconditioned polar step~\eqref{eq:factor-directions}}
 \State $D_B\gets P^{-1/2}\,\msign \big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
 \Statex
 \Phase{Magnitude}
@@ -624,7 +624,7 @@ to other initializations. Rank-stabilized LoRA~\cite{rslora} replaces the $\alph
 adapter scale with $\alpha/\sqrt{r}$ to avoid the rank-dependent shrinkage that makes
 high-rank adapters hard to train, and $\mu$A~\cite{mua} studies how these
 hyperparameters should scale with rank to keep the optimal learning rate stable. In
-contrast, \methodname{} ensures each factor receives an update of equal size in the spectral norm, while simultaneously ensuring the total update to the weight is also bounded in spectral norm. 
+contrast, \methodname{} ensures each factor receives an update of equal size in the spectral norm, while simultaneously ensuring the merged-weight update is also bounded in spectral norm. 
 
 % changes the update geometry itself, computing factor update
 % directions in a curvature-aware metric
@@ -640,7 +640,7 @@ for a dense weight, producing an update equal to the matrix sign of the momentum
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
-whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} also applies a matrix-sign step to a whitened gradient. Its metric is derived from controlling per-sample loss change in the batch. We adapt this update to LoRA training and add magnitude control, which removes the need for learning-rate grafting \cite{shi2023distributed, mousse}.
+whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} also applies a matrix-sign step to a preconditioned gradient. Its metric is derived from controlling per-sample loss change in the batch. We adapt this update to LoRA training and add magnitude control, which removes the need for learning-rate grafting \cite{shi2023distributed, mousse}.
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
@@ -911,54 +911,44 @@ Substituting back gives the stated solution.
 
 \subsection{Magnitude}
 
-\begin{lemma}[Fixed factor step sizes under LoRA rescaling]
+\begin{lemma}[A constant per-factor step does not control the merged update]
 \label{lem:factor-radius-gauge}
-Fix $P$, $Q$, and the product gradient $G$, and let
-$\widehat D_A=D_A/\norm{D_A}_2$ and $\widehat D_B=D_B/\norm{D_B}_2$ be the
-normalized directions from \eqref{eq:factor-directions}. For $c>0$, rescale the
-factors by
+Fix $P$, $Q$, and the product gradient $G$, let $\widehat D_A=D_A/\norm{D_A}_2$ and
+$\widehat D_B=D_B/\norm{D_B}_2$ be the normalized directions of
+\eqref{eq:factor-directions}, and step both factors by a common, fixed size $\rho>0$,
+$\Delta A=-\rho\widehat D_A$ and $\Delta B=-\rho\widehat D_B$. Under the
+product-preserving rescaling $(A,B)\mapsto(cA,c^{-1}B)$, $c>0$, which leaves $BA$
+unchanged, the normalized directions are invariant, $\widehat D_{A,c}=\widehat D_A$ and
+$\widehat D_{B,c}=\widehat D_B$, and the first-order merged update
 \[
-  B_c=cB,\qquad A_c=c^{-1}A,
+  U_c=-\rho\bigl(c^{-1}B\,\widehat D_A+c\,\widehat D_B A\bigr)
 \]
-which leaves the product fixed, $B_cA_c=BA$. These normalized directions are
-invariant under the rescaling, so a common factor step size $\rho>0$ gives the
-first-order merged update
-\[
-  U_c=-\rho\bigl(cB\,\widehat D_A+c^{-1}\widehat D_B A\bigr).
-\]
-If $B\widehat D_A\ne0$ or $\widehat D_B A\ne0$, then $\sup_{c>0}\norm{U_c}_2=\infty$.
+satisfies $\sup_{c>0}\norm{U_c}_2=\infty$ whenever $B\widehat D_A\neq0$ or
+$\widehat D_B A\neq0$. Bounding the factor steps in isolation therefore does not control
+the product update $\Delta W$.
 \end{lemma}
 
 \begin{proof}
-\emph{The normalized directions are rescaling-invariant.} Under the rescaling, the
-$A$-block factor gradient and contracted curvature scale as
+Under the rescaling $A_c=cA$, $B_c=c^{-1}B$,
 \[
-  G_{A,c}=B_c^\top G=c\,G_A,\qquad
-  C_{A,c}=B_c^\top P B_c=c^2C_A,
+  G_{A,c}=B_c^\top G=c^{-1}G_A,\qquad
+  C_{A,c}=B_c^\top P B_c=c^{-2}C_A,
 \]
 so the polar argument in \eqref{eq:factor-directions} is unchanged,
+$C_{A,c}^{-1/2}G_{A,c}\,Q^{-1/2}=C_A^{-1/2}G_A\,Q^{-1/2}$. Hence $D_{A,c}=cD_A$, and
+normalizing removes the scalar, $\widehat D_{A,c}=\widehat D_A$. Symmetrically,
+$G_{B,c}=G A_c^\top=cG_B$ and $C_{B,c}=A_cQA_c^\top=c^{2}C_B$ give $D_{B,c}=c^{-1}D_B$
+and $\widehat D_{B,c}=\widehat D_B$. With both directions fixed, the merged update is
+$U_c=B_c\Delta A+\Delta B A_c=-\rho\bigl(c^{-1}B\widehat D_A+c\,\widehat D_B A\bigr)$.
+The two terms scale oppositely in $c$:
 \[
-  C_{A,c}^{-1/2}G_{A,c}\,Q^{-1/2}=C_A^{-1/2}G_A\,Q^{-1/2}.
-\]
-Hence $D_{A,c}=c^{-1}D_A$, and normalizing removes the scalar:
-$\widehat D_{A,c}=\widehat D_A$. Symmetrically,
-\[
-  G_{B,c}=G A_c^\top=c^{-1}G_B,\qquad
-  C_{B,c}=A_cQA_c^\top=c^{-2}C_B,
-\]
-give $D_{B,c}=cD_B$ and $\widehat D_{B,c}=\widehat D_B$. With both directions
-fixed, the merged update is the stated $U_c$.
-
-\emph{The merged update is unbounded.} The two terms of $U_c$ scale oppositely
-in $c$:
-\[
-  \frac{\norm{U_c}_2}{c}\to\rho\norm{B\widehat D_A}_2\ \ (c\to\infty),
+  c\,\norm{U_c}_2\to\rho\norm{B\widehat D_A}_2\ \ (c\to0),
   \qquad
-  c\,\norm{U_c}_2\to\rho\norm{\widehat D_B A}_2\ \ (c\to0).
+  \norm{U_c}_2/c\to\rho\norm{\widehat D_B A}_2\ \ (c\to\infty).
 \]
-If $B\widehat D_A\ne0$, the first limit forces $\norm{U_c}_2\to\infty$ as
-$c\to\infty$; otherwise, if $\widehat D_B A\ne0$, the second forces
-$\norm{U_c}_2\to\infty$ as $c\to0$. In either case $\sup_{c>0}\norm{U_c}_2=\infty$.
+If $B\widehat D_A\ne0$, the first forces $\norm{U_c}_2\to\infty$ as $c\to0$; otherwise,
+if $\widehat D_B A\ne0$, the second forces $\norm{U_c}_2\to\infty$ as $c\to\infty$. In
+either case $\sup_{c>0}\norm{U_c}_2=\infty$.
 \end{proof}
 
 \begin{remark}[Negligibility of the quadratic term]
@@ -1095,7 +1085,7 @@ $H^{1/2}=(R\otimes L)^{1/4}$ gives the dense update
   \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
 \]
 \methodname{} instead uses the full gradient covariance $\Sigma\approx Q\otimes P$ as its
-metric, whitening by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse-square-root
+metric, preconditioning by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse-square-root
 rather than Mousse's fourth-root power; the first-order LoRA product map then contracts
 these dense factors to $C_A=B^\top P B$ and $C_B=AQA^\top$.
 
@@ -1502,7 +1492,7 @@ factor $r/d$, and we drop them.
 \paragraph{Optimizer.} The optimizer step (\Cref{alg:ours}) runs on the factors $A,B$ alone
 and does not depend on $n_{\mathrm{tok}}$. Its matmuls fall into two groups. The first group
 spans the long dimension $d$: forming the curvature factors $C_A,C_B$ \eqref{eq:ours-closure},
-the whiten--polar--unwhiten directions \eqref{eq:factor-directions}, and the metric update
+the preconditioned polar directions \eqref{eq:factor-directions}, and the metric update
 \eqref{eq:ours-klcoupling}. There is a fixed number of these per factor, each costing
 $O(r^2 d)$, for $12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ in total. The second group is the
 matrix sign $\msign(\cdot)$ and the curvature inverse-square-roots, computed entirely in the
