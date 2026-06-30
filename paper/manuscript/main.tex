@@ -1424,7 +1424,8 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 
 \subsection{Relative Damping}\label{app:damping}
 We use relative damping for each inverse square root computation in \Cref{alg:ours}.
-Let $X \succ 0$ be symmetric matr
+Let $X$ be symmetric positive definite with eigendecomposition
+$X = U\operatorname{diag}(\lambda_i)U^\top$,
 \[
 \tilde X = X + \lambda_\max(X) I = 
 U\operatorname{diag}
