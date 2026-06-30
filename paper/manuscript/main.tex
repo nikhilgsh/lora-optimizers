@@ -1424,34 +1424,47 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 
 \subsection{Relative Damping}\label{app:damping}
 We use relative damping for each inverse square root computation in \Cref{alg:ours}.
-Let $X$ be symmetric positive definite with eigendecomposition
-$X = U\operatorname{diag}(\lambda)U^\top$,
-defined damped matrix
+Let $X \in \mathbb{R}^{r\times r}$ be symmetric positive semidefinite with eigendecomposition
+$X = U\operatorname{diag}(\lambda)U^\top$.
+Defined damped matrix
 \[
-\tilde X = X + \lambda_{\max}(X) \delta I = 
+\hat X = X + \lambda_{\max} \delta I = 
 U\operatorname{diag}
     \left(\lambda + \lambda_{\max}\delta \mathbf{1}
     \right)
     U^\top.
 \]
-We further normalize the spectrum
-The damped eigenvalues lie in
+Further normalize the spectrum to get
 \[
-    [\lambda_{\min}+\lambda_{\max}\delta,
-    \lambda_{\max}+\lambda_{\max}\delta].
+\widetilde X = \hat X /\alpha,
+\qquad \alpha=\operatorname{tr}(\hat X).
 \]
-
-Thus eigenvalues of inverse square root
-$\tilde X^{-1/2}$ are bounded from above by
+Since $\hat X\succ 0$, then 
 \[
-   \frac{1}{\sqrt{\lambda_{\min}+\lambda_{\max}\delta}}.
+\lambda_{\max}(1+\delta) \leq \alpha =
+\sum_{i=1}^r \lambda_i + r\lambda_{\max}\delta
+\leq r\lambda_{\max}(1+\delta).
+\]
+Thus the eigenvalues of $\widetilde X$ lie in
+\[
+    \frac{\lambda_i + \lambda_{\max}\delta}{\alpha}
+    \in
+    \left [\frac{\delta}{r(1+\delta)}, 1
+    \right ].
+\]
+Therefore, eigenvalues of inverse square root
+$\tilde X^{-1/2}$ are in the range
+\[
+\left [1, \sqrt{\frac{r(1+\delta)}{\delta}} \right ].
 \]
 Thus $\delta$  prevents directions with
 nearly zero curvature from being amplified without bound.
 
 \textbf{Warmup.}
 At the beginning of training, an EMA curvature factor may still be zero.
-When $\lambda_{\max}=0$, we set inverse square root to identity.  The corresponding
+When $\lambda_{\max}=0$, we set inverse square root
+to identity,
+$\widetilde X^{-1/2}=I$.  The corresponding
 side is then unpreconditioned, so the update reduces to the plain
 momentum direction until the curvature estimate becomes nonzero.
 
