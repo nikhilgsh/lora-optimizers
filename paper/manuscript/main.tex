@@ -437,7 +437,9 @@ ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \]
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
-Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. We compute the matrix sign and inverse square roots by Gram Newton--Schulz iterations (\Cref{app:gramns}), estimate the spectral norms by power iteration (\Cref{alg:smax}), and use damping in the curvature inverse square roots (\Cref{app:damping}). For further tractability, we restrict matrices 
+Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. 
+\nikhil{we should address the EMA used for the gradient second-moment.}
+We compute the matrix sign and inverse square roots by Gram Newton--Schulz iterations (\Cref{app:gramns}), estimate the spectral norms by power iteration (\Cref{alg:smax}), and use damping in the curvature inverse square roots (\Cref{app:damping}). For further tractability, we restrict matrices 
 $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}. To estimate the diagonal factors $P$ and $Q$ we apply KL-Shampoo's \cite{klshampoo}
 coupled second moment equations (\Cref{app:matnormal}).
 
@@ -1359,7 +1361,7 @@ $Q_K$ is interpreted.
     For a damped curvature matrix $C$ (\Cref{app:damping}), first normalize
     \[
         \widetilde C = C/\alpha,
-        \qquad \alpha \geq \|C\|_2.
+        \qquad \alpha = \operatorname{tr}(\widetilde C).
     \]
 Take $R_0=\widetilde C\succ0$, equivalently
 $Y_0=\widetilde C^{1/2}$.  The same iteration gives
