@@ -86,6 +86,12 @@ class OptimizerConfig:
     # precond_delta (coupled). Set it to sweep the diagonal floor alone (e.g. VN's
     # trace-relative δ) while holding the curvature-inverse floor fixed.
     rdinv_delta: float | None = None
+    # Init of the diagonal metric EMAs D_in (=Q) / D_out (=P). "zero" (shipped/paper):
+    # step 1 uses the _rdinv identity fallback (the step-one rule). "ones": step 1
+    # normalizes to the same identity without the special case, but the EMA carries a
+    # decaying β₂ᵗ identity prior through warmup. Identical step-1 update; differs only
+    # in the warmup transient. Ablation only — "zero" reproduces the paper figures.
+    cw_metric_init: str = "zero"
     cw_picard_iters: int = 1
     cw_nesterov: bool = False
     cw_no_radius: bool = False

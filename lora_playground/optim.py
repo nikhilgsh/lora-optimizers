@@ -1104,7 +1104,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
                  cw_unpinned=False, cw_factor_a=0.0, cw_factor_b=0.0,
-                 rdinv_variant="A", rdinv_delta=None):
+                 rdinv_variant="A", rdinv_delta=None, cw_metric_init="zero"):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1180,6 +1180,18 @@ class CurvatureWhitenLoRA(Optimizer):
         # None -> use self.delta (coupled, original behavior). Set it to vary the
         # diagonal floor (e.g. VN's δ·Tr) while holding the curvature-inverse floor fixed.
         self.rdinv_delta = None if rdinv_delta is None else float(rdinv_delta)
+        # cw_metric_init selects the init of the diagonal metric EMAs D_in (=Q) and
+        # D_out (=P). "zero" (shipped/paper): D=0, so step 1 hits the _rdinv xmax≈0
+        # fallback → identity metric (the "step-one rule"), and the (1-β₂) EMA scale
+        # cancels under the max-normalization from step 2 on (pure measured shape).
+        # "ones": D=1, so step 1 normalizes to the SAME identity metric WITHOUT the
+        # special case, and the EMA carries a decaying β₂ᵗ·1 uniform (identity) prior
+        # on the curvature shape over a 1/(1-β₂) timescale. The two give bit-identical
+        # step-1 updates and converge once β₂ᵗ→0; they differ only in the warmup
+        # transient. See notebooks/cw_metric_init_analysis.ipynb.
+        if cw_metric_init not in {"zero", "ones"}:
+            raise ValueError(f"cw_metric_init must be 'zero' or 'ones', got {cw_metric_init!r}")
+        self.cw_metric_init = str(cw_metric_init)
         # diag_metric reuses the D_in/D_out EMAs as the single global diagonal metric.
         # With kl_coupled=True those diagonals are the KL coupled fixed point (Prop 4);
         # with kl_coupled=False they are plain grad-energy EMAs (the diag-shampoo arm).
@@ -1254,6 +1266,8 @@ class CurvatureWhitenLoRA(Optimizer):
         # used in (Alg 3 updates L/R/Q after the weight step). First eigh seed
         # happens after step 1. Grams are zero-initialized (Alg 3 EMA).
         self._q_initialized = False
+        # Diagonal-metric (D_in/D_out) initializer — see cw_metric_init above.
+        _minit = torch.ones if self.cw_metric_init == "ones" else torch.zeros
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
             r, d_in = A.shape
@@ -1271,8 +1285,8 @@ class CurvatureWhitenLoRA(Optimizer):
                 'R_B': torch.zeros((r, r), dtype=torch.float32, device=A.device),
                 # large side: diagonal curvature = EMA of per-column / per-row
                 # gradient energy.
-                'D_in': torch.zeros(d_in, dtype=torch.float32, device=A.device),
-                'D_out': torch.zeros(d_out, dtype=torch.float32, device=B.device),
+                'D_in': _minit(d_in, dtype=torch.float32, device=A.device),
+                'D_out': _minit(d_out, dtype=torch.float32, device=B.device),
                 'Q_A': eye.clone(),
                 'Q_B': eye.clone(),
                 # exact eigenvalues of L_A / R_B from the last eigh refresh
@@ -11547,6 +11561,7 @@ def build_optimizer(
     cw_factor_b: float = 0.0,
     rdinv_variant: str = "A",
     rdinv_delta: float | None = None,
+    cw_metric_init: str = "zero",
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,

@@ -689,6 +689,15 @@ def make_parser():
                              "also floors the small-side C_A/C_B inverse-sqrt). Set it to "
                              "sweep the diagonal floor alone (e.g. VN trace-δ) while "
                              "holding the curvature-inverse floor at --precond_delta.")
+    parser.add_argument("--cw_metric_init", choices=["zero", "ones"], default="zero",
+                        help="Init of the CurvatureWhitenLoRA diagonal metric EMAs "
+                             "D_in (=Q) and D_out (=P). 'zero' (default, shipped/paper) "
+                             "starts the EMAs at 0 so step 1 uses the _rdinv identity "
+                             "fallback (the step-one rule); 'ones' starts them at 1 so the "
+                             "step-1 metric normalizes to the same identity WITHOUT the "
+                             "special case, carrying a decaying β₂ᵗ identity prior through "
+                             "warmup. Identical step-1 update; differs only in the warmup "
+                             "transient. Ablation only — 'zero' reproduces the paper figures.")
     parser.add_argument("--cw_nesterov", action="store_true",
                         help="Use Nesterov-lookahead momentum (ĝ + β₁·m, Muon "
                              "convention) into the CurvatureWhitenLoRA whiten→polar "
@@ -1280,6 +1289,7 @@ def main():
         cw_factor_b=args.cw_factor_b,
         rdinv_variant=args.rdinv_variant,
         rdinv_delta=args.rdinv_delta,
+        cw_metric_init=args.cw_metric_init,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,
