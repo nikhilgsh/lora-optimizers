@@ -1426,71 +1426,33 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 We use relative damping for each inverse square root computation in \Cref{alg:ours}.
 Let $X$ be symmetric positive definite with eigendecomposition
 $X = U\operatorname{diag}(\lambda)U^\top$,
+de
 \[
-\tilde X = X + \lambda_{\max}(X) I = 
+\tilde X = X + \lambda_{\max}(X) \delta I = 
 U\operatorname{diag}
-    \left(
-        \left( \lambda + \lambda_{\max}\delta\right)^{-1/2}
+    \left(\lambda + \lambda_{\max}\delta \mathbf{1}
     \right)
     U^\top.
 \]
-On the normalized spectrum, the damping parameter $\delta$ has a fixed
-meaning.  If $X = U\operatorname{diag}(\lambda_i)U^\top$ is the eigendecomposition of $X$,
-then inverse square root of $X$ with relative damping is defined as
-\[
-    H_\delta(X)
-    =
-    U\operatorname{diag}
-    \left(
-        \left(\frac{\lambda_i}{\lambda_{\max}}+\delta\right)^{-1/2}
-    \right)
-    U^\top .
-\]
 The damped eigenvalues lie in
 \[
-    \frac{\lambda_i}{\lambda_{\max}}+\delta
-    \in [\delta,1+\delta]
-    ~\implies~
-    \kappa\left(
-        \frac{X}{\lambda_{\max}}+\delta I
-    \right)
-    \leq
-    \frac{1+\delta}{\delta}.
+    [\lambda_{\min}+\lambda_{\max}\delta,
+    \lambda_{\max}+\lambda_{\max}\delta].
 \]
-Equivalently,
+Thus eigenvalues of inverse square root
+$\tilde X^{-1/2}$ are bounded from above by
 \[
-    \|H_\delta(X)\|_2 \leq \delta^{-1/2}.
+   \frac{1}{\sqrt{\lambda_{\min}+\lambda_{\max}\delta}}.
 \]
 Thus $\delta$  prevents directions with
 nearly zero curvature from being amplified without bound.
 
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-\item \textbf{Relation to ordinary damping.}
-Since
-\[
-    \frac{X}{\lambda_{\max}}+\delta I
-    =
-    \frac{1}{\lambda_{\max}}
-    \left(X+\delta\lambda_{\max}I\right),
-\]
-we have
-\[
-    H_\delta(X)
-    =
-    \lambda_{\max}^{1/2}
-    \left(X+\delta\lambda_{\max}I\right)^{-1/2}.
-\]
-Thus relative damping is ordinary damping with floor
-$\delta\lambda_{\max}$, up to a global scalar.  That scalar is harmless
-because the subsequent polar and spectral-normalization steps are
-scale-invariant.
-
-\item \textbf{Warmup.}
+\textbf{Warmup.}
 At the beginning of training, an EMA curvature factor may still be zero.
-When $\lambda_{\max}=0$, we set $H_\delta(X)=I$.  The corresponding
+When $\lambda_{\max}=0$, we set inverse square root to identity.  The corresponding
 side is then unpreconditioned, so the update reduces to the plain
 momentum direction until the curvature estimate becomes nonzero.
-\end{itemize}
+
 
 
 
