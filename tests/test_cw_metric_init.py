@@ -39,12 +39,12 @@ _PROD = dict(kl_coupled=True, diag_metric=True, soap_v=False, use_polar=True,
              precond_refresh_every=10, delta=1e-4, betas=(0.9, 0.999), lr=1e-2)
 
 
-def _two_runs(b_zero, nsteps):
+def _two_runs(b_zero, nsteps, init="ones"):
     torch.manual_seed(0)
     m0 = _Model(b_zero)
     m1 = copy.deepcopy(m0)
     o0 = CurvatureWhitenLoRA(m0, cw_metric_init="zero", **_PROD)
-    o1 = CurvatureWhitenLoRA(m1, cw_metric_init="ones", **_PROD)
+    o1 = CurvatureWhitenLoRA(m1, cw_metric_init=init, **_PROD)
     g = torch.Generator().manual_seed(1)
     rel = []
     for _ in range(nsteps):
@@ -78,6 +78,16 @@ def test_diverges_after_step1(b_zero):
     assert rel[-1] > 1e-3, f"no divergence by step 8 (rel={rel[-1]:.2e})"
 
 
+@pytest.mark.parametrize("b_zero", [True, False])
+def test_delta_reproduces_zero(b_zero):
+    # cw_metric_init="delta" (εI at the damping floor) must reproduce zero-init to
+    # sub-noise — δ-set residual, far below the "ones" effect. Step 1 identical; the
+    # 50-step max stays ~5e-4 (≪ the AdamW noise floor; ≪ 1e-2 the "ones" arm hits).
+    rel = _two_runs(b_zero, nsteps=50, init="delta")
+    assert rel[0] < 1e-5, f"step-1 rel diff {rel[0]:.2e}"
+    assert max(rel) < 2e-3, f"delta drifts from zero (max rel {max(rel):.2e})"
+
+
 def test_default_is_zero():
     m = _Model(b_zero=True)
     assert CurvatureWhitenLoRA(m, **_PROD).cw_metric_init == "zero"
@@ -88,6 +98,13 @@ def test_ones_init_value():
     o = CurvatureWhitenLoRA(m, cw_metric_init="ones", **_PROD)
     st = o.pair_state[0]
     assert torch.all(st["D_in"] == 1.0) and torch.all(st["D_out"] == 1.0)
+
+
+def test_delta_init_value():
+    m = _Model(b_zero=True)
+    o = CurvatureWhitenLoRA(m, cw_metric_init="delta", **_PROD)
+    st = o.pair_state[0]
+    assert torch.all(st["D_in"] == _PROD["delta"]) and torch.all(st["D_out"] == _PROD["delta"])
 
 
 def test_bad_value_raises():
