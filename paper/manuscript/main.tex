@@ -445,10 +445,9 @@ Accounting for the quadratic term $\Delta B\Delta A$ dropped in~\eqref{eq:DeltaW
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
 Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. 
-\nikhil{we should address the EMA used for the gradient second-moment.}
 We compute the matrix sign and inverse square roots by Gram Newton--Schulz iterations (\Cref{app:gramns}), estimate the spectral norms by power iteration (\Cref{alg:smax}), and use damping in the curvature inverse square roots (\Cref{app:damping}). For further tractability, we restrict matrices 
-$P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}. To estimate the diagonal factors $P$ and $Q$ we apply KL-Shampoo's \cite{klshampoo}
-coupled second moment equations (\Cref{app:matnormal}).
+$P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}. The implementation stores exponential moving averages for these diagonal curvature scores. Before forming the LMO metric, we normalize them by their largest diagonal entries,
+$\bar P=P/\lambda_{\max}(P)$ and $\bar Q=Q/\lambda_{\max}(Q)$, and use $\bar P,\bar Q$ in the direction. For a single undamped step this normalization only rescales $D_A$ and $D_B$, so it has no effect after the spectral normalization in \eqref{eq:ours-rho}. With EMA, however, the normalization fixes the scale ambiguity of the Kronecker factorization before each KL-Shampoo measurement, so the memory weights are set by $\beta_2$ rather than by an arbitrary split of scale between $P$ and $Q$. \Cref{app:matnormal} derives this profile estimator.
 
 \begin{algorithm}[t]
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
@@ -461,9 +460,10 @@ coupled second moment equations (\Cref{app:matnormal}).
 \State $\widehat M_A\gets\beta_1M_A+(1-\beta_1)G_A, \qquad \widehat M_B\gets\beta_1M_B+(1-\beta_1)G_B$ \Comment{Nesterov look-ahead}
 \Statex
 \Phase{Direction}
-\State $C_A\gets B^\top\,P\,B, \qquad C_B\gets A\,Q\,A^\top$
-\State $D_A\gets C_A^{-1/2}\,\msign \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{preconditioned polar step~\eqref{eq:factor-directions}}
-\State $D_B\gets P^{-1/2}\,\msign \big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
+\State $\bar P\gets P/\lambda_{\max}(P), \qquad \bar Q\gets Q/\lambda_{\max}(Q)$
+\State $C_A\gets B^\top\,\bar P\,B, \qquad C_B\gets A\,\bar Q\,A^\top$
+\State $D_A\gets C_A^{-1/2}\,\msign \big(C_A^{-1/2}\,\widehat M_A\,\bar Q^{-1/2}\big)\,\bar Q^{-1/2}$ \Comment{preconditioned polar step~\eqref{eq:factor-directions}}
+\State $D_B\gets \bar P^{-1/2}\,\msign \big(\bar P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
 \Statex
 \Phase{Magnitude}
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
@@ -549,7 +549,7 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \methodname{} can be decomposed into three components.
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
   \item \textbf{Product-awareness}. The product-aware LMO in~\eqref{eq:decoupled-lora-lmo}, which acts on the merged product $BA$ rather than on the factors $A$ and $B$ separately.
-  \item \textbf{Curvature}. The adaptively estimated diagonal metrics $P$ and $Q$ in~\eqref{eq:ours-klcoupling}.
+  \item \textbf{Curvature}. The adaptively estimated diagonal curvature profiles $\bar P$ and $\bar Q$ in~\eqref{eq:ours-klcoupling}.
   \item \textbf{Magnitude}. Sets each factor update to spectral norm $\rho$ in~\eqref{eq:ours-rho}.
 \end{itemize}
 With the diagonal metrics set to identity ($P = I_{\mathrm{out}}$ and $Q=I_{\mathrm{in}}$) and magnitude control removed, \methodname{} reduces to Product Muon. This update coincides with the momentum-free forms of LoRA-Muon, iMuon, and LoRA-RITE, as shown in~\Cref{app:memoryless}.
@@ -1110,102 +1110,151 @@ from a single LoRA LMO.
 \section{Diagonal Kronecker Second Moment Estimator for the Curvature Diagonals}
 \label{app:matnormal}
 In this section we derive the estimator \eqref{eq:ours-klcoupling} and its coupling
-\eqref{eq:ours-closure} from the second moment model \eqref{eq:pq-factor} alone.
+\eqref{eq:ours-closure} for the normalized curvature profiles used by
+\methodname{}.
 
-\paragraph{Model and moment identities.} 
-Let 
-$G\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ 
-be stochastic merged-weight gradient.
-We use the diagonal Kronecker approximation of \eqref{eq:pq-factor} as follows
+\paragraph{Historical second moment and scale convention.}
+At optimizer step $t$, let $\mathbb{E}_{H_t}$ denote the exponentially weighted
+historical average over the stochastic merged-weight gradients available before
+the step. Equivalently, for batch second moments
+$\Sigma_s=\frac1{n_s}\sum_i g_{s,i}g_{s,i}^\top$ with
+$g_{s,i}=\operatorname{vec}(G_{s,i})$, the ideal historical second moment is
+\[
+  \Sigma_{H,t}
+  =(1-\beta_2)\sum_{s<t}\beta_2^{t-1-s}\Sigma_s
+  =\mathbb{E}_{H_t}[\operatorname{vec}(G)\operatorname{vec}(G)^\top].
+\]
+We make the same diagonal Kronecker approximation as in \eqref{eq:pq-factor},
+but apply it to this historical second moment and fix the scalar ambiguity:
 \begin{equation}\label{e-diag-kron-second-mom-model}
-\Sigma
-=\mathbb{E}[\operatorname{vec}(G)\operatorname{vec}(G)^\top]
-\approx Q\otimes P,
-\qquad
-P=\diag(p)\succ0,
-\quad
-Q=\diag(q)\succ0,
+  \Sigma_{H,t}
+  \approx
+  \kappa_t\,(\bar Q_t\otimes \bar P_t),
+  \qquad
+  \lambda_{\max}(\bar P_t)=\lambda_{\max}(\bar Q_t)=1,
+  \qquad
+  \bar P_t=\diag(\bar p_t),\quad
+  \bar Q_t=\diag(\bar q_t).
 \end{equation}
-where $p\in\mathbb{R}^{d_{\mathrm{out}}}$ and $q\in\mathbb{R}^{d_{\mathrm{in}}}$. Thus
-$\mathbb{E}[G_{ij}^2]\approx p_iq_j$.
-By \eqref{e-grad-wrt-factors} and \eqref{eq:ours-closure},
-\[
-\operatorname{vec}(G_A)=(I_{d_{\mathrm{in}}}\otimes B^\top)\operatorname{vec}(G),
-\qquad \operatorname{vec}(G_B)=(A\otimes I_{d_{\mathrm{out}}})\operatorname{vec}(G),
-\]
-therefore, second moment model gives
-\[
-\mathbb{E}[\operatorname{vec}(G_A)\operatorname{vec}(G_A)^\top]\approx Q\otimes C_A,
-\qquad
-\mathbb{E}[\operatorname{vec}(G_B)\operatorname{vec}(G_B)^\top]\approx C_B\otimes P.
-\]
-Note that the rescaling
-$(P,Q)\mapsto(cP,c^{-1}Q)$ leaves  $Q\otimes P$ 
-unchanged.
+The scalar $\kappa_t$ is the overall second-moment scale. The normalized factors
+$\bar P_t,\bar Q_t$ are the curvature profiles used by the LMO direction. This
+scale convention does not affect a single undamped normalized direction, but it
+matters once the curvature estimates are averaged over time.
 
-\paragraph{Divergence-based projection.}
-We fix $C_A\succ0$ and fit the second moment of $G_A$ by
-$Q\otimes C_A$, where $Q=\operatorname{Diag}(q)$. As in \cite{klshampoo}, 
-we get $q$ by projecting the second moment of $G_A$  onto a set of Kronecker-structured 
-symmetric positive definite matrices
-w.r.t. 
-KL divergence
+\paragraph{Gauge-fixed KL fixed point.}
+Fix $A$, $B$, and the historical average $\mathbb{E}_{H_t}$. For a candidate
+profile $\bar P$, define
 \[
- \begin{array}{ll}
-  \underset{q}{\mathrm{minimize}} &
-  \frac12\sum_{j=1}^{d_{\mathrm{in}}}
-    \left(
-        r\log q_j
-        +\frac{1}{q_j}
-          \mathbb{E}[(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}]
-    \right)
-  \end{array}
+  C_A(\bar P)=B^\top \bar P B .
 \]
-The objective above is strictly convex in $\log q$ and is coordinatewise separable. Applying the
-same calculation to $G_B$ gives
+By \eqref{e-grad-wrt-factors},
+\[
+  \operatorname{vec}(G_A)
+  =(I_{d_{\mathrm{in}}}\otimes B^\top)\operatorname{vec}(G),
+\]
+so the model \eqref{e-diag-kron-second-mom-model} gives
+\[
+  \mathbb{E}_{H_t}[\operatorname{vec}(G_A)\operatorname{vec}(G_A)^\top]
+  \approx
+  \kappa_t\,(\bar Q_t\otimes C_A(\bar P_t)).
+\]
+The diagonal KL-Shampoo coordinate estimate for the column-side factor is
 \begin{equation}
-\begin{aligned}
-    q_j
-    &=\frac1r\,
-      \mathbb{E}[(G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}],
-    &&j=1,\ldots,d_{\mathrm{in}},\\
-    p_i
-    &=\frac1r\,
-      \mathbb{E}[(G_B)_{i,:}C_B^{-1}(G_B)_{i,:}^\top],
-    &&i=1,\ldots,d_{\mathrm{out}}.
-\end{aligned}
-\label{eq:diag-kron-population}
+  T_Q(\bar P)
+  =
+  \frac1r\,
+  \diag\!\left(
+    \mathbb{E}_{H_t}\!\left[
+      G_A^\top C_A(\bar P)^{-1}G_A
+    \right]
+  \right).
+  \label{eq:diag-kron-population}
 \end{equation}
-For fixed $C_A$ or $C_B$, these are the diagonal specialization of the
-conditional two-sided KL-Shampoo equations \cite{klshampoo}. They are coupled
-because $C_A$ contains $P$, while $C_B$ contains $Q$.
-
-If diagonal Kronecker model \eqref{e-diag-kron-second-mom-model} 
-is exact, then
+When \eqref{e-diag-kron-second-mom-model} is exact and $\bar P=\bar P_t$,
 \begin{equation}
-    \mathbb{E}[G_A^\top C_A^{-1}G_A]=rQ,
-    \qquad
-    \mathbb{E}[G_BC_B^{-1}G_B^\top]=rP.
-    \label{eq:diag-kron-unbiased}
+  T_Q(\bar P_t)=\kappa_t\,\bar q_t .
+  \label{eq:diag-kron-unbiased}
 \end{equation}
-Indeed, the first identity is
-$\operatorname{tr}(C_A^{-1}C_A)Q=rQ$; the second is identical. This proves the
-factor $1/r$ in \eqref{eq:diag-kron-population}.
+Indeed,
+$\mathbb{E}_{H_t}[G_A^\top C_A(\bar P_t)^{-1}G_A]
+=r\kappa_t\bar Q_t$, since
+$C_A(\bar P_t)^{-1}$ whitens the rank-side covariance and leaves the
+column-side factor $\kappa_t\bar Q_t$.
 
+The row-side estimate is symmetric. For
+\[
+  C_B(\bar Q)=A\bar Q A^\top ,
+\]
+define
+\[
+  T_P(\bar Q)
+  =
+  \frac1r\,
+  \diag\!\left(
+    \mathbb{E}_{H_t}\!\left[
+      G_B C_B(\bar Q)^{-1}G_B^\top
+    \right]
+  \right).
+\]
+Under the same model, $T_P(\bar Q_t)=\kappa_t\bar p_t$. Thus the normalized
+profile fixed point is
+\[
+  \bar q_t=\frac{T_Q(\bar P_t)}{\norm{T_Q(\bar P_t)}_\infty},
+  \qquad
+  \bar p_t=\frac{T_P(\bar Q_t)}{\norm{T_P(\bar Q_t)}_\infty}.
+\]
 
-\paragraph{Online update.}
-We track the population equations \eqref{eq:diag-kron-population} by an
-exponential moving average (EMA) with parameter $\beta_2$. 
-Specifically, 
-update \eqref{eq:diag-kron-population} becomes
+\paragraph{Stochastic relaxed update.}
+The exact maps $T_Q,T_P$ require historical expectations and would have to be
+solved to convergence. Instead, \methodname{} carries the previous fixed-point
+iterate forward and takes one stochastic relaxed flip-flop step per optimizer
+step. Let $q_t,p_t$ be the stored EMA score vectors and set
+\[
+  \bar q_t=\frac{q_t}{\norm{q_t}_\infty},
+  \qquad
+  \bar p_t=\frac{p_t}{\norm{p_t}_\infty},
+  \qquad
+  \bar Q_t=\diag(\bar q_t),
+  \quad
+  \bar P_t=\diag(\bar p_t).
+\]
+The current minibatch gives stochastic estimates of $T_Q(\bar P_t)$ and
+$T_P(\bar Q_t)$,
+\[
+  \widehat T_{Q,t}
+  =
+  \frac1r\,\diag\!\left(G_A^\top C_A(\bar P_t)^{-1}G_A\right),
+  \qquad
+  \widehat T_{P,t}
+  =
+  \frac1r\,\diag\!\left(G_B C_B(\bar Q_t)^{-1}G_B^\top\right).
+\]
+The online estimator is
 \begin{equation}
-  q_j=\mathrm{EMA}\Big[\tfrac1r (G_A)_{:,j}^\top C_A^{-1}(G_A)_{:,j}\Big],\qquad
-  p_i=\mathrm{EMA}\Big[\tfrac1r (G_B)_{i,:} C_B^{-1}(G_B)_{i,:}^\top\Big],
+  q_{t+1}=\beta_2 q_t+(1-\beta_2)\widehat T_{Q,t},
+  \qquad
+  p_{t+1}=\beta_2 p_t+(1-\beta_2)\widehat T_{P,t}.
   \label{eq:ours-klcoupling}
 \end{equation}
-as outlined in \Cref{alg:ours}.
-% Further, by \eqref{eq:diag-kron-unbiased}
-% if the Kronecker model is exact and XXX
+The LMO at the next step uses the normalized representatives
+$q_{t+1}/\norm{q_{t+1}}_\infty$ and
+$p_{t+1}/\norm{p_{t+1}}_\infty$.
+
+\paragraph{Why normalize before measuring.}
+The normalization fixes a scale ambiguity in the flip-flop measurement. If
+$P=a\bar P$, then
+\[
+  B^\top P B = a\,B^\top \bar P B,
+  \qquad
+  (B^\top P B)^{-1}=a^{-1}(B^\top\bar P B)^{-1}.
+\]
+Thus using the raw factor $P$ divides the new contribution to the $q$ EMA by
+$a$. Across time, this changes the effective history weight from
+$(1-\beta_2)\beta_2^{t-1-s}$ to
+$(1-\beta_2)\beta_2^{t-1-s}/a_s$. The normalized update
+\eqref{eq:ours-klcoupling} removes this arbitrary scale split before each
+measurement. It therefore averages score estimates in a fixed scale convention
+and normalizes only when the scores are used as curvature profiles.
 
 \section{Numerical Primitives}
 \label{app:primitives}
