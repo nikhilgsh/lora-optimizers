@@ -102,17 +102,17 @@ to each layer, so the adapted weight is $W = W_0 + \DW$. With only the adapter t
 
 The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon and Shampoo treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA.
 
-However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works try to address this by making the update product-aware~\cite{imuon,loramuon,tilde_csd}, but we find that this alone does not consistently improve over Adam. 
+However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works try to address this by proposing updates that are variants of a product-aware~\cite{imuon,loramuon,tilde_csd} Muon step. In our experiments we find that the product Muon step is also unable consistently improve over Adam. 
 
-This motivates \methodname{}, which is also derived using a product-aware viewpoint, but differs in how the step is chosen. Our contributions are:
+This motivates \methodname{}, which is derived from a novel formulation which is motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update that can be applied to LoRA using a product-aware viewpoint. Lastly, unlike the product Muon step, we control the factor update sizes in addition to the size of the merged weight update. Our contributions are:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
     \item \textbf{Curvature-aware direction.} We derive a curvature-preconditioned update direction by controlling the per-sample loss change across a batch, with a product-aware version for LoRA.
     
-    \item \textbf{Magnitude control.} Unlike other product-aware updates, we control the factor update sizes in addition to the size of the merged weight update.
+    \item \textbf{Magnitude control.} Unlike other product-aware updates, 
 
     \item \textbf{Component ablation.} We isolate the effect of the previous two contributions and show each provides a meaningful speedup.
 
-    \item \textbf{Learning-rate transfer.} We show that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less sensitive to learning rate.
+    \item \textbf{Learning-rate transfer.} We show that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less sensitive to the learning rate.
 
     \item \textbf{Empirical performance.} Across a range of base models and datasets, \methodname{} reaches Adam's held-out loss in $1.2$–$1.7\times$ fewer steps, while adding at most 3\% per-step overhead.
 \end{itemize}
