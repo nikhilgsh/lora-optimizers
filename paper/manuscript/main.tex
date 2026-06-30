@@ -1358,9 +1358,9 @@ $Q_K$ is interpreted.
 
 
     \item \textbf{Inverse square root.}
-    For a damped curvature matrix $C$ (\Cref{app:damping}), first normalize
+    We damp the curvature matrix $C$ (\Cref{app:damping}), and normalize the spectrum
     \[
-        \widetilde C = C/\alpha,
+        \widetilde C = (C + \delta \lambda_{\max}(C))/\alpha,
         \qquad \alpha = \operatorname{tr}(\widetilde C).
     \]
 Take $R_0=\widetilde C\succ0$, equivalently
@@ -1378,10 +1378,10 @@ because $\widetilde C^{1/2}$ is symmetric positive definite.  Hence
 \[
     Q_K\approx \widetilde C^{-1/2}.
 \]
-If $\widetilde C=C/\alpha$, then
+We recover inverse square root as 
 \[
     C^{-1/2}
-    =
+    \approx
     \alpha^{-1/2}\widetilde C^{-1/2}
     \approx
     \alpha^{-1/2}Q_K .
