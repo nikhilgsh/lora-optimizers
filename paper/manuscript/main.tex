@@ -108,10 +108,8 @@ However, naively applying a matrix-aware optimizer to each factor does not impro
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.72\linewidth]{fig1_hero.pdf}
-  \caption{\textbf{\methodname{} outperforms baselines during training.} Evaluation loss across
-  training steps for Llama-3.2-1B finetuned on math dataset at rank $r = 256$. \methodname{} outperforms Adam, iMuon, Muon, and LoRA-RITE and reaches Adam's final loss in $1.63\times$ fewer steps.  Per-setting learning
-  curves available in \Cref{app:curves}.}
+  \includegraphics[width=\linewidth]{fig_hero_with_tuning.pdf}
+  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon, Muon, and LoRA-RITE and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss versus learning rate---each optimizer's optimum and its two neighbouring grid values, with the rate normalized to that optimum---showing every optimizer at a clearly bracketed optimum at which \methodname{} attains the lowest loss. Per-setting learning curves available in \Cref{app:curves}.}
   \label{fig:hero}
 \end{figure}
 
@@ -471,13 +469,13 @@ ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \qquad
 \Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
 \]
-Including the dropped quadratic term $\Delta B\Delta A$, the realized merged update overshoots the budget $\eta$ by at most a relative $\eta/(\norm{A}_2+\norm{B}_2)^2$ (\Cref{rem:quadratic}).
+Including the dropped quadratic term $\Delta B\Delta A$, the realized merged update overshoots $\eta$ by at most a relative $\eta/(\norm{A}_2+\norm{B}_2)^2$ (\Cref{rem:quadratic}).
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
 Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. 
 We compute the matrix sign and inverse square roots by Gram Newton--Schulz iterations (\Cref{app:gramns}), estimate the spectral norms by power iteration (\Cref{alg:smax}), and use damping in the curvature inverse square roots (\Cref{app:damping}). For further tractability, we restrict matrices 
 $P$ and $Q$ to be diagonal, as in Adafactor \cite{adafactor}. The implementation stores exponential moving averages for these diagonal curvature scores. Before forming the LMO metric, we normalize them by their largest diagonal entries,
-$\bar P=P/\lambda_{\max}(P)$ and $\bar Q=Q/\lambda_{\max}(Q)$, and use $\bar P,\bar Q$ in the direction. For a single undamped step this normalization only rescales $D_A$ and $D_B$, so it has no effect after the spectral normalization in \eqref{eq:ours-rho}. With EMA, however, the normalization fixes the scale ambiguity of the Kronecker factorization before each KL-Shampoo measurement, so the memory weights are set by $\beta_2$ rather than by an arbitrary split of scale between $P$ and $Q$. \Cref{app:matnormal} derives this profile estimator.
+$\bar P=P/\lambda_{\max}(P)$ and $\bar Q=Q/\lambda_{\max}(Q)$, and use $\bar P,\bar Q$ in the direction. For a single undamped step this normalization only rescales $D_A$ and $D_B$, so it has no effect after the spectral normalization in \eqref{eq:ours-rho}. With EMA, however, the normalization fixes the scale ambiguity of the Kronecker factorization before each KL-Shampoo measurement, so the memory weights are set by $\beta_2$ rather than by an arbitrary split of scale between $P$ and $Q$. \Cref{app:matnormal} derives this normalized second-moment estimator.
 
 \begin{algorithm}[t]
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
@@ -572,7 +570,7 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \methodname{} can be decomposed into three components.
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
   \item \textbf{Product-awareness}. The product-aware LMO in~\eqref{eq:decoupled-lora-lmo}, which acts on the merged product $BA$ rather than on the factors $A$ and $B$ separately.
-  \item \textbf{Curvature}. The adaptively estimated diagonal curvature profiles $\bar P$ and $\bar Q$ in~\eqref{eq:ours-klcoupling}.
+  \item \textbf{Curvature}. The adaptively estimated diagonal curvature weights $\bar P$ and $\bar Q$ in~\eqref{eq:ours-klcoupling}.
   \item \textbf{Magnitude}. Sets each factor update to spectral norm $\rho$ in~\eqref{eq:ours-rho}.
 \end{itemize}
 With the diagonal metrics set to identity ($P = I_{\mathrm{out}}$ and $Q=I_{\mathrm{in}}$) and magnitude control removed, \methodname{} reduces to Product Muon. This update coincides with the momentum-free forms of LoRA-Muon, iMuon, and LoRA-RITE, as shown in~\Cref{app:memoryless}.
@@ -788,7 +786,7 @@ hardware-independent. Reproducing all our experiments takes about $850$ GPU-hour
 \section{Proofs}
 \label{app:proofs}
 
-\subsection{Direction}
+\paragraph{Direction.}
 
 \begin{lemma}[Spectral norm LMO]\label{lem:muon-lmo}
 For $G\in\mathbb{R}^{m\times n}$ and $\eta>0$,
@@ -944,7 +942,7 @@ Substituting back gives the stated solution.
 
 
 
-\subsection{Magnitude}
+\paragraph{Magnitude.}
 
 \nikhil{need to reevaluate if this section is worth it.}
 
@@ -962,11 +960,10 @@ submultiplicativity give
 \[
   \norm{\Delta W}_2\le\rho s+\rho^2=\eta\Bigl(1+\tfrac{\eta}{s^2}\Bigr),
 \]
-so the realized merged update overshoots the budget $\eta$ by at most a relative
+so the realized merged update overshoots $\eta$ by at most a relative
 $\eta/s^2$. At standard initialization $B=0$ and $A$ has independent entries of
 variance $\Theta(1/d_{\mathrm{in}})$, so $s=\norm{A}_2=\Theta(1)$ and the overshoot
-is $O(\eta)$, decreasing as the factors grow. This bounds the realized step size;
-it makes no claim about how the dropped term shifts the update direction.
+is $O(\eta)$, decreasing as the factors grow.
 \end{remark}
 
 
@@ -1100,25 +1097,33 @@ spirit to \methodname{}'s magnitude control but is not curvature-aware and is no
 from a single LoRA LMO.
 
 % ===========================================================================
-\section{Diagonal Kronecker Second Moment Estimator for the Curvature Diagonals}
+\section{Estimating Normalized Second Moments}
 \label{app:matnormal}
-In this section we derive the estimator \eqref{eq:ours-klcoupling} and its coupling
-\eqref{eq:ours-closure} for the normalized curvature profiles used by
-\methodname{}.
+The implementation stores diagonal second-moment estimates across optimizer
+steps, so the scale convention for the Kronecker factors affects the EMA itself.
+The identity
+\[
+  Q\otimes P=(aQ)\otimes(a^{-1}P),\qquad a>0,
+\]
+shows that the same Kronecker matrix has many factor representatives. If the
+next measurement is formed with an arbitrary representative, its contribution to
+the EMA is rescaled by that arbitrary choice. We therefore normalize the factors
+before each measurement and update the stored scores in that fixed convention.
 
-\paragraph{Historical second moment and scale convention.}
+\paragraph{Scale convention.}
 At optimizer step $t$, let $\mathbb{E}_{H_t}$ denote the exponentially weighted
 historical average over the stochastic merged-weight gradients available before
-the step. Equivalently, for batch second moments
+the step. For batch second moments
 $\Sigma_s=\frac1{n_s}\sum_i g_{s,i}g_{s,i}^\top$ with
-$g_{s,i}=\operatorname{vec}(G_{s,i})$, the ideal historical second moment is
+$g_{s,i}=\operatorname{vec}(G_{s,i})$, this target is
 \[
   \Sigma_{H,t}
   =(1-\beta_2)\sum_{s<t}\beta_2^{t-1-s}\Sigma_s
   =\mathbb{E}_{H_t}[\operatorname{vec}(G)\operatorname{vec}(G)^\top].
 \]
-We make the same diagonal Kronecker approximation as in \eqref{eq:pq-factor},
-but apply it to this historical second moment and fix the scalar ambiguity:
+We apply the diagonal Kronecker approximation from \eqref{eq:pq-factor} to this
+historical second moment and separate its scalar scale from its normalized
+factors:
 \begin{equation}\label{e-diag-kron-second-mom-model}
   \Sigma_{H,t}
   \approx
@@ -1129,14 +1134,15 @@ but apply it to this historical second moment and fix the scalar ambiguity:
   \bar P_t=\diag(\bar p_t),\quad
   \bar Q_t=\diag(\bar q_t).
 \end{equation}
-The scalar $\kappa_t$ is the overall second-moment scale. The normalized factors
-$\bar P_t,\bar Q_t$ are the curvature profiles used by the LMO direction. This
-scale convention does not affect a single undamped normalized direction, but it
-matters once the curvature estimates are averaged over time.
+The scalar $\kappa_t$ carries the overall second-moment scale. The normalized
+factors $\bar P_t,\bar Q_t$ are the diagonal weights used by the LMO direction.
+For a single undamped normalized direction, this convention only changes a later
+spectral rescaling. For an EMA, however, the convention also determines which
+quantities are averaged over time.
 
-\paragraph{Gauge-fixed KL fixed point.}
+\paragraph{Population estimator.}
 Fix $A$, $B$, and the historical average $\mathbb{E}_{H_t}$. For a candidate
-profile $\bar P$, define
+row-side factor $\bar P$, define
 \[
   C_A(\bar P)=B^\top \bar P B .
 \]
@@ -1151,7 +1157,8 @@ so the model \eqref{e-diag-kron-second-mom-model} gives
   \approx
   \kappa_t\,(\bar Q_t\otimes C_A(\bar P_t)).
 \]
-The diagonal KL-Shampoo coordinate estimate for the column-side factor is
+The following contraction estimates the column-side second moments after
+whitening the rank-side covariance:
 \begin{equation}
   T_Q(\bar P)
   =
@@ -1172,7 +1179,8 @@ Indeed,
 $\mathbb{E}_{H_t}[G_A^\top C_A(\bar P_t)^{-1}G_A]
 =r\kappa_t\bar Q_t$, since
 $C_A(\bar P_t)^{-1}$ whitens the rank-side covariance and leaves the
-column-side factor $\kappa_t\bar Q_t$.
+column-side factor $\kappa_t\bar Q_t$. Thus $T_Q$ recovers the normalized
+factor $\bar q_t$ up to the shared scalar $\kappa_t$.
 
 The row-side estimate is symmetric. For
 \[
@@ -1189,19 +1197,19 @@ define
     \right]
   \right).
 \]
-Under the same model, $T_P(\bar Q_t)=\kappa_t\bar p_t$. Thus the normalized
-profile fixed point is
+Under the same model, $T_P(\bar Q_t)=\kappa_t\bar p_t$. Removing the shared
+scalar gives the normalized factors
 \[
   \bar q_t=\frac{T_Q(\bar P_t)}{\norm{T_Q(\bar P_t)}_\infty},
   \qquad
   \bar p_t=\frac{T_P(\bar Q_t)}{\norm{T_P(\bar Q_t)}_\infty}.
 \]
 
-\paragraph{Stochastic relaxed update.}
-The exact maps $T_Q,T_P$ require historical expectations and would have to be
-solved to convergence. Instead, \methodname{} carries the previous fixed-point
-iterate forward and takes one stochastic relaxed flip-flop step per optimizer
-step. Let $q_t,p_t$ be the stored EMA score vectors and set
+\paragraph{Online estimator.}
+The population maps $T_Q,T_P$ require historical expectations. Algorithm
+\ref{alg:ours} instead uses the previous EMA state to form one minibatch
+measurement per optimizer step. Let $q_t,p_t$ be the stored score vectors and
+normalize them before the measurement:
 \[
   \bar q_t=\frac{q_t}{\norm{q_t}_\infty},
   \qquad
@@ -1211,8 +1219,7 @@ step. Let $q_t,p_t$ be the stored EMA score vectors and set
   \quad
   \bar P_t=\diag(\bar p_t).
 \]
-The current minibatch gives stochastic estimates of $T_Q(\bar P_t)$ and
-$T_P(\bar Q_t)$,
+The current minibatch gives the stochastic estimates
 \[
   \widehat T_{Q,t}
   =
@@ -1229,25 +1236,25 @@ The online estimator is
   p_{t+1}=\beta_2 p_t+(1-\beta_2)\widehat T_{P,t}.
   \label{eq:ours-klcoupling}
 \end{equation}
-The LMO at the next step uses the normalized representatives
+The next LMO uses the normalized representatives
 $q_{t+1}/\norm{q_{t+1}}_\infty$ and
 $p_{t+1}/\norm{p_{t+1}}_\infty$.
 
-\paragraph{Why normalize before measuring.}
-The normalization fixes a scale ambiguity in the flip-flop measurement. If
-$P=a\bar P$, then
+\paragraph{Effect of raw scaling.}
+The placement of this normalization matters. Suppose the row-side factor used
+to form $C_A$ is $P=a\bar P$. Then
 \[
   B^\top P B = a\,B^\top \bar P B,
   \qquad
   (B^\top P B)^{-1}=a^{-1}(B^\top\bar P B)^{-1}.
 \]
-Thus using the raw factor $P$ divides the new contribution to the $q$ EMA by
-$a$. Across time, this changes the effective history weight from
-$(1-\beta_2)\beta_2^{t-1-s}$ to
+Using the raw factor would therefore divide the new contribution to the $q$ EMA
+by $a$. Across time, the effective weight of a measurement from step $s$ changes
+from $(1-\beta_2)\beta_2^{t-1-s}$ to
 $(1-\beta_2)\beta_2^{t-1-s}/a_s$. The normalized update
-\eqref{eq:ours-klcoupling} removes this arbitrary scale split before each
-measurement. It therefore averages score estimates in a fixed scale convention
-and normalizes only when the scores are used as curvature profiles.
+\eqref{eq:ours-klcoupling} removes this arbitrary scale before each measurement,
+so $\beta_2$ controls the memory rather than the choice of Kronecker
+representative.
 
 \section{Numerical Primitives}
 \label{app:primitives}
