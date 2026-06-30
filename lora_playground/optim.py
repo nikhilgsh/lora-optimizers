@@ -667,8 +667,8 @@ OPTIMIZER_CHOICES = {
     "adamuon-polar-product-lora",
     "adamuon-lora",
     "muon-lora",
-    "imuon-lora",
-    "lora-rite",
+    "imuon-lora",   # authors' iMuon reference VENDORED & run verbatim (third_party/imuon_muon.py) — not our reimpl
+    "lora-rite",    # faithful PORT of authors' official LoRA-RITE impl, algorithm unchanged (lora_rite.py)
     "product-muon-lora",
     "adam-muon-lora",
     "adam-product-muon-lora",
