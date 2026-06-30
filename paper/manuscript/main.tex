@@ -202,7 +202,7 @@ A \leftarrow A + \Delta A,
 \qquad
 B \leftarrow B + \Delta B.
 \]
-Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$. But what matters is the resulting product $BA$, and a separate bound on $\Delta A$ and $\Delta B$ does not control it (\Cref{lem:factor-radius-gauge}). Indeed, 
+Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$. But what matters is the resulting product $BA$, and a separate bound on $\Delta A$ and $\Delta B$ does not control it. Indeed,
 the update to the merged weight is, after linearizing the product,
 \begin{equation} \label{eq:DeltaW-lin}
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
@@ -470,7 +470,7 @@ ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 \qquad
 \Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
 \]
-Accounting for the quadratic term $\Delta B\Delta A$ dropped in~\eqref{eq:DeltaW-lin} would change $\rho$ by only $O(\eta)$ (\Cref{rem:quadratic}).
+Including the dropped quadratic term $\Delta B\Delta A$, the realized merged update overshoots the budget $\eta$ by at most a relative $\eta/(\norm{A}_2+\norm{B}_2)^2$ (\Cref{rem:quadratic}).
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Implementation.}
 Algorithm~\ref{alg:ours} summarizes the resulting optimizer step. In the implementation, the direction formula \eqref{eq:factor-directions} is applied to Nesterov momentum in place of the raw factor gradients. 
@@ -752,26 +752,24 @@ LR schedule            & constant (no warmup or decay) \\
 
 \paragraph{Learning-rate sweep.}
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Grid} (per optimizer): $\{3{\times}10^{-5},\ 10^{-4},\ 3{\times}10^{-4},\ 10^{-3},\ 3{\times}10^{-3},\ 10^{-2},\ 3{\times}10^{-2},\ 10^{-1}\}$.
-  \item \textbf{Selection}: best per optimizer and setting on held-out eval loss (never training loss).
+  \item \textbf{Grid}: learning rates spaced by factors of three, swept wide enough to clearly bracket each optimizer's optimum.
   \item \textbf{Adam}: betas $(0.9,0.999)$, $\varepsilon = 10^{-8}$.
   \item \textbf{Muon}: momentum $\beta_1 = 0.9$, matrix sign via PolarExpress ($8$ iterations).
   \item \textbf{iMuon}: the authors' reference implementation (their Appendix~K momentum form), with momentum $0.95$, Nesterov, and $5$ Newton--Schulz steps.
-  \item \textbf{LoRA-RITE}: the authors' official PyTorch implementation, with betas $(0.9,0.999)$, $\varepsilon = 10^{-6}$, in-optimizer gradient clip $1.0$ in the invariant coordinates (escape-mass term disabled, as in the reference), and the trainer's global gradient-norm clip disabled because a raw-gradient-norm clip is not transformation-invariant.
+  \item \textbf{LoRA-RITE}: the authors' official PyTorch implementation, with betas $(0.9,0.999)$, $\varepsilon = 10^{-6}$, in-optimizer gradient clip $1.0$ in the invariant coordinates, with the escaped-mass floor (\Cref{app:memoryless}) disabled as in the reference, and the trainer's global gradient-norm clip disabled because a raw-gradient-norm clip is not transformation-invariant.
 \end{itemize}
 
 \paragraph{\methodname{} configuration.} Fixed across every \methodname{} run (full step in \Cref{alg:ours}):
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item Momentum decay $\beta_1 = 0.9$.
   \item Curvature-EMA decay $0.99$ (the $\beta_2$ of \eqref{eq:ours-klcoupling}).
-  
   \item PolarExpress and the shared Gram--Newton--Schulz at $K = 8$ iterations each.
   \item Relative damping $\delta = 10^{-4}$.
 \end{itemize}
 
 \paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime})
 are measured on an NVIDIA RTX PRO 6000 (Blackwell); eval-loss values are
-hardware-independent.
+hardware-independent. Reproducing all our experiments takes about $850$ GPU-hours.
 
 % ===========================================================================
 \section{Proofs}
@@ -790,7 +788,7 @@ and
 \[
 X^\star = -\eta\msign(G)
 \]
-is unique least Frobenius norm minimizer of
+is the unique least Frobenius-norm minimizer of
 \[
 \begin{array}{ll}
 \underset{\|X\|_2\leq \eta}{\mathrm{minimize}}&
@@ -835,7 +833,7 @@ Hence $g_i = Me_i$ for every $i =1,\ldots, n$. Consequently
 \dotprod{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
 \]
 since $M^\top  (MM^\top)^{\dagger} M$ is an orthogonal projector
-onto the range on $M^\top$. 
+onto the range of $M^\top$. 
 This proves the {\bf Leverage bound}. 
 
 The {\bf Rank one} property follows since $W$ encodes a linear layer $x_i \mapsto W x_i$, and by the chain rule   
@@ -844,7 +842,7 @@ The {\bf Rank one} property follows since $W$ encodes a linear layer $x_i \mapst
 \right|_{z =Wx_i} x_i^\top
 =b_i x_i^\top,
 \]
-where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i} $ is the so called backward gradient.
+where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i} $ is the so-called backward gradient.
 \end{proof} 
 
 
@@ -905,7 +903,7 @@ and
 Finally,
 \[
 \max_{\tilde G  \in\mathcal{G}(\Sigma)}
-\langle \tilde G ,U\rangle
+\langle \tilde G ,\Delta W\rangle
 =
 \max_{\|u\|_2\|v\|_2\leq\sqrt{n}}
 u^\top P^{1/2} \Delta W Q^{1/2}v 
@@ -924,7 +922,7 @@ $\norm{Y}_2\le\eta$, and the objective becomes
 =
 \left\langle L^{-1}MR^{-1},Y\right\rangle .
 \]
-By \Cref{lem:muon-lmo}, unique least Frobenius norm minimizer is
+By \Cref{lem:muon-lmo}, the unique least Frobenius-norm minimizer is
 \[
 Y=-\eta \msign \left(L^{-1}MR^{-1}\right).
 \]
@@ -937,67 +935,25 @@ Substituting back gives the stated solution.
 
 \nikhil{need to reevaluate if this section is worth it.}
 
-\begin{lemma}[A constant per-factor step does not control the merged update]
-\label{lem:factor-radius-gauge}
-Fix $P$, $Q$, and the product gradient $G$, let $\widehat D_A=D_A/\norm{D_A}_2$ and
-$\widehat D_B=D_B/\norm{D_B}_2$ be the normalized directions of
-\eqref{eq:factor-directions}, and step both factors by a common, fixed size $\rho>0$,
-$\Delta A=-\rho\widehat D_A$ and $\Delta B=-\rho\widehat D_B$. Under the
-product-preserving rescaling $(A,B)\mapsto(cA,c^{-1}B)$, $c>0$, which leaves $BA$
-unchanged, the normalized directions are invariant, $\widehat D_{A,c}=\widehat D_A$ and
-$\widehat D_{B,c}=\widehat D_B$, and the first-order merged update
-\[
-  U_c=-\rho\bigl(c^{-1}B\,\widehat D_A+c\,\widehat D_B A\bigr)
-\]
-satisfies $\sup_{c>0}\norm{U_c}_2=\infty$ whenever $B\widehat D_A\neq0$ or
-$\widehat D_B A\neq0$. Bounding the factor steps in isolation therefore does not control
-the product update $\Delta W$.
-\end{lemma}
-
-\begin{proof}
-Under the rescaling $A_c=cA$, $B_c=c^{-1}B$,
-\[
-  G_{A,c}=B_c^\top G=c^{-1}G_A,\qquad
-  C_{A,c}=B_c^\top P B_c=c^{-2}C_A,
-\]
-so the polar argument in \eqref{eq:factor-directions} is unchanged,
-$C_{A,c}^{-1/2}G_{A,c}\,Q^{-1/2}=C_A^{-1/2}G_A\,Q^{-1/2}$. Hence $D_{A,c}=cD_A$, and
-normalizing removes the scalar, $\widehat D_{A,c}=\widehat D_A$. Symmetrically,
-$G_{B,c}=G A_c^\top=cG_B$ and $C_{B,c}=A_cQA_c^\top=c^{2}C_B$ give $D_{B,c}=c^{-1}D_B$
-and $\widehat D_{B,c}=\widehat D_B$. With both directions fixed, the merged update is
-$U_c=B_c\Delta A+\Delta B A_c=-\rho\bigl(c^{-1}B\widehat D_A+c\,\widehat D_B A\bigr)$.
-The two terms scale oppositely in $c$:
-\[
-  c\,\norm{U_c}_2\to\rho\norm{B\widehat D_A}_2\ \ (c\to0),
-  \qquad
-  \norm{U_c}_2/c\to\rho\norm{\widehat D_B A}_2\ \ (c\to\infty).
-\]
-If $B\widehat D_A\ne0$, the first forces $\norm{U_c}_2\to\infty$ as $c\to0$; otherwise,
-if $\widehat D_B A\ne0$, the second forces $\norm{U_c}_2\to\infty$ as $c\to\infty$. In
-either case $\sup_{c>0}\norm{U_c}_2=\infty$.
-\end{proof}
-
-\begin{remark}[Negligibility of the quadratic term]
+\begin{remark}[Realized merged update]
 \label{rem:quadratic}
-Our magnitude control \eqref{eq:ours-rho} bounds the first-order merged update
-$B\Delta A+\Delta B A$ and drops the quadratic term $\Delta B\Delta A$. Dropping
-it shifts the step by only $O(\eta)$. The merged update is
+The magnitude control \eqref{eq:ours-rho} sets $\rho=\eta/s$ with
+$s=\norm{A}_2+\norm{B}_2$ to bound the linearized merged update
+$B\Delta A+\Delta B A$ of \eqref{eq:DeltaW-lin}. The realized update also contains
+the dropped term $\Delta B\Delta A$:
 \[
   \Delta W = B\Delta A+\Delta B A+\Delta B\Delta A .
 \]
-With the per-factor cap $\norm{\Delta A}_2,\norm{\Delta B}_2\le\rho$ and
-$s=\norm{A}_2+\norm{B}_2$, the triangle inequality and submultiplicativity give
-$\norm{\Delta W}_2 \le \rho s + \rho^2$. Bounding this full right-hand side by
-$\eta$ gives the step
+With $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$, the triangle inequality and
+submultiplicativity give
 \[
-  \rho^\star = \bigl(-s+\sqrt{s^2+4\eta}\bigr)/2
-  = \frac{\eta}{s}-\frac{\eta^2}{s^3}+O(\eta^3/s^5),
+  \norm{\Delta W}_2\le\rho s+\rho^2=\eta\Bigl(1+\tfrac{\eta}{s^2}\Bigr),
 \]
-while dropping $\rho^2$ gives our $\rho=\eta/s$. The quadratic term thus shifts
-the step by a relative $(\rho-\rho^\star)/\rho=\eta/s^2$. At standard
-initialization $A$ has independent entries of variance $\Theta(1/d_{\mathrm{in}})$
-and $B=0$, so $s=\norm{A}_2=\Theta(1)$ with high probability. The shift
-$\eta/s^2$ is then $O(\eta)$, decreasing as $s$ grows.
+so the realized merged update overshoots the budget $\eta$ by at most a relative
+$\eta/s^2$. At standard initialization $B=0$ and $A$ has independent entries of
+variance $\Theta(1/d_{\mathrm{in}})$, so $s=\norm{A}_2=\Theta(1)$ and the overshoot
+is $O(\eta)$, decreasing as the factors grow. This bounds the realized step size;
+it makes no claim about how the dropped term shifts the update direction.
 \end{remark}
 
 
