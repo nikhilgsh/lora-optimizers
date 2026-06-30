@@ -469,7 +469,7 @@ coupled second moment equations (\Cref{app:matnormal}).
 \section{Experiments}
 \label{sec:exp}
 
-Here we perform an extensive ablation, comparing \methodname{} to several competitive baselines in~\Cref{sec:exp-main}, investigating which design choices of \methodname{} are responsible for its efficacy in~\Cref{sec:exp-ablation}, and testing robustness across rank and an out-of-distribution finetuning task in~\Cref{sec:exp-taskdep}.
+Here we evaluate \methodname{}, comparing it to several baselines in~\Cref{sec:exp-main}, investigating which design choices of \methodname{} are responsible for its efficacy in~\Cref{sec:exp-ablation}, and testing robustness across rank and an out-of-distribution finetuning task in~\Cref{sec:exp-taskdep}.
 
 \subsection{Setup}
 \label{sec:exp-setup}
@@ -538,14 +538,14 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 
 \methodname{} can be decomposed into three components.
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Product Muon}. The product-aware LMO in~\eqref{eq:decoupled-lora-lmo}.
+  \item \textbf{Product-awareness}. The product-aware LMO in~\eqref{eq:decoupled-lora-lmo}, which acts on the merged product $BA$ rather than on the factors $A$ and $B$ separately.
   \item \textbf{Curvature}. The adaptively estimated diagonal metrics $P$ and $Q$ in~\eqref{eq:ours-klcoupling}.
-  \item \textbf{Magnitude}. The rule that sets each factor update to spectral norm $\rho$ in~\eqref{eq:ours-rho}.
+  \item \textbf{Magnitude}. Sets each factor update to spectral norm $\rho$ in~\eqref{eq:ours-rho}.
 \end{itemize}
-With the diagonal metrics set to identity ($P = I_{\mathrm{out}}$ and $Q=I_{\mathrm{in}}$) and magnitude rescaling removed, \methodname{} reduces to Product Muon. This update coincides with the momentum-free forms of LoRA-Muon, iMuon, and LoRA-RITE, as shown in~\Cref{app:memoryless}.
+With the diagonal metrics set to identity ($P = I_{\mathrm{out}}$ and $Q=I_{\mathrm{in}}$) and magnitude control removed, \methodname{} reduces to Product Muon. This update coincides with the momentum-free forms of LoRA-Muon, iMuon, and LoRA-RITE, as shown in~\Cref{app:memoryless}.
 
-We ablate Llama-3.2-1B on math to isolate the two additions beyond Product Muon, the curvature metric and the magnitude rule (\Cref{fig:ablation}).
-Removing both additions eliminates the speedup over Adam in the right panel of~\Cref{fig:ablation}. Restoring the curvature metric and then the magnitude rule each recovers about half of \methodname{}'s speedup.
+On Llama-3.2-1B finetuned on math, we ablate the curvature metric and the magnitude control in turn to measure each component's contribution to \methodname{}'s speedup over Adam (\Cref{fig:ablation}).
+Removing both components eliminates the speedup over Adam in the right panel of~\Cref{fig:ablation}. Restoring the curvature metric and then the magnitude control each recovers about half of \methodname{}'s speedup.
 
 \begin{figure}[t]
   \centering
@@ -952,7 +952,7 @@ $\norm{U_c}_2\to\infty$ as $c\to0$. In either case $\sup_{c>0}\norm{U_c}_2=\inft
 
 \begin{remark}[Negligibility of the quadratic term]
 \label{rem:quadratic}
-Our magnitude rule \eqref{eq:ours-rho} bounds the first-order merged update
+Our magnitude control \eqref{eq:ours-rho} bounds the first-order merged update
 $B\Delta A+\Delta B A$ and drops the quadratic term $\Delta B\Delta A$. Dropping
 it shifts the step by only $O(\eta)$. The merged update is
 \[
@@ -1101,7 +1101,7 @@ independently.
 \paragraph{Spectron.}
 Spectron \cite{spectron} bounds the induced product update by rescaling orthogonalized
 factor steps with the current factor norms, in native low-rank pretraining. It is close in
-spirit to \methodname{}'s magnitude rule but is not curvature-aware and is not derived
+spirit to \methodname{}'s magnitude control but is not curvature-aware and is not derived
 from a single LoRA LMO.
 
 % ===========================================================================
