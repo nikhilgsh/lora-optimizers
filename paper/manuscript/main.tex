@@ -1264,11 +1264,11 @@ SVD (\Cref{alg:gramns}).
 
 \paragraph{Quintic Newton--Schulz.}
 Each iteration applies an odd degree-five polynomial
-\[
+\begin{equation}\label{e-gram-ns-poly}
     p_t(s)
     =
     a_t s + b_t s^3 + c_t s^5 .
-\]
+\end{equation}
 The coefficients $(a_t,b_t,c_t)$ are the PolarExpress coefficients
 \cite{polarexpress}.  They are chosen so that repeated composition of the
 maps $p_t$ drives singular values toward $1$.  The coefficients are
@@ -1300,14 +1300,13 @@ then
     =
     M_t R_t M_t .
 \]
-Thus the entire iteration can be run on the Gram matrix $R_t$.  If $s_t$ is a singular value of $Y_t$, then
-corresponding eigenvalue of $R_t$ is $\lambda_t=s_t^2$, and the singular value evolves as
+Thus the entire iteration can be run on the Gram matrix $R_t$. 
+Moreover, since $M_t$ is a polynomial in $R_t$, the iteration preserves the
+singular vectors of $Y_t$ and only changes its singular values. 
+Since polynomials \eqref{e-gram-ns-poly} are chosen so that this iteration drives
+normalized singular values to $1$,
 \[
-    s_{t+1}
-    =
-    \left(a_t+b_t s_t^2+c_t s_t^4\right)s_t
-    =
-    p_t(s_t).
+    Y_t \to \polar(Y_0).
 \]
 Therefore the Gram update implements the same quintic Newton--Schulz map
 on singular values, but costs only $r\times r$ matrix multiplications.
@@ -1338,21 +1337,20 @@ $Q_K$ is interpreted.
         \qquad
         \alpha \geq \|X\|_2,
     \]
-    to ensure that the singular values lie in the range $[0, 1]$.  Using the small-side Gram
+    to ensure that the singular values lie in the range $[0, 1]$.  
+    Taking $Y_0=\widetilde X$ and small-side Gram
     \[
         R_0 = \widetilde X\widetilde X^\top ,
     \]
-    the algorithm returns $Q_K$, and the matrix sign is approximated by
-    \[
-        \polar(X)
-        =
-        \polar(\widetilde X)
-        \approx
-        Q_K\widetilde X .
-    \]
-    If the small-side Gram is instead $\widetilde X^\top\widetilde X$,
-    the same formula is used on the transpose, returning
-    $\widetilde X Q_K$.
+    gives $Y_K=Q_KY_0$ and
+\[
+    Y_K =Q_K\widetilde X
+    \approx
+    \polar(\widetilde X)
+    =
+    \polar(X).
+\]
+
 
     \item \textbf{Inverse square root.}
     For a damped curvature matrix $C$ (\Cref{app:damping}), first normalize
@@ -1360,16 +1358,30 @@ $Q_K$ is interpreted.
         \widetilde C = C/\alpha,
         \qquad \alpha \geq \|C\|_2.
     \]
-    We set
-    $R_0=\widetilde C$.  The same algorithm returns
-    $Q_K\approx \widetilde C^{-1/2}$, so
-    \[
-        C^{-1/2}
-        =
-        \alpha^{-1/2}\widetilde C^{-1/2}
-        \approx
-        \alpha^{-1/2} Q_K .
-    \]
+Take $R_0=\widetilde C\succ0$, equivalently
+$Y_0=\widetilde C^{1/2}$.  The same iteration gives
+\[
+    Q_K\widetilde C^{1/2}
+    =
+    Y_K
+    \approx
+    \polar(\widetilde C^{1/2})
+    =
+    I,
+\]
+because $\widetilde C^{1/2}$ is symmetric positive definite.  Hence
+\[
+    Q_K\approx \widetilde C^{-1/2}.
+\]
+If $\widetilde C=C/\alpha$, then
+\[
+    C^{-1/2}
+    =
+    \alpha^{-1/2}\widetilde C^{-1/2}
+    \approx
+    \alpha^{-1/2}Q_K .
+\]
+    
 \end{itemize}
 
 
