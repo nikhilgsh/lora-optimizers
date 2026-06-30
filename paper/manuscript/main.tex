@@ -208,7 +208,13 @@ where the factor gradients are
     \qquad
     G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
 \end{equation}
-Thus \eqref{eq:decoupled-lora-lmo} is the Product Muon LMO. Solving the Product Muon LMO yields the update directions...
+Thus \eqref{eq:decoupled-lora-lmo} is the Product Muon LMO. Its factorwise solutions are
+\[
+\begin{aligned}
+    \Delta A &= -\tau\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
+    \Delta B &= -\tau\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
+\end{aligned}
+\]
 
 \subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
 We now derive the base LMO that will be the starting point of \methodname{}. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation rather than a full input.
