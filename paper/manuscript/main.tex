@@ -1360,7 +1360,7 @@ $Q_K$ is interpreted.
     \item \textbf{Inverse square root.}
     We damp the curvature matrix $C\succ 0$ (\Cref{app:damping}), and normalize the spectrum
     \[
-        \widetilde C = (C + \delta \lambda_{\max}(C))/\alpha,
+        \widetilde C = (C + \delta \lambda_{\max}(C)I)/\alpha,
         \qquad \alpha = \operatorname{tr}(\widetilde C).
     \]
 Take $R_0=\widetilde C$, equivalently
@@ -1426,7 +1426,7 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 We use relative damping for each inverse square root computation in \Cref{alg:ours}.
 Let $X$ be symmetric positive definite with eigendecomposition
 $X = U\operatorname{diag}(\lambda)U^\top$,
-de
+defined damped matrix
 \[
 \tilde X = X + \lambda_{\max}(X) \delta I = 
 U\operatorname{diag}
@@ -1434,11 +1434,13 @@ U\operatorname{diag}
     \right)
     U^\top.
 \]
+We further normalize the spectrum
 The damped eigenvalues lie in
 \[
     [\lambda_{\min}+\lambda_{\max}\delta,
     \lambda_{\max}+\lambda_{\max}\delta].
 \]
+
 Thus eigenvalues of inverse square root
 $\tilde X^{-1/2}$ are bounded from above by
 \[
