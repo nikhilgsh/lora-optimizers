@@ -689,15 +689,14 @@ def make_parser():
                              "also floors the small-side C_A/C_B inverse-sqrt). Set it to "
                              "sweep the diagonal floor alone (e.g. VN trace-δ) while "
                              "holding the curvature-inverse floor at --precond_delta.")
-    parser.add_argument("--cw_metric_init", choices=["zero", "ones", "delta"], default="zero",
-                        help="Init of the CurvatureWhitenLoRA diagonal metric EMAs "
-                             "D_in (=Q) and D_out (=P). 'zero' (default, legacy) starts the "
-                             "EMAs at 0 so step 1 uses the _rdinv identity fallback (the "
-                             "step-one rule); 'delta' starts them at δI (the damping floor) "
-                             "so step 1 normalizes to the same identity WITHOUT the special "
-                             "case, reproducing 'zero' to sub-noise (branch-free); 'ones' "
-                             "starts at 1 — a strong identity prior with a warmup transient "
-                             "that measurably hurts (ablation). All give an identical step-1 update.")
+    parser.add_argument("--cw_metric_init", default="zero",
+                        help="Init of the CurvatureWhitenLoRA diagonal metric EMAs D_in (=Q) "
+                             "and D_out (=P): 'zero' (legacy; step 1 uses the _rdinv identity "
+                             "fallback / the step-one branch), 'ones' (strong identity prior, "
+                             "measurably hurts — ablation), 'delta' (=δ damping floor, also "
+                             "hurts at production scale since δ≫ the ~1e-7 curvature), or a "
+                             "FLOAT ε for P₀=Q₀=εI (branch-free; needs ε ≪ ~1e-7, e.g. 1e-10). "
+                             "All give an identical step-1 update; they differ only in warmup.")
     parser.add_argument("--cw_nesterov", action="store_true",
                         help="Use Nesterov-lookahead momentum (ĝ + β₁·m, Muon "
                              "convention) into the CurvatureWhitenLoRA whiten→polar "

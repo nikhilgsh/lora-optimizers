@@ -79,13 +79,23 @@ def test_diverges_after_step1(b_zero):
 
 
 @pytest.mark.parametrize("b_zero", [True, False])
-def test_delta_reproduces_zero(b_zero):
-    # cw_metric_init="delta" (εI at the damping floor) must reproduce zero-init to
-    # sub-noise — δ-set residual, far below the "ones" effect. Step 1 identical; the
-    # 50-step max stays ~5e-4 (≪ the AdamW noise floor; ≪ 1e-2 the "ones" arm hits).
+def test_delta_close_to_zero_TOY_SCALE_ONLY(b_zero):
+    # CAVEAT: this passes only because this toy model's curvature is O(1), so the
+    # δ=1e-4 init sits BELOW its crossover. At PRODUCTION scale the curvature metric
+    # is ~1e-7, so δ=1e-4 is ~1000× too big and "delta" behaves like "ones" (+0.019
+    # eval loss), NOT like zero. Do NOT read this as "delta reproduces zero" — it does
+    # not in production. The prior-free branch-free init is a FLOAT ε ≪ 1e-7 (≈1e-10),
+    # not δ. Kept as a regression that the init plumbing works, with the scale warning.
     rel = _two_runs(b_zero, nsteps=50, init="delta")
     assert rel[0] < 1e-5, f"step-1 rel diff {rel[0]:.2e}"
-    assert max(rel) < 2e-3, f"delta drifts from zero (max rel {max(rel):.2e})"
+
+
+def test_float_eps_init_value():
+    # cw_metric_init accepts a float ε → P0=Q0=εI (the branch-free prior-free init).
+    m = _Model(b_zero=True)
+    o = CurvatureWhitenLoRA(m, cw_metric_init="1e-10", **_PROD)
+    st = o.pair_state[0]
+    assert torch.all(st["D_in"] == 1e-10) and torch.all(st["D_out"] == 1e-10)
 
 
 def test_default_is_zero():

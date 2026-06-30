@@ -1193,9 +1193,21 @@ class CurvatureWhitenLoRA(Optimizer):
         #   "ones": D=1 (ε=1), a strong identity prior (strength 1/(1-β₂)≈100) decaying
         #     over ~1/(1-β₂) steps — a real warmup transient that measurably hurts.
         # All three give an identical step-1 update. See notebooks/cw_metric_init_analysis.ipynb.
-        if cw_metric_init not in {"zero", "ones", "delta"}:
-            raise ValueError(f"cw_metric_init must be 'zero', 'delta', or 'ones', got {cw_metric_init!r}")
+        #   <float ε> (e.g. "1e-10"): P₀=Q₀=εI directly, ε DECOUPLED from the damping δ.
+        #     The init lives on the RAW curvature scale (~1e-7 in production), so ε must be
+        #     ≪ that to be prior-free; ε≈1e-10 is branch-free AND tracks zero (the damping
+        #     δ=1e-4 is a NORMALIZED-metric floor and is the wrong scale for the raw init).
         self.cw_metric_init = str(cw_metric_init)
+        if self.cw_metric_init not in {"zero", "ones", "delta"}:
+            try:
+                self._metric_init_eps = float(self.cw_metric_init)
+            except ValueError:
+                raise ValueError(
+                    f"cw_metric_init must be 'zero'/'ones'/'delta' or a float ε, got {cw_metric_init!r}")
+            if self._metric_init_eps < 0:
+                raise ValueError(f"cw_metric_init ε must be ≥ 0, got {self._metric_init_eps}")
+        else:
+            self._metric_init_eps = None  # resolved from the named mode at the pair loop
         # diag_metric reuses the D_in/D_out EMAs as the single global diagonal metric.
         # With kl_coupled=True those diagonals are the KL coupled fixed point (Prop 4);
         # with kl_coupled=False they are plain grad-energy EMAs (the diag-shampoo arm).
@@ -1271,7 +1283,9 @@ class CurvatureWhitenLoRA(Optimizer):
         # happens after step 1. Grams are zero-initialized (Alg 3 EMA).
         self._q_initialized = False
         # Diagonal-metric (D_in/D_out) initial fill value — see cw_metric_init above.
-        if self.cw_metric_init == "ones":
+        if self._metric_init_eps is not None:
+            _minit_val = self._metric_init_eps          # explicit float ε → P₀=Q₀=εI
+        elif self.cw_metric_init == "ones":
             _minit_val = 1.0
         elif self.cw_metric_init == "delta":
             _minit_val = self.delta if self.rdinv_delta is None else self.rdinv_delta
