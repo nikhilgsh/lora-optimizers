@@ -37,7 +37,7 @@
 \newcommand{\smax}{\sigma_{\max}}
 \newcommand{\ip}[1]{\langle #1 \rangle}
 \newcommand{\DW}{\Delta W}
-\DeclareMathOperator{\polar}{msign}          % matrix sign (orthogonal polar factor): U\Sigma V^T -> U V^T
+\DeclareMathOperator{\msign}{msign}          % matrix sign (orthogonal polar factor): U\Sigma V^T -> U V^T
 % Working method name -- rename in one place once finalized.
 \newcommand{\alg}[1]{$\mathrm{#1}$}
 \newcommand{\LMO}{{\sf LMO}}
@@ -135,16 +135,16 @@ This motivates \methodname{}, which is derived from a novel formulation motivate
 A LoRA adapter changes the model through the product $BA$ of its two
 factors~\eqref{eq:lora}, while the optimizer acts on $A$ and $B$. This section
 derives an update that treats the adapter as a matrix update while still
-operating on the factors. We first recall Muon, where the polar update
+operating on the factors. \nikhil{Rewrite (clunky/anthropomorphic). Intended: we control the change in the product $BA$ while updating only the factors $A$ and $B$.}We first recall Muon, where the matrix-sign update
 direction solves a spectral-norm LMO. We then apply the same LMO to a LoRA
 product, which shows why independent per-factor orthogonalization is not the
-right object. The final update incorporates a diagonal curvature metric into
+right object. \nikhil{Rewrite (``not the right object'' is vague). Intended: carried to LoRA, the bound falls on the change in the product $BA$, not on each factor's update --- the Product Muon step.}The final update incorporates a diagonal curvature metric into
 this product-aware direction and uses a separate scaling rule to keep the two
 factor steps balanced.
 
 \subsection{Muon}\label{sec:muon}
 
-Muon chooses the polar factor of a matrix gradient as its update direction~\cite{muon,carlson2015preconditioned}. This direction solves a spectral-norm linear minimization oracle (LMO). For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, an LMO minimizes the local linearization of the loss subject to a ball constraint,
+Muon chooses the matrix sign of the gradient as its update direction~\cite{muon,carlson2015preconditioned}. \nikhil{Define ``matrix sign'' here in the main text (it is only defined in \Cref{lem:muon-lmo}): $\msign(G)=UV^\top$ for the reduced SVD $G=U\Sigma V^\top$ keeps each singular direction and sets every singular value to one.}This direction solves a spectral-norm linear minimization oracle (LMO). For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, an LMO minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -162,7 +162,7 @@ Choosing the spectral norm,
 \[
 \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2,
 \]
-controls the worst-case amplification of a linear operator. With this choice, the LMO direction is the polar factor of the gradient, up to sign and scale (\Cref{lem:muon-lmo}). Bounding the spectral norm of the update can therefore stabilize training and feature learning~\cite{yang2023spectral,bernstein2025modular}. To adapt this direction to LoRA, we must account for the product structure in~\eqref{eq:lora}.
+controls the worst-case amplification of a linear operator. With this choice, the LMO direction is the matrix sign of the gradient, up to sign and scale (\Cref{lem:muon-lmo}). Bounding the spectral norm of the update can therefore stabilize training and feature learning~\cite{yang2023spectral,bernstein2025modular}. To adapt this direction to LoRA, we must account for the product structure in~\eqref{eq:lora}.
 
 \subsection{Product Muon}\label{sec:product-muon}
 
@@ -173,31 +173,31 @@ A \leftarrow A + \Delta A,
 B \leftarrow B + \Delta B.
 \]
 Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$. But what matters is the resulting product $BA$. Indeed, 
-the update to the merged weight, after linearizing the product, gives
+the update to the merged weight is, after linearizing the product,
 \begin{equation} \label{eq:DeltaW-lin}
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
 \end{equation}
 where we dropped the nonlinear term $\Delta B\Delta A$. 
 To take into account the resulting product, a spectral norm bound should be applied to thus linearized product update. Substituting~\eqref{eq:DeltaW-lin} into~\eqref{eq:lmo}, the spectral constraint becomes
 \[
-\left\| B \Delta A + \Delta B A \right\|
+\norm{B \Delta A + \Delta B A}_2
 \le \tau.
 \]
 This constraint couples the two unknowns $\Delta A$ and $\Delta B$. We decouple them with the upper bound
 \[
-\left\| B \Delta A + \Delta B A \right\|
+\norm{B \Delta A + \Delta B A}_2
 \le
-\left\| B \Delta A \right\| + \left\|\Delta B A \right\|.
+\norm{B \Delta A}_2 + \norm{\Delta B A}_2.
 \]
 With this bound we get the \emph{Product Muon} LMO
 \begin{equation}
   \begin{aligned}
   \Delta A &\in \argmin_{\Delta A}~ \langle G_A, \Delta A \rangle
   \quad \textnormal{subject to}\quad
-  \norm{B \Delta A}\le\tau, \\
+  \norm{B \Delta A}_2\le\tau, \\
   \Delta B &\in \argmin_{\Delta B}~ \langle G_B, \Delta B \rangle
   \quad \textnormal{subject to}\quad
-  \norm{\Delta B A}\le\tau,
+  \norm{\Delta B A}_2\le\tau,
   \end{aligned}
   \label{eq:decoupled-lora-lmo}
 \end{equation}
@@ -207,7 +207,7 @@ where the factor gradients are
     \qquad
     G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
 \end{equation}
-Thus \eqref{eq:decoupled-lora-lmo} is the Product Muon LMO. \methodname{} builds on this product-aware object, but changes both the metric used for the direction and the rule used to set the factor-step magnitude.
+Thus \eqref{eq:decoupled-lora-lmo} is the Product Muon LMO. \methodname{} builds on this product-aware object, but changes both the metric used for the direction and the rule used to set the factor-step magnitude. \nikhil{Rewrite (awkward; do NOT frame \methodname{} as ``building on'' Product Muon). \methodname{} generalizes this step: a curvature-aware metric for the direction plus a separate magnitude rule. Product Muon is the special case (identity metric, no magnitude control).}
 
 \subsection{Per-Sample Loss Control}
 
@@ -305,7 +305,7 @@ The LMO in~\eqref{eq:polorafull} is an instance of the following preconditioned 
 Let $L$ and $R$ be symmetric positive definite. Then
 \begin{equation}\label{e-gen-spectral-lmo-update}
 X^\star = -\tau L^{-1}
-\polar\left(L^{-1}MR^{-1}\right) R^{-1}
+\msign\left(L^{-1}MR^{-1}\right) R^{-1}
 \end{equation}
 is a solution of
 \[
@@ -319,7 +319,7 @@ $\|LXR\|_F$ over the solution set.
 \end{restatable}
 Applying the lemma above with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq:polorafull} is given by
 \begin{equation}\label{eq:polorafull-update}
-    \Delta W =  - \tau P^{-1/2} \polar(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
+    \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
 
 
@@ -394,11 +394,11 @@ Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo}, each
   \begin{aligned}
   D_A &=
   C_A^{-1/2}\,
-  \polar\!\left(C_A^{-1/2}\,G_A\,Q^{-1/2}\right)
+  \msign\!\left(C_A^{-1/2}\,G_A\,Q^{-1/2}\right)
   \,Q^{-1/2},\\
   D_B &=
   P^{-1/2}\,
-  \polar\!\left(P^{-1/2}\,G_B\,C_B^{-1/2}\right)
+  \msign\!\left(P^{-1/2}\,G_B\,C_B^{-1/2}\right)
   \,C_B^{-1/2}.
   \end{aligned}
   \label{eq:factor-directions}
@@ -455,8 +455,8 @@ coupled second moment equations (\Cref{app:matnormal}).
 \Statex
 \Phase{Direction}
 \State $C_A\gets B^\top\,P\,B, \qquad C_B\gets A\,Q\,A^\top$
-\State $D_A\gets C_A^{-1/2}\,\polar \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
-\State $D_B\gets P^{-1/2}\,\polar \big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
+\State $D_A\gets C_A^{-1/2}\,\msign \big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{whiten--polar--unwhiten~\eqref{eq:factor-directions}}
+\State $D_B\gets P^{-1/2}\,\msign \big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
 \Statex
 \Phase{Magnitude}
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
@@ -618,7 +618,7 @@ to other initializations. Rank-stabilized LoRA~\cite{rslora} replaces the $\alph
 adapter scale with $\alpha/\sqrt{r}$ to avoid the rank-dependent shrinkage that makes
 high-rank adapters hard to train, and $\mu$A~\cite{mua} studies how these
 hyperparameters should scale with rank to keep the optimal learning rate stable. In
-contrast, \methodname{} ensures each factor receives an update of equal size in the operator norm, while simultaneously ensuring the total update to the weight is also bounded in operator norm. 
+contrast, \methodname{} ensures each factor receives an update of equal size in the spectral norm, while simultaneously ensuring the total update to the weight is also bounded in spectral norm. 
 
 % changes the update geometry itself, computing factor update
 % directions in a curvature-aware metric
@@ -630,11 +630,11 @@ contrast, \methodname{} ensures each factor receives an update of equal size in 
 Recently, optimizers that operate at the matrix level, rather than treating parameters as
 a flattened vector, have attracted attention for their gains over Adam~\cite{liu2025muon,
 qiu2026hyperparameter, benchmark_practices}. Muon~\cite{muon} solves the spectral-norm LMO
-for a dense weight, producing an update equal to the polar factor of the momentum
+for a dense weight, producing an update equal to the matrix sign of the momentum
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
-whiten the gradient before a polar step (\Cref{app:related-spectral}). \methodname{} also applies a polar step to a whitened gradient. Its metric is derived from controlling per-sample loss change in the batch. We adapt this update to LoRA training and add magnitude control, which removes the need for learning-rate grafting \cite{shi2023distributed, mousse}.
+whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} also applies a matrix-sign step to a whitened gradient. Its metric is derived from controlling per-sample loss change in the batch. We adapt this update to LoRA training and add magnitude control, which removes the need for learning-rate grafting \cite{shi2023distributed, mousse}.
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
@@ -656,7 +656,7 @@ explicitly control the factor steps by scaling them with the factor norms. Spect
 \methodname{} carries the fast part of spectral, curvature-aware optimization to
 LoRA at low cost.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item A polar step in a coupled two-sided \emph{diagonal} curvature metric, with each factor step set to spectral norm $\rho$.
+  \item A matrix-sign step in a coupled two-sided \emph{diagonal} curvature metric, with each factor step set to spectral norm $\rho$.
   \item $1.2$--$1.7\times$ fewer steps than Adam across nine settings, with training from $B{=}0$ and one learning rate across rank.
   \item The expensive Kronecker curvature and inner refinement it is usually bundled with add nothing.
   \item $\le 5\%$ per-step wall and ${\approx}\tfrac12$ Adam's state, so the step speedup survives in wall-clock.
@@ -726,7 +726,7 @@ LR schedule            & constant (no warmup or decay) \\
   \item \textbf{Grid} (per optimizer): $\{3{\times}10^{-5},\ 10^{-4},\ 3{\times}10^{-4},\ 10^{-3},\ 3{\times}10^{-3},\ 10^{-2},\ 3{\times}10^{-2},\ 10^{-1}\}$.
   \item \textbf{Selection}: best per optimizer and setting on held-out eval loss (never training loss).
   \item \textbf{Adam}: betas $(0.9,0.999)$, $\varepsilon = 10^{-8}$.
-  \item \textbf{Muon}: momentum $\beta_1 = 0.9$, polar factor via PolarExpress ($8$ iterations), no $B$-side learning-rate multiplier.
+  \item \textbf{Muon}: momentum $\beta_1 = 0.9$, matrix sign via PolarExpress ($8$ iterations), no $B$-side learning-rate multiplier.
   \item \textbf{iMuon}: the authors' reference implementation (their Appendix~K momentum form), with momentum $0.95$, Nesterov, and $5$ Newton--Schulz steps.
   \item \textbf{LoRA-RITE}: the authors' official PyTorch implementation, with betas $(0.9,0.999)$, $\varepsilon = 10^{-6}$, in-optimizer gradient clip $1.0$ in the invariant coordinates (escape-mass term disabled, as in the reference), and the trainer's global gradient-norm clip disabled because a raw-gradient-norm clip is not transformation-invariant.
 \end{itemize}
@@ -758,7 +758,7 @@ For $G\in\mathbb{R}^{m\times n}$ and $\eta>0$,
 \]
 and 
 \[
-X^\star = -\eta\polar(G)
+X^\star = -\eta\msign(G)
 \]
 is unique least Frobenius norm minimizer of
 \[
@@ -781,7 +781,7 @@ By duality of the spectral and nuclear norms, every feasible $X$ satisfies
 Let $G=U\Sigma V^\top$ be a reduced singular value decomposition.  The
 choice
 \[
-    X=-\eta UV^\top=-\eta\polar(G)
+    X=-\eta UV^\top=-\eta\msign(G)
 \]
 is feasible and satisfies
 \[
@@ -896,7 +896,7 @@ $\norm{Y}_2\le\eta$, and the objective becomes
 \]
 By \Cref{lem:muon-lmo}, unique least Frobenius norm minimizer is
 \[
-Y=-\eta \polar \left(L^{-1}MR^{-1}\right).
+Y=-\eta \msign \left(L^{-1}MR^{-1}\right).
 \]
 Substituting back gives the stated solution.
 \end{proof}
@@ -1002,15 +1002,15 @@ The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} are
 \end{equation}
 They have the closed-form solution
 \begin{align} 
-    \Delta A &=-\tau\,S_A^{-1/2}\polar(S_A^{-1/2}G_A) \nonumber \\
-    \Delta B &=-\tau\,\polar(G_BS_B^{-1/2})S_B^{-1/2}.  \label{eq:decoupled-lora-lmo-closed}
+    \Delta A &=-\tau\,S_A^{-1/2}\msign(S_A^{-1/2}G_A) \nonumber \\
+    \Delta B &=-\tau\,\msign(G_BS_B^{-1/2})S_B^{-1/2}.  \label{eq:decoupled-lora-lmo-closed}
 \end{align}
 We will use the fact that for any matrix $M$ with full column rank and reduced SVD $M=U\Sigma V^\top$,
-the polar factor equals
+the matrix sign equals
 \begin{equation}
   % Not true unless we assume full rank
   M(M^\top M)^{-1/2}=
-  UV^\top=\polar(M).
+  UV^\top=\msign(M).
   \label{eq:polar-id}
 \end{equation}
 
@@ -1022,10 +1022,10 @@ which in our notation for $ \widehat G_B=G_B S_B^{-1/2}$ becomes
 \[
   \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}.
 \]
-With no accumulation by \eqref{eq:polar-id} the middle factor is a polar factor, so
+With no accumulation by \eqref{eq:polar-id} the middle factor is the matrix sign, so
 \begin{equation*}
-  \Delta B=-\eta \polar(\widehat G_B) S_B^{-1/2}
-  =-\eta \polar \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
+  \Delta B=-\eta \msign(\widehat G_B) S_B^{-1/2}
+  =-\eta \msign \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
 \end{equation*}
 which is equal to the $B$-update given in~\eqref{eq:decoupled-lora-lmo-closed}. Analogous arguments hold for the $A$-update.
 
@@ -1033,8 +1033,8 @@ which is equal to the $B$-update given in~\eqref{eq:decoupled-lora-lmo-closed}. 
 \paragraph{iMuon, momentum-free.}
 iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which is the dense-space signal passed to the intrinsic spectral LMO. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
 \begin{equation}
-  \Delta B(H) =\polar \big(HA^\top S_B^{-1/2}\big)S_B^{-1/2},\qquad
-  \Delta A(H) =S_A^{-1/2}\polar \big(S_A^{-1/2}B^\top H\big).
+  \Delta B(H) =\msign \big(HA^\top S_B^{-1/2}\big)S_B^{-1/2},\qquad
+  \Delta A(H) =S_A^{-1/2}\msign \big(S_A^{-1/2}B^\top H\big).
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 For the base Algorithm~1 in~\cite{imuon}, the ambient matrix is the raw gradient $G$, so~\eqref{eq:imuon-lmo-ambient}
@@ -1056,7 +1056,7 @@ Plugging $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top=B^
 \begin{equation*}
   \widehat M A^\top=G_B S_B+(BB^\top)G_B
   \quad\Longrightarrow\quad
-  \Delta B(\widehat M)=\polar\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
+  \Delta B(\widehat M)=\msign\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
 \end{equation*}
 which is different from Product Muon. The argument for $\Delta A$ is symmetric.
 Thus switching momentum off does not recover \eqref{eq:decoupled-lora-lmo}. While
@@ -1086,7 +1086,7 @@ Mousse fixes its trust region by a Shampoo curvature $H\approx(R\otimes L)^{1/2}
 $L$ and $R$ being the moving averages of $GG^\top$ and $G^\top G$. Whitening by
 $H^{1/2}=(R\otimes L)^{1/4}$ gives the dense update
 \[
-  \Delta W=-L^{-1/4}\,\polar\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
+  \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
 \]
 \methodname{} instead uses the full gradient covariance $\Sigma\approx Q\otimes P$ as its
 metric, whitening by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse-square-root
@@ -1261,7 +1261,7 @@ $\rho$, which may destabilize training.
 \label{app:gramns}
 
 \Cref{alg:ours} uses two spectral primitives:
-the sign of a matrix $\polar(\cdot)$ and the inverse square root
+the sign of a matrix $\msign(\cdot)$ and the inverse square root
 of $r \times r$ curvature matrix.  We compute both with the
 same Gram Newton--Schulz method.  The method uses only $r\times r$
 matrix multiplications and does not require an eigendecomposition or an
@@ -1311,7 +1311,7 @@ singular vectors of $Y_t$ and only changes its singular values.
 Since polynomials \eqref{e-gram-ns-poly} are chosen so that this iteration drives
 normalized singular values to $1$,
 \[
-    Y_t \to \polar(Y_0).
+    Y_t \to \msign(Y_0).
 \]
 Therefore the Gram update implements the same quintic Newton--Schulz map
 on singular values, but costs only $r\times r$ matrix multiplications.
@@ -1351,9 +1351,9 @@ $Q_K$ is interpreted.
 \[
     Y_K =Q_K\widetilde X
     \approx
-    \polar(\widetilde X)
+    \msign(\widetilde X)
     =
-    \polar(X).
+    \msign(X).
 \]
 
 
@@ -1370,7 +1370,7 @@ $Y_0=\widetilde C^{1/2}$.  The same iteration gives
     =
     Y_K
     \approx
-    \polar(\widetilde C^{1/2})
+    \msign(\widetilde C^{1/2})
     =
     I,
 \]
@@ -1417,7 +1417,7 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 \EndFor
 \State \Return $Q$ 
 % \Comment{$\to$ polar factor (post-multiply $\tilde X$), or inverse-sqrt (post-scale)}
-\Comment{used for $\polar(\cdot)$, or post-scaled for $C^{-1/2}$}
+\Comment{used for $\msign(\cdot)$, or post-scaled for $C^{-1/2}$}
 \end{algorithmic}
 \end{algorithm}
 
@@ -1486,7 +1486,7 @@ spans the long dimension $d$: forming the curvature factors $C_A,C_B$ \eqref{eq:
 the whiten--polar--unwhiten directions \eqref{eq:factor-directions}, and the metric update
 \eqref{eq:ours-klcoupling}. There is a fixed number of these per factor, each costing
 $O(r^2 d)$, for $12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ in total. The second group is the
-matrix sign $\polar(\cdot)$ and the curvature inverse-square-roots, computed entirely in the
+matrix sign $\msign(\cdot)$ and the curvature inverse-square-roots, computed entirely in the
 small $r\times r$ space by the Gram Newton--Schulz of \Cref{app:gramns}, for $32\,K\,r^3$.
 Together, with no eigendecomposition anywhere,
 \begin{equation}
