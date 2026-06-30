@@ -115,13 +115,21 @@ However, naively applying a matrix-aware optimizer to each factor does not impro
   \label{fig:hero}
 \end{figure}
 
-This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. In the terminology of the community working on variant of Muon, \methodname{} is LMO (Linear Minimization Oracle) based method, with a new constraint on the change in the per-sample loss. This formulation gives as a solution a curvature-preconditioned update 
-
-with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update.
+This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. In the terminology of the community working on variant of Muon, \methodname{} is LMO (Linear Minimization Oracle) based method, with a new constraint on the change in the per-sample loss. This formulation gives as a solution a curvature-preconditioned update in the spectral norm. We then develop a product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the update to the product.
 
 We evaluate \methodname{} through an extensive numerical study spanning multiple base models, datasets, adapter ranks, and learning-rate settings. As previewed in \Cref{fig:hero}, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines, reaching Adam's final held-out loss in $1.2$--$1.7\times$ fewer steps across our different settings, with only a less than 3\% cost increase of each step as compared to Adam. We complement these comparisons with component ablations that separate the effects of the curvature-aware direction and magnitude controls we introduce, showing that both contribute to the overall speedup of \methodname{} over our baselines.
  Finally, we find that \methodname{} is  easier to tune than Adam: its optimal learning rate is stable across rank, and performance is less sensitive to the learning rate.
 
+
+
+\noindent
+Our open source implementation is available at:
+\begin{quote}\centering
+{\color{blue}\url{https://github.com/XXX}}
+\end{quote}
+
+
+The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname{}. We first review Muon as a spectral-norm linear minimization oracle in \Cref{sec:muon}. We then adapt this view to LoRA products in \Cref{sec:product-muon} to arrive at Product Muon. \Cref{sec:sample-loss-lmo} derives our curvature-aware update from a per-sample loss-change constraint and turns it into a practical factor update with magnitude control. \Cref{sec:exp} evaluates the method. The main comparison in \Cref{sec:exp-main} measures step and wall-clock speedups over Adam, with the headline behavior shown in \Cref{fig:hero} and the full breadth summarized in \Cref{tab:breadth}. \Cref{sec:exp-ablation} separates the roles of curvature and magnitude control, while \Cref{sec:exp-taskdep} studies rank transfer and distribution shift. Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.
 
 % This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update.
 % Our contributions are:
@@ -133,14 +141,7 @@ We evaluate \methodname{} through an extensive numerical study spanning multiple
 %     \item \textbf{Empirical performance.} Across a range of base models and datasets, \methodname{} reaches Adam's held-out loss in $1.2$–$1.7\times$ fewer steps, while adding at most 3\% per-step overhead.
 % \end{itemize}
 
-\noindent
-Our open source implementation is available at:
-\begin{quote}\centering
-{\color{blue}\url{https://github.com/XXX}}
-\end{quote}
 
-
-The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname{}. We first review Muon as a spectral-norm linear minimization oracle in \Cref{sec:muon}. We then adapt this view to LoRA products in \Cref{sec:product-muon} to arrive . \Cref{sec:sample-loss-lmo} derives our curvature-aware update from a per-sample loss-change constraint and turns it into a practical factor update with magnitude control. \Cref{sec:exp} evaluates the method. The main comparison in \Cref{sec:exp-main} measures step and wall-clock speedups over Adam, with the headline behavior shown in \Cref{fig:hero} and the full breadth summarized in \Cref{tab:breadth}. \Cref{sec:exp-ablation} separates the roles of curvature and magnitude control, while \Cref{sec:exp-taskdep} studies rank transfer and distribution shift. Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.
 
 % \nikhil{I think we want the contributions to be more concise and punchy.}
 % \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
@@ -680,23 +681,35 @@ Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\nor
 explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
 
 % ===========================================================================
+
 \section{Conclusion}
 \label{sec:conclusion}
-\methodname{} carries the fast part of spectral, curvature-aware optimization to
-LoRA at low cost.
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item A matrix-sign step in a coupled two-sided \emph{diagonal} curvature metric, with each factor step set to spectral norm $\rho$.
-  \item $1.2$--$1.7\times$ fewer steps than Adam across nine settings, with training from $B{=}0$ and one learning rate across rank.
-  \item The expensive Kronecker curvature and inner refinement it is usually bundled with add nothing.
-  \item $\le 5\%$ per-step wall and ${\approx}\tfrac12$ Adam's state, so the step speedup survives in wall-clock.
-\end{itemize}
 
-The per-sample loss-control view suggests several possible follow-up directions.
-\begin{itemize}
-    \item Using other outergradient approximations could lead to other efficient methods
-    \item Using other approximations other than linear for the total change, such as a quadratic approximation
-    \item ,....
-\end{itemize}
+\methodname{} takes a different route to optimizing LoRA adapters: it asks how  a step should look through the merged product weight and through the current batch loss, rather than treating the two LoRA factors as unrelated parameter matrices. This view leads to a practical optimizer that combines a product-aware spectral direction, a lightweight curvature metric, and explicit control of factor-step magnitudes. In our experiments, this was enough to turn matrix-aware LoRA optimization into a consistent training-speed improvement over Adam, with small overhead and good learning-rate transfer across rank.
+
+The method is still built on approximations. We use diagonal curvature factors for efficiency, so \methodname{} may miss interactions captured by richer Kronecker or full-matrix metrics. The derivation also relies on a linearized loss change and a linearized product update, which means the optimizer does not directly control higher-order effects or the dropped $\Delta B\Delta A$ term. Finally, our evaluation focuses on LoRA finetuning for language models and on held-out loss as the main measure of progress; broader downstream evaluations, longer training horizons, other adapter families, and different hardware or batch-size regimes remain open.
+
+\rob{**HERE**}
+These limitations point to several future directions. One is to design better outergradient approximations that remain cheap enough for adapter training. Another is to incorporate second-order or trust-region information without losing the simplicity of the current update. More broadly, the per-sample loss-control perspective may be useful beyond LoRA, especially for other parameter-efficient methods where the optimizer acts on a factorized or constrained parameterization but the model only sees the composed update.
+
+
+% \section{Conclusion}
+% \label{sec:conclusion}
+% \methodname{} carries the fast part of spectral, curvature-aware optimization to
+% LoRA at low cost.
+% \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+%   \item A matrix-sign step in a coupled two-sided \emph{diagonal} curvature metric, with each factor step set to spectral norm $\rho$.
+%   \item $1.2$--$1.7\times$ fewer steps than Adam across nine settings, with training from $B{=}0$ and one learning rate across rank.
+%   \item The expensive Kronecker curvature and inner refinement it is usually bundled with add nothing.
+%   \item $\le 5\%$ per-step wall and ${\approx}\tfrac12$ Adam's state, so the step speedup survives in wall-clock.
+% \end{itemize}
+
+% The per-sample loss-control view suggests several possible follow-up directions.
+% \begin{itemize}
+%     \item Using other outergradient approximations could lead to other efficient methods
+%     \item Using other approximations other than linear for the total change, such as a quadratic approximation
+%     \item ,....
+% \end{itemize}
 
 \printbibliography
 
@@ -1498,22 +1511,25 @@ momentum direction until the curvature estimate becomes nonzero.
 
 \section{FLOP Overhead of the Optimizer}
 \label{app:flops}
-The wall measurement (\Cref{sec:exp-walltime}) is hardware-specific. The FLOP count is its
-architecture-only counterpart, and tells the same near-free story. We count it for one
-adapted layer, a frozen weight $W\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ with its LoRA
-pair $(A,B)$ at rank $r\ll d_{\mathrm{in}},d_{\mathrm{out}}$, and combine layers at the end.
-Here $K$ is the number of Newton--Schulz iterations and $n_{\mathrm{tok}}$ the tokens
-processed per step.
+The wall-clock measurements in \Cref{sec:exp-walltime} are hardware dependent.
+To give a hardware-independent comparison, we also report FLOP counts.
+We first count FLOPs for a single adapted layer.  The frozen weight is
+$W\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
+and its LoRA adapter is the rank-$r$ pair $(A,B)$, with
+$r\ll d_{\mathrm{in}},d_{\mathrm{out}}$.
+We then sum the per-layer costs over all adapted layers.  Throughout, $K$
+denotes the number of Newton--Schulz iterations, and $n_{\mathrm{tok}}$ denotes
+the number of tokens processed per optimization step.
 
 \paragraph{Forward and backward.} With the base weight frozen, the backward pass skips its
 weight gradient, so it costs the same as the forward rather than twice it: four matmul-flops
 per parameter per token in all, against six for full fine-tuning \cite{kaplan2020scaling}.
 For one layer,
 \begin{equation}
-  C_{\mathrm{fwd}}=C_{\mathrm{bwd}}=2\,d_{\mathrm{in}}d_{\mathrm{out}}\,n_{\mathrm{tok}}.
+  C_{\mathrm{fwd}}=C_{\mathrm{bwd}}=2 d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}}.
   \label{eq:flop-fb}
 \end{equation}
-Summed over layers this is $4N\,n_{\mathrm{tok}}$ for total parameter count $N$. The LoRA
+Summed over layers this is $4N n_{\mathrm{tok}}$ for total parameter count $N$. The LoRA
 factors add only $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ parameters per layer, smaller by a
 factor $r/d$, and we drop them.
 
