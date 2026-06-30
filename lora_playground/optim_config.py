@@ -71,6 +71,16 @@ class OptimizerConfig:
     anderson_reg: float = 1e-10
 
     # curvature-whiten ablation flags
+    # rdinv_variant: reference scale for the relative-damping floor in _rdinv
+    # (the large-side diagonal metric). "A" = own op-norm (shipped/paper:
+    # (x/x_max+δ)^{-1/2}, floor δ·x_max); "B" = raw/unbiased KL gauge
+    # (x+δ·x_max)^{-1/2}, same op-norm floor (= A up to a per-step gauge, but the
+    # D_in/D_out EMA diverges because SAinv carries the partner factor's
+    # time-varying max); "VN" = von Neumann / matrix Adafactor (x+δ·Tr(partner))^{-1/2},
+    # the trace-scaled projection (Wu Lin et al. Table 2, S_a=E[GGᵀ]/Tr(S_b)). δ is
+    # NOT comparable across variants (op-norm-relative for A/B, trace-relative for
+    # VN). Only "A" reproduces the paper figures; B/VN are the investigation.
+    rdinv_variant: str = "A"
     cw_picard_iters: int = 1
     cw_nesterov: bool = False
     cw_no_radius: bool = False

@@ -674,6 +674,15 @@ def make_parser():
                              "k=1 (default) is the single-block step; k>=2 adds the "
                              "diagonal cross-coupling correction (kl_shampoo_polar_"
                              "derivation.md section Cross-coupling).")
+    parser.add_argument("--rdinv_variant", choices=["A", "B", "VN"], default="A",
+                        help="Reference scale for the relative-damping floor in the "
+                             "CurvatureWhitenLoRA large-side diagonal metric (_rdinv). "
+                             "'A' (default) = own op-norm (x/x_max+δ)^{-1/2}, the shipped "
+                             "paper protagonist; 'B' = raw/unbiased KL gauge "
+                             "(x+δ·x_max)^{-1/2} (same op-norm floor); 'VN' = von Neumann / "
+                             "matrix Adafactor (x+δ·Tr(partner))^{-1/2}, trace-scaled. "
+                             "δ is op-norm-relative for A/B but trace-relative for VN. "
+                             "Only 'A' reproduces the paper figures.")
     parser.add_argument("--cw_nesterov", action="store_true",
                         help="Use Nesterov-lookahead momentum (ĝ + β₁·m, Muon "
                              "convention) into the CurvatureWhitenLoRA whiten→polar "
@@ -1263,6 +1272,7 @@ def main():
         cw_unpinned=args.cw_unpinned,
         cw_factor_a=args.cw_factor_a,
         cw_factor_b=args.cw_factor_b,
+        rdinv_variant=args.rdinv_variant,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,

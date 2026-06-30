@@ -1103,7 +1103,8 @@ class CurvatureWhitenLoRA(Optimizer):
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
-                 cw_unpinned=False, cw_factor_a=0.0, cw_factor_b=0.0):
+                 cw_unpinned=False, cw_factor_a=0.0, cw_factor_b=0.0,
+                 rdinv_variant="A"):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1167,6 +1168,13 @@ class CurvatureWhitenLoRA(Optimizer):
         # two-sided program with an exact cross term (vs the mixed-metric option a).
         # Requires kl_coupled=True (it reuses the D_in/D_out EMAs).
         self.diag_metric = bool(diag_metric)
+        if rdinv_variant not in {"A", "B", "VN"}:
+            raise ValueError(f"rdinv_variant must be 'A', 'B', or 'VN', got {rdinv_variant!r}")
+        if rdinv_variant == "VN" and not diag_metric:
+            raise ValueError("rdinv_variant='VN' (partner-trace damping) requires "
+                             "diag_metric=True (the D_in/D_out diagonal metric whose "
+                             "partner traces it references).")
+        self.rdinv_variant = str(rdinv_variant)
         # diag_metric reuses the D_in/D_out EMAs as the single global diagonal metric.
         # With kl_coupled=True those diagonals are the KL coupled fixed point (Prop 4);
         # with kl_coupled=False they are plain grad-energy EMAs (the diag-shampoo arm).
@@ -1274,12 +1282,35 @@ class CurvatureWhitenLoRA(Optimizer):
     def _sym(M):
         return 0.5 * (M + M.transpose(-2, -1))
 
-    def _rdinv(self, x):
-        """Relative-damped inverse-sqrt of a nonneg tensor along its last dim:
-        (x/x_max + δ)^{-1/2}. Returns ones where x_max≈0 (uninitialized factor →
-        no whitening; the Frobenius rescale then yields a plain momentum step)."""
+    def _rdinv(self, x, partner_trace=None):
+        """Relative-damped inverse-sqrt of a nonneg tensor along its last dim.
+        The damping floor's REFERENCE SCALE is what the variant selects:
+
+          "A" (shipped/paper): (x/x_max + δ)^{-1/2}  — floor δ·x_max (op-norm).
+          "B" (raw/unbiased KL gauge): (x + δ·x_max)^{-1/2}  — same op-norm floor,
+              raw representation (= A·x_max^{-1/2}; diverges from A only via the slow
+              D_in/D_out EMA, which carries the partner factor's time-varying max).
+          "VN" (von Neumann = matrix Adafactor): (x + δ·Tr(partner))^{-1/2}  — floor
+              δ·Tr(partner), the trace-scaled projection of Wu Lin et al. Table 2
+              (S_a = E[GGᵀ]/Tr(S_b)). Needs ``partner_trace`` (the partner factor's
+              diagonal sum, a per-pair scalar); falls back to the op-norm floor if
+              absent (non-diagonal whitening paths, which VN does not target).
+
+        Returns ones where x_max≈0 (uninitialized factor → no whitening; the
+        Frobenius rescale then yields a plain momentum step). NOTE: δ is NOT
+        comparable across variants — for A/B it is relative to the op-norm, for VN
+        relative to the trace, so VN's floor is ~Tr/x_max larger at the same δ."""
+        v = self.rdinv_variant
         xmax = x.amax(dim=-1, keepdim=True)
-        out = (x / xmax.clamp_min(1e-30) + self.delta).rsqrt()
+        if v == "B":
+            out = (x + self.delta * xmax).clamp_min(1e-30).rsqrt()
+        elif v == "VN":
+            if partner_trace is None:
+                out = (x + self.delta * xmax).clamp_min(1e-30).rsqrt()
+            else:
+                out = (x + self.delta * partner_trace).clamp_min(1e-30).rsqrt()
+        else:  # "A" — shipped / paper protagonist
+            out = (x / xmax.clamp_min(1e-30) + self.delta).rsqrt()
         return torch.where(xmax < 1e-30, torch.ones_like(out), out)
 
     def _cw_diag_record(self, *, A_post, B_post, A_pre, B_pre, dA, dB,
@@ -1552,7 +1583,8 @@ class CurvatureWhitenLoRA(Optimizer):
             if self.cw_no_diag_curv:  # −Shampoo: M_in=M_out=I → C_A=BᵀB, C_B=AAᵀ
                 dinA = torch.ones_like(st['D_in']); doutB = torch.ones_like(st['D_out'])
             else:
-                dinA = self._rdinv(st['D_in']); doutB = self._rdinv(st['D_out'])
+                dinA = self._rdinv(st['D_in'], partner_trace=st['D_out'].sum(dim=-1, keepdim=True))
+                doutB = self._rdinv(st['D_out'], partner_trace=st['D_in'].sum(dim=-1, keepdim=True))
             Din_m = (dinA * dinA).reciprocal()
             Dout_m = (doutB * doutB).reciprocal()
             if self.diag_metric:
@@ -1714,7 +1746,8 @@ class CurvatureWhitenLoRA(Optimizer):
             if self.cw_no_diag_curv:  # −Shampoo: M_in=M_out=I → C_A=BᵀB, C_B=AAᵀ
                 dinA = torch.ones_like(Din); doutB = torch.ones_like(Dout)
             else:
-                dinA = self._rdinv(Din); doutB = self._rdinv(Dout)
+                dinA = self._rdinv(Din, partner_trace=Dout.sum(dim=-1, keepdim=True))
+                doutB = self._rdinv(Dout, partner_trace=Din.sum(dim=-1, keepdim=True))
             Din_m = (dinA * dinA).reciprocal()
             Dout_m = (doutB * doutB).reciprocal()
             if self.diag_metric:
@@ -11506,6 +11539,7 @@ def build_optimizer(
     cw_unpinned: bool = False,
     cw_factor_a: float = 0.0,
     cw_factor_b: float = 0.0,
+    rdinv_variant: str = "A",
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,
