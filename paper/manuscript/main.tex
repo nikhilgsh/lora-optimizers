@@ -1358,12 +1358,12 @@ $Q_K$ is interpreted.
 
 
     \item \textbf{Inverse square root.}
-    We damp the curvature matrix $C$ (\Cref{app:damping}), and normalize the spectrum
+    We damp the curvature matrix $C\succ 0$ (\Cref{app:damping}), and normalize the spectrum
     \[
         \widetilde C = (C + \delta \lambda_{\max}(C))/\alpha,
         \qquad \alpha = \operatorname{tr}(\widetilde C).
     \]
-Take $R_0=\widetilde C\succ0$, equivalently
+Take $R_0=\widetilde C$, equivalently
 $Y_0=\widetilde C^{1/2}$.  The same iteration gives
 \[
     Q_K\widetilde C^{1/2}
@@ -1424,6 +1424,15 @@ $R\gets MRM$; in finite precision it removes accumulated drift
 
 \subsection{Relative Damping}\label{app:damping}
 We use relative damping for each inverse square root computation in \Cref{alg:ours}.
+Let $X \succ 0$ be symmetric matr
+\[
+\tilde X = X + \lambda_\max(X) I = 
+U\operatorname{diag}
+    \left(
+        \left(\frac{\lambda_i}{\lambda_{\max}}+\delta\right)^{-1/2}
+    \right)
+    U^\top 
+\]
 On the normalized spectrum, the damping parameter $\delta$ has a fixed
 meaning.  If $X = U\operatorname{diag}(\lambda_i)U^\top$ is the eigendecomposition of $X$,
 then inverse square root of $X$ with relative damping is defined as
