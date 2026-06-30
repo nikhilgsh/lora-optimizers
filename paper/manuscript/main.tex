@@ -93,24 +93,20 @@
 Deployment of large-scale pretrained models increasingly depends on adapting a
 general model to many specialized tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized models. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
 \begin{equation}
-\DW = \frac{\alpha}{r}\,BA, \qquad
+W = W_0 + \DW, \qquad \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-to each layer, so the adapted weight is $W = W_0 + \DW$. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
+to each layer. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
 The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon and Shampoo treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA.
 
-However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works try to address this by proposing updates that are variants of a product-aware~\cite{imuon,loramuon,tilde_csd} Muon step. In our experiments we find that the product Muon step is also unable consistently improve over Adam. 
+However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works try to address this by proposing updates that are variants of a product-aware~\cite{imuon,loramuon,tilde_csd} Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}). In our experiments, we find that the Product Muon step is also unable to consistently improve over Adam. 
 
-This motivates \methodname{}, which is derived from a novel formulation which is motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update that can be applied to LoRA using a product-aware viewpoint. Lastly, unlike the product Muon step, we control the factor update sizes in addition to the size of the merged weight update. Our contributions are:
+This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update. Our contributions are:
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-    \item \textbf{Curvature-aware direction.} We derive a curvature-preconditioned update direction by controlling the per-sample loss change across a batch, with a product-aware version for LoRA.
-    
-    \item \textbf{Magnitude control.} Unlike other product-aware updates, 
-
-    \item \textbf{Component ablation.} We isolate the effect of the previous two contributions and show each provides a meaningful speedup.
+    \item \textbf{Component ablation.} We isolate the effect of the curvature-aware direction and magnitude control and show each provides a meaningful speedup.
 
     \item \textbf{Learning-rate transfer.} We show that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less sensitive to the learning rate.
 
@@ -146,7 +142,7 @@ right object. The final update incorporates a diagonal curvature metric into
 this product-aware direction and uses a separate scaling rule to keep the two
 factor steps balanced.
 
-\subsection{Muon}
+\subsection{Muon}\label{sec:muon}
 
 Muon chooses the polar factor of a matrix gradient as its update direction~\cite{muon,carlson2015preconditioned}. This direction solves a spectral-norm linear minimization oracle (LMO). For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, an LMO minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
@@ -168,7 +164,7 @@ Choosing the spectral norm,
 \]
 controls the worst-case amplification of a linear operator. With this choice, the LMO direction is the polar factor of the gradient, up to sign and scale (\Cref{lem:muon-lmo}). Bounding the spectral norm of the update can therefore stabilize training and feature learning~\cite{yang2023spectral,bernstein2025modular}. To adapt this direction to LoRA, we must account for the product structure in~\eqref{eq:lora}.
 
-\subsection{Product Muon}
+\subsection{Product Muon}\label{sec:product-muon}
 
 Consider a LoRA step that updates the two factors by a given matrix $\Delta A$ and $\Delta B$ as follows
 \[
@@ -1324,9 +1320,11 @@ $Q_0=I$, each step sets
     \qquad
     R_{t+1}=M_t R_t M_t .
 \]
-Hence by induction we can show that
+Hence by induction we can show that for $Q_0=I$ 
 \[
-    R_t = Q_t R_0 Q_t^\top .
+    Y_t=Q_tY_0,
+    \qquad
+    R_t=Q_tR_0Q_t^\top .
 \]
 At the end of the iteration, $Q_K$ is the accumulated matrix.
 The two call sites differ only in how $R_0$ is initialized and how
