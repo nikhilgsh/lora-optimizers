@@ -635,7 +635,7 @@ contrast, \methodname{} sets the two factor updates to have the same spectral no
 Recently, optimizers that operate at the matrix level, rather than treating parameters as
 a flattened vector, have attracted attention for their gains over Adam~\cite{liu2025muon,
 qiu2026hyperparameter, benchmark_practices}. Muon~\cite{muon} solves the spectral-norm LMO
-for a dense weight, producing an update equal to the matrix sign of the momentum
+for a full weight matrix, producing an update equal to the matrix sign of the momentum
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
@@ -968,7 +968,7 @@ which is equal to the $B$-update given in~\eqref{eq:product-muon-step}. Analogou
 
 
 \paragraph{iMuon, momentum-free.}
-iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which is the dense-space signal passed to the intrinsic spectral LMO. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
+iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which is the full-space signal passed to the intrinsic spectral LMO. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
 \begin{equation}
   \Delta B(H) =\msign \big(HA^\top S_B^{-1/2}\big)S_B^{-1/2},\qquad
   \Delta A(H) =S_A^{-1/2}\msign \big(S_A^{-1/2}B^\top H\big).
@@ -1011,7 +1011,6 @@ Gram-matrix form is equivalent to the simplified QR-coordinate form of
 LoRA-RITE~\cite{loramuon}.
 
 
-\nikhil{these paragraphs are stubs}
 \section{Extended Prior Work}
 \label{app:related-spectral}
 Here we will better contextualize how
@@ -1021,24 +1020,14 @@ optimizers (\Cref{sec:related}).
 \paragraph{Mousse.}
 Mousse fixes its trust region by a Shampoo curvature $H\approx(R\otimes L)^{1/2}$, with
 $L$ and $R$ being the moving averages of $GG^\top$ and $G^\top G$. Whitening by
-$H^{1/2}=(R\otimes L)^{1/4}$ gives the dense update
+$H^{1/2}=(R\otimes L)^{1/4}$ gives the full-weight update
 \[
   \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
 \]
 \methodname{} instead uses the full gradient covariance $\Sigma\approx Q\otimes P$ as its
 metric, preconditioning by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse square root
 rather than Mousse's fourth-root power; the first-order LoRA product map then contracts
-these dense factors to $C_A=B^\top P B$ and $C_B=AQA^\top$.
-
-\paragraph{SOAP-Muon.}
-SOAP-Muon whitens the gradient with a SOAP preconditioner and then orthogonalizes the
-result \cite{soapmuon}.
-
-\paragraph{Kang et al.}
-For spectral gradient flow in a simplified matrix-factorization model,
-Kang et al.~\cite{kang_specgf} prove that the singular values of the merged adapter
-product grow at a nearly uniform rate even though the two factors are orthogonalized
-independently.
+these full-size factors to $C_A=B^\top P B$ and $C_B=AQA^\top$.
 
 \paragraph{Spectron.}
 Spectron \cite{spectron} bounds the induced product update by rescaling orthogonalized
@@ -1375,7 +1364,7 @@ processed per optimization step.
 
 
 \paragraph{Forward and backward.}
-For a dense
+For a linear
 layer $Y=XW^\top$, the forward pass costs
 $2d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}$
 FLOPs.
