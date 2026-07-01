@@ -402,7 +402,7 @@ give the factor update directions.
 \paragraph{Magnitude.}
 % It remains to choose the step magnitude. 
 % Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update.
-We now choose the update magnitudes for the two factors. Firstly, we control the size of the updates themselves in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Secondly, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+We now choose the update magnitudes for the two factors. We control the size of the updates themselves in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
 \approx
@@ -413,39 +413,23 @@ We now choose the update magnitudes for the two factors. Firstly, we control the
 \norm{A}_2\norm{\Delta B}_2,
 \label{eq:ours-prodcap}
 \end{equation}
+<<<<<<< 0da4dfc4d6f33dde30b0edab3971f396c55ec66e
 Treating $A$ and $B$ symmetrically, we use a single step size $\rho$ for both factors, setting $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Choosing
+=======
+and so setting
+>>>>>>> 563c2c729403726f5cc0d5ff826e59cc1733d86f
 \begin{equation}
 \rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
 \label{eq:ours-rho}
 \end{equation}
-ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
+ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ and $D_B$ from \eqref{eq:factor-directions} gives the updates
 \[
 \Delta A = -\rho\,\frac{D_A}{\norm{D_A}_2},
 \qquad
 \Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
 \]
-Including the dropped quadratic term $\Delta B\Delta A$, the actual merged update overshoots $\eta$ by at most a relative $\eta/(\norm{A}_2+\norm{B}_2)^2$ (\Cref{rem:quadratic}).
-\Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
-\paragraph{Optimizer step.}
-\Cref{alg:ours} summarizes the resulting step. The direction formula
-\eqref{eq:factor-directions} acts on Nesterov momentum rather than raw factor
-gradients.
-The step uses Gram Newton--Schulz iterations for the matrix sign and inverse
-square roots (\Cref{app:gramns}), power iteration for spectral norms
-(\Cref{alg:smax}), and relative damping in the curvature inverse square roots
-(\Cref{app:damping}). For tractability, the curvature metrics are diagonal, as
-in Adafactor \cite{adafactor}. Their diagonal entries are stored as EMA vectors
-$p$ and $q$, initialized to a small multiple of the all-ones vector so that the
-first step, before any curvature is observed, uses the identity metric. Before
-the direction step, the algorithm rescales each by its largest entry,
-$\bar P=\diag(p/\norm{p}_\infty)$ and
-$\bar Q=\diag(q/\norm{q}_\infty)$, and uses $\bar P,\bar Q$ in the direction.
-For a single undamped step this normalization only rescales $D_A$ and $D_B$, so
-it has no effect after the spectral normalization in \eqref{eq:ours-rho}. With
-EMA, however, the normalization fixes the scale ambiguity of the Kronecker
-factorization before each minibatch estimate for $p$ and $q$, so $\beta_2$ sets
-the EMA decay rather than an arbitrary split of scale between the two vectors.
-\Cref{app:matnormal} derives this normalized second-moment estimator.
+\paragraph{Optimizer step.} To reduce overhead, the matrices $P$ are $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}. We also employ standard averaging techniques: instead of raw gradients we use Nesterov momentum buffers and for updating $P$ and $Q$ we use an exponential moving average (EMA). To eliminate scaling ambiguity in $P$ and $Q$ we rescale each by its largest entry to produce $\bar{P}$ and $\bar{Q}$ which are then used to compute the direction and in the EMA update. We discuss the motivation for this strategy in more detail in \Cref{app:matnormal}. To ensure fast optimizer steps we use Gram Newton--Schulz iterations for the matrix sign and inverse square roots (\Cref{app:gramns}) and power iteration for estimating spectral norms (\Cref{alg:smax}). For stability, we use relative damping in the inverse square roots
+(\Cref{app:damping}). The resulting step is summarized in \Cref{alg:ours}. 
 
 \begin{algorithm}[t]
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
@@ -919,7 +903,7 @@ so the overshoot is $O(\eta)$ and shrinks as the factors grow.
 \end{remark}
 
 
-\section{Momentum-Free Limits of LoRA-RITE, iMuon, and LoRA-Muon}
+\section{Momentum-Free Reductions to Product Muon}
 \label{app:memoryless}
 LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon \cite{loramuon}
 reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed. We show this below.
