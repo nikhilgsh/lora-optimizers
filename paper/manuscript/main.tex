@@ -171,7 +171,7 @@ The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname
 To derive the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the constrained steepest descent perspective~\cite{crawshaw2026exploration}, which is often referred to as the  linear minimization oracle (LMO) perspective~\cite{pmlr-v267-pethick25a}. 
 % This perspective views the Muon update as minimizing the linearized loss subject to controlling the spectral norm of the update. 
 Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon method. 
-In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions, which we then rescale to control both the per-factor and merged-weight update sizes.
+In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates.
 % A LoRA adapter changes the model through the product $BA$ of its two
 % factors~\eqref{eq:lora}, while the optimizer acts on $A$ and $B$. This section
 % derives an update that treats the adapter as a matrix update while still
@@ -348,7 +348,7 @@ Then \eqref{eq:polorafull-hard} can be rewritten as
 \end{array}
 \label{eq:polorafull}
 \end{equation}
-where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
+where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. Its value does not matter, since we use the LMO only for the direction and rescale it to the desired size. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
 \begin{equation}\label{eq:polorafull-update}
     \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
@@ -419,7 +419,7 @@ give the factor update directions.
 \paragraph{Magnitude.}
 % It remains to choose the step magnitude. 
 % Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update.
-Having derived the direction, we now choose the magnitude. We directly control the size of the factor updates in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+Having derived the direction, we now set the magnitude directly rather than through the budget $\tau$, controlling the size of the factor updates in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
 \approx
