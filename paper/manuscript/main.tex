@@ -1363,40 +1363,100 @@ momentum direction until the curvature estimate becomes nonzero.
 \section{FLOP Overhead of the Optimizer}
 \label{app:flops}
 The wall-clock measurements in \Cref{sec:exp-walltime} are hardware dependent.
-To give a hardware-independent comparison, we also report FLOP counts.
-We first count FLOPs for a single adapted layer.  The frozen weight is
-$W\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
-and its LoRA adapter is the rank-$r$ pair $(A,B)$, with
-$r\ll d_{\mathrm{in}},d_{\mathrm{out}}$.
-We then sum the per-layer costs over all adapted layers.  Throughout, $K$
+To give a hardware-independent comparison, we also report leading matmul FLOP counts.
+We count one multiply-add as two FLOPs.  The count below is for one
+adapted linear layer with frozen base weight
+$W\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ and LoRA factors
+$B\in\mathbb{R}^{d_{\mathrm{out}}\times r}$,
+$A\in\mathbb{R}^{r\times d_{\mathrm{in}}}$, with
+$r\ll d_{\mathrm{in}},d_{\mathrm{out}}$.  
+Throughout, $K$
 denotes the number of Newton--Schulz iterations, and $n_{\mathrm{tok}}$ denotes
 the number of tokens processed per optimization step.
 
-\paragraph{Forward and backward.} With the base weight frozen, the backward pass skips its
-weight gradient, so it costs the same as the forward rather than twice it: four matmul-flops
-per parameter per token in all, against six for full fine-tuning \cite{kaplan2020scaling}.
-For one layer,
+
+\paragraph{Forward and backward.}
+For a dense
+layer $Y=XW^\top$, the forward pass costs
+$2d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}$
+FLOPs.
+In full finetuning, given backward gradient $G=\nabla_Y \mathcal{L}$,
+the backward pass computes both the input gradient and
+the weight gradient, 
+\[
+\nabla_X \mathcal{L} = GW,
+\qquad
+\nabla_W \mathcal{L} = G^\top X,
+\]
+so it costs twice the forward.  In LoRA finetuning the
+base weight $W$ is frozen, so we do not form
+$\nabla_W \mathcal{L}$.  The
+backward pass through $W$ therefore costs only one forward-equivalent
+matmul:
 \begin{equation}
-  C_{\mathrm{fwd}}=C_{\mathrm{bwd}}=2 d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}}.
+  C_{\mathrm{fwd}}^{\mathrm{base}}
+  =
+  C_{\mathrm{bwd}}^{\mathrm{base}}
+  =
+  2 d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}} .
   \label{eq:flop-fb}
 \end{equation}
-Summed over layers this is $4N n_{\mathrm{tok}}$ for total parameter count $N$. The LoRA
-factors add only $2r(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ parameters per layer, smaller by a
-factor $r/d$, and we drop them.
+Thus the frozen base weights contribute
+\[
+    4N n_{\mathrm{tok}}
+\]
+FLOPs per step, where $N$ is the total number of frozen adapted-layer
+parameters.  This should be compared with the usual
+$6N n_{\mathrm{tok}}$ count for full finetuning
+\cite{kaplan2020scaling}.
+LoRA factors  contain
+\[
+    r(d_{\mathrm{in}}+d_{\mathrm{out}})
+\]
+trainable parameters and incur FLOPs of order
+$n_{\mathrm{tok}}r(d_{\mathrm{in}}+d_{\mathrm{out}})$.  Since
+$r\ll d_{\mathrm{in}},d_{\mathrm{out}}$, we omit these terms in the
+leading-order count.
 
-\paragraph{Optimizer.} The optimizer step (\Cref{alg:ours}) runs on the factors $A,B$ alone
-and does not depend on $n_{\mathrm{tok}}$. Its matmuls fall into two groups. The first group
-spans the long dimension $d$: forming the curvature factors $C_A,C_B$ \eqref{eq:ours-closure},
-the preconditioned polar directions \eqref{eq:factor-directions}, and the metric update
-\eqref{eq:ours-klcoupling}. There is a fixed number of these per factor, each costing
-$O(r^2 d)$, for $12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})$ in total. The second group is the
-matrix sign $\msign(\cdot)$ and the curvature inverse-square-roots, computed entirely in the
-small $r\times r$ space by the Gram Newton--Schulz of \Cref{app:gramns}, for $32 K r^3$.
-Together, with no eigendecomposition anywhere,
+
+\paragraph{Optimizer.}
+The \methodname{} optimizer (\Cref{alg:ours}) update runs once per optimizer step and does not
+depend on $n_{\mathrm{tok}}$.  We count its leading matmul FLOPs.  The
+long-dimension work consists of forming
+\[
+    C_A=B^\top \bar P B,
+    \qquad
+    C_B=A\bar QA^\top,
+\]
+forming the preconditioned sign inputs, forming the small-side Grams for the two
+matrix signs, applying the accumulated Gram maps to recover the signs,
+post-preconditioning the signs, and computing the diagonal metric updates
+\[
+    \diag(G_A^\top C_A^{-1}G_A),
+    \qquad
+    \diag(G_B C_B^{-1}G_B^\top).
+\]
+With diagonal $\bar P, \bar Q$, these operations contribute
+$12r^2(d_{\mathrm{in}}+d_{\mathrm{out}})$
+leading FLOPs.
+
+The Newton--Schulz iterations themselves run in the small $r\times r$ Gram
+space.  One Gram Newton--Schulz call costs $8Kr^3$ FLOPs:
+$2r^3$ to form $R^2$, $2r^3$ for $Q\leftarrow MQ$, and $4r^3$ for
+$R\leftarrow MRM$.  Each layer uses four such calls: two matrix signs and two
+curvature inverse square roots.  Hence the small-matrix iterative work is $32Kr^3$.
+Ignoring lower-order elementwise operations, diagonal scalings, spectral-norm
+power iterations, and one-time re-anchoring terms, the leading optimizer cost is
 \begin{equation}
-  C_{\mathrm{opt}}=12 r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32 K r^3 .
+  C_{\mathrm{opt}}
+  =
+  12r^2(d_{\mathrm{in}}+d_{\mathrm{out}})
+  +
+  32Kr^3 .
   \label{eq:flop-opt}
 \end{equation}
+
+
 
 \paragraph{Overhead fraction.} Dividing \eqref{eq:flop-opt} by \eqref{eq:flop-fb} gives the
 per-layer overhead in closed form,
