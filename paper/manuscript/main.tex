@@ -236,14 +236,13 @@ where the factor gradients are
     \qquad
     G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
 \end{equation}
-%\nikhil{reference?}
-The solution to this LMO is given by
-\[
+By \Cref{lem:whitened-spectral-lmo}, the solution to this LMO is
+\begin{equation}\label{eq:product-muon-step}
 \begin{aligned}
     \Delta A &= -\tau\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
     \Delta B &= -\tau\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
 \end{aligned}
-\]
+\end{equation}
 Similar to Muon, these factor updates are computed using momentum buffers and with $\tau = \eta$.
 \subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
 We now derive the base LMO that will be the starting point of \methodname{}.
@@ -333,25 +332,7 @@ Then \eqref{eq:polorafull-hard} can be rewritten as
 \label{eq:polorafull}
 \end{equation}
 where we have absorbed a $\frac{1}{\sqrt{n}}$ into $\tau$, that is, $\tau \leftarrow \frac{\tau}{\sqrt{n}}$.
-The LMO in~\eqref{eq:polorafull} is an instance of the following preconditioned spectral-norm LMO.
-\begin{restatable}[Preconditioned spectral-norm LMO]{lemma}{GeneralLmoUpdate}
-\label{lem:whitened-spectral-lmo}
-Let $L$ and $R$ be symmetric positive definite. Then
-\begin{equation}\label{e-gen-spectral-lmo-update}
-X^\star = -\tau L^{-1}
-\msign\left(L^{-1}MR^{-1}\right) R^{-1}
-\end{equation}
-is a solution of
-\[
-\begin{array}{ll}
-\underset{\|LXR\|_2\leq\tau}{\mathrm{minimize}}&
-\ip{M,X}.
-\end{array}
-\]
-Moreover, $X^\star$ is the unique minimizer of
-$\|LXR\|_F$ over the solution set.
-\end{restatable}
-Applying the lemma above with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq:polorafull} is given by
+The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo}. Applying it with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq:polorafull} is given by
 \begin{equation}\label{eq:polorafull-update}
     \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
@@ -791,7 +772,9 @@ $\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ & --- \\
 Newton--Schulz iterations & ---       & $8$   & $5$    & ---       & $8$ \\
 \bottomrule
 \end{tabular}
-\caption{Per-optimizer hyperparameters, fixed across all settings, with a dash marking a hyperparameter the optimizer does not have. Here $\beta_1$ is the momentum decay throughout, while $\beta_2$ is the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{} (\Cref{alg:ours}). The Newton--Schulz iteration count is the number of matrix-sign iterations, computed by PolarExpress for Muon and \methodname{} and by plain Newton--Schulz for iMuon (\Cref{app:gramns}). \methodname{} reuses this count for its Gram--Newton--Schulz inverse square roots and additionally uses relative damping $\delta=10^{-4}$ (\Cref{app:damping}).}
+\caption{
+\nikhil{caption is way too long}
+Per-optimizer hyperparameters, fixed across all settings, with a dash marking a hyperparameter the optimizer does not have. Here $\beta_1$ is the momentum decay throughout, while $\beta_2$ is the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{} (\Cref{alg:ours}). The Newton--Schulz iteration count is the number of matrix-sign iterations, computed by PolarExpress for Muon and \methodname{} and by plain Newton--Schulz for iMuon (\Cref{app:gramns}). \methodname{} reuses this count for its Gram--Newton--Schulz inverse square roots and additionally uses relative damping $\delta=10^{-4}$ (\Cref{app:damping}).}
 \label{tab:optim-config}
 \end{table}
 
@@ -802,7 +785,7 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       & $8$ \\
 % ===========================================================================
 \section{Proofs}
 \label{app:proofs}
-
+\nikhil{result numbering is out of order. this roadmap pargraph isn't helpful. it would be better to orient each result in turn instead of frontloading everything}
 This appendix proves the results used in \Cref{sec:method}, in their order of appearance there. \Cref{lem:muon-lmo} is the spectral-norm LMO whose solution gives Muon's update direction (\Cref{sec:muon}). \Cref{lem:gradprop} collects the gradient properties, and \Cref{lem:pseudogradient-spectral} evaluates the resulting outergradient support function under a Kronecker-factored metric; together they turn the per-sample loss constraint of \Cref{sec:sample-loss-lmo} into a preconditioned spectral norm. \Cref{lem:whitened-spectral-lmo} then solves the preconditioned spectral-norm LMO that sets the \methodname{} direction. Finally, \Cref{rem:quadratic} bounds the error from linearizing the merged update.
 
 \begin{lemma}[Spectral norm LMO]\label{lem:muon-lmo}
@@ -910,7 +893,23 @@ Maximizing over the balls gives the spectral norm,
 \]
 \end{proof}
 
-\GeneralLmoUpdate*
+\begin{lemma}[Preconditioned spectral-norm LMO]
+\label{lem:whitened-spectral-lmo}
+Let $L$ and $R$ be symmetric positive definite. Then
+\begin{equation}\label{e-gen-spectral-lmo-update}
+X^\star = -\tau L^{-1}
+\msign\left(L^{-1}MR^{-1}\right) R^{-1}
+\end{equation}
+is a solution of
+\[
+\begin{array}{ll}
+\underset{\|LXR\|_2\leq\tau}{\mathrm{minimize}}&
+\ip{M,X}.
+\end{array}
+\]
+Moreover, $X^\star$ is the unique minimizer of
+$\|LXR\|_F$ over the solution set.
+\end{lemma}
 \begin{proof}[Proof of \Cref{lem:whitened-spectral-lmo}]
 We change variables to reduce the preconditioned LMO to the plain spectral-norm
 LMO of \Cref{lem:muon-lmo}. Set $Y=LXR$, so $X=L^{-1}YR^{-1}$; the constraint
@@ -951,7 +950,7 @@ so the overshoot is $O(\eta)$ and shrinks as the factors grow.
 \end{remark}
 
 
-
+\nikhil{this should have a better title}
 \section{Momentum-Free LoRA-RITE, iMuon, and LoRA-Muon}
 \label{app:memoryless}
 LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon \cite{loramuon}
@@ -972,11 +971,7 @@ The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} are
   \end{aligned}
   \label{eq:decoupled-lora-lmo-app} 
 \end{equation}
-They have the closed-form solution
-\begin{align} 
-    \Delta A &=-\tau\,S_A^{-1/2}\msign(S_A^{-1/2}G_A) \nonumber \\
-    \Delta B &=-\tau\,\msign(G_BS_B^{-1/2})S_B^{-1/2}.  \label{eq:decoupled-lora-lmo-closed}
-\end{align}
+They have the closed-form solution~\eqref{eq:product-muon-step}.
 We will use the fact that for any matrix $M$ with full column rank and reduced SVD $M=U\Sigma V^\top$,
 the matrix sign equals
 \begin{equation}
@@ -998,7 +993,7 @@ With no accumulation by \eqref{eq:polar-id} the middle factor is the matrix sign
   \Delta B=-\eta \msign(\widehat G_B) S_B^{-1/2}
   =-\eta \msign \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
 \end{equation*}
-which is equal to the $B$-update given in~\eqref{eq:decoupled-lora-lmo-closed}. Analogous arguments hold for the $A$-update.
+which is equal to the $B$-update given in~\eqref{eq:product-muon-step}. Analogous arguments hold for the $A$-update.
 
 
 \paragraph{iMuon, momentum-free.}
@@ -1009,7 +1004,7 @@ iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\time
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 For the base Algorithm~1 in~\cite{imuon}, the ambient matrix is the raw gradient $G$, so~\eqref{eq:imuon-lmo-ambient}
-is again equivalent to \eqref{eq:decoupled-lora-lmo-closed}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update.
+is again equivalent to \eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update.
 
 \paragraph{iMuon, with momentum.} The official implementation of iMuon with momentum (their Appendix~K) does not
 use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
@@ -1045,7 +1040,7 @@ Gram-matrix form is equivalent to the simplified QR-coordinate form of
 LoRA-RITE~\cite{loramuon}.
 
 
-
+\nikhil{needs better title. also paragraphs are stubs, "the whitening power" reads awkwardly.}
 \section{Extended Prior Work: Spectral and Curvature-Aware Optimizers}
 \label{app:related-spectral}
 Here we will better contextualize how
