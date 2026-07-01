@@ -486,8 +486,8 @@ the EMA decay rather than an arbitrary split of scale between the two vectors.
 \Statex
 \Phase{Direction}
 \State $\begin{aligned}[t]
-  \bar P &\gets \diag\!\big(p/\norm{p}_\infty\big), &\quad \bar Q &\gets \diag\!\big(q/\norm{q}_\infty\big)\\[-4pt]
-  C_A &\gets B^\top \bar P\, B, &\quad C_B &\gets A\,\bar Q\, A^\top
+  &\bar P \gets \diag\!\big(p/\norm{p}_\infty\big), &&\qquad \bar Q \gets \diag\!\big(q/\norm{q}_\infty\big)\\[-4pt]
+  &C_A \gets B^\top \bar P\, B, &&\qquad C_B \gets A\,\bar Q\, A^\top
 \end{aligned}$
 \State $D_A\gets C_A^{-1/2}\,\msign\big(C_A^{-1/2}\,\widehat M_A\,\bar Q^{-1/2}\big)\,\bar Q^{-1/2}$ \Comment{preconditioned polar step~\eqref{eq:factor-directions}}
 \State $D_B\gets \bar P^{-1/2}\,\msign\big(\bar P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
@@ -527,7 +527,7 @@ We use the authors' official implementations for iMuon and LoRA-RITE, and detail
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to reach Adam's final loss. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
+We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to reach tuned Adam's final loss. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
 
 
 
