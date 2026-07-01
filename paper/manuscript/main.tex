@@ -544,7 +544,7 @@ The essential ingredients in \methodname{} can be decomposed into three componen
   \item \textbf{Curvature}. An adaptive estimate of the gradient geometry allows the update to be more directly sensitive to how different directions change the loss~\eqref{eq:pq-factor}.
   \item \textbf{Magnitude}. The sizes of the factor steps and the merged update are both controlled~\eqref{eq:ours-rho}.
 \end{itemize}
-Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math, we ablate these two components in turn (\Cref{fig:ablation}). Product Muon shows no speedup over Adam, and restoring each recovers about half of the speedup.
+Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}.  On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and each of the two components accounts for about half the speedup gap between Product Muon and \methodname{}.
 
 \begin{figure}[t]
   \centering
@@ -556,9 +556,9 @@ Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the mag
 
 \subsection{Effect of Rank and Distribution Shift}
 \label{sec:exp-taskdep}
-To understand the effect of the LoRA rank and of the finetuning dataset, we vary the rank while finetuning on math and vary the dataset from code to a low-resource language underrepresented in the pretraining mix.
+To probe the effect of the LoRA rank and of the finetuning dataset on the performance of \methodname{}, we vary the rank while finetuning on math and vary the dataset from code to a low-resource language underrepresented in the pretraining mix.
 
-\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, the step speedup of \methodname{} over Adam grows too (\Cref{tab:rank}; learning curves in \Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer across rank: the optimal learning rate is stable across rank, whereas the optimal learning rate for Adam shifts (\Cref{fig:lr_transfer}).
+\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, the step speedup of \methodname{} over Adam grows too (\Cref{tab:rank}; learning curves in \Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer across rank. The optimal learning rate is stable across rank, whereas the optimal learning rate for Adam shifts (\Cref{fig:lr_transfer}). We also observe reduced sensitivity to the learning rate compared to Adam.
 
 \begin{table}[t]
 \centering\small
@@ -584,7 +584,7 @@ $256$ & $1.63\times$ & $1.58\times$ \\
   \label{fig:lr_transfer}
 \end{figure}
 
-\paragraph{Distribution shift.} Coding data is heavily represented in the pretraining data for the Qwen2.5-1.5B model. Bengali (Aya \cite{aya}) is much less so; we therefore refer to code as in-distribution and Bengali as out-of-distribution datasets. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
+\paragraph{Distribution shift.} Coding data is heavily represented in the pretraining data for the Qwen2.5-1.5B model. \nikhil{any reference?} On the other hand, data for a low-resource language like Bengali is much less present. We therefore refer informally refer the code dataset as being in-distribution and Bengali dataset (Aya \cite{aya}) as being out-of-distribution. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
 
 \begin{figure}[tb]
   \centering
