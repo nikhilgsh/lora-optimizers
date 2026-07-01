@@ -351,7 +351,7 @@ So far we have described an update for the full weight matrix $W \in \R^{d_{\mat
   \end{equation}
 \nikhil{it's weird to make this caveat here, we should preempt this early on and make it completely normal to think of the LMO as setting a direction and the magnitude is a separate concern.}
 Since we will set the magnitude later, the reader can ignore the exact value of $\tau$. 
-\nikhil{this is a repeat of the product muon derivation, maybe just reference this?}
+\nikhil{this is a repeat of the product muon derivation, maybe just reference this and we can do the derivation faster here?}
 The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
 \[
 \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
@@ -392,7 +392,7 @@ By definition of the spectral norm, and using the above definitions of $C_A$ and
 \qquad
 \norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2 .
 \end{equation}
-Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo}, each factorwise LMO is an instance of \Cref{lem:whitened-spectral-lmo}, with $(L,R)=(C_A^{1/2},Q^{1/2})$ for the $\Delta A$ update and $(L,R)=(P^{1/2},C_B^{1/2})$ for the $\Delta B$ update. Thus the two minimizers are $-\tau D_A$ and $-\tau D_B$, where
+Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo}, each factorwise LMO is an instance of \Cref{lem:whitened-spectral-lmo}, thus the two minimizers are $\Delta A = -\tau D_A$ and $\Delta B = -\tau D_B$, where
 \begin{equation}
   \begin{aligned}
   D_A &=
@@ -402,11 +402,11 @@ Using~\eqref{eq:collapse-constraint} in~\eqref{eq:decoupled-direction-lmo}, each
   D_B &=
   P^{-1/2}\,
   \msign\!\left(P^{-1/2}\,G_B\,C_B^{-1/2}\right)
-  \,C_B^{-1/2}.
+  \,C_B^{-1/2}
   \end{aligned}
   \label{eq:factor-directions}
 \end{equation}
-The minimizers scale linearly with the budgets, $\Delta A=-\tau D_A$ and $\Delta B=-\tau D_B$, so $\tau$ controls the magnitude while $D_A$ and $D_B$ give the factor update directions.
+give the factor update directions.
 % We therefore leave the budgets free and set the step magnitude directly through the learning rate $\eta$.
 
 \paragraph{Magnitude.}
