@@ -255,8 +255,7 @@ To be conservative with respect to every activation, we enforce that no single a
 \begin{equation}\label{eq:loss-diff}
      \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
-This would ensure stable training with no spikes or jumps for the current batch loss.  
-But the loss is highly non-linear and non-convex, so instead we use the local linearization of the loss given by
+This would ensure that no input would spike the current batch loss. Due to the highly non-linear and non-convex nature of the loss, we instead use the local linearization of the loss
 \[  
 \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \ip{G_i, \Delta W}. 
 \]
