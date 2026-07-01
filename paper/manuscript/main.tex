@@ -918,8 +918,11 @@ becomes $\norm{Y}_2\le\tau$ and the objective becomes
 \ip{M,X}=\ip{L^{-1}MR^{-1},Y} .
 \]
 By \Cref{lem:muon-lmo} with budget $\tau$, the unique least Frobenius-norm
-minimizer is $Y=-\tau\,\msign(L^{-1}MR^{-1})$. Substituting $X=L^{-1}YR^{-1}$
-gives the stated solution.
+minimizer is
+\[
+    Y=-\tau\,\msign(L^{-1}MR^{-1}).
+\]
+Substituting $X=L^{-1}YR^{-1}$ gives the stated solution.
 \end{proof}
 
 
@@ -1079,44 +1082,39 @@ from a single LoRA LMO.
 % ===========================================================================
 \section{Estimating Normalized Second Moments}
 \label{app:matnormal}
-For each LoRA layer, Algorithm~\ref{alg:ours} stores two nonnegative vectors
-$p_t$ and $q_t$ instead of a dense second-moment matrix. The algorithm uses
-$\bar P_t=\diag(p_t/\norm{p_t}_\infty)$ and
-$\bar Q_t=\diag(q_t/\norm{q_t}_\infty)$ in the direction formulas, through
-$C_{A,t}=B_t^\top \bar P_t B_t$ and $C_{B,t}=A_t\bar Q_t A_t^\top$. This appendix
-derives the vectors added to the EMA recurrences for $p_t$ and $q_t$.
+For one LoRA layer, suppose we could keep the second moment of the gradient with
+respect to the merged weight $W=W_0+BA$. That matrix is too large to store.
+Algorithm~\ref{alg:ours} therefore keeps two diagonal factors instead: $p_t$ for
+output coordinates and $q_t$ for input coordinates. The update below shows how
+the available factor gradients, $G_A$ and $G_B$, determine those two diagonals
+under a diagonal Kronecker approximation.
 
-The normalization fixes the scale of the two Kronecker factors. Since
-$Q\otimes P=(aQ)\otimes(a^{-1}P)$ for any $a>0$, the same Kronecker product has
-many factorizations. But $C_{A,t}$ and $C_{B,t}$ change when scale is moved from
-one factor to the other, so the EMA must average vectors computed under the
-fixed convention $\norm{\bar p_t}_\infty=\norm{\bar q_t}_\infty=1$.
-
-\paragraph{Dense target and normalized factors.}
-Consider one LoRA layer, with $\alpha=r$ as in \Cref{sec:exp-setup}. At
-optimizer step $s$, let $x_{s,i}$ be the $i$th input activation to this layer.
-The merged weight, per-example merged-weight gradient, minibatch second moment,
-and raw EMA are
+\paragraph{Merged-weight target.}
+Consider one LoRA layer, with $\alpha=r$ as in \Cref{sec:exp-setup}. At step
+$s$, the merged weight is $W_s=W_0+B_sA_s$. For the $i$th input activation
+$x_{s,i}$ to this layer, let
+$G_{s,i}=\nabla_W\ell_{x_{s,i}}(W_sx_{s,i})$ and
+$g_{s,i}=\vec(G_{s,i})$. The minibatch second moment and its raw EMA are
 \[
-\begin{alignedat}{2}
-  W_s &= W_0+B_sA_s,
-  &\qquad
-  G_{s,i} &= \nabla_W \ell_{x_{s,i}}(W_sx_{s,i}),\\
-  \Sigma_s &= \frac1{n_s}\sum_{i=1}^{n_s} g_{s,i}g_{s,i}^\top,\quad
-  g_{s,i}=\vec(G_{s,i}),
-  &\qquad
-  V_{s+1} &= \beta_2V_s+(1-\beta_2)\Sigma_s,\quad V_0=0 .
-\end{alignedat}
+  \Sigma_s=\frac1{n_s}\sum_{i=1}^{n_s}g_{s,i}g_{s,i}^\top,
+  \qquad
+  V_{s+1}=\beta_2V_s+(1-\beta_2)\Sigma_s,
+  \qquad
+  V_0=0 .
 \]
-Here $\beta_2$ is the curvature decay coefficient from \Cref{alg:ours}. For
-$t>0$, let $\mathbb{E}_t$ be the normalized time average with weights
-$\pi_{t,s}=(1-\beta_2)\beta_2^{t-1-s}/(1-\beta_2^t)$ for $s<t$. Then, for any
-function $\phi$ of a single merged-weight gradient,
-$\mathbb{E}_t[\phi(G)]=\sum_{s<t}\pi_{t,s}n_s^{-1}\sum_i\phi(G_{s,i})$. The raw
-EMA satisfies $V_t=(1-\beta_2^t)\mathbb{E}_t[gg^\top]$, with $g=\vec(G)$.
-The scalar $1-\beta_2^t$ only changes scale, so the normalized factors are
-defined by the model
+Here $\beta_2$ is the curvature decay coefficient from \Cref{alg:ours}. For any
+function $\phi$ of one merged-weight gradient, define $\mathbb{E}_t$ as the
+following weighted average over earlier minibatches. With $g=\vec(G)$, the scalar
+$1-\beta_2^t$ in $V_t=(1-\beta_2^t)\mathbb{E}_t[gg^\top]$ can be absorbed into
+the overall scale, so we approximate the normalized average by a scaled
+Kronecker product of two diagonal matrices:
 \begin{equation}\label{e-diag-kron-second-mom-model}
+\begin{gathered}
+  \mathbb{E}_t[\phi(G)]
+  =
+  \sum_{s<t}
+  \frac{(1-\beta_2)\beta_2^{t-1-s}}{1-\beta_2^t}
+  \frac1{n_s}\sum_{i=1}^{n_s}\phi(G_{s,i}),\\
   \mathbb{E}_t[gg^\top]
   \approx
   \kappa_t(\bar Q_t\otimes\bar P_t),
@@ -1124,16 +1122,32 @@ defined by the model
   \bar P_t=\diag(\bar p_t),\quad
   \bar Q_t=\diag(\bar q_t),\quad
   \norm{\bar p_t}_\infty=\norm{\bar q_t}_\infty=1 .
+\end{gathered}
 \end{equation}
-The normalized factors separate second-moment scale from relative entries.
 
-To estimate them, suppress the time index on the current factors, writing
-$A=A_t$ and $B=B_t$. The factor gradients are $G_A=B^\top G$ and
-$G_B=G A^\top$. With $C_{A,t}=B^\top\bar P_t B$ and
-$C_{B,t}=A\bar Q_tA^\top$, the model gives
-$\mathbb{E}_t[G_A^\top C_{A,t}^{-1}G_A]\approx r\kappa_t\bar Q_t$ and
-$\mathbb{E}_t[G_B C_{B,t}^{-1}G_B^\top]\approx r\kappa_t\bar P_t$, since
-$\Tr(C_{A,t}^{-1}C_{A,t})=\Tr(C_{B,t}^{-1}C_{B,t})=r$. Taking diagonals gives
+\paragraph{Using factor gradients.}
+At the current factors $A=A_t$ and $B=B_t$, the gradients with respect to the
+two LoRA factors are $G_A=B^\top G$ and $G_B=G A^\top$. These multiplications
+also transform the two diagonal matrices in
+\eqref{e-diag-kron-second-mom-model}. With
+$C_{A,t}=B^\top\bar P_tB$ and $C_{B,t}=A\bar Q_tA^\top$, the trace terms below
+reduce to $r$:
+\[
+\begin{aligned}
+  \mathbb{E}_t[G_A^\top C_{A,t}^{-1}G_A]
+  &\approx
+  \Tr(C_{A,t}^{-1}C_{A,t})\,\kappa_t\bar Q_t
+  =
+  r\kappa_t\bar Q_t,\\
+  \mathbb{E}_t[G_B C_{B,t}^{-1}G_B^\top]
+  &\approx
+  \Tr(C_{B,t}^{-1}C_{B,t})\,\kappa_t\bar P_t
+  =
+  r\kappa_t\bar P_t .
+\end{aligned}
+\]
+Taking diagonals leaves one vector proportional to $\bar q_t$ and one
+proportional to $\bar p_t$:
 \[
 \begin{alignedat}{2}
   \tilde q_t
@@ -1142,55 +1156,52 @@ $\Tr(C_{A,t}^{-1}C_{A,t})=\Tr(C_{B,t}^{-1}C_{B,t})=r$. Taking diagonals gives
   \bigr)
   \approx \kappa_t\bar q_t,
   &\qquad
+  \bar q_t
+  &= \tilde q_t/\norm{\tilde q_t}_\infty,\\
   \tilde p_t
   &= \frac1r\diag\!\bigl(
     \mathbb{E}_t[G_B C_{B,t}^{-1}G_B^\top]
   \bigr)
-  \approx \kappa_t\bar p_t,\\
-  \bar q_t
-  &= \tilde q_t/\norm{\tilde q_t}_\infty,
+  \approx \kappa_t\bar p_t,
   &
   \bar p_t
   &= \tilde p_t/\norm{\tilde p_t}_\infty .
 \end{alignedat}
 \]
-The last row removes the shared unknown scale $\kappa_t$.
+The normalization in the right column removes the shared scale $\kappa_t$.
 
 \paragraph{Online estimator.}
-The vectors $\tilde q_t,\tilde p_t$ average over all past minibatches.
-Algorithm \ref{alg:ours} instead computes one minibatch estimate at each step
-and applies the same EMA recurrence online. Let $q_t,p_t$ be the stored vectors
-for the scaled quantities $\tilde q_t,\tilde p_t$. Their normalized versions are
-the current estimates of $\bar q_t,\bar p_t$. Thus
-$\bar P_t=\diag(p_t/\norm{p_t}_\infty)$,
-$\bar Q_t=\diag(q_t/\norm{q_t}_\infty)$,
-$C_A=B^\top\bar P_t B$, and $C_B=A\bar Q_t A^\top$. For the current minibatch,
+Algorithm~\ref{alg:ours} uses the current minibatch in place of the time
+average and applies the same EMA to the resulting two vectors. At step $t$, it
+first forms $\bar P_t=\diag(p_t/\norm{p_t}_\infty)$ and
+$\bar Q_t=\diag(q_t/\norm{q_t}_\infty)$, then
+$C_A=B^\top\bar P_tB$ and $C_B=A\bar Q_tA^\top$. The minibatch estimates and EMA
+update are
 \begin{equation}\label{eq:ours-klcoupling}
 \begin{alignedat}{2}
   \widehat q_t
   &= \frac1r\diag\!\left(G_A^\top C_A^{-1}G_A\right),
   &\qquad
-  \widehat p_t
-  &= \frac1r\diag\!\left(G_B C_B^{-1}G_B^\top\right),\\
   q_{t+1}
-  &= \beta_2 q_t+(1-\beta_2)\widehat q_t,
+  &= \beta_2q_t+(1-\beta_2)\widehat q_t,\\
+  \widehat p_t
+  &= \frac1r\diag\!\left(G_B C_B^{-1}G_B^\top\right),
   &
   p_{t+1}
-  &= \beta_2 p_t+(1-\beta_2)\widehat p_t .
+  &= \beta_2p_t+(1-\beta_2)\widehat p_t .
 \end{alignedat}
 \end{equation}
-At the next step, the direction computation uses
-$q_{t+1}/\norm{q_{t+1}}_\infty$ and
+The next direction step uses $q_{t+1}/\norm{q_{t+1}}_\infty$ and
 $p_{t+1}/\norm{p_{t+1}}_\infty$.
 
-\paragraph{Effect of raw scaling.}
-The placement of this normalization matters. If $P=a\bar P$ replaces $\bar P$
-in $B^\top\bar P B$, then $(B^\top P B)^{-1}=a^{-1}(B^\top\bar P B)^{-1}$, so
-the $q$ update is divided by $a$. Across time, the vector computed at step $s$
-would receive weight $(1-\beta_2)\beta_2^{t-1-s}/a_s$ instead of
-$(1-\beta_2)\beta_2^{t-1-s}$. Normalizing before constructing $C_A$ and $C_B$
-therefore makes $\beta_2$ set the EMA decay, rather than the arbitrary
-Kronecker representative.
+\paragraph{Scale convention.}
+The normalization must happen before constructing $C_A$ and $C_B$. If
+$P=a\bar P$ replaces $\bar P$ in $B^\top\bar P B$, then
+$(B^\top P B)^{-1}=a^{-1}(B^\top\bar P B)^{-1}$, so the resulting $q$ estimate
+is divided by $a$. Across time, the contribution from step $s$ would be weighted
+by $(1-\beta_2)\beta_2^{t-1-s}/a_s$ instead of
+$(1-\beta_2)\beta_2^{t-1-s}$. Normalizing first makes $\beta_2$ set the EMA
+decay, rather than the arbitrary Kronecker representative.
 
 \section{Numerical Subroutines}
 \label{app:primitives}
@@ -1210,9 +1221,9 @@ lower bound on $\norm{M}_2$.
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
 \label{alg:smax}
 \begin{algorithmic}[1]
-\Require $M\in\mathbb{R}^{m\times n}$ with $m\le n$ (else use $M^\top$); cached vector $v\in\mathbb{R}^m$ (empty on the first step); iterations $K$
-\State $l \gets \max_i\norm{M_{i,:}}_2$ \Comment{largest row norm, a lower bound on $\norm{M}_2$}
-\If{$v$ is empty} \State $v\gets M\mathbf{1}$ \Comment{cold start: $M$ times the all-ones vector} \EndIf
+\Require $M\in\mathbb{R}^{m\times n}$, $m\le n$ (else $M^\top$); cached $v\in\mathbb{R}^m$; iterations $K$
+\State $l \gets \max_i\norm{M_{i,:}}_2$
+\If{$v$ is empty} \State $v\gets M\mathbf{1}$ \Comment{cold start} \EndIf
 \For{$k=1,\dots,K$} \Comment{iterate the smaller Gram $MM^\top$}
   \State $w\gets M^\top v$;\quad $v\gets Mw/\norm{Mw}_2$
 \EndFor
@@ -1224,10 +1235,12 @@ lower bound on $\norm{M}_2$.
 \label{app:gramns}
 
 Beyond the spectral norm, \Cref{alg:ours} needs the matrix sign $\msign(\cdot)$
-and the inverse square root of the $r \times r$ curvature matrix.  We compute
-both with the same Gram Newton--Schulz method \cite{gram_ns}, which uses only
-$r\times r$ matrix multiplications and needs no eigendecomposition or SVD
-(\Cref{alg:gramns}).
+and the inverse square root of the $r \times r$ curvature matrix.  Both reduce to
+an inverse square root of a small positive semidefinite matrix: the sign is
+$\msign(X)=(XX^\top)^{-1/2}X$, and the curvature term is $C^{-1/2}$ directly.  We
+compute that inverse square root by the Gram Newton--Schulz iteration
+\cite{gram_ns} (\Cref{alg:gramns}), which uses only $r\times r$ matrix
+multiplications and needs no eigendecomposition or SVD.
 
 \paragraph{Quintic Newton--Schulz.}
 Each iteration applies an odd degree-five polynomial
@@ -1276,40 +1289,38 @@ Hence by induction,
     R_t=Q_tR_0Q_t^\top .
 \]
 Since the normalized singular values converge to $1$, $R_K\to I$, so
-$Q_K\approx R_0^{-1/2}$.  The two call sites differ only in the input $S$
-(with $R_0=S/\gamma$) and how $Q_K$ is post-scaled.
+$Q_K\approx R_0^{-1/2}$.  The returned accumulator $Q=Q_K$ thus satisfies
+$Q\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,S^{-1/2}$, i.e.\ $S^{-1/2}\approx Q/\sqrt{\gamma}$.
+The two uses differ only in the matrix $S$ and scalar $\gamma$ we pass to
+\Cref{alg:gramns}:
 
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
     \item \textbf{Matrix sign.}
-    Apply \Cref{alg:gramns} to $S=XX^\top$ with prescale
-    $\gamma=\norm{X}_F^2\ge\norm{X}_2^2$.  Since
-    $Q\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,(XX^\top)^{-1/2}$,
+    Call \Cref{alg:gramns} with $S=XX^\top$ and $\gamma=\norm{X}_F^2$, giving
     \[
-        \msign(X) = (XX^\top)^{-1/2}X = QX/\sqrt{\gamma}.
+        \msign(X)=(XX^\top)^{-1/2}X=QX/\sqrt{\gamma}.
     \]
     \item \textbf{Inverse square root.}
     Damp $C\succ 0$ to $\hat C=C+\delta\lambda_{\max}(C)I$ (\Cref{app:damping}) and
-    apply \Cref{alg:gramns} with $S=\hat C$, $\gamma=\Tr(\hat C)$.  Since
-    $Q\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,\hat C^{-1/2}$,
+    call \Cref{alg:gramns} with $S=\hat C$ and $\gamma=\Tr(\hat C)$, giving
     \[
-        C^{-1/2}\approx \hat C^{-1/2} = Q/\sqrt{\gamma}.
+        C^{-1/2}\approx\hat C^{-1/2}=Q/\sqrt{\gamma}.
     \]
-    
 \end{itemize}
 
 
 
 \paragraph{Stability and precision.}
-We run the Gram Newton--Schulz iteration in fp32, which is cheap because all
-matrices are only $r\times r$ and avoids the bf16 instability we observed near
-the damping floor.  We use $K=8$ iterations.
+We run the Gram Newton--Schulz iteration in fp32, which is inexpensive because
+every matrix is only $r\times r$.  We use $K=8$ iterations.
 
 
 \begin{algorithm}[h]
-\caption{Gram Newton--Schulz for $\msign(X)$ and $C^{-1/2}$}
+\caption{Gram Newton--Schulz iteration}
 \label{alg:gramns}
 \begin{algorithmic}[1]
-\Require symmetric PSD $S \in \mathbb{R}^{r \times r}$; prescale $\gamma \ge \lambda_{\max}(S)$; coefficients $\{(a_t,b_t,c_t)\}_{t=1}^{K}$
+\Require positive semidefinite $S \in \mathbb{R}^{r \times r}$; $\gamma \ge \lambda_{\max}(S)$; coefficients $\{(a_t,b_t,c_t)\}_{t=1}^{K}$
+\Statex\vspace{-0.5\baselineskip}
 \State $R\gets S/\gamma$;\quad $Q\gets I$ \Comment{normalize so $\lambda_{\max}(R)\le 1$}
 \For{$t=1,\dots,K$}
   \State $M\gets a_t I+b_t R+c_t R^2$
@@ -1322,16 +1333,16 @@ the damping floor.  We use $K=8$ iterations.
 
 \subsection{Relative Damping}\label{app:damping}
 Each inverse square root in \Cref{alg:ours} is damped so that directions of
-nearly zero curvature are not amplified without bound.  For a symmetric positive
+nearly zero curvature are not amplified without bound.  For a positive
 semidefinite curvature matrix $C = U\operatorname{diag}(\lambda)U^\top \in \mathbb{R}^{r\times r}$,
 we damp by $\delta$ relative to the top eigenvalue; \Cref{alg:gramns} then
-normalizes by its prescale $\gamma=\Tr(\hat C)$,
+normalizes by $\gamma=\Tr(\hat C)$,
 \[
     \hat C = C + \lambda_{\max}\delta I,
     \qquad
     \widetilde C = \hat C/\gamma .
 \]
-Since $\hat C \succ 0$, the prescale, the normalized spectrum, and the resulting
+Since $\hat C \succ 0$, the trace $\gamma$, the normalized spectrum, and the resulting
 inverse square root are all bounded,
 \[
 \begin{aligned}
@@ -1362,17 +1373,19 @@ momentum direction until the curvature estimate becomes nonzero.
 
 \section{FLOP Overhead of the Optimizer}
 \label{app:flops}
-The wall-clock measurements in \Cref{sec:exp-walltime} are hardware dependent.
-To give a hardware-independent comparison, we also report leading matmul FLOP counts.
-We count one multiply-add as two FLOPs.  The count below is for one
-adapted linear layer with frozen base weight
-$W\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ and LoRA factors
-$B\in\mathbb{R}^{d_{\mathrm{out}}\times r}$,
-$A\in\mathbb{R}^{r\times d_{\mathrm{in}}}$, with
-$r\ll d_{\mathrm{in}},d_{\mathrm{out}}$.  
-Throughout, $K$
-denotes the number of Newton--Schulz iterations, and $n_{\mathrm{tok}}$ denotes
-the number of tokens processed per optimization step.
+The wall-clock measurements in \Cref{sec:exp-walltime} depend on the hardware, so
+we also report leading matmul FLOP counts, which do not.  We count one
+multiply-add as two FLOPs.  The count below is for one
+adapted linear layer with frozen base weight $W$ and rank-$r$ LoRA factors
+$A,B$,
+\[
+  W\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}},\quad
+  B\in\mathbb{R}^{d_{\mathrm{out}}\times r},\quad
+  A\in\mathbb{R}^{r\times d_{\mathrm{in}}},
+\]
+with $r\ll d_{\mathrm{in}},d_{\mathrm{out}}$.  Throughout, $K$ denotes the number
+of Newton--Schulz iterations, and $n_{\mathrm{tok}}$ denotes the number of tokens
+processed per optimization step.
 
 
 \paragraph{Forward and backward.}
