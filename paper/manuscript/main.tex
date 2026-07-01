@@ -207,7 +207,7 @@ Applying Muon naively would impose a spectral bound separately on $\Delta A$ and
 \begin{equation} \label{eq:DeltaW-lin}
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
 \end{equation}
-from which we see that the spectral norm bound should be applied to this linearized product update. Substituting the above~\eqref{eq:DeltaW-lin} into the Muon LMO~\eqref{eq:lmo} gives the spectral constraint
+from which we see that the spectral norm bound should be applied to this linearized product update. Substituting~\eqref{eq:DeltaW-lin} into the Muon LMO~\eqref{eq:lmo} gives the spectral constraint
 \[
 \norm{B \Delta A + \Delta B A}_2
 \le \tau.
@@ -252,7 +252,7 @@ To be conservative with respect to every activation, we enforce that no single a
 \begin{equation}\label{eq:loss-diff}
      \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
-This would ensure that no input would spike the current batch loss. Due to the highly nonlinear and nonconvex nature of the loss, we instead use the local linearization of the loss
+This bound would keep any single input from spiking the current batch loss, but the loss is nonlinear and nonconvex, so we replace it with a local linearization,
 \[  
 \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \ip{G_i, \Delta W}. 
 \]
@@ -296,7 +296,7 @@ b\in\mathbb{R}^{d_{\mathrm{out}}},
 \ip{\Sigma^\dagger \vec(\tilde G), \vec(\tilde G)} \leq n \right \}.
 \end{equation}
 By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus we can use this $\mathcal{G}$ in our upper bound~\eqref{eq:outgrad1}.
-The last remaining issue is that $\Sigma$ is too large of a matrix to store or use directly. To address this issue we replace $\Sigma$ with a structured approximation.
+The last issue is that $\Sigma$ is too large to store or use directly, so we replace it with a structured approximation.
 
 \paragraph{Kronecker approximation.}
 Following the Kronecker-factored approximations used by Shampoo~\cite{shampoo, klshampoo}
@@ -339,9 +339,9 @@ The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-n
 
 
 \paragraph{Direction.}
-So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt this update to LoRA~\eqref{eq:lora}, computing its \emph{direction} and its \emph{magnitude} separately. 
-To set the direction, we adapt the preconditioned spectral-norm
-  LMO~\eqref{eq:polorafull}. The magnitude is set separately below.
+So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt it to LoRA~\eqref{eq:lora}, computing the \emph{direction} and \emph{magnitude} of the factor updates separately. 
+The direction comes from the preconditioned spectral-norm
+  LMO~\eqref{eq:polorafull}, and the magnitude is set below.
   
  
 Replacing $\Delta W$ in \eqref{eq:polorafull} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
@@ -362,16 +362,8 @@ The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta 
 \leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
 + \norm{P^{1/2} \Delta B A Q^{1/2}}_2,
 \]
-so bounding each factor step bounds the merged update. Using the above upper bound in~\eqref{eq:joint-direction-lmo}
-% We therefore impose one spectral-norm constraint per factor,
-% \[
-% \norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau_A,
-% \qquad
-% \norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau_B ,
-% \]
- decouples the product LMO into two factorwise LMOs.
-That is, using factor gradients~\eqref{e-grad-wrt-factors},
-the LMO~\eqref{eq:joint-direction-lmo} decouples into two factorwise LMOs
+so bounding each factor step bounds the merged update. Using this bound in~\eqref{eq:joint-direction-lmo} with the
+factor gradients~\eqref{e-grad-wrt-factors}, the product LMO decouples into two factorwise LMOs
 \begin{equation}
 \setlength{\arraycolsep}{2pt}
 \begin{array}{@{}c@{\qquad}c@{}}
@@ -531,8 +523,8 @@ We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned
 
 
 
-\paragraph{Wall-clock.}\label{sec:exp-walltime} The total FLOPs of each step of \methodname{} are independent of the batch size, while the forward
-and backward passes scale with batch size (\Cref{app:flops}). Thus the  relative per-step time of \methodname{}  shrinks
+\paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer FLOPs of each \methodname{} step are independent of the batch size, while the forward
+and backward passes scale with it (\Cref{app:flops}). Thus the relative per-step time shrinks
 as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $3\%$ over Adam on
 all four base models (\Cref{tab:breadth}), and the step speedup carries to wall-clock almost
 unchanged.  
@@ -574,8 +566,8 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \end{itemize}
 With the diagonal metrics set to identity ($P = I_{\mathrm{out}}$ and $Q=I_{\mathrm{in}}$) and magnitude control removed, \methodname{} reduces to Product Muon. This update coincides with the momentum-free forms of LoRA-Muon, iMuon, and LoRA-RITE, as shown in~\Cref{app:memoryless}.
 
-On Llama-3.2-1B finetuned on math, we ablate the curvature metric and the magnitude control in turn to measure each component's contribution to \methodname{}'s speedup over Adam (\Cref{fig:ablation}).
-Removing both components eliminates the speedup over Adam in the right panel of~\Cref{fig:ablation}. Restoring the curvature metric and then the magnitude control each recovers about half of \methodname{}'s speedup.
+On Llama-3.2-1B finetuned on math, we ablate the curvature metric and the magnitude control in turn to measure each component's contribution (\Cref{fig:ablation}).
+Removing both eliminates the speedup over Adam (right panel). Restoring the curvature metric and then the magnitude control each recovers about half of the speedup.
 
 \begin{figure}[t]
   \centering
@@ -645,7 +637,7 @@ to other initializations. Rank-stabilized LoRA~\cite{rslora} replaces the $\alph
 adapter scale with $\alpha/\sqrt{r}$ to avoid the rank-dependent shrinkage that makes
 high-rank adapters hard to train, and $\mu$A~\cite{mua} studies how these
 hyperparameters should scale with rank to keep the optimal learning rate stable. In
-contrast, \methodname{} ensures each factor receives an update of equal size in the spectral norm, while simultaneously ensuring the merged-weight update is also bounded in spectral norm. 
+contrast, \methodname{} sets the two factor updates to have the same spectral norm while also bounding the merged-weight update in spectral norm. 
 
 % changes the update geometry itself, computing factor update
 % directions in a curvature-aware metric
@@ -1573,8 +1565,7 @@ and \methodname{} at their optimal learning rates. The settings already drawn as
 
 \section{Factor Self-Balancing}
 \label{app:gauge}
-By \eqref{eq:ours-rho}, \methodname{}'s step size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. Rescaling $(A,B)\mapsto(cA,c^{-1}B)$ leaves the product $BA$, and hence the model, unchanged, but changes these norms, and with them $\rho$. Among scalar rescalings $(A,B)\mapsto(cA,c^{-1}B)$ of a fixed 
-factorization $BA$, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style step sizes \cite{loramuon}.
+By \eqref{eq:ours-rho}, \methodname{}'s step size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. The rescaling $(A,B)\mapsto(cA,c^{-1}B)$ preserves the product $BA$, so the layer's output is unchanged. It does change $\norm{A}_2$ and $\norm{B}_2$, shifting $\rho$. Among such rescalings, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style step sizes \cite{loramuon}.
 
 In our runs this problem does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
 
