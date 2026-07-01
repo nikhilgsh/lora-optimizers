@@ -402,9 +402,7 @@ give the factor update directions.
 \paragraph{Magnitude.}
 % It remains to choose the step magnitude. 
 % Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update.
-We now choose the update magnitudes for the two factors subject to two constraints. First, the linearized merged update $\Delta W$ should have a spectral norm bounded by a user-specified learning rate $\eta$. Second, the factor updates $\Delta A$ and $\Delta B$ should have equal spectral-norm magnitude.
-
-By the triangle inequality and submultiplicativity,
+We now choose the update magnitudes for the two factors by imposing two constraints. First, the linearized merged update \eqref{eq:DeltaW-lin} should have a spectral norm bounded by the learning rate $\eta$. Second, the factor updates $\Delta A$ and $\Delta B$ should have equal spectral norms. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
 \approx
@@ -415,7 +413,6 @@ By the triangle inequality and submultiplicativity,
 \norm{A}_2\norm{\Delta B}_2 .
 \label{eq:ours-prodcap}
 \end{equation}
-
 Treating $A$ and $B$ symmetrically, we use a single step size $\rho$ for both factors, setting $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Choosing
 \begin{equation}
 \rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
