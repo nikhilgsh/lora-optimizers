@@ -764,9 +764,7 @@ $\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ & --- \\
 Newton--Schulz iterations & ---       & $8$   & $5$    & ---       & $8$ \\
 \bottomrule
 \end{tabular}
-\caption{
-\nikhil{caption is way too long}
-Per-optimizer hyperparameters, fixed across all settings, with a dash marking a hyperparameter the optimizer does not have. Here $\beta_1$ is the momentum decay throughout, while $\beta_2$ is the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{} (\Cref{alg:ours}). The Newton--Schulz iteration count is the number of matrix-sign iterations, computed by PolarExpress for Muon and \methodname{} and by plain Newton--Schulz for iMuon (\Cref{app:gramns}). \methodname{} reuses this count for its Gram--Newton--Schulz inverse square roots and additionally uses relative damping $\delta=10^{-4}$ (\Cref{app:damping}).}
+\caption{Per-optimizer hyperparameters. $\beta_1$ is the momentum decay, and $\beta_2$ the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{}. The Newton--Schulz iterations approximate the matrix sign (\Cref{app:gramns}), and \methodname{} additionally applies relative damping $\delta=10^{-4}$ (\Cref{app:damping}).}
 \label{tab:optim-config}
 \end{table}
 
@@ -777,9 +775,30 @@ Per-optimizer hyperparameters, fixed across all settings, with a dash marking a 
 % ===========================================================================
 \section{Proofs}
 \label{app:proofs}
-\nikhil{result numbering is out of order. this roadmap pargraph isn't helpful. it would be better to orient each result in turn instead of frontloading everything}
-This appendix proves the results used in \Cref{sec:method}, in their order of appearance there. \Cref{lem:muon-lmo} is the spectral-norm LMO whose solution gives Muon's update direction (\Cref{sec:muon}). \Cref{lem:gradprop} collects the gradient properties, and \Cref{lem:pseudogradient-spectral} evaluates the resulting outergradient support function under a Kronecker-factored metric; together they turn the per-sample loss constraint of \Cref{sec:sample-loss-lmo} into a preconditioned spectral norm. \Cref{lem:whitened-spectral-lmo} then solves the preconditioned spectral-norm LMO that sets the \methodname{} direction. Finally, \Cref{rem:quadratic} bounds the error from linearizing the merged update.
 
+We first collect the gradient properties used to build the outergradient set.
+\gradprop*
+\begin{proof}[Proof of \Cref{lem:gradprop}]
+For the {\bf Leverage bound}, let $g_i=\vec(G_i)$ and
+$M=[g_1,\ldots,g_n]$, so $g_i = Me_i$ for every $i =1,\ldots, n$. Then
+\[
+\ip{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
+\]
+since $M^\top  (MM^\top)^{\dagger} M$ is the orthogonal projector onto the range
+of $M^\top$.
+
+The {\bf Rank one} property is the chain rule: $W$ encodes a linear layer
+$x_i \mapsto W x_i$, so
+\[
+\nabla \ell_{x_i}(Wx_i) =  \left. \frac{d }{dz} \ell_{x_i}(z)
+\right|_{z =Wx_i} x_i^\top
+=b_i x_i^\top,
+\]
+where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i}$ is the
+output-side gradient.
+\end{proof}
+
+Next we solve the spectral-norm LMO whose solution is the Muon update direction (\Cref{sec:muon}).
 \begin{lemma}[Spectral norm LMO]\label{lem:muon-lmo}
 Let $G\in\mathbb{R}^{m\times n}$ and $\eta>0$, and write
 $\norm{G}_{\mathrm{nuc}}=\sum_i\sigma_i(G)$ for the nuclear norm, the sum of the
@@ -820,31 +839,7 @@ so it attains the lower bound and is therefore optimal. The minimum-norm
 statement follows from Lemma C.2~\cite{parshakova2026muon}.
 \end{proof}
 
-
-
-\gradprop*
-\begin{proof}[Proof of \Cref{lem:gradprop}]
-For the {\bf Leverage bound}, let $g_i=\vec(G_i)$ and
-$M=[g_1,\ldots,g_n]$, so $g_i = Me_i$ for every $i =1,\ldots, n$. Then
-\[
-\ip{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
-\]
-since $M^\top  (MM^\top)^{\dagger} M$ is the orthogonal projector onto the range
-of $M^\top$.
-
-The {\bf Rank one} property is the chain rule: $W$ encodes a linear layer
-$x_i \mapsto W x_i$, so
-\[
-\nabla \ell_{x_i}(Wx_i) =  \left. \frac{d }{dz} \ell_{x_i}(z)
-\right|_{z =Wx_i} x_i^\top
-=b_i x_i^\top,
-\]
-where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i}$ is the
-output-side gradient.
-\end{proof}
-
-
-
+Using those properties, we evaluate the outergradient support function under a Kronecker-factored metric, turning the per-sample loss constraint (\Cref{sec:sample-loss-lmo}) into a preconditioned spectral norm.
 \begin{lemma}[Outergradient set under a Kronecker factorization]
 \label{lem:pseudogradient-spectral}
 Let
@@ -885,6 +880,7 @@ Maximizing over the balls gives the spectral norm,
 \]
 \end{proof}
 
+We then solve that preconditioned spectral-norm LMO, which sets the \methodname{} direction.
 \begin{lemma}[Preconditioned spectral-norm LMO]
 \label{lem:whitened-spectral-lmo}
 Let $L$ and $R$ be symmetric positive definite. Then
@@ -916,8 +912,6 @@ minimizer is
 \]
 Substituting $X=L^{-1}YR^{-1}$ gives the stated solution.
 \end{proof}
-
-
 
 \begin{remark}[Second-order term in the merged update]
 \label{rem:quadratic}
