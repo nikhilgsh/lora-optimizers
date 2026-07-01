@@ -349,7 +349,7 @@ So far we have described an update for the full weight matrix $W \in \R^{d_{\mat
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-Exactly as for Product Muon in~\Cref{sec:product-muon}, subadditivity of the spectral norm splits the coupled constraint in~\eqref{eq:joint-direction-lmo} into one bound per factor. With the factor gradients~\eqref{e-grad-wrt-factors}, the product LMO then decouples into two factorwise LMOs
+Just like for Product Muon in~\Cref{sec:product-muon}, subadditivity of the spectral norm splits the coupled constraint in~\eqref{eq:joint-direction-lmo} into one bound per factor. With the factor gradients~\eqref{e-grad-wrt-factors}, the product LMO then decouples into two factorwise LMOs
 \begin{equation}
 \setlength{\arraycolsep}{2pt}
 \begin{array}{@{}c@{\qquad}c@{}}
@@ -727,7 +727,7 @@ $\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ & --- \\
 Newton--Schulz iterations & ---       & $8$   & $5$    & ---       & $8$ \\
 \bottomrule
 \end{tabular}
-\caption{Per-optimizer hyperparameters. $\beta_1$ is the momentum decay, and $\beta_2$ the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{}. The Newton--Schulz iterations approximate the matrix sign (\Cref{app:gramns}), and \methodname{} additionally applies relative damping $\delta=10^{-4}$ (\Cref{app:damping}).}
+\caption{Per-optimizer hyperparameters. $\beta_1$ is the momentum decay, and $\beta_2$ the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{}. \methodname{} additionally applies relative damping $\delta=10^{-4}$ (\Cref{app:damping}). \nikhil{and $\varepsilon$?}}
 \label{tab:optim-config}
 \end{table}
 
@@ -990,6 +990,7 @@ LoRA-RITE~\cite{loramuon}.
 
 \section{Extended Prior Work}
 \label{app:related-spectral}
+\nikhil{should be fleshed out more, especially spectron.}
 Here we will better contextualize how
  \methodname{} relates to other spectral and curvature-aware
 optimizers (\Cref{sec:related}).
@@ -1015,6 +1016,7 @@ from a single LoRA LMO.
 % ===========================================================================
 \section{Estimating Normalized Second Moments}
 \label{app:matnormal}
+\nikhil{Needs work.}
 For one LoRA layer, the curvature quantity we would like to use is the second
 moment of the gradient with respect to the merged weight $W=W_0+BA$.
 \Cref{alg:ours} cannot store that full matrix, so it keeps two
