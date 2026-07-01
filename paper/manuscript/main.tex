@@ -402,7 +402,7 @@ give the factor update directions.
 \paragraph{Magnitude.}
 % It remains to choose the step magnitude. 
 % Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update.
-We now choose the update magnitudes for the two factors. We control the size of the updates themselves in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+Having derived the direction, we now choose the magnitude. We directly control the size of the factor updates in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
 \approx
@@ -612,7 +612,7 @@ contrast, \methodname{} sets the two factor updates to have the same spectral no
 Recently, optimizers that operate at the matrix level, rather than treating parameters as
 a flattened vector, have attracted attention for their gains over Adam~\cite{liu2025muon,
 qiu2026hyperparameter, benchmark_practices}. Muon~\cite{muon} solves the spectral-norm LMO
-for a full weight matrix, producing an update equal to the matrix sign of the momentum
+for a weight matrix, producing an update equal to the matrix sign of the momentum
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
@@ -945,7 +945,7 @@ which is equal to the $B$-update given in~\eqref{eq:product-muon-step}. Analogou
 
 
 \paragraph{iMuon, momentum-free.}
-iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which is the full-space signal passed to the intrinsic spectral LMO. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
+iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which is the signal passed to the intrinsic spectral LMO. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
 \begin{equation}
   \Delta B(H) =\msign \big(HA^\top S_B^{-1/2}\big)S_B^{-1/2},\qquad
   \Delta A(H) =S_A^{-1/2}\msign \big(S_A^{-1/2}B^\top H\big).
@@ -997,14 +997,14 @@ optimizers (\Cref{sec:related}).
 \paragraph{Mousse.}
 Mousse fixes its trust region by a Shampoo curvature $H\approx(R\otimes L)^{1/2}$, with
 $L$ and $R$ being the moving averages of $GG^\top$ and $G^\top G$. Whitening by
-$H^{1/2}=(R\otimes L)^{1/4}$ gives the full-weight update
+$H^{1/2}=(R\otimes L)^{1/4}$ gives the update
 \[
   \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
 \]
 \methodname{} instead uses the full gradient covariance $\Sigma\approx Q\otimes P$ as its
 metric, preconditioning by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse square root
 rather than Mousse's fourth-root power; the first-order LoRA product map then contracts
-these full-size factors to $C_A=B^\top P B$ and $C_B=AQA^\top$.
+these to the $r\times r$ matrices $C_A=B^\top P B$ and $C_B=AQA^\top$.
 
 \paragraph{Spectron.}
 Spectron \cite{spectron} bounds the induced product update by rescaling orthogonalized
