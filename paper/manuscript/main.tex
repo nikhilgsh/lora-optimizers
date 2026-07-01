@@ -192,7 +192,7 @@ For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with g
   \mbox{subject to} &
   \displaystyle
   \norm{\Delta W}_2
-  \le \tau,
+  \le \eta,
   \end{array}
   \label{eq:lmo}
 \end{equation}
@@ -203,12 +203,11 @@ where $\|\cdot\|_2$ is the spectral norm
 Bounding the spectral norm controls the largest amount by which the update can change the layer's output over all unit-norm inputs~\cite{yang2023spectral}.
 A solution to~\eqref{eq:lmo} is given by the matrix sign of the gradient~\cite{bernstein2025modular}
 \[
-    \Delta W = -\tau \msign(G),
+    \Delta W = -\eta \msign(G),
 \]
 where $\msign(G)=UV^\top$ and $G=U\Sigma V^\top$ is the reduced SVD (see~\Cref{lem:muon-lmo}). 
 
-In practice, Muon uses the momentum estimate of the gradients,
-% $\tau$ is set using a learning rate $\eta$, 
+In practice, Muon uses the momentum estimate of the gradients
 and a polynomial approximation to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}). Next we show how to adapt this LMO to be aware of the product structure in LoRA~\eqref{eq:lora}.
 
 \subsection{Product Muon}\label{sec:product-muon}
@@ -225,7 +224,7 @@ Applying Muon naively would impose a spectral bound separately on $\Delta A$ and
 from which we see that the spectral norm bound should be applied to this linearized product update. Substituting~\eqref{eq:DeltaW-lin} into the spectral LMO~\eqref{eq:lmo} gives the spectral constraint
 \[
 \norm{B \Delta A + \Delta B A}_2
-\le \tau.
+\le \eta.
 \]
 The constraint couples the two unknowns $\Delta A$ and $\Delta B$, but we can decouple them with the upper bound using norm subadditivity:
 \[
@@ -238,10 +237,10 @@ As a result, we get the \emph{Product Muon} LMO
   \begin{aligned}
   \Delta A &\in \argmin_{\Delta A}~ \ip{G_A, \Delta A}
   \quad \textnormal{subject to}\quad
-  \norm{B \Delta A}_2\le\tau, \\
+  \norm{B \Delta A}_2\le\eta, \\
   \Delta B &\in \argmin_{\Delta B}~ \ip{G_B, \Delta B}
   \quad \textnormal{subject to}\quad
-  \norm{\Delta B A}_2\le\tau,
+  \norm{\Delta B A}_2\le\eta,
   \end{aligned}
   \label{eq:decoupled-lora-lmo}
 \end{equation}
@@ -254,18 +253,17 @@ where the factor gradients are
 By \Cref{lem:whitened-spectral-lmo}, the solution to this LMO is
 \begin{equation}\label{eq:product-muon-step}
 \begin{aligned}
-    \Delta A &= -\tau\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
-    \Delta B &= -\tau\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
+    \Delta A &= -\eta\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
+    \Delta B &= -\eta\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
 \end{aligned}
 \end{equation}
 Similar to Muon, these factor updates are computed using momentum estimates of the  gradients.
-% and with $\tau = \eta$.
 \subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
 We now derive the base LMO that will be the starting point of \methodname{}.
 Let $\{x_1, \ldots, x_n\}$ be the input activations to the layer that $W$ encodes, and let $G_i = \nabla \ell_{x_i}(W)$ be the gradient of the loss on activation $x_i$. Abusing notation slightly, we write $\ell_{x_i}$ for the loss on a single activation rather than a full input.
 
 The justification of using the spectral norm in Muon is that it is conservative, since it bounds the change to the output of the layer with respect to all activations on the unit ball, indeed since
-\[\| \Delta W \|_2 \leq \tau \quad \Leftrightarrow \quad \| \Delta W x\|_2 \leq \tau, \quad \forall x\;: \;\|x\|_2 \leq 1.\]
+\[\| \Delta W \|_2 \leq \eta \quad \Leftrightarrow \quad \| \Delta W x\|_2 \leq \eta, \quad \forall x\;: \;\|x\|_2 \leq 1.\]
 But what really matters in the end is final loss. 
 Thus we adapt this conservative approach to instead ensure that no single activation results in a large change in the \emph{loss}, that is, we want
 \begin{equation}\label{eq:loss-diff}
