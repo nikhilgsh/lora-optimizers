@@ -413,11 +413,7 @@ We now choose the update magnitudes for the two factors. We control the size of 
 \norm{A}_2\norm{\Delta B}_2,
 \label{eq:ours-prodcap}
 \end{equation}
-<<<<<<< 0da4dfc4d6f33dde30b0edab3971f396c55ec66e
-Treating $A$ and $B$ symmetrically, we use a single step size $\rho$ for both factors, setting $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Choosing
-=======
 and so setting
->>>>>>> 563c2c729403726f5cc0d5ff826e59cc1733d86f
 \begin{equation}
 \rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
 \label{eq:ours-rho}
@@ -428,7 +424,7 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 \qquad
 \Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
 \]
-\paragraph{Optimizer step.} To reduce overhead, the matrices $P$ are $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}. We also employ standard averaging techniques: instead of raw gradients we use Nesterov momentum buffers and for updating $P$ and $Q$ we use an exponential moving average (EMA). To eliminate scaling ambiguity in $P$ and $Q$ we rescale each by its largest entry to produce $\bar{P}$ and $\bar{Q}$ which are then used to compute the direction and in the EMA update. We discuss the motivation for this strategy in more detail in \Cref{app:matnormal}. To ensure fast optimizer steps we use Gram Newton--Schulz iterations for the matrix sign and inverse square roots (\Cref{app:gramns}) and power iteration for estimating spectral norms (\Cref{alg:smax}). For stability, we use relative damping in the inverse square roots
+\paragraph{Optimizer step.} To reduce overhead, the matrices $P$ are $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}. We also employ standard averaging techniques: instead of raw gradients we use Nesterov momentum buffers and for updating $P$ and $Q$ we use an exponential moving average (EMA). To eliminate scaling ambiguity in $P$ and $Q$ we rescale each by its largest entry to produce $\bar{P}$ and $\bar{Q}$ which are then used to compute the direction and in the EMA update. We discuss the motivation for this strategy in more detail in \Cref{app:matnormal}. To ensure fast optimizer steps we use power iteration for estimating spectral norms (\Cref{app:smax}) and Gram Newton--Schulz iterations for the matrix sign and inverse square roots (\Cref{app:gramns}). For stability, we use relative damping in the inverse square roots
 (\Cref{app:damping}). The resulting step is summarized in \Cref{alg:ours}. 
 
 \begin{algorithm}[t]
