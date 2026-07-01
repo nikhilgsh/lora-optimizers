@@ -161,7 +161,7 @@ The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname
 \label{sec:method}
 To build up to the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the linear minimization oracle (LMO) perspective. 
 This perspective views the Muon update as minimizing the linearized loss subject to controlling the spectral norm of the update. Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon LMO. 
-In \Cref{sec:sample-loss-lmo} we derive a new base LMO that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions, but in order to ensure the sizes of the per-factor updates are well-behaved we rescale the updates to simultaneously control the per-factor update and merged-weight update sizes.
+In \Cref{sec:sample-loss-lmo} we derive a new base LMO that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions, which we then rescale to control both the per-factor and merged-weight update sizes.
 % A LoRA adapter changes the model through the product $BA$ of its two
 % factors~\eqref{eq:lora}, while the optimizer acts on $A$ and $B$. This section
 % derives an update that treats the adapter as a matrix update while still
@@ -236,7 +236,7 @@ where the factor gradients are
     \qquad
     G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
 \end{equation}
-\nikhil{reference?}
+%\nikhil{reference?}
 The solution to this LMO is given by
 \[
 \begin{aligned}
@@ -245,21 +245,19 @@ The solution to this LMO is given by
 \end{aligned}
 \]
 Similar to Muon, these factor updates are computed using momentum buffers and with $\tau = \eta$.
-\nikhil{better subsection title?}
 \subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
-We now derive the base LMO that will be the starting point of \methodname{}. 
-\nikhil{this sentence is a pain to read}
-Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation rather than a full input.
+We now derive the base LMO that will be the starting point of \methodname{}.
+Let $\{x_1, \ldots, x_n\}$ be the input activations to the layer that $W$ encodes, and let $G_i = \nabla \ell_{x_i}(W)$ be the gradient of the loss on activation $x_i$. Abusing notation slightly, we write $\ell_{x_i}$ for the loss on a single activation rather than a full input.
 
-To be conservative with respect to every activation, we enforce that no single activation results in a large change in the loss, that is we want
+To be conservative with respect to every activation, we enforce that no single activation results in a large change in the loss, that is, we want
 \begin{equation}\label{eq:loss-diff}
      \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
-This would ensure that no input would spike the current batch loss. Due to the highly non-linear and non-convex nature of the loss, we instead use the local linearization of the loss
+This would ensure that no input would spike the current batch loss. Due to the highly nonlinear and nonconvex nature of the loss, we instead use the local linearization of the loss
 \[  
 \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \ip{G_i, \Delta W}. 
 \]
-Replacing the spectral-norm constraint in~\eqref{eq:lmo} with the per-sample bounds~\eqref{eq:loss-diff}, linearized as above, gives
+Replacing the spectral-norm constraint in~\eqref{eq:lmo} with the per-sample bounds~\eqref{eq:loss-diff} linearized as above gives
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -271,13 +269,12 @@ Replacing the spectral-norm constraint in~\eqref{eq:lmo} with the per-sample bou
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-Since we do not have efficient direct access to the per-input gradients $G_i$, we will now define a \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$,
-use the following inequality
+Since we do not have efficient direct access to the per-input gradients $G_i$, we will now define an \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, use the inequality
 \begin{equation} \label{eq:outgrad1}
     \max_{i=1,\ldots, n}  \ip{G_i, \Delta W}  
     \leq   \max_{\tilde G \in \mathcal{G}} \; \ip{\tilde G, \Delta W},
 \end{equation} 
-and then impose  that the right hand side of \eqref{eq:outgrad1} 
+and then impose  that the right-hand side of \eqref{eq:outgrad1} 
 is less than $\tau$. 
 To build $\mathcal{G}$ we collect some standard properties of the gradient matrices in the following lemma.
 \begin{restatable}[Properties of gradients]{lemma}{gradprop} 
@@ -335,7 +332,7 @@ Then \eqref{eq:polorafull-hard} can be rewritten as
 \end{array}
 \label{eq:polorafull}
 \end{equation}
-where we have absorbed a $\frac{1}{\sqrt{n}}$ into $\tau$, that is $\tau \leftarrow \frac{\tau}{\sqrt{n}}$.
+where we have absorbed a $\frac{1}{\sqrt{n}}$ into $\tau$, that is, $\tau \leftarrow \frac{\tau}{\sqrt{n}}$.
 The LMO in~\eqref{eq:polorafull} is an instance of the following preconditioned spectral-norm LMO.
 \begin{restatable}[Preconditioned spectral-norm LMO]{lemma}{GeneralLmoUpdate}
 \label{lem:whitened-spectral-lmo}
@@ -474,7 +471,7 @@ ensures $\norm{\Delta W}_2\leq \eta$, and gives the updates
 Including the dropped quadratic term $\Delta B\Delta A$, the actual merged update overshoots $\eta$ by at most a relative $\eta/(\norm{A}_2+\norm{B}_2)^2$ (\Cref{rem:quadratic}).
 \Cref{app:gauge} examines how the step size $\rho$ depends on the relative scale of $A$ and $B$.
 \paragraph{Optimizer step.}
-Algorithm~\ref{alg:ours} summarizes the resulting step. The direction formula
+\Cref{alg:ours} summarizes the resulting step. The direction formula
 \eqref{eq:factor-directions} acts on Nesterov momentum rather than raw factor
 gradients.
 The step uses Gram Newton--Schulz iterations for the matrix sign and inverse
@@ -494,7 +491,6 @@ factorization before each minibatch estimate for $p$ and $q$, so $\beta_2$ sets
 the EMA decay rather than an arbitrary split of scale between the two vectors.
 \Cref{app:matnormal} derives this normalized second-moment estimator.
 
-\nikhil{$C_B$ should align with $\bar{Q}$, vertical spacing is uneven between the sections and within sections}
 \begin{algorithm}[t]
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
 \label{alg:ours}
@@ -503,13 +499,15 @@ the EMA decay rather than an arbitrary split of scale between the two vectors.
 \Statex
 \Phase{Nesterov Momentum}
 \State $\begin{aligned}[t]
-  M_A &\gets \beta_1 M_A+(1-\beta_1)G_A, &\quad M_B &\gets \beta_1 M_B+(1-\beta_1)G_B\\[2pt]
+  M_A &\gets \beta_1 M_A+(1-\beta_1)G_A, &\quad M_B &\gets \beta_1 M_B+(1-\beta_1)G_B\\[-4pt]
   \widehat M_A &\gets \beta_1 M_A+(1-\beta_1)G_A, &\quad \widehat M_B &\gets \beta_1 M_B+(1-\beta_1)G_B
 \end{aligned}$ \Comment{buffer + look-ahead}
 \Statex
 \Phase{Direction}
-\State $\bar P\gets\diag\!\big(p/\norm{p}_\infty\big), \qquad \bar Q\gets\diag\!\big(q/\norm{q}_\infty\big)$
-\State $C_A\gets B^\top \bar P\, B, \qquad C_B\gets A\,\bar Q\, A^\top$
+\State $\begin{aligned}[t]
+  \bar P &\gets \diag\!\big(p/\norm{p}_\infty\big), &\quad \bar Q &\gets \diag\!\big(q/\norm{q}_\infty\big)\\[-4pt]
+  C_A &\gets B^\top \bar P\, B, &\quad C_B &\gets A\,\bar Q\, A^\top
+\end{aligned}$
 \State $D_A\gets C_A^{-1/2}\,\msign\big(C_A^{-1/2}\,\widehat M_A\,\bar Q^{-1/2}\big)\,\bar Q^{-1/2}$ \Comment{preconditioned polar step~\eqref{eq:factor-directions}}
 \State $D_B\gets \bar P^{-1/2}\,\msign\big(\bar P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$
 \Statex
@@ -532,7 +530,7 @@ Here we evaluate \methodname{}, comparing it to several baselines in~\Cref{sec:e
 \label{sec:exp-setup}
 
 \paragraph{Comparison.}
-For every model, dataset, and rank, we only vary the optimizer and learning rate. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out evaluation loss.
+For every model, dataset, and rank, we only vary the optimizer and learning rate. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out loss.
 
 The main comparisons finetune OLMo-2-1B~\cite{olmo2}, Llama-3.2-1B~\cite{llama3}, Qwen2.5-1.5B~\cite{qwen25}, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}) datasets, using rank $r=256$ unless stated otherwise. Additional experiments in \Cref{sec:exp-taskdep} vary the rank as well as change the finetuning dataset to a low-resource language. \Cref{app:exp} gives the full experimental configurations.
 
@@ -548,14 +546,14 @@ We use the authors' official implementations for iMuon and LoRA-RITE, and detail
 
 \subsection{Measuring Efficiency Benefits}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match Adam's tuned loss after $T$ steps. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
+We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to reach Adam's final loss. Across our experiments, \methodname{} reaches Adam's loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
 
 
 
-\paragraph{Wall-clock.}\label{sec:exp-walltime} The total FLOPs of each step of \methodname{}   are independent of the batch size, while the forward
+\paragraph{Wall-clock.}\label{sec:exp-walltime} The total FLOPs of each step of \methodname{} are independent of the batch size, while the forward
 and backward passes scale with batch size (\Cref{app:flops}). Thus the  relative per-step time of \methodname{}  shrinks
 as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $3\%$ over Adam on
-all four base models (\Cref{tab:breadth}), and the step-count speedup carries to wall-clock almost
+all four base models (\Cref{tab:breadth}), and the step speedup carries to wall-clock almost
 unchanged.  
 
 % Code columns: per-model step speedup (lora_playground leaderboard frac_best_lr ->
@@ -610,7 +608,7 @@ Removing both components eliminates the speedup over Adam in the right panel of~
 \label{sec:exp-taskdep}
 To understand the effect of the LoRA rank and of the finetuning dataset, we vary the rank while finetuning on math and vary the dataset from code to a low-resource language underrepresented in the pretraining mix.
 
-\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, \methodname{}'s step-speedup over Adam grows too (\Cref{tab:rank}; learning curves in \Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer across rank: the optimal learning rate is stable across rank, whereas the optimal learning rate for Adam shifts (\Cref{fig:lr_transfer}).
+\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, \methodname{}'s step speedup over Adam grows too (\Cref{tab:rank}; learning curves in \Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer across rank: the optimal learning rate is stable across rank, whereas the optimal learning rate for Adam shifts (\Cref{fig:lr_transfer}).
 
 \begin{table}[t]
 \centering\small
@@ -628,8 +626,6 @@ $256$ & $1.63\times$ & $1.58\times$ \\
 \label{tab:rank}
 \end{table}
 
-\paragraph{Distribution shift.} Coding data is heavily represented in the pretraining data for the Qwen2.5-1.5B model. Bengali (Aya \cite{aya}) much less so, therefore, we refer to code as in-distribution and Bengali as out-of-distribution datasets. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
-
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig3_lr_transfer.pdf}
@@ -638,7 +634,9 @@ $256$ & $1.63\times$ & $1.58\times$ \\
   \label{fig:lr_transfer}
 \end{figure}
 
-\begin{figure}[h]
+\paragraph{Distribution shift.} Coding data is heavily represented in the pretraining data for the Qwen2.5-1.5B model. Bengali (Aya \cite{aya}) is much less so; we therefore refer to code as in-distribution and Bengali as out-of-distribution datasets. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
+
+\begin{figure}[tb]
   \centering
   \includegraphics[width=\linewidth]{fig_ood.pdf}
   \caption{\textbf{\methodname{} has more speedup on out-of-distribution dataset.} 
@@ -757,7 +755,7 @@ This section gives the full configuration behind \Cref{sec:exp-setup}. Within ea
 \end{itemize}
 
 \paragraph{Fixed training configuration.} \Cref{tab:config} lists the settings held fixed across all runs.
-\begin{table}[h]
+\begin{table}[ht]
 \centering\small
 \begin{tabular}{@{}ll@{}}
 \toprule
@@ -781,7 +779,7 @@ LR schedule            & constant \\
 \end{table}
 
 \paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimum. All other optimizer hyperparameters are fixed (\Cref{tab:optim-config}).
-\begin{table}[h]
+\begin{table}[ht]
 \centering\small
 \begin{tabular}{@{}lccccc@{}}
 \toprule
@@ -1062,7 +1060,7 @@ $H^{1/2}=(R\otimes L)^{1/4}$ gives the dense update
   \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
 \]
 \methodname{} instead uses the full gradient covariance $\Sigma\approx Q\otimes P$ as its
-metric, preconditioning by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse-square-root
+metric, preconditioning by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse square root
 rather than Mousse's fourth-root power; the first-order LoRA product map then contracts
 these dense factors to $C_A=B^\top P B$ and $C_B=AQA^\top$.
 
@@ -1087,7 +1085,7 @@ from a single LoRA LMO.
 \label{app:matnormal}
 For one LoRA layer, the curvature quantity we would like to use is the second
 moment of the gradient with respect to the merged weight $W=W_0+BA$.
-Algorithm~\ref{alg:ours} cannot store that full matrix, so it keeps two
+\Cref{alg:ours} cannot store that full matrix, so it keeps two
 diagonal vectors, one for output coordinates and one for input coordinates. This
 section defines the recency-weighted second moment, writes the normalized
 Kronecker fixed point for these two vectors, and shows how the online update
@@ -1239,7 +1237,7 @@ that would inflate the update and risk destabilizing training.  We therefore
 return the larger of the power-iteration value and the largest row norm of $M$, a
 lower bound on $\norm{M}_2$.
 
-\begin{algorithm}[h]
+\begin{algorithm}[ht]
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
 \label{alg:smax}
 \begin{algorithmic}[1]
@@ -1337,7 +1335,7 @@ We run the Gram Newton--Schulz iteration in fp32, which is inexpensive because
 every matrix is only $r\times r$.  We use $K=8$ iterations.
 
 
-\begin{algorithm}[h]
+\begin{algorithm}[ht]
 \caption{Gram Newton--Schulz iteration}
 \label{alg:gramns}
 \begin{algorithmic}[1]
@@ -1381,7 +1379,7 @@ inverse square root are all bounded,
 The bound $\sqrt{r(1+\delta)/\delta}$ grows as $\delta\to 0$, so a smaller
 $\delta$ permits stronger amplification of low-curvature directions.
 
-\textbf{Warmup.}
+\paragraph{Warmup.}
 At the beginning of training, an EMA curvature factor may still be zero.
 When $\lambda_{\max}=0$, we set the inverse square root
 to identity,
@@ -1534,7 +1532,7 @@ The whole-model overhead is an average of these per-layer fractions weighted by 
 it is dominated by the large feed-forward matrices, which have the smallest fraction. 
 
 \paragraph{Why the Gram form.} All of the dependence on $K$ sits in the $32Kr^3$ term, the
-Gram Newton--Schulz. It computes the matrix sign and the curvature inverse-square-roots by
+Gram Newton--Schulz. It computes the matrix sign and the curvature inverse square roots by
 iterating on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
 (\Cref{app:gramns}), which is about $d/r$ cheaper per iteration. Iterating on the factor
 instead would make the optimizer step roughly $1.5\times$ costlier, increasing its share of
