@@ -1082,106 +1082,121 @@ from a single LoRA LMO.
 % ===========================================================================
 \section{Estimating Normalized Second Moments}
 \label{app:matnormal}
-For one LoRA layer, suppose we could keep the second moment of the gradient with
-respect to the merged weight $W=W_0+BA$. That matrix is too large to store.
-Algorithm~\ref{alg:ours} therefore keeps two diagonal factors instead: $p_t$ for
-output coordinates and $q_t$ for input coordinates. The update below shows how
-the available factor gradients, $G_A$ and $G_B$, determine those two diagonals
-under a diagonal Kronecker approximation.
+For one LoRA layer, the curvature quantity we would like to use is the second
+moment of the gradient with respect to the merged weight $W=W_0+BA$.
+Algorithm~\ref{alg:ours} cannot store that full matrix, so it keeps two
+diagonal vectors, one for output coordinates and one for input coordinates. This
+section defines the recency-weighted second moment, writes the normalized
+Kronecker fixed point for these two vectors, and shows how the online update
+takes one relaxed step toward that fixed point.
 
-\paragraph{Merged-weight target.}
-Consider one LoRA layer, with $\alpha=r$ as in \Cref{sec:exp-setup}. At step
-$s$, the merged weight is $W_s=W_0+B_sA_s$. For the $i$th input activation
-$x_{s,i}$ to this layer, let
-$G_{s,i}=\nabla_W\ell_{x_{s,i}}(W_sx_{s,i})$ and
-$g_{s,i}=\vec(G_{s,i})$. The minibatch second moment and its raw EMA are
+\paragraph{Weighted historical covariance.}
+At step $s$, let $x_{s,i}$ be an input activation to the layer. The merged
+weight, per-example gradient, minibatch second moment, and raw EMA are
 \[
-  \Sigma_s=\frac1{n_s}\sum_{i=1}^{n_s}g_{s,i}g_{s,i}^\top,
+\begin{aligned}
+  W_s &= W_0+B_sA_s,\\
+  G_{s,i} &= \nabla_W\ell_{x_{s,i}}(W_sx_{s,i}),
   \qquad
-  V_{s+1}=\beta_2V_s+(1-\beta_2)\Sigma_s,
+  g_{s,i} = \vec(G_{s,i}),\\
+  \Sigma_s &= \frac1{n_s}\sum_i g_{s,i}g_{s,i}^\top,\\
+  V_{s+1} &= \beta_2V_s+(1-\beta_2)\Sigma_s,
   \qquad
   V_0=0 .
+\end{aligned}
 \]
-Here $\beta_2$ is the curvature decay coefficient from \Cref{alg:ours}. For any
-function $\phi$ of one merged-weight gradient, define $\mathbb{E}_t$ as the
-following weighted average over earlier minibatches. With $g=\vec(G)$, the scalar
-$1-\beta_2^t$ in $V_t=(1-\beta_2^t)\mathbb{E}_t[gg^\top]$ can be absorbed into
-the overall scale, so we approximate the normalized average by a scaled
-Kronecker product of two diagonal matrices:
-\begin{equation}\label{e-diag-kron-second-mom-model}
-\begin{gathered}
+Here $n_s$ is the minibatch size and $\beta_2$ is the curvature decay
+coefficient.
+
+The EMA is equivalent to a covariance over a recency-weighted finite set of past
+examples. For $s<t$, define
+\[
+\begin{aligned}
+  w_{t,s,i}
+  &=
+  \frac{(1-\beta_2)\beta_2^{t-1-s}}{(1-\beta_2^t)n_s},\\
   \mathbb{E}_t[\phi(G)]
-  =
-  \sum_{s<t}
-  \frac{(1-\beta_2)\beta_2^{t-1-s}}{1-\beta_2^t}
-  \frac1{n_s}\sum_{i=1}^{n_s}\phi(G_{s,i}),\\
+  &=
+  \sum_{s<t}\sum_{i=1}^{n_s}
+  w_{t,s,i}\phi(G_{s,i}),\\
+  \bar\Sigma_t
+  &=
   \mathbb{E}_t[gg^\top]
+  =
+  \sum_{s<t}\sum_{i=1}^{n_s}
+  w_{t,s,i} g_{s,i}g_{s,i}^\top .
+\end{aligned}
+\]
+The weights sum to one and $V_t=(1-\beta_2^t)\bar\Sigma_t$. The scalar
+$1-\beta_2^t$ only changes the overall scale, so it does not affect the
+normalized factors below. The same covariance view gives the weighted version
+of the leverage argument from the main text:
+with $z_{t,s,i}=\sqrt{w_{t,s,i}}\,g_{s,i}$, the covariance is
+$\bar\Sigma_t=\sum z_{t,s,i}z_{t,s,i}^\top$, so the same leverage bound applies
+to the rescaled gradients $z_{t,s,i}$, or equivalently to
+$\sqrt{w_{t,s,i}}\ip{G_{s,i},\Delta W}$.
+
+\paragraph{Kronecker model.}
+The Kronecker approximation is applied to this weighted covariance:
+\begin{equation}\label{e-diag-kron-second-mom-model}
+  \bar\Sigma_t
   \approx
   \kappa_t(\bar Q_t\otimes\bar P_t),
   \qquad
   \bar P_t=\diag(\bar p_t),\quad
   \bar Q_t=\diag(\bar q_t),\quad
   \norm{\bar p_t}_\infty=\norm{\bar q_t}_\infty=1 .
-\end{gathered}
 \end{equation}
+The normalization is a convention. Replacing $\bar P_t$ by $a\bar P_t$ and
+$\bar Q_t$ by $a^{-1}\bar Q_t$ leaves $\bar Q_t\otimes\bar P_t$ unchanged. The
+constraints above choose one representative and leave $\kappa_t$ as the
+remaining scalar.
 
-\paragraph{Using factor gradients.}
-At the current factors $A=A_t$ and $B=B_t$, the gradients with respect to the
-two LoRA factors are $G_A=B^\top G$ and $G_B=G A^\top$. These multiplications
-also transform the two diagonal matrices in
-\eqref{e-diag-kron-second-mom-model}. With
-$C_{A,t}=B^\top\bar P_tB$ and $C_{B,t}=A\bar Q_tA^\top$, the trace terms below
-reduce to $r$:
+\paragraph{Fixed-point map.}
+At the current factors $A=A_t$ and $B=B_t$, a merged-weight gradient $G$ induces
+factor gradients $G_A=B^\top G$ and $G_B=G A^\top$. For normalized vectors
+$\bar p$ and $\bar q$, define
 \[
 \begin{aligned}
-  \mathbb{E}_t[G_A^\top C_{A,t}^{-1}G_A]
-  &\approx
-  \Tr(C_{A,t}^{-1}C_{A,t})\,\kappa_t\bar Q_t
-  =
-  r\kappa_t\bar Q_t,\\
-  \mathbb{E}_t[G_B C_{B,t}^{-1}G_B^\top]
-  &\approx
-  \Tr(C_{B,t}^{-1}C_{B,t})\,\kappa_t\bar P_t
-  =
-  r\kappa_t\bar P_t .
+  T_Q(\bar p)
+  &=
+  \frac1r\diag\!\left(
+    \mathbb{E}_t[G_A^\top (B^\top\diag(\bar p)B)^{-1}G_A]
+  \right),\\
+  T_P(\bar q)
+  &=
+  \frac1r\diag\!\left(
+    \mathbb{E}_t[G_B (A\diag(\bar q)A^\top)^{-1}G_B^\top]
+  \right).
 \end{aligned}
 \]
-Taking diagonals leaves one vector proportional to $\bar q_t$ and one
-proportional to $\bar p_t$:
+Here $\mathbb{E}_t$ denotes the weighted average with weights $w_{t,s,i}$ from
+the previous paragraph. If the Kronecker model holds and
+$\bar p=\bar p_t$, then the first map gives $\kappa_t\bar q_t$: the expectation
+contains $B^\top\bar P_tB$, and the inverse contributes
+$\Tr((B^\top\bar P_tB)^{-1}B^\top\bar P_tB)=r$. The argument for $T_P$ is the
+same with $A$ and $B$ swapped. The normalized KL-Shampoo fixed point is
 \[
-\begin{alignedat}{2}
-  \tilde q_t
-  &= \frac1r\diag\!\bigl(
-    \mathbb{E}_t[G_A^\top C_{A,t}^{-1}G_A]
-  \bigr)
-  \approx \kappa_t\bar q_t,
-  &\qquad
-  \bar q_t
-  &= \tilde q_t/\norm{\tilde q_t}_\infty,\\
-  \tilde p_t
-  &= \frac1r\diag\!\bigl(
-    \mathbb{E}_t[G_B C_{B,t}^{-1}G_B^\top]
-  \bigr)
-  \approx \kappa_t\bar p_t,
-  &
-  \bar p_t
-  &= \tilde p_t/\norm{\tilde p_t}_\infty .
-\end{alignedat}
+  q=T_Q\!\left(\frac{p}{\norm{p}_\infty}\right),
+  \qquad
+  p=T_P\!\left(\frac{q}{\norm{q}_\infty}\right),
+  \qquad
+  \bar q=\frac{q}{\norm{q}_\infty},\quad
+  \bar p=\frac{p}{\norm{p}_\infty}.
 \]
-The normalization in the right column removes the shared scale $\kappa_t$.
 
 \paragraph{Online estimator.}
-Algorithm~\ref{alg:ours} uses the current minibatch in place of the time
-average and applies the same EMA to the resulting two vectors. At step $t$, it
-first forms $\bar P_t=\diag(p_t/\norm{p_t}_\infty)$ and
-$\bar Q_t=\diag(q_t/\norm{q_t}_\infty)$, then
-$C_A=B^\top\bar P_tB$ and $C_B=A\bar Q_tA^\top$. The minibatch estimates and EMA
-update are
+\methodname{} performs one relaxed stochastic step toward this fixed point per
+optimizer step. It first normalizes the stored vectors,
+$\bar P_t=\diag(p_t/\norm{p_t}_\infty)$ and
+$\bar Q_t=\diag(q_t/\norm{q_t}_\infty)$, then forms
+$C_A=B^\top\bar P_tB$ and $C_B=A\bar Q_tA^\top$. On the current minibatch, the
+estimates and EMA updates are
 \begin{equation}\label{eq:ours-klcoupling}
-\begin{alignedat}{2}
+\begin{aligned}
   \widehat q_t
   &= \frac1r\diag\!\left(G_A^\top C_A^{-1}G_A\right),
-  &\qquad
+  &
   q_{t+1}
   &= \beta_2q_t+(1-\beta_2)\widehat q_t,\\
   \widehat p_t
@@ -1189,12 +1204,16 @@ update are
   &
   p_{t+1}
   &= \beta_2p_t+(1-\beta_2)\widehat p_t .
-\end{alignedat}
+\end{aligned}
 \end{equation}
-The next direction step uses $q_{t+1}/\norm{q_{t+1}}_\infty$ and
+The key point is that the EMA is taken before normalization. The vector $q_t$
+estimates $\kappa_t\bar q_t$, and $p_t$ estimates $\kappa_t\bar p_t$. Normalizing each
+minibatch estimate first would average per-minibatch normalized factors, which
+is not the normalized factor of the averaged historical covariance. The next
+direction step therefore uses $q_{t+1}/\norm{q_{t+1}}_\infty$ and
 $p_{t+1}/\norm{p_{t+1}}_\infty$.
 
-\paragraph{Scale convention.}
+\paragraph{Why normalization comes first.}
 The normalization must happen before constructing $C_A$ and $C_B$. If
 $P=a\bar P$ replaces $\bar P$ in $B^\top\bar P B$, then
 $(B^\top P B)^{-1}=a^{-1}(B^\top\bar P B)^{-1}$, so the resulting $q$ estimate
