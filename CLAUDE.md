@@ -156,6 +156,12 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
   batched↔per-pair-safe lower bound on `sigma_max` — AND run enough iterations (a
   warm 3-iteration start chronically under-estimated ~10–25% at every site; bump to
   ~8). A lower-bound floor alone does not fix the chronic-bias drift; you need both.
+  The floor plus a single deterministic `M·1` cold start is a sufficient guard. An
+  extra one-hot basis-vector fallback is not needed, because it would change the
+  estimate only on the measure-zero set (`M≠0` with `M·1=0` exactly), and `M=0`
+  returns `0` regardless (differential-verified bit-for-bit on random, real-snapshot,
+  and zero-column-sum inputs; `~/polora` dropped it, `lora_playground/spectral.py`
+  still carries it harmlessly).
 - **Never use a full SVD / `eigh` to get a scalar `sigma_max` (or `lambda_max`).**
   `torch.linalg.matrix_norm(X, ord=2)` is a *full SVD* — it was ~80% of the
   curvature-whiten-polar step (224 SVDs/step, ~30 ms each; killing it gave 4.4×).

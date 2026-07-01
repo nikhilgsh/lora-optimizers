@@ -102,6 +102,19 @@ def _shared_knobs(cfg: dict) -> str:
     ib = cfg.get("lora_init_b")
     if ib not in (None, "zero"):
         s += f" initB={ib}"
+    # Curvature-metric init + rdinv investigation knobs: default runs (metric
+    # init 'zero', rdinv variant 'A', no rdinv-delta) keep the bare label;
+    # the e2 metric-init and rdinv B/VN/delta sweeps get a suffix so they no
+    # longer collapse onto the protagonist's label.
+    cm = cfg.get("cw_metric_init")
+    if cm not in (None, "zero"):
+        s += f" minit={cm}"
+    rv = cfg.get("rdinv_variant")
+    if rv not in (None, "A"):
+        s += f" rdinv={rv}"
+    rd = cfg.get("rdinv_delta")
+    if rd is not None:
+        s += f" rdδ={_eps(rd)}"
     return s
 
 

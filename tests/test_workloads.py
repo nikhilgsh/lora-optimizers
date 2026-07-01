@@ -61,10 +61,10 @@ def test_deny_pattern():
 
 
 def test_registry_shape():
-    assert len(WORKLOADS) == 16
+    assert len(WORKLOADS) == 18
     # 6 OLMo-2-1B (opc/openmath/tulu3 × r{64,256}) + 6 Llama-3.2-1B (opc r{64,256};
-    # openmath r{32,64,128,256}) + 2 Qwen2.5-1.5B (opc, bengali) + 1 Meta-Llama-3-8B
-    # + 1 Qwen3-0.6B (openwebmath), all unique.
+    # openmath r{32,64,128,256}) + 3 Qwen2.5-1.5B (opc, openmath, bengali)
+    # + 2 Meta-Llama-3-8B (opc, openmath) + 1 Qwen3-0.6B (openwebmath), all unique.
     keys = {(w.model_name, w.dataset, w.rank) for w in WORKLOADS}
     assert len(keys) == len(WORKLOADS)
     assert ("Qwen/Qwen2.5-1.5B", "opc", 256) in keys

@@ -102,6 +102,7 @@ def labeled_completed_runs(
     *,
     horizon: int,
     completion_slack: int = DEFAULT_COMPLETION_SLACK,
+    check_discrimination: bool = True,
 ) -> dict[str, dict[float, tuple[float, list[dict]]]]:
     """Bucket completed runs into ``{variant_label: {lr: (final_loss, history)}}``.
 
@@ -109,8 +110,17 @@ def labeled_completed_runs(
     panel) and it completed (last eval step >= horizon - completion_slack).
     When several runs share a (label, lr) — e.g. a resub continuation — the
     longest-trajectory one wins, matching the notebooks' dedup.
+
+    ``check_discrimination`` (default on): before bucketing, hard-fail if any
+    (label, lora_r, lr) bucket holds runs with more than one ``series_id`` —
+    i.e. ``variant_key`` collapses genuinely different optimizer configs into
+    one label, so the longest-trajectory tiebreak silently picks one config and
+    drops the others (the exact failure that let an investigation-knob run win a
+    protagonist cell). The guard is knob-agnostic: a NEW hyperparameter that a
+    label fails to discriminate trips it automatically, naming the field. Opt
+    out only for cells that intentionally average across an axis.
     """
-    by: dict[str, dict[float, tuple[float, list[dict], int]]] = defaultdict(dict)
+    kept: list[tuple[dict, list[dict], str, float, dict, float]] = []
     for cfg, hist in runs:
         if not hist:
             continue
@@ -125,6 +135,19 @@ def labeled_completed_runs(
             lr = float(cfg["lr"])
         except (KeyError, TypeError, ValueError):
             continue
+        kept.append((cfg, hist, label, lr, last, last_step))
+
+    if check_discrimination and kept:
+        # Lazy import: plotting.dedup is a leaf, but importing it at module load
+        # would invert the plotting->leaderboard dependency.
+        from lora_playground.plotting.dedup import assert_label_discriminates
+        assert_label_discriminates(
+            [(cfg, hist) for cfg, hist, *_ in kept], variant_key,
+            bucket_keys=("lora_r", "lr"),
+        )
+
+    by: dict[str, dict[float, tuple[float, list[dict], int]]] = defaultdict(dict)
+    for cfg, hist, label, lr, last, last_step in kept:
         prev = by[label].get(lr)
         if prev is None or last_step > prev[2]:
             by[label][lr] = (last["eval_loss"], hist, last_step)
