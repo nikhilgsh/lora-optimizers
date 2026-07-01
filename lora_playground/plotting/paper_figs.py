@@ -78,7 +78,7 @@ NAME_LM = "w/o curvature or magnitude"
 # separated hues (gold / vermillion / purple); PoLoRA is the thickest blue. (The fig2
 # ablation arms are SOLID too, separated by colour + weight -- they are not in fig1.)
 STYLE = {
-    "AdamW":      dict(color="#333333", marker="o", ls="-",  lw=2.0),
+    "Adam":      dict(color="#333333", marker="o", ls="-",  lw=2.0),
     "PoLoRA": dict(color="#0072B2", marker="s", ls="-",  lw=2.4),
     NAME_NAIVE:   dict(color="#CB5A4C", marker="v", ls="-",  lw=1.7),  # muted brick (warm)
     "iMuon":      dict(color="#E0A33D", marker="^", ls="-",  lw=1.7),  # muted amber (warm)
@@ -114,7 +114,7 @@ def _is_proto(cfg: dict) -> bool:
 
 def paper_variant_key(cfg: dict) -> str | None:
     if cfg.get("optimizer") == "adamw":
-        return "AdamW"
+        return "Adam"
     if cfg.get("optimizer") == "imuon-lora":
         return "iMuon"
     if _is_proto(cfg) and cfg.get("cw_no_radius") is False and cfg.get("cw_no_diag_curv") is False:
@@ -141,7 +141,7 @@ def arm_key(cfg: dict) -> str | None:
     (w/o curvature) -> PoLoRA, plus the AdamW/iMuon references."""
     o = cfg.get("optimizer")
     if o == "adamw":
-        return "AdamW"
+        return "Adam"
     if o == "imuon-lora":
         return "iMuon"
     if o == "lora-rite":
@@ -180,9 +180,9 @@ def _paper_cells():
     for wl in iter_workloads():
         labeled = labeled_completed_runs(
             workload_runs(wl), paper_variant_key, horizon=wl.horizon)
-        rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
+        rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
         rows = {r["variant"]: r for r in rows}
-        if "PoLoRA" in rows and "AdamW" in rows:
+        if "PoLoRA" in rows and "Adam" in rows:
             out.append((wl, labeled, rows, target))
     out.sort(key=lambda c: -speedup_from_frac(c[2]["PoLoRA"]["frac_best_lr"]))
     return out
@@ -233,7 +233,7 @@ def _draw_hero(ax, show_speedup=True, legend=True):
     wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)   # primary hero (PLAN.md)
     labeled = labeled_completed_runs(
         workload_runs(wl), arm_key, horizon=wl.horizon)
-    rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
+    rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
     rows = {r["variant"]: r for r in rows}
 
     finals = {}
@@ -243,7 +243,7 @@ def _draw_hero(ax, show_speedup=True, legend=True):
     # hues so they stay legible where they converge near AdamW's final loss), and ours.
     # (The decoupled identity-metric/no-rescale arm -- which would overlap Muon -- stays
     # in the fig2 ablation, not here.)
-    for v in ("AdamW", "iMuon", "LoRA-RITE", NAME_NAIVE, "PoLoRA"):
+    for v in ("Adam", "iMuon", "LoRA-RITE", NAME_NAIVE, "PoLoRA"):
         if v not in rows:
             continue
         lr = rows[v]["best_lr"]
@@ -384,11 +384,11 @@ def fig_ood(figsize=(7.4, 3.3)):
         wl = find_workload(model, data, rank)
         labeled = labeled_completed_runs(
             workload_runs(wl), paper_variant_key, horizon=wl.horizon)
-        rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
+        rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
         rows = {r["variant"]: r for r in rows}
         finals = {}
         proto_xy = None
-        for v in ("AdamW", "PoLoRA"):
+        for v in ("Adam", "PoLoRA"):
             if v not in rows:
                 continue
             lr = rows[v]["best_lr"]
@@ -430,11 +430,11 @@ def _appendix_curves(specs, outname, figsize):
         wl = find_workload(model, data, rank)
         labeled = labeled_completed_runs(
             workload_runs(wl), paper_variant_key, horizon=wl.horizon)
-        rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
+        rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
         rows = {r["variant"]: r for r in rows}
         finals = {}
         proto_xy = None
-        for v in ("AdamW", "PoLoRA"):
+        for v in ("Adam", "PoLoRA"):
             if v not in rows:
                 continue
             lr = rows[v]["best_lr"]
@@ -525,7 +525,7 @@ def fig2():
     competing trajectory (that is the hero's job)."""
     wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)
     labeled = labeled_completed_runs(workload_runs(wl), arm_key, horizon=wl.horizon)
-    rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
+    rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
     rows = {r["variant"]: r for r in rows}
     labels = {NAME_NAIVE: "Muon", NAME_LM: "w/o curvature\nor magnitude",
               NAME_CURV: "w/o curvature", "PoLoRA": "PoLoRA (ours)"}
@@ -548,7 +548,7 @@ def fig2():
                  lw=STYLE[v].get("lw", 1.6), label=labels[v].replace("\n", " "))
         print(f"  {v:24s} best_lr {lr:g}  final {ys[-1]:.4f}")
     axL.axhline(target, color="#666666", ls=(0, (4, 3)), lw=1.0)
-    axL.text(250, target, "AdamW", fontsize=ANN, va="bottom", ha="left", color="#666666")
+    axL.text(250, target, "Adam", fontsize=ANN, va="bottom", ha="left", color="#666666")
     axL.set_xlabel("Training Step", fontsize=LAB)
     axL.set_ylabel("Eval Loss", fontsize=LAB)
     axL.set_xlim(0, 9300)
@@ -572,11 +572,11 @@ def fig2():
                  va="center", ha="left", fontsize=ANN)
         print(f"  {v:24s} speedup {('x%.2f' % s) if crossed else 'no crossing (ties)'}")
     axR.axvline(1.0, color="#666666", ls=(0, (4, 3)), lw=1.0)
-    axR.text(1.0, len(arms) - 0.30, "AdamW", fontsize=ANN, ha="center", va="bottom",
+    axR.text(1.0, len(arms) - 0.30, "Adam", fontsize=ANN, ha="center", va="bottom",
              color="#666666")
     axR.set_yticks(range(len(arms)))
     axR.set_yticklabels([labels[v] for v in arms], fontsize=TICK)
-    axR.set_xlabel("speedup over AdamW", fontsize=LAB)
+    axR.set_xlabel("speedup over Adam", fontsize=LAB)
     axR.tick_params(axis="x", labelsize=TICK)
     axR.set_xlim(0, 1.9)
     axR.set_ylim(-0.6, len(arms) - 0.25)
@@ -599,7 +599,7 @@ def fig3(star_ms=11, figsize=(7.2, 3.0)):
     import matplotlib.cm as cm
     ranks = [32, 64, 128, 256]   # r16 excluded (flat/under-resolved basin top)
     rcol = {r: c for r, c in zip(ranks, cm.viridis_r(np.linspace(0.12, 0.92, len(ranks))))}
-    arms = ["PoLoRA", "AdamW"]
+    arms = ["PoLoRA", "Adam"]
     data = {a: {} for a in arms}                 # arm -> rank -> {lr: final_loss}
     allv = []
     print("── fig3 lr transfer (openmath r>=32 ladder) ──")
@@ -665,7 +665,7 @@ def _draw_lr_tuning(ax, legend=True):
     creation or save. `legend=False` for composed figures that carry one shared key."""
     wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)
     labeled = labeled_completed_runs(workload_runs(wl), arm_key, horizon=wl.horizon)
-    order = ["AdamW", NAME_NAIVE, "iMuon", "LoRA-RITE", "PoLoRA"]
+    order = ["Adam", NAME_NAIVE, "iMuon", "LoRA-RITE", "PoLoRA"]
     name = {NAME_NAIVE: "Muon"}          # other keys are already the display label
     xpos = [1 / 3, 1.0, 3.0]             # optimum and its two neighbours, shared by all
 
