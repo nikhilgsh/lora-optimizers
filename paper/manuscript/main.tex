@@ -544,7 +544,7 @@ The essential ingredients in \methodname{} can be decomposed into three componen
   \item \textbf{Curvature}. An adaptive estimate of the gradient geometry allows the update to be more directly sensitive to how different directions change the loss~\eqref{eq:pq-factor}.
   \item \textbf{Magnitude}. The sizes of the factor steps and the merged update are both controlled~\eqref{eq:ours-rho}.
 \end{itemize}
-Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta$ in \eqref{eq:decoupled-direction-lmo}), reduces \methodname{}  to Product Muon \eqref{eq:product-muon-step}, the base update shared by several concurrent optimizers (\Cref{app:memoryless}). On Llama-3.2-1B finetuned on math, we ablate these two components in turn (\Cref{fig:ablation}). Removing both shows no speedup over Adam, and restoring each recovers about half of the speedup.
+Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math, we ablate these two components in turn (\Cref{fig:ablation}). Product Muon shows no speedup over Adam, and restoring each recovers about half of the speedup.
 
 \begin{figure}[t]
   \centering
@@ -643,7 +643,7 @@ removes the basis dependence with an adaptive preconditioner~\cite{lorarite}, wh
 optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMuon and
 LoRA-Muon derive invariant updates from spectral-norm
 LMOs~\cite{imuon,loramuon}. As discussed in \Cref{app:memoryless}, the momentum-free LoRA-RITE, LoRA-Muon,
-and iMuon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
+iMuon, and Compositional Muon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
 
 \paragraph{Magnitude control for low-rank products.}
 Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when $A$ or $B$ have small singular values, the updates $\Delta A$ and $\Delta B$ can be very large, which can destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack}, which are not based on the LMO step~\eqref{eq:decoupled-lora-lmo},
