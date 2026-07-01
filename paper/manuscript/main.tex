@@ -349,8 +349,10 @@ So far we have described an update for the full weight matrix $W \in \R^{d_{\mat
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-\nikhil{it's weird to make this caveat here, we should preempt this }
-Since we will set the magnitude later, the reader can ignore the exact value of $\tau$. The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
+\nikhil{it's weird to make this caveat here, we should preempt this early on and make it completely normal to think of the LMO as setting a direction and the magnitude is a separate concern.}
+Since we will set the magnitude later, the reader can ignore the exact value of $\tau$. 
+\nikhil{this is a repeat of the product muon derivation, maybe just reference this?}
+The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
 \[
 \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
 \leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
