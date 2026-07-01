@@ -100,11 +100,13 @@ def _is_proto(cfg: dict) -> bool:
         # Pin every sub-knob that an investigation sweep flips while leaving the
         # fields above untouched -- otherwise that sweep is mislabeled PoLoRA and
         # wins cells via newest-wins. The canonical values: curvature metric init
-        # 'zero' (the e2 delta/ones runs are component experiments), rdinv variant
-        # 'A' (B/VN are investigation arms), no rdinv-delta sweep. The
-        # `labeled_completed_runs` discrimination guard fires if a NEW such knob
-        # appears, so this list is maintained by the guard, not by guesswork.
-        and cfg.get("cw_metric_init") in (None, "zero")
+        # 'zero' or the shipped '1e-12' (P0=Q0=eps*I, c2a3aab) -- verified
+        # performance-equivalent, so both are the protagonist (the e2 delta/ones
+        # runs are component experiments); rdinv variant 'A' (B/VN are investigation
+        # arms), no rdinv-delta sweep. The `labeled_completed_runs` discrimination
+        # guard fires if a NEW such knob appears, so this list is maintained by the
+        # guard, not by guesswork.
+        and cfg.get("cw_metric_init") in (None, "zero", "1e-12")
         and cfg.get("rdinv_variant") in (None, "A")
         and cfg.get("rdinv_delta") is None
     )
@@ -668,7 +670,6 @@ def _draw_lr_tuning(ax, legend=True):
     xpos = [1 / 3, 1.0, 3.0]             # optimum and its two neighbours, shared by all
 
     print("── fig_lr_tuning (Llama openmath r256, optimum and +/-1 grid step) ──")
-    ax.axvline(1.0, color="#dddddd", lw=0.9, zorder=0)
     vals = []
     for v in order:
         by_lr = labeled.get(v)
@@ -690,9 +691,9 @@ def _draw_lr_tuning(ax, legend=True):
     ax.set_xscale("log")
     ax.set_xlim(xpos[0] / 1.3, xpos[-1] * 1.3)
     ax.set_xticks(xpos)
-    ax.set_xticklabels([r"$3^{-1}$", r"$3^{0}$", r"$3^{1}$"])
+    ax.set_xticklabels(["1/3", "1", "3"])
     ax.xaxis.set_minor_locator(plt.NullLocator())
-    ax.set_xlabel("Learning Rate / Optimal LR")
+    ax.set_xlabel("Learning rate (× best)")
     ax.set_ylabel("Final Eval Loss")
     if legend:
         ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
