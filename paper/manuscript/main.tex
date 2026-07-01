@@ -541,9 +541,9 @@ Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 
 \methodname{} can be decomposed into three components.
 \begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Product-awareness}. The product-aware LMO in~\eqref{eq:decoupled-lora-lmo}, which acts on the merged product $BA$ rather than on the factors $A$ and $B$ separately.
-  \item \textbf{Curvature}. The adaptively estimated diagonal curvature factors $P$ and $Q$ in~\eqref{eq:ours-klcoupling}.
-  \item \textbf{Magnitude}. Sets each factor update to spectral norm $\rho$ in~\eqref{eq:ours-rho}.
+  \item \textbf{Product-awareness}. Each factor's update accounts for the other, rather than updating $A$ and $B$ independently~\eqref{eq:decoupled-lora-lmo}.
+  \item \textbf{Curvature}. The update geometry adapts to the curvature, measuring the merged update in a norm set by the curvature factors $P$ and $Q$, so the step reflects how much each direction changes the loss~\eqref{eq:pq-factor}.
+  \item \textbf{Magnitude}. Each factor step is set to a common spectral norm $\rho$, bounding the merged update by $\eta$~\eqref{eq:ours-rho}.
 \end{itemize}
 With the curvature factors set to identity ($P = I_{\mathrm{out}}$ and $Q=I_{\mathrm{in}}$) and magnitude control removed, \methodname{} reduces to Product Muon. This update coincides with the momentum-free forms of LoRA-Muon, iMuon, and LoRA-RITE, as shown in~\Cref{app:memoryless}.
 
@@ -1008,6 +1008,15 @@ Specifically, its momentum-free LMOs in Eq. (7) and (8) of~\cite{loramuon} are p
 LoRA-Muon also shows that this
 Gram-matrix form is equivalent to the simplified QR-coordinate form of
 LoRA-RITE~\cite{loramuon}.
+
+
+\paragraph{Compositional Muon.}
+Compositional Muon~\cite{tilde_csd} derives product-aware spectral updates for two low-rank products in attention: the QK product $W_QW_K^\top$ and the OV product. The same two-factor structure underlies a LoRA adapter. Its half-split rule gives each factor a spectral budget of $\epsilon/2$ and whitens it by the other factor,
+\[
+  \Delta W_Q=-\tfrac{\epsilon}{2}\,\msign\!\big(G_Q C_K^{-1}\big)\,C_K^{-1},
+  \qquad C_K=(W_K^\top W_K)^{1/2},
+\]
+and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\top)^{1/2}$, recovering the Product Muon step~\eqref{eq:product-muon-step}. Momentum and a gauge correction are added separately. The OV hybrid rule and the isotropic approximation are specific to multi-head attention and do not reduce to Product Muon.
 
 
 \section{Extended Prior Work}
