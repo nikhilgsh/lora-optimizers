@@ -97,6 +97,16 @@ def _is_proto(cfg: dict) -> bool:
         and cfg.get("beta1") == 0.9
         and cfg.get("precond_method") == "gram_ns"
         and cfg.get("precond_delta") == 1e-4   # pin the locked delta arm (never collapse delta sweeps)
+        # Pin every sub-knob that an investigation sweep flips while leaving the
+        # fields above untouched -- otherwise that sweep is mislabeled PoLoRA and
+        # wins cells via newest-wins. The canonical values: curvature metric init
+        # 'zero' (the e2 delta/ones runs are component experiments), rdinv variant
+        # 'A' (B/VN are investigation arms), no rdinv-delta sweep. The
+        # `labeled_completed_runs` discrimination guard fires if a NEW such knob
+        # appears, so this list is maintained by the guard, not by guesswork.
+        and cfg.get("cw_metric_init") in (None, "zero")
+        and cfg.get("rdinv_variant") in (None, "A")
+        and cfg.get("rdinv_delta") is None
     )
 
 
@@ -215,14 +225,15 @@ def _annotate_speedup(ax, cross, horizon, target, speed, color, drop_from=None,
 
 
 # ───────────────────────────── Figure 1: showcase ─────────────────────────────
-def fig1(show_speedup=True):
+def _draw_hero(ax, show_speedup=True, legend=True):
+    """Draw the hero trajectory panel (Llama openmath r256) onto `ax`. Returns the
+    leaderboard summary so callers can print/compose; no figure creation or save."""
     wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)   # primary hero (PLAN.md)
     labeled = labeled_completed_runs(
         workload_runs(wl), arm_key, horizon=wl.horizon)
     rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
     rows = {r["variant"]: r for r in rows}
 
-    fig, ax = plt.subplots(figsize=(5.4, 3.4))
     finals = {}
     proto_xy = None
     # AdamW reference (dark, thick), the spectral rival iMuon, the adaptive baseline
@@ -251,13 +262,21 @@ def fig1(show_speedup=True):
     ax.set_xlabel("Training Step")
     ax.set_ylabel("Eval Loss")
     ax.set_xlim(0, 9300)
-    ax.legend(frameon=False, loc="upper right" if "iMuon" in finals else "upper center",
-              bbox_to_anchor=(0.52, 1.0) if "iMuon" not in finals else None)
+    if legend:
+        ax.legend(frameon=False, loc="upper right" if "iMuon" in finals else "upper center",
+                  bbox_to_anchor=(0.52, 1.0) if "iMuon" not in finals else None)
+    return dict(wl=wl, target=target, cross=cross, speed=speed, finals=finals)
+
+
+def fig1(show_speedup=True):
+    fig, ax = plt.subplots(figsize=(5.4, 3.4))
+    info = _draw_hero(ax, show_speedup=show_speedup)
     fig.tight_layout()
     fig.savefig(FIGS / "fig1_hero.pdf")
     fig.savefig(FIGS / "fig1_hero.png", dpi=150)
-    print(f"── fig1: {_cell_label(wl)}  target {target:.4f}  crossing step {cross:.0f}"
-          f"  speedup x{speed:.2f}  arms: {sorted(finals)}")
+    print(f"── fig1: {_cell_label(info['wl'])}  target {info['target']:.4f}"
+          f"  crossing step {info['cross']:.0f}  speedup x{info['speed']:.2f}"
+          f"  arms: {sorted(info['finals'])}")
     return fig
 
 
@@ -617,6 +636,81 @@ def fig3(star_ms=11, figsize=(7.2, 3.0)):
     fig.tight_layout()
     fig.savefig(FIGS / "fig3_lr_transfer.pdf", bbox_inches="tight")
     fig.savefig(FIGS / "fig3_lr_transfer.png", dpi=150, bbox_inches="tight")
+    return fig
+
+
+def fig_lr_tuning(figsize=(5.8, 3.3)):
+    """LR-tuning provenance for the hero cell (Llama-3.2-1B openmath r256): final
+    eval loss at each optimizer's tuned learning rate and its two grid neighbours
+    (one ~3x step below and above the optimum). The x-axis is normalized to each
+    optimizer's own optimum, so the basins overlay on a unified, symmetric grid and
+    every reported number reads as a tuned interior optimum. The window stops one
+    grid step each side: two steps above the optimum the LR-sensitive baselines
+    (AdamW, Muon) diverge, which would break the converged y-window. The absolute
+    optima differ by ~330x across optimizers, which is why the axis is normalized to
+    each optimizer's optimum. Line weights/colours/styles follow the fig1 convention;
+    one marker for all series (the colour, not the marker, identifies the optimizer)."""
+    fig, ax = plt.subplots(figsize=figsize)
+    _draw_lr_tuning(ax, legend=True)
+    fig.tight_layout()
+    fig.savefig(FIGS / "fig_lr_tuning.pdf", bbox_inches="tight")
+    fig.savefig(FIGS / "fig_lr_tuning.png", dpi=150, bbox_inches="tight")
+    return fig
+
+
+def _draw_lr_tuning(ax, legend=True):
+    """Draw the LR-tuning basin panel (Llama openmath r256) onto `ax`; no figure
+    creation or save. `legend=False` for composed figures that carry one shared key."""
+    wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)
+    labeled = labeled_completed_runs(workload_runs(wl), arm_key, horizon=wl.horizon)
+    order = ["AdamW", NAME_NAIVE, "iMuon", "LoRA-RITE", "PoLoRA"]
+    name = {NAME_NAIVE: "Muon"}          # other keys are already the display label
+    xpos = [1 / 3, 1.0, 3.0]             # optimum and its two neighbours, shared by all
+
+    print("── fig_lr_tuning (Llama openmath r256, optimum and +/-1 grid step) ──")
+    ax.axvline(1.0, color="#dddddd", lw=0.9, zorder=0)
+    vals = []
+    for v in order:
+        by_lr = labeled.get(v)
+        if not by_lr:
+            print(f"  {v:12s}: NONE"); continue
+        lrs = sorted(by_lr)
+        i = min(range(len(lrs)), key=lambda k: by_lr[lrs[k]][0])
+        if i == 0 or i == len(lrs) - 1:
+            print(f"  {v:12s}: optimum at grid edge -- skipped"); continue
+        tri = [by_lr[lrs[i - 1]][0], by_lr[lrs[i]][0], by_lr[lrs[i + 1]][0]]
+        vals += tri
+        st = STYLE[v]
+        ax.plot(xpos, tri, color=st["color"], ls=st["ls"], marker="o", ms=4.5,
+                lw=st.get("lw", 1.6), label=name.get(v, v))
+        print(f"  {v:12s}: lr* {lrs[i]:g}  floor {tri[1]:.4f}")
+
+    lo, hi = min(vals), max(vals); pad = 0.10 * (hi - lo)
+    ax.set_ylim(lo - pad, hi + pad)
+    ax.set_xscale("log")
+    ax.set_xlim(xpos[0] / 1.3, xpos[-1] * 1.3)
+    ax.set_xticks(xpos)
+    ax.set_xticklabels([r"$3^{-1}$", r"$3^{0}$", r"$3^{1}$"])
+    ax.xaxis.set_minor_locator(plt.NullLocator())
+    ax.set_xlabel("Learning Rate / Optimal LR")
+    ax.set_ylabel("Final Eval Loss")
+    if legend:
+        ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
+    ax.spines[["top", "right"]].set_visible(False)
+
+
+def fig_hero_with_tuning(figsize=(11.0, 3.4)):
+    """Preview of the 2-panel hero: loss-vs-step trajectory (left) + LR-tuning basin
+    (right), one shared legend on the left panel (both panels share the 5 colours).
+    Lets you eyeball whether the tuning figure belongs alongside the hero or in the
+    appendix."""
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=figsize)
+    info = _draw_hero(axL, legend=True)
+    _draw_lr_tuning(axR, legend=False)
+    print(f"── fig_hero_with_tuning: speedup x{info['speed']:.2f}")
+    fig.tight_layout()
+    fig.savefig(FIGS / "fig_hero_with_tuning.pdf", bbox_inches="tight")
+    fig.savefig(FIGS / "fig_hero_with_tuning.png", dpi=150, bbox_inches="tight")
     return fig
 
 
