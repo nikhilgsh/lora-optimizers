@@ -7,7 +7,7 @@
 # Positional args (must match params JSON key order):
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
 #   9: precond_method (OPTIONAL — empty=gram_ns (protagonist default); "eigh"/"higham" override)
-#  10: cw_metric_init (OPTIONAL — "zero" (default, paper) / "ones" (diagonal-metric-init ablation))
+#  10: cw_metric_init (OPTIONAL — default "1e-12" = εI branch-free init; "zero"/"ones"/"delta" are ablations)
 lr=${1:-3e-2}
 optimizer=${2:-kl-diag-polar-lora}      # paper protagonist (was diag-shampoo-polar-lora; pivot 2026-06-11)
 seed=${3:-0}
@@ -17,7 +17,7 @@ model=${6:-allenai/OLMo-2-0425-1B}
 data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${8:-256}
 precond_method=${9:-gram_ns}            # protagonist inverse-sqrt: Polar-Express Gram NS (was eigh)
-cw_metric_init=${10:-zero}              # diagonal-metric (D_in/D_out) init: zero (paper) / ones (ablation)
+cw_metric_init=${10:-1e-12}             # diagonal-metric (D_in/D_out) init: εI=1e-12 (default, branch-free, ≡zero); zero/ones/delta are ablations
 
 # Inverse-sqrt method. Default gram_ns (protagonist). Pass an explicit "eigh"/"higham" at
 # positional 9 to override; pass the empty string to fall through to train.py default None

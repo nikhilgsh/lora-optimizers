@@ -98,9 +98,12 @@ def test_float_eps_init_value():
     assert torch.all(st["D_in"] == 1e-10) and torch.all(st["D_out"] == 1e-10)
 
 
-def test_default_is_zero():
+def test_default_is_eps():
+    # Shipped default is P0=Q0=εI at ε=1e-12 (branch-free, prior-free), not "zero".
     m = _Model(b_zero=True)
-    assert CurvatureWhitenLoRA(m, **_PROD).cw_metric_init == "zero"
+    o = CurvatureWhitenLoRA(m, **_PROD)
+    assert o.cw_metric_init == "1e-12"
+    assert torch.all(o.pair_state[0]["D_in"] == 1e-12)
 
 
 def test_ones_init_value():

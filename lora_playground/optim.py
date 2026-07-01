@@ -1104,7 +1104,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
                  cw_unpinned=False, cw_factor_a=0.0, cw_factor_b=0.0,
-                 rdinv_variant="A", rdinv_delta=None, cw_metric_init="zero"):
+                 rdinv_variant="A", rdinv_delta=None, cw_metric_init="1e-12"):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1181,22 +1181,20 @@ class CurvatureWhitenLoRA(Optimizer):
         # diagonal floor (e.g. VN's δ·Tr) while holding the curvature-inverse floor fixed.
         self.rdinv_delta = None if rdinv_delta is None else float(rdinv_delta)
         # cw_metric_init selects the init of the diagonal metric EMAs D_in (=Q) and
-        # D_out (=P).
-        #   "zero" (legacy): D=0, so step 1 hits the _rdinv xmax≈0 fallback → identity
-        #     metric (the "step-one rule"); from step 2 the (1-β₂) EMA scale cancels
-        #     under the max-normalization (pure measured shape).
-        #   "delta": D=δI at the damping floor (ε=δ, the same δ _rdinv uses). Step 1
-        #     normalizes to the identity WITHOUT the special-case branch (xmax=δ>0), and
-        #     the εI prior is negligible (strength δ/(1-β₂)≈0.01). Reproduces "zero" to
-        #     sub-noise (~5e-4 max weight diff over 50 steps, δ-set and ε-independent;
-        #     not bit-identical — the branch returns exactly 1 vs (1+δ)^(-1/2)).
-        #   "ones": D=1 (ε=1), a strong identity prior (strength 1/(1-β₂)≈100) decaying
-        #     over ~1/(1-β₂) steps — a real warmup transient that measurably hurts.
-        # All three give an identical step-1 update. See notebooks/cw_metric_init_analysis.ipynb.
-        #   <float ε> (e.g. "1e-10"): P₀=Q₀=εI directly, ε DECOUPLED from the damping δ.
-        #     The init lives on the RAW curvature scale (~1e-7 in production), so ε must be
-        #     ≪ that to be prior-free; ε≈1e-10 is branch-free AND tracks zero (the damping
-        #     δ=1e-4 is a NORMALIZED-metric floor and is the wrong scale for the raw init).
+        # D_out (=P). All choices give an identical step-1 update; they differ only in warmup.
+        #   <float ε> (DEFAULT "1e-12"): P₀=Q₀=εI. The shipped init. ε is DECOUPLED from the
+        #     damping δ and lives on the RAW curvature scale (~1e-7 in production), so a tiny
+        #     ε ≪ that is prior-free AND branch-free (xmax=ε>1e-30, so the _rdinv step-one
+        #     fallback never fires). Validated to reproduce zero-init to ≤5e-4 across all four
+        #     paper models and over a long horizon. δ=1e-4 is a NORMALIZED-metric floor — the
+        #     wrong scale for the raw init, which is why "delta" fails (below).
+        #   "zero" (legacy ablation): D=0, so step 1 hits the _rdinv xmax≈0 fallback → identity
+        #     (the "step-one rule" branch); from step 2 the (1-β₂) EMA scale cancels under the
+        #     max-normalization. Behaviorally == the tiny-ε default; kept for reference.
+        #   "delta" (ablation): D=δI (ε=δ=1e-4). δ ≫ the ~1e-7 curvature, so the uniform prior
+        #     swamps the metric through warmup — behaves like "ones", NOT zero (+0.019 loss).
+        #   "ones" (ablation): D=1 (ε=1), a strong identity prior (strength 1/(1-β₂)≈100) — a
+        #     warmup transient that measurably hurts. See notebooks/cw_metric_init_analysis.ipynb.
         self.cw_metric_init = str(cw_metric_init)
         if self.cw_metric_init not in {"zero", "ones", "delta"}:
             try:
@@ -11584,7 +11582,7 @@ def build_optimizer(
     cw_factor_b: float = 0.0,
     rdinv_variant: str = "A",
     rdinv_delta: float | None = None,
-    cw_metric_init: str = "zero",
+    cw_metric_init: str = "1e-12",
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,

@@ -91,7 +91,7 @@ class OptimizerConfig:
     # normalizes to the same identity without the special case, but the EMA carries a
     # decaying β₂ᵗ identity prior through warmup. Identical step-1 update; differs only
     # in the warmup transient. Ablation only — "zero" reproduces the paper figures.
-    cw_metric_init: str = "zero"
+    cw_metric_init: str = "1e-12"
     cw_picard_iters: int = 1
     cw_nesterov: bool = False
     cw_no_radius: bool = False

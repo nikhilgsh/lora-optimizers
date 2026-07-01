@@ -13,276 +13,269 @@ AlgoPerf-style performance profile across the 18 (model, dataset, rank) workload
 
 | canonical variant | coverage | robustness_score | mean ratio-to-best |
 |---|---|---|---|
-| `AdamW` | 18/18 | 0.819 | 1.519 |
-| `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8` | 12/18 | 0.990 | 1.018 |
-| `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95` | 7/18 | 0.993 | 1.008 |
-| `chord-tight ns=5 k=1 (abs=1e-6)` | 7/18 | 0.973 | 1.063 |
-| `chord-tight ns=8 k=1 (abs=1e-6)` | 7/18 | 0.940 | 1.169 |
-
-_Coverage-starved (<5/18, not ranked — see the per-section tables): `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3)` (4/18); `chord-tight-clean ns=8 k=2 (abs=1e-6)` (4/18); `chord-tight ns=8 k=1 (ε_rel=1e-3)` (4/18); `chord-tight ns=8 k=1 (ε_rel=1e-1)` (4/18); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2)` (4/18); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4)` (3/18); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (3/18); `diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4)` (3/18); `diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (3/18); `chord-tight ns=8 k=1 (ε_rel=1e-2)` (3/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4)` (2/18); `KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4)` (2/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95` (2/18); `KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (2/18); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3)` (2/18); `chord-tight-clean ns=10 k=1 (c=0.2)` (2/18); `chord-tight-clean ns=10 k=1 (κ_sr=0.75)` (2/18); `chord-tight PE=10 k=1 (abs=1e-6)` (2/18); `chord-tight-clean ns=10 k=2 (κ_sr=0.75)` (2/18); `chord-tight-clean PE=10 k=2 (abs=1e-6)` (2/18); `chord-tight-clean ns=10 k=2 (c=0.2)` (2/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8` (2/18); `KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (2/18); `chord-tight-clean ns=5 k=2 (abs=1e-6)` (2/18); `KL-diag +polar ns=5 (f=10, β_c=0.9, δ=1e-4)` (1/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN rdδ=1e-6` (1/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95` (1/18); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95` (1/18); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95` (1/18); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-3) β1=0.95` (1/18); `chord-tight-clean ns=8 k=1 (abs=1e-6)` (1/18); `KL-diag +polar ns=5 (f=10, β_c=0.999, δ=1e-4)` (1/18); `SOAP-curv +polar ns=5 (f=10, β_c=0.99, δ=1e-3)` (1/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN` (1/18); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=3e-5)` (1/18); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv` (1/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=B` (1/18); `KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-4)` (1/18); `KL-Shampoo (f=10, β_c=0.99, δ=1e-3)` (1/18); `SOAP-curv (f=10, β_c=0.99, δ=1e-3)` (1/18); `chord-tight ns=5 k=1 (ε_rel=1e-2)` (1/18); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-2)` (1/18); `KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-6)` (1/18); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) w/o-curv β1=0.95` (1/18); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv unpinned H=8 initB=symmetric` (1/18)._
 
 ### OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=64
 
-AdamW speed target (best-lr final loss): **0.7702**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-04 | 0.7702 | 1.00× | 1.00× |
-| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7557 | 1.67× | 1.26× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7561 | 1.66× | 1.26× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7562 | 1.65× | 1.26× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7566 | 1.62× | 1.15× |
-| KL-diag +polar ns=5 (f=10, β_c=0.9, δ=1e-4) | 3e-02 | 0.7570 | 1.60× | 1.26× |
-| chord-tight-clean ns=10 k=2 (κ_sr=0.75) | 1e-01 | 0.7571 | 1.60× | 1.39× |
-| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7568 | 1.60× | 1.25× |
-| KL-diag +polar ns=5 (f=10, β_c=0.999, δ=1e-4) | 3e-02 | 0.7568 | 1.59× | 1.26× |
-| chord-tight-clean ns=10 k=2 (c=0.2) | 1e-01 | 0.7575 | 1.59× | — |
-| diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7570 | 1.59× | 1.26× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.7547 | 1.56× | 1.37× |
-| diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7578 | 1.55× | 1.26× |
-| chord-tight PE=10 k=1 (abs=1e-6) | 1e-02 | 0.7574 | 1.50× | 1.19× |
-| chord-tight-clean ns=10 k=1 (κ_sr=0.75) | 1e-02 | 0.7569 | 1.50× | 1.20× |
-| chord-tight-clean PE=10 k=2 (abs=1e-6) | 3e-02 | 0.7571 | 1.49× | 1.20× |
-| chord-tight-clean ns=10 k=1 (c=0.2) | 1e-02 | 0.7574 | 1.49× | 1.16× |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) | 1e-02 | 0.7577 | 1.49× | 1.18× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) | 1e-02 | 0.7587 | 1.46× | 1.19× |
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) | 3e-02 | 0.7608 | 1.32× | 1.17× |
-| chord-tight-clean ns=5 k=2 (abs=1e-6) | 1e-01 | 0.7631 | 1.31× | 1.19× |
-| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.7631 | 1.26× | 1.16× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7561 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7562 | — | 1.00× |
+| diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7578 | — | 1.00× |
+| KL-diag +polar ns=5 (f=10, β_c=0.9, δ=1e-4) minit=1e-12 | 3e-02 | 0.7570 | — | 1.00× |
+| KL-diag +polar ns=5 (f=10, β_c=0.999, δ=1e-4) minit=1e-12 | 3e-02 | 0.7568 | — | 1.00× |
+| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-03 | 0.7631 | — | 1.00× |
+| diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7570 | — | 1.00× |
+| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7557 | — | 1.00× |
+| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7568 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7566 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) minit=1e-12 | 3e-02 | 0.7608 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) minit=1e-12 | 1e-02 | 0.7577 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) minit=1e-12 | 1e-02 | 0.7587 | — | 1.00× |
+| chord-tight-clean ns=10 k=1 (c=0.2) minit=1e-12 | 1e-02 | 0.7574 | — | 1.00× |
+| chord-tight-clean ns=10 k=1 (κ_sr=0.75) minit=1e-12 | 1e-02 | 0.7569 | — | 1.00× |
+| chord-tight PE=10 k=1 (abs=1e-6) minit=1e-12 | 1e-02 | 0.7574 | — | 1.00× |
+| chord-tight-clean PE=10 k=2 (abs=1e-6) minit=1e-12 | 3e-02 | 0.7571 | — | 1.00× |
+| chord-tight-clean ns=5 k=2 (abs=1e-6) minit=1e-12 | 1e-01 | 0.7631 | — | 1.00× |
+| chord-tight-clean ns=10 k=2 (κ_sr=0.75) minit=1e-12 | 1e-01 | 0.7571 | — | 1.00× |
+| chord-tight-clean ns=10 k=2 (c=0.2) minit=1e-12 | 1e-01 | 0.7575 | — | — |
+| AdamW minit=1e-12 | 3e-04 | 0.7702 | — | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 3e-02 | 0.7547 | — | 1.00× |
 
 ### OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=256
 
-AdamW speed target (best-lr final loss): **0.7524**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.7524 | 1.00× | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 3e-02 | 0.7356 | 1.61× | 1.26× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7357 | 1.57× | 1.28× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7360 | 1.56× | 1.28× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-02 | 0.7363 | 1.55× | 1.27× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.7377 | 1.52× | 1.27× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.7383 | 1.51× | 1.19× |
-| diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7374 | 1.50× | 1.26× |
-| SOAP-curv +polar ns=5 (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.7387 | 1.49× | 1.23× |
-| diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7382 | 1.47× | 1.27× |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) | 1e-02 | 0.7386 | 1.44× | 1.20× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.7388 | 1.44× | 1.31× |
-| chord-tight-clean ns=8 k=1 (abs=1e-6) +curv | 3e-03 | 0.7394 | 1.44× | 1.12× |
-| chord-tight-clean ns=10 k=1 (κ_sr=0.75) | 1e-02 | 0.7387 | 1.44× | 1.20× |
-| chord-tight-clean ns=10 k=1 (c=0.2) | 1e-02 | 0.7391 | 1.43× | 1.22× |
-| chord-tight ns=8 k=1 (ε_rel=1e-2) | 1e-02 | 0.7399 | 1.41× | 1.17× |
-| chord-tight PE=10 k=1 (abs=1e-6) | 1e-02 | 0.7414 | 1.37× | 1.20× |
-| chord-tight ns=5 k=1 (ε_rel=1e-2) | 3e-02 | 0.7415 | 1.34× | 1.18× |
-| KL-Shampoo (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.7474 | 1.33× | 1.09× |
-| chord-tight-clean PE=10 k=2 (abs=1e-6) | 1e-01 | 0.7422 | 1.33× | 1.19× |
-| SOAP-curv (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.7423 | 1.33× | 1.15× |
-| chord-tight-clean ns=10 k=2 (κ_sr=0.75) | 1e-01 | 0.7437 | 1.31× | 1.16× |
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) | 3e-02 | 0.7430 | 1.29× | 1.16× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) | 3e-03 | 0.7432 | 1.29× | 1.13× |
-| chord-tight-clean ns=10 k=2 (c=0.2) | 1e-01 | 0.7494 | 1.10× | — |
-| chord-tight-clean ns=5 k=2 (abs=1e-6) | 1e-01 | 0.7511 | 1.04× | 1.01× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 3e-02 | 0.7356 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 3e-02 | 0.7363 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7360 | — | 1.00× |
+| diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7382 | — | 1.00× |
+| diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7374 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) minit=1e-12 | 1e-02 | 0.7383 | — | 1.00× |
+| KL-Shampoo (f=10, β_c=0.99, δ=1e-3) minit=1e-12 | 1e-02 | 0.7474 | — | 1.00× |
+| SOAP-curv (f=10, β_c=0.99, δ=1e-3) minit=1e-12 | 1e-02 | 0.7423 | — | 1.00× |
+| SOAP-curv +polar ns=5 (f=10, β_c=0.99, δ=1e-3) minit=1e-12 | 1e-02 | 0.7387 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) minit=1e-12 | 3e-02 | 0.7430 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) minit=1e-12 | 1e-02 | 0.7386 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) minit=1e-12 | 3e-03 | 0.7432 | — | 1.00× |
+| chord-tight ns=5 k=1 (ε_rel=1e-2) minit=1e-12 | 3e-02 | 0.7415 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-2) minit=1e-12 | 1e-02 | 0.7399 | — | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 3e-02 | 0.7388 | — | 1.00× |
+| chord-tight-clean ns=10 k=1 (c=0.2) minit=1e-12 | 1e-02 | 0.7391 | — | 1.00× |
+| chord-tight-clean ns=10 k=1 (κ_sr=0.75) minit=1e-12 | 1e-02 | 0.7387 | — | 1.00× |
+| chord-tight PE=10 k=1 (abs=1e-6) minit=1e-12 | 1e-02 | 0.7414 | — | 1.00× |
+| chord-tight-clean PE=10 k=2 (abs=1e-6) minit=1e-12 | 1e-01 | 0.7422 | — | 1.00× |
+| chord-tight-clean ns=5 k=2 (abs=1e-6) minit=1e-12 | 1e-01 | 0.7511 | — | 1.00× |
+| chord-tight-clean ns=10 k=2 (κ_sr=0.75) minit=1e-12 | 1e-01 | 0.7437 | — | 1.00× |
+| chord-tight-clean ns=10 k=2 (c=0.2) minit=1e-12 | 1e-01 | 0.7494 | — | — |
+| AdamW minit=1e-12 | 1e-04 | 0.7524 | — | 1.00× |
+| chord-tight-clean ns=8 k=1 (abs=1e-6) +curv minit=1e-12 | 3e-03 | 0.7394 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 1e-02 | 0.7377 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.7357 | — | 1.00× |
 
 ### OLMo-2-1B × OpenMathInstruct-2 × r=64
 
-AdamW speed target (best-lr final loss): **0.4090**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-04 | 0.4090 | 1.00× | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 1e-01 | 0.3961 | 1.55× | 1.43× |
-| chord-tight ns=8 k=1 (abs=1e-6) | 1e-02 | 0.3985 | 1.44× | 1.17× |
+| AdamW minit=1e-12 | 3e-04 | 0.4090 | — | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) minit=1e-12 | 1e-02 | 0.3985 | — | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 1e-01 | 0.3961 | — | 1.00× |
 
 ### OLMo-2-1B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **0.3964**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.3964 | 1.00× | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3758 | 1.86× | 1.39× |
-| diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3758 | 1.81× | 1.34× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.78× | 1.29× |
-| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3766 | 1.77× | 1.42× |
-| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3773 | 1.76× | 1.41× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 3e-02 | 0.3780 | 1.74× | 1.50× |
-| diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.73× | 1.37× |
-| chord-tight ns=8 k=1 (abs=1e-6) | 3e-02 | 0.3788 | 1.60× | 1.50× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.3820 | 1.55× | 1.40× |
-| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.3844 | 1.41× | 1.20× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 3e-02 | 0.3780 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.3758 | — | 1.00× |
+| diag-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.3758 | — | 1.00× |
+| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-03 | 0.3844 | — | 1.00× |
+| diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.3772 | — | 1.00× |
+| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.3773 | — | 1.00× |
+| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.3766 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.3772 | — | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) minit=1e-12 | 3e-02 | 0.3788 | — | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 3e-02 | 0.3820 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 0.3964 | — | 1.00× |
 
 ### OLMo-2-1B × Tulu-3 SFT mixture × r=64
 
-AdamW speed target (best-lr final loss): **0.7926**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.7926 | 1.00× | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 1e-02 | 0.7837 | 1.45× | 1.23× |
+| AdamW minit=1e-12 | 1e-04 | 0.7926 | — | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 1e-02 | 0.7837 | — | 1.00× |
 
 ### OLMo-2-1B × Tulu-3 SFT mixture × r=256
 
-AdamW speed target (best-lr final loss): **0.7802**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.7802 | 1.00× | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 3e-02 | 0.7704 | 1.35× | 1.22× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 3e-02 | 0.7704 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 0.7802 | — | 1.00× |
 
 ### Llama-3.2-1B × opc-sft-stage2 (OpenCoder) × r=64
 
-AdamW speed target (best-lr final loss): **0.7003**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.7003 | 1.00× | 1.00× |
-| chord-tight ns=8 k=1 (abs=1e-6) | 3e-03 | 0.6972 | 1.14× | 1.04× |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) | 3e-03 | 0.6973 | 1.14× | 1.04× |
-| chord-tight ns=8 k=1 (ε_rel=1e-2) | 3e-03 | 0.6973 | 1.14× | 1.04× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) | 3e-03 | 0.6978 | 1.11× | 1.03× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 3e-03 | 0.6979 | 1.09× | 1.03× |
-| chord-tight-clean ns=8 k=2 (abs=1e-6) | 3e-03 | 0.6986 | 1.08× | 1.03× |
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) | 3e-03 | 0.6988 | 1.07× | 1.02× |
-| chord-tight ns=3 k=1 (abs=1e-6) | 1e-02 | 0.7003 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) minit=1e-12 | 3e-03 | 0.6988 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) minit=1e-12 | 3e-03 | 0.6973 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-2) minit=1e-12 | 3e-03 | 0.6973 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) minit=1e-12 | 3e-03 | 0.6978 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (abs=1e-6) minit=1e-12 | 3e-03 | 0.6986 | — | 1.00× |
+| chord-tight ns=3 k=1 (abs=1e-6) minit=1e-12 | 1e-02 | 0.7003 | — | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) minit=1e-12 | 3e-03 | 0.6972 | — | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 3e-03 | 0.6979 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 0.7003 | — | 1.00× |
 
 ### Llama-3.2-1B × opc-sft-stage2 (OpenCoder) × r=256
 
-AdamW speed target (best-lr final loss): **0.6948**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-05 | 0.6948 | 1.00× | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-03 | 0.6849 | 1.55× | 1.17× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 3e-03 | 0.6848 | 1.55× | 1.24× |
-| chord-tight-clean ns=8 k=2 (abs=1e-6) | 3e-03 | 0.6880 | 1.34× | 1.16× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) | 1e-03 | 0.6886 | 1.32× | 1.09× |
-| chord-tight ns=8 k=1 (ε_rel=1e-2) | 1e-03 | 0.6891 | 1.28× | 1.13× |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) | 1e-03 | 0.6893 | 1.27× | 1.13× |
-| chord-tight ns=8 k=1 (abs=1e-6) | 1e-03 | 0.6894 | 1.26× | — |
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) | 3e-03 | 0.6895 | 1.25× | — |
-| chord-tight ns=5 k=1 (abs=1e-6) | 1e-03 | 0.6976 | — | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 3e-03 | 0.6848 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 3e-03 | 0.6849 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) minit=1e-12 | 3e-03 | 0.6895 | — | — |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) minit=1e-12 | 1e-03 | 0.6893 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-2) minit=1e-12 | 1e-03 | 0.6891 | — | 1.00× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) minit=1e-12 | 1e-03 | 0.6886 | — | 1.00× |
+| AdamW minit=1e-12 | 3e-05 | 0.6948 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (abs=1e-6) minit=1e-12 | 3e-03 | 0.6880 | — | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) minit=1e-12 | 1e-03 | 0.6894 | — | — |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 1e-03 | 0.6976 | — | — |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=32
 
-AdamW speed target (best-lr final loss): **0.4115**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-04 | 0.4115 | 1.00× | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 1e-02 | 0.4000 | 1.48× | 1.23× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 1e-02 | 0.4000 | — | 1.00× |
+| AdamW minit=1e-12 | 3e-04 | 0.4115 | — | 1.00× |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=64
 
-AdamW speed target (best-lr final loss): **0.3991**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.3991 | 1.00× | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3847 | 1.59× | 1.21× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 1e-02 | 0.3853 | 1.54× | 1.25× |
-| chord-tight ns=8 k=1 (abs=1e-6) | 3e-03 | 0.3909 | 1.26× | 1.16× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 1e-02 | 0.3853 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 1e-02 | 0.3847 | — | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) minit=1e-12 | 3e-03 | 0.3909 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 0.3991 | — | 1.00× |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=128
 
-AdamW speed target (best-lr final loss): **0.3890**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.3890 | 1.00× | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3733 | 1.57× | 1.27× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 1e-02 | 0.3743 | 1.52× | 1.28× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 1e-02 | 0.3743 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 1e-02 | 0.3733 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 0.3890 | — | 1.00× |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **0.3823**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.3823 | 1.00× | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3644 | 1.68× | 1.38× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 1e-02 | 0.3644 | 1.63× | 1.40× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN rdδ=1e-6 | 1e-02 | 0.3643 | 1.62× | 1.41× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN | 1e-02 | 0.3656 | 1.58× | 1.34× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=B | 1e-02 | 0.3675 | 1.47× | 1.22× |
-| chord-tight ns=8 k=1 (abs=1e-6) | 3e-03 | 0.3710 | 1.36× | 1.20× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) w/o-curv β1=0.95 | 3e-03 | 0.3723 | 1.30× | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 | 3e-03 | 0.3724 | 1.29× | 1.10× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv unpinned H=8 initB=symmetric | 1e-03 | 0.3815 | 1.01× | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 rdinv=VN rdδ=1e-6 | 1e-02 | 0.3643 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 rdinv=B | 1e-02 | 0.3675 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 rdinv=VN | 1e-02 | 0.3656 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv unpinned H=8 initB=symmetric minit=1e-12 | 1e-03 | 0.3815 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 1e-02 | 0.3644 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 minit=1e-12 | 3e-03 | 0.3724 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) w/o-curv β1=0.95 minit=1e-12 | 3e-03 | 0.3723 | — | — |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 1e-02 | 0.3644 | — | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) minit=1e-12 | 3e-03 | 0.3710 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 0.3823 | — | 1.00× |
 
 ### Qwen2.5-1.5B × opc-sft-stage2 (OpenCoder) × r=256
 
-AdamW speed target (best-lr final loss): **0.6023**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-05 | 0.6023 | 1.00× | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 3e-03 | 0.5988 | 1.30× | 1.08× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-03 | 0.5989 | 1.30× | 1.08× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) | 3e-03 | 0.5995 | 1.23× | 1.07× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 | 1e-03 | 0.6008 | 1.09× | — |
-| chord-tight ns=8 k=1 (abs=1e-6) | 1e-03 | 0.6012 | 1.06× | 1.02× |
-| chord-tight ns=5 k=1 (abs=1e-6) | 3e-03 | 0.6033 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 minit=1e-12 | 1e-03 | 0.6008 | — | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 3e-03 | 0.5988 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 3e-03 | 0.5989 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) minit=1e-12 | 3e-03 | 0.5995 | — | 1.00× |
+| AdamW minit=1e-12 | 3e-05 | 0.6023 | — | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) minit=1e-12 | 3e-03 | 0.6033 | — | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) minit=1e-12 | 1e-03 | 0.6012 | — | 1.00× |
 
 ### Qwen2.5-1.5B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **0.2935**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-05 | 0.2935 | 1.00× | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 1e-02 | 0.2877 | 1.64× | 1.33× |
+| AdamW minit=1e-12 | 3e-05 | 0.2935 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 1e-02 | 0.2877 | — | 1.00× |
 
 ### Qwen2.5-1.5B × Aya-Bengali × r=256
 
-AdamW speed target (best-lr final loss): **0.4979**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 0.4979 | 1.00× | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 3e-02 | 0.4763 | 1.73× | 1.39× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-02 | 0.4767 | 1.71× | 1.30× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.4797 | 1.60× | 1.21× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=3e-5) | 3e-02 | 0.4802 | 1.59× | 1.18× |
-| chord-tight-clean ns=8 k=1 (ε_rel=1e-3) | 1e-02 | 0.4777 | 1.59× | 1.28× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.4820 | 1.43× | 1.23× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-2) | 1e-02 | 0.4838 | 1.43× | 1.18× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 3e-02 | 0.4763 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 3e-02 | 0.4767 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=3e-5) minit=1e-12 | 3e-02 | 0.4802 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 3e-02 | 0.4797 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-2) minit=1e-12 | 1e-02 | 0.4838 | — | 1.00× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) minit=1e-12 | 1e-02 | 0.4820 | — | 1.00× |
+| chord-tight-clean ns=8 k=1 (ε_rel=1e-3) minit=1e-12 | 1e-02 | 0.4777 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 0.4979 | — | 1.00× |
 
 ### Meta-Llama-3-8B × opc-sft-stage2 (OpenCoder) × r=256
 
-AdamW speed target (best-lr final loss): **0.5553**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-05 | 0.5553 | 1.00× | 1.00× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) | 1e-03 | 0.5519 | 1.26× | 1.10× |
-| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95 | 1e-03 | 0.5520 | 1.26× | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95 | 1e-03 | 0.5518 | 1.23× | — |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-3) β1=0.95 | 1e-03 | 0.5520 | 1.22× | 1.06× |
-| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-03 | 0.5522 | 1.21× | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-03 | 0.5521 | 1.21× | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 1e-03 | 0.5523 | 1.20× | 1.09× |
-| chord-tight-clean ns=8 k=1 (ε_rel=1e-3) | 1e-03 | 0.5534 | 1.11× | 1.04× |
-| chord-tight-clean ns=8 k=2 (abs=1e-6) | 3e-03 | 0.5533 | 1.10× | 1.04× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-04 | 0.5599 | — | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 1e-03 | 0.5523 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 1e-03 | 0.5521 | — | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95 minit=1e-12 | 1e-03 | 0.5518 | — | — |
+| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95 minit=1e-12 | 1e-03 | 0.5520 | — | — |
+| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 3e-03 | 0.5522 | — | — |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-3) β1=0.95 minit=1e-12 | 1e-03 | 0.5520 | — | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 minit=1e-12 | 3e-04 | 0.5599 | — | — |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) minit=1e-12 | 1e-03 | 0.5519 | — | 1.00× |
+| chord-tight-clean ns=8 k=1 (ε_rel=1e-3) minit=1e-12 | 1e-03 | 0.5534 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (abs=1e-6) minit=1e-12 | 3e-03 | 0.5533 | — | 1.00× |
+| AdamW minit=1e-12 | 3e-05 | 0.5553 | — | 1.00× |
 
 ### Meta-Llama-3-8B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **0.2866**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 3e-05 | 0.2866 | 1.00× | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 | 3e-03 | 0.2773 | 1.59× | 1.25× |
+| AdamW minit=1e-12 | 3e-05 | 0.2866 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 | 3e-03 | 0.2773 | — | 1.00× |
 
 ### Qwen3-0.6B × OpenWebMath × r=64
 
-AdamW speed target (best-lr final loss): **1.8460**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW | 1e-04 | 1.8460 | 1.00× | 1.00× |
-| chord-tight-clean ns=8 k=2 (abs=1e-6) | 1e-03 | 1.8442 | 1.34× | 1.10× |
-| chord-tight-clean ns=8 k=1 (abs=1e-6) | 1e-03 | 1.8442 | 1.30× | 1.08× |
-| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-4) | 1e-03 | 1.8452 | 1.16× | 1.06× |
-| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-6) | 1e-03 | 1.8454 | 1.11× | 1.04× |
+| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-6) minit=1e-12 | 1e-03 | 1.8454 | — | 1.00× |
+| AdamW minit=1e-12 | 1e-04 | 1.8460 | — | 1.00× |
+| chord-tight-clean ns=8 k=1 (abs=1e-6) minit=1e-12 | 1e-03 | 1.8442 | — | 1.00× |
+| chord-tight-clean ns=8 k=2 (abs=1e-6) minit=1e-12 | 1e-03 | 1.8442 | — | 1.00× |
+| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-4) minit=1e-12 | 1e-03 | 1.8452 | — | 1.00× |
 

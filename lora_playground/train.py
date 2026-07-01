@@ -689,14 +689,15 @@ def make_parser():
                              "also floors the small-side C_A/C_B inverse-sqrt). Set it to "
                              "sweep the diagonal floor alone (e.g. VN trace-δ) while "
                              "holding the curvature-inverse floor at --precond_delta.")
-    parser.add_argument("--cw_metric_init", default="zero",
+    parser.add_argument("--cw_metric_init", default="1e-12",
                         help="Init of the CurvatureWhitenLoRA diagonal metric EMAs D_in (=Q) "
-                             "and D_out (=P): 'zero' (legacy; step 1 uses the _rdinv identity "
-                             "fallback / the step-one branch), 'ones' (strong identity prior, "
-                             "measurably hurts — ablation), 'delta' (=δ damping floor, also "
-                             "hurts at production scale since δ≫ the ~1e-7 curvature), or a "
-                             "FLOAT ε for P₀=Q₀=εI (branch-free; needs ε ≪ ~1e-7, e.g. 1e-10). "
-                             "All give an identical step-1 update; they differ only in warmup.")
+                             "and D_out (=P). DEFAULT '1e-12': a FLOAT ε → P₀=Q₀=εI, the "
+                             "branch-free prior-free init (ε ≪ the ~1e-7 curvature scale, so no "
+                             "_rdinv step-one branch and no warmup bias; validated to reproduce "
+                             "zero-init to ≤5e-4 across all 4 models). Other values are ablations: "
+                             "'zero' (legacy; relies on the step-one branch), 'ones' (strong "
+                             "identity prior, hurts +0.019), 'delta' (=δ damping floor, also hurts "
+                             "since δ≫ curvature). All give an identical step-1 update.")
     parser.add_argument("--cw_nesterov", action="store_true",
                         help="Use Nesterov-lookahead momentum (ĝ + β₁·m, Muon "
                              "convention) into the CurvatureWhitenLoRA whiten→polar "
