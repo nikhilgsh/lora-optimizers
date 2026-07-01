@@ -279,7 +279,7 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
 \begin{restatable}[Properties of gradients]{lemma}{gradprop} 
   \label{lem:gradprop}
     Let $g_i=\vec(G_i) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for all $i=1, \ldots, n$,
-    and $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. It follows that the gradients satisfy
+    and let $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. It follows that the gradients satisfy
     \begin{enumerate}
         \item {\bf Leverage bound:} $ \ip{\Sigma^\dagger g_i, g_i} \leq n$, \\[-0.5cm]
         \item {\bf Rank one:} $G_i = b_i x_i^\top$,
@@ -287,7 +287,7 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
     for some $x_i \in \R^{d_{\mathrm{in}}}$ and $b_i \in \R^{d_{\mathrm{out}}}$.
 \end{restatable}
 
-The above properties suggest the following outergradient set
+\noindent The above properties motivate the choice of the following outergradient set
 \begin{equation} 
 \label{eq:outgrad} 
 \mathcal{G}(\Sigma) := \left \{ \tilde G = b x^\top ~\bigg |~  
@@ -303,7 +303,7 @@ Following the Kronecker-factored approximations used by Shampoo~\cite{shampoo, k
 and KFAC~\cite{kfac}, let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
      \begin{equation} \label{eq:pq-factor}
      \Sigma  \approx Q \otimes P.\end{equation}
-     Using the factorization above, if we use our outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following LMO
+     Using the factorization above, if we use the outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following LMO
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -331,20 +331,14 @@ Then \eqref{eq:polorafull-hard} can be rewritten as
 \end{array}
 \label{eq:polorafull}
 \end{equation}
-where we have absorbed a $\frac{1}{\sqrt{n}}$ into $\tau$, that is, $\tau \leftarrow \frac{\tau}{\sqrt{n}}$.
-The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo}. Applying it with $(L,R)=(P^{1/2},Q^{1/2})$, a solution to \eqref{eq:polorafull} is given by
+where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
 \begin{equation}\label{eq:polorafull-update}
     \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation} 
 
 
 \paragraph{Direction.}
-So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt it to LoRA~\eqref{eq:lora}, computing the \emph{direction} and \emph{magnitude} of the factor updates separately. 
-The direction comes from the preconditioned spectral-norm
-  LMO~\eqref{eq:polorafull}, and the magnitude is set below.
-  
- 
-Replacing $\Delta W$ in \eqref{eq:polorafull} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
+So far we have described an update for the full weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt it to LoRA~\eqref{eq:lora}, deriving the \emph{direction} first and then setting the \emph{magnitude} of the factor updates. Replacing $\Delta W$ in \eqref{eq:polorafull} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
 \begin{equation}
     \begin{array}{ll}
     \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
@@ -355,8 +349,8 @@ Replacing $\Delta W$ in \eqref{eq:polorafull} with its linearized product update
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-  Since we will set the magnitude later, the reader can ignore the exact value of $\tau$.
-The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
+\nikhil{it's weird to make this caveat here, we should preempt this }
+Since we will set the magnitude later, the reader can ignore the exact value of $\tau$. The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
 \[
 \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
 \leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
