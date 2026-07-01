@@ -349,17 +349,7 @@ So far we have described an update for the full weight matrix $W \in \R^{d_{\mat
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-\nikhil{it's weird to make this caveat here, we should preempt this early on and make it completely normal to think of the LMO as setting a direction and the magnitude is a separate concern.}
-Since we will set the magnitude later, the reader can ignore the exact value of $\tau$. 
-\nikhil{this is a repeat of the product muon derivation, maybe just reference this and we can do the derivation faster here?}
-The constraint in \eqref{eq:joint-direction-lmo} couples $\Delta A$ and $\Delta B$ inside a single spectral norm. Subadditivity of the spectral norm bounds it by the two factor steps separately,
-\[
-\norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
-\leq \norm{P^{1/2}B\Delta A Q^{1/2}}_2
-+ \norm{P^{1/2} \Delta B A Q^{1/2}}_2,
-\]
-so bounding each factor step bounds the merged update. Using this bound in~\eqref{eq:joint-direction-lmo} with the
-factor gradients~\eqref{e-grad-wrt-factors}, the product LMO decouples into two factorwise LMOs
+Exactly as for Product Muon in~\Cref{sec:product-muon}, subadditivity of the spectral norm splits the coupled constraint in~\eqref{eq:joint-direction-lmo} into one bound per factor. With the factor gradients~\eqref{e-grad-wrt-factors}, the product LMO then decouples into two factorwise LMOs
 \begin{equation}
 \setlength{\arraycolsep}{2pt}
 \begin{array}{@{}c@{\qquad}c@{}}
@@ -932,8 +922,7 @@ so the overshoot is $O(\eta)$ and shrinks as the factors grow.
 \end{remark}
 
 
-\nikhil{this should have a better title}
-\section{Momentum-Free LoRA-RITE, iMuon, and LoRA-Muon}
+\section{Momentum-Free Limits of LoRA-RITE, iMuon, and LoRA-Muon}
 \label{app:memoryless}
 LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon \cite{loramuon}
 reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed. We show this below.
@@ -1022,14 +1011,14 @@ Gram-matrix form is equivalent to the simplified QR-coordinate form of
 LoRA-RITE~\cite{loramuon}.
 
 
-\nikhil{needs better title. also paragraphs are stubs, "the whitening power" reads awkwardly.}
-\section{Extended Prior Work: Spectral and Curvature-Aware Optimizers}
+\nikhil{these paragraphs are stubs}
+\section{Extended Prior Work}
 \label{app:related-spectral}
 Here we will better contextualize how
  \methodname{} relates to other spectral and curvature-aware
 optimizers (\Cref{sec:related}).
 
-\paragraph{Mousse and the whitening power.}
+\paragraph{Mousse.}
 Mousse fixes its trust region by a Shampoo curvature $H\approx(R\otimes L)^{1/2}$, with
 $L$ and $R$ being the moving averages of $GG^\top$ and $G^\top G$. Whitening by
 $H^{1/2}=(R\otimes L)^{1/4}$ gives the dense update
