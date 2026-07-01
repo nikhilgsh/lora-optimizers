@@ -101,7 +101,7 @@ A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 to each layer. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
 
-The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon and Shampoo treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA. 
+The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon~\cite{muon} and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}, so it is natural to ask whether the same gains carry over to LoRA. 
 
 However, naively applying a matrix-aware optimizer to each factor does not improve on Adam. The model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works try to address this by proposing updates that are variants of a product-aware~\cite{imuon,loramuon,tilde_csd} Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}). In our experiments, we find that the Product Muon step is also unable to consistently improve over Adam. 
 
@@ -159,7 +159,9 @@ The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname
 
 
 \label{sec:method}
-To build up to the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the linear minimization oracle (LMO) perspective. This perspective views the Muon update as minimizing the linearized loss subject to controlling the spectral norm of the update. Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon LMO. In \Cref{sec:sample-loss-lmo} we then derive a novel matrix-aware base LMO different from Muon: instead of controlling the spectral norm of the update, it controls the change in the per-sample loss. Then similar to how the Muon LMO was adapted to the Product Muon LMO, we also derive a product-aware version of our base LMO. Finally, in order to ensure the sizes of the per-factor updates are well-behaved we apply a magnitude rescaling which simultaneously controls the per-factor update and merged-weight update sizes.
+To build up to the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the linear minimization oracle (LMO) perspective. 
+This perspective views the Muon update as minimizing the linearized loss subject to controlling the spectral norm of the update. Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon LMO. 
+In \Cref{sec:sample-loss-lmo} we derive a new base LMO that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions, but in order to ensure the sizes of the per-factor updates are well-behaved we rescale the updates to simultaneously control the per-factor update and merged-weight update sizes.
 % A LoRA adapter changes the model through the product $BA$ of its two
 % factors~\eqref{eq:lora}, while the optimizer acts on $A$ and $B$. This section
 % derives an update that treats the adapter as a matrix update while still
@@ -171,7 +173,7 @@ To build up to the \methodname{} update, in \Cref{sec:muon} we first recall the 
 % factor steps balanced.
 
 \subsection{Muon}\label{sec:muon}
-For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, the Muon LMO~\cite{muon,carlson2015preconditioned} minimizes the local linearization of the loss subject to a ball constraint,
+For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, the Muon LMO~\cite{bernstein2025modular,carlson2015preconditioned} minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -187,38 +189,36 @@ where $\|\cdot\|_2$ is the spectral norm
 \[
 \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2.
 \]
-Choosing the spectral norm in the LMO controls the worst-case amplification of a linear operator~\cite{yang2023spectral}. With this choice, the LMO direction is the matrix sign of the gradient~\cite{bernstein2025modular}
+Bounding the spectral norm controls the largest amount by which the update can change the layer's output over all unit-norm inputs~\cite{yang2023spectral}.
+With this choice, the LMO direction is the matrix sign of the gradient~\cite{bernstein2025modular}
 \[
     \Delta W = -\tau \msign(G),
 \]
-where $\msign(G)=UV^\top$ for the reduced SVD $G=U\Sigma V^\top$ (\Cref{lem:muon-lmo}). In practice, Muon realizes this step with the learning rate as the budget ($\tau=\eta$), applies the matrix sign to a momentum buffer rather than the raw gradient $G$, and approximates it by Newton--Schulz iteration instead of an explicit SVD (\Cref{app:gramns}). To adapt this direction to LoRA, we should account for the product structure in~\eqref{eq:lora} as we will show next.
+where $\msign(G)=UV^\top$ for the reduced SVD $G=U\Sigma V^\top$ (\Cref{lem:muon-lmo}). In practice, Muon sets $\tau$ to be the learning rate $\eta$, applies the matrix sign to a momentum buffer rather than the raw gradient $G$, and approximates the matrix sign operation using Newton--Schulz iterations (\Cref{app:gramns}). Next we show how to adapt this LMO to be aware of the product structure in LoRA~\eqref{eq:lora}.
 
 \subsection{Product Muon}\label{sec:product-muon}
-
-Consider a LoRA step that updates the two factors by a given matrix $\Delta A$ and $\Delta B$ as follows
+Consider a LoRA step that updates the two factors $A$ and $B$ as follows
 \[
 A \leftarrow A + \Delta A,
 \qquad
 B \leftarrow B + \Delta B.
 \]
-Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$. But what matters is the resulting product $BA$, and a separate bound on $\Delta A$ and $\Delta B$ does not control it. Indeed,
-the update to the merged weight is, after linearizing the product,
+Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$, but what matters to the layer is the effective update of the product $BA$ which is not controlled solely by $\Delta A$ and $\Delta B$. Indeed, the update to the merged weight is to first-order,
 \begin{equation} \label{eq:DeltaW-lin}
 \Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
 \end{equation}
-where we dropped the nonlinear term $\Delta B\Delta A$. 
-To take into account the resulting product, a spectral norm bound should be applied to this linearized product update. Substituting~\eqref{eq:DeltaW-lin} into~\eqref{eq:lmo}, the spectral constraint becomes
+from which we see that the spectral norm bound should be applied to this linearized product update. Substituting the above~\eqref{eq:DeltaW-lin} into the Muon LMO~\eqref{eq:lmo} gives the spectral constraint
 \[
 \norm{B \Delta A + \Delta B A}_2
 \le \tau.
 \]
-This constraint couples the two unknowns $\Delta A$ and $\Delta B$. We decouple them with the upper bound
+The constraint couples the two unknowns $\Delta A$ and $\Delta B$, but we can decouple them with the upper bound from norm subadditivity
 \[
 \norm{B \Delta A + \Delta B A}_2
 \le
 \norm{B \Delta A}_2 + \norm{\Delta B A}_2.
 \]
-With this bound we get the \emph{Product Muon} LMO
+As a result, we get the \emph{Product Muon} LMO
 \begin{equation}
   \begin{aligned}
   \Delta A &\in \argmin_{\Delta A}~ \ip{G_A, \Delta A}
@@ -236,14 +236,14 @@ where the factor gradients are
     \qquad
     G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
 \end{equation}
-Thus \eqref{eq:decoupled-lora-lmo} is the Product Muon LMO. Its factorwise solutions are
+The solution to this LMO is given by
 \[
 \begin{aligned}
     \Delta A &= -\tau\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
     \Delta B &= -\tau\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
 \end{aligned}
 \]
-As with Muon, these factor updates are computed on momentum buffers, with the matrix sign and the inverse square roots of $B^\top B$ and $AA^\top$ obtained by Newton--Schulz (\Cref{app:gramns}). Both steps share a single budget $\tau=\eta$, which bounds the merged contributions $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ rather than the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$ that our magnitude rule~\eqref{eq:ours-rho} sets directly.
+Similar to Muon, these factor updates are computed using momentum buffers and with $\tau = \eta$.
 
 \subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
 We now derive the base LMO that will be the starting point of \methodname{}. Let $\{x_1, \ldots, x_n\}$ be a batch of input activations to the layer that $W$ encodes, and let $G_i$ be the gradient associated with $x_i$, that is, with a slight abuse of notation $G_i = \nabla \ell_{x_i}(W)$, where the abuse comes from using $\ell_{x_i}$ to denote the loss with respect to this activation rather than a full input.
