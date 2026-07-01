@@ -1453,14 +1453,17 @@ leading-order count.
 
 \paragraph{Optimizer.}
 The \methodname{} optimizer (\Cref{alg:ours}) update runs once per optimizer step and does not
-depend on $n_{\mathrm{tok}}$.  We count its leading matmul FLOPs.  The
-long-dimension work consists of forming
+depend on $n_{\mathrm{tok}}$.  
+We now count the leading operations that scale with
+$d_{\mathrm{in}}$ or $d_{\mathrm{out}}$. 
+The leading terms consist of forming
 \[
     C_A=B^\top \bar P B,
     \qquad
     C_B=A\bar QA^\top,
 \]
-forming the preconditioned sign inputs, forming the small-side Grams for the two
+the preconditioned sign inputs, 
+the small-side Gram matrices for the two
 matrix signs, applying the accumulated Gram maps to recover the signs,
 post-preconditioning the signs, and computing the diagonal metric updates
 \[
@@ -1491,18 +1494,40 @@ power iterations, and one-time re-anchoring terms, the leading optimizer cost is
 
 
 \paragraph{Overhead fraction.} Dividing \eqref{eq:flop-opt} by \eqref{eq:flop-fb} gives the
-per-layer overhead in closed form,
+per-layer optimizer FLOP overhead 
 \begin{equation}
-  \frac{C_{\mathrm{opt}}}{C_{\mathrm{fwd}}+C_{\mathrm{bwd}}}
-  =\frac{12\,r^2(d_{\mathrm{in}}{+}d_{\mathrm{out}})+32 K r^3}{4 d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}}}
-  =\frac{3r^2}{n_{\mathrm{tok}}}\Big(\tfrac1{d_{\mathrm{in}}}+\tfrac1{d_{\mathrm{out}}}\Big)
-  +\underbrace{\frac{8Kr^3}{d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}}}}_{\text{Gram Newton--Schulz}}.
+  \frac{C_{\mathrm{opt}}}{C_{\mathrm{fwd}}^{\mathrm{base}}
+  +C_{\mathrm{bwd}}^{\mathrm{base}}}
+  =
+  \frac{
+    12r^2(d_{\mathrm{in}}+d_{\mathrm{out}})
+    +
+    32Kr^3
+  }{
+    4d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}
+  }
+  =
+  \frac{3r^2}{n_{\mathrm{tok}}}
+  \left(
+    \frac1{d_{\mathrm{in}}}
+    +
+    \frac1{d_{\mathrm{out}}}
+  \right)
+  +
+  \frac{
+    8Kr^3
+  }{
+    d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}
+  } .
   \label{eq:flop-ratio}
 \end{equation}
-The fraction falls as $1/n_{\mathrm{tok}}$, so it shrinks as the batch grows. The first term is
+Thus, for fixed model dimensions, rank, and Newton--Schulz iteration count, the
+optimizer FLOP fraction decays as $1/n_{\mathrm{tok}}$.
+The first term is
 governed by the smaller of the two layer dimensions. The second is divided by their product,
 so relative to the first it weighs most on the square attention matrices, where the two
-dimensions are comparable, and less on the wide feed-forward matrices. The whole-model overhead is an average of these per-layer fractions weighted by layer size, so
+dimensions are comparable, and less on the wide feed-forward matrices. 
+The whole-model overhead is an average of these per-layer fractions weighted by layer size, so
 it is dominated by the large feed-forward matrices, which have the smallest fraction. 
 
 \paragraph{Why the Gram form.} All of the dependence on $K$ sits in the $32Kr^3$ term, the
