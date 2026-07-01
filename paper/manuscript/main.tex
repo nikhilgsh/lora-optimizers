@@ -727,7 +727,7 @@ $\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ & --- \\
 Newton--Schulz iterations & ---       & $8$   & $5$    & ---       & $8$ \\
 \bottomrule
 \end{tabular}
-\caption{Per-optimizer hyperparameters. $\beta_1$ is the momentum decay, and $\beta_2$ the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{}. \methodname{} additionally applies relative damping $\delta=10^{-4}$ (\Cref{app:damping}). \nikhil{and $\varepsilon$?}}
+\caption{Per-optimizer hyperparameters. $\beta_1$ is the momentum decay, $\beta_2$ the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{}, and $\varepsilon$ the numerical-stability constant. \methodname{} additionally applies relative damping $\delta=10^{-4}$ (\Cref{app:damping}).}
 \label{tab:optim-config}
 \end{table}
 
