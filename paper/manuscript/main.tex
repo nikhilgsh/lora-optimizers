@@ -285,8 +285,7 @@ Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the s
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-This LMO has a finite optimum (\Cref{prop:wellposed}).
-Since we do not have efficient direct access to the per-input gradients $G_i$, we will now define a centrally symmetric \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the inequality
+This per-sample LMO is well-posed (\Cref{prop:wellposed}), but its constraints are not directly usable, since we lack efficient access to the per-input gradients $G_i$. We therefore define a centrally symmetric \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the inequality
 \begin{equation} \label{eq:outgrad1}
     \max_{i=1,\ldots, n}  |\ip{G_i, \Delta W}|
     \leq   \max_{\tilde G \in \mathcal{G}} \; \ip{\tilde G, \Delta W},
