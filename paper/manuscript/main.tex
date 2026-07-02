@@ -1257,36 +1257,27 @@ $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$, then
 \[
   T_Q(P)=\kappa_t\diag(Q),
   \qquad
-  T_P(Q)=\kappa_t\diag(P) :
+  T_P(Q)=\kappa_t\diag(P).
 \]
-each map recovers the other factor up to the shared scalar $\kappa_t$.
+Each map recovers the other factor up to the shared scalar $\kappa_t$.
 \end{lemma}
 \begin{proof}
-Let $X\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ be symmetric with
-spectral decomposition $X=\sum_l\lambda_l x_lx_l^\top$, so that
-$G^\top XG=\sum_l\lambda_l(G^\top x_l)(G^\top x_l)^\top$. Vectorizing gives
-$G^\top x=(I_{d_{\mathrm{in}}}\otimes x^\top)\,g$ for any
-$x\in\R^{d_{\mathrm{out}}}$, so the model and the mixed-product identity
-$(A\otimes B)(C\otimes D)=AC\otimes BD$ yield
+For symmetric $X$, decompose $X=\sum_l\lambda_l x_lx_l^\top$, so that
+$G^\top XG=\sum_l\lambda_l(G^\top x_l)(G^\top x_l)^\top$. Since
+$G^\top x=(I_{d_{\mathrm{in}}}\otimes x^\top)\,g$, the model and the
+mixed-product identity give
 \[
   \mathbb{E}_t\big[(G^\top x)(G^\top x)^\top\big]
-  =(I\otimes x^\top)\,\mathbb{E}_t[gg^\top]\,(I\otimes x)
   =\kappa_t\,(I\otimes x^\top)(Q\otimes P)(I\otimes x)
-  =\kappa_t\,(x^\top Px)\,Q .
+  =\kappa_t\,(x^\top Px)\,Q,
 \]
-Summing over the decomposition and using
-$\sum_l\lambda_l\,x_l^\top Px_l=\Tr(XP)$ gives
-$\mathbb{E}_t[G^\top XG]=\kappa_t\Tr(XP)\,Q$. Now take $X=BC_A^{-1}B^\top$.
-This choice produces the matrix that $T_Q$ averages, since $G_A=B^\top G$
-gives $G_A^\top C_A^{-1}G_A=G^\top BC_A^{-1}B^\top G=G^\top XG$, and it makes
-the trace a constant, since $C_A=B^\top PB$ and cyclicity give
-$\Tr(XP)=\Tr(C_A^{-1}B^\top PB)=\Tr(C_A^{-1}C_A)=\Tr(I_r)=r$. Therefore
-\[
-  T_Q(P)=\tfrac1r\diag\!\big(\mathbb{E}_t[G^\top XG]\big)
-  =\tfrac1r\diag(\kappa_t\,r\,Q)=\kappa_t\diag(Q).
-\]
-The claim for $T_P$ holds by the same argument with the roles of rows and
-columns exchanged ($A\leftrightarrow B$, $P\leftrightarrow Q$).
+and summing over the decomposition,
+$\mathbb{E}_t[G^\top XG]=\kappa_t\Tr(XP)\,Q$. Taking $X=BC_A^{-1}B^\top$
+turns the left side into $\mathbb{E}_t[G_A^\top C_A^{-1}G_A]$ and gives
+$\Tr(XP)=\Tr(C_A^{-1}B^\top PB)=r$, so
+$T_Q(P)=\tfrac1r\diag(\kappa_t\,r\,Q)=\kappa_t\diag(Q)$. The claim for $T_P$
+holds by the same argument with rows and columns exchanged
+($A\leftrightarrow B$, $P\leftrightarrow Q$).
 \end{proof}
 
 The inner $C_A^{-1}$ calibrates the recovered scale: it makes the trace in the
