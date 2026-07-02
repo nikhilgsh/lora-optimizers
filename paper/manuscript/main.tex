@@ -618,13 +618,7 @@ to other initializations. Rank-stabilized LoRA~\cite{rslora} replaces the $\alph
 adapter scale with $\alpha/\sqrt{r}$ to avoid the rank-dependent shrinkage that makes
 high-rank adapters hard to train, and $\mu$A~\cite{mua} studies how these
 hyperparameters should scale with rank to keep the optimal learning rate stable. In
-contrast, \methodname{} sets the two factor updates to have the same spectral norm while also bounding the merged-weight update in spectral norm. 
-
-% changes the update geometry itself, computing factor update
-% directions in a curvature-aware metric
-% and 
-% scaling them to control the induced change
-% in the merged weight.
+contrast, \methodname{} keeps these scalar hyperparameters fixed and instead changes the update itself, computing the factor update directions in a curvature-aware metric on the merged product $BA$ rather than rescaling a coordinatewise Adam step.
 
 \paragraph{Matrix-aware updates.}
 Recently, optimizers that operate at the matrix level, rather than treating parameters as
@@ -634,16 +628,15 @@ for a weight matrix, producing an update equal to the matrix sign of the momentu
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
-whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} also applies a matrix-sign step to a preconditioned gradient. Its metric is derived from controlling per-sample loss change in the batch. We adapt this update to LoRA training and add magnitude control, which removes the need for learning-rate grafting \cite{shi2023distributed, mousse}.
+whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}.
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
 change of basis $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$. Since Adam is not invariant
 to this transformation, a line of work has proposed LoRA optimizers that are. LoRA-RITE
 removes the basis dependence with an adaptive preconditioner~\cite{lorarite}, while Riemannion
-optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMuon and
-LoRA-Muon derive invariant updates from spectral-norm
-LMOs~\cite{imuon,loramuon}. As discussed in \Cref{app:memoryless}, the momentum-free LoRA-RITE, LoRA-Muon,
+optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMuon, LoRA-Muon, and Compositional Muon derive invariant updates from
+spectral-norm LMOs~\cite{imuon,loramuon,tilde_csd}. As discussed in \Cref{app:memoryless}, the momentum-free LoRA-RITE, LoRA-Muon,
 iMuon, and Compositional Muon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
 
 \paragraph{Magnitude control for low-rank products.}
