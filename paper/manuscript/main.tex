@@ -1096,84 +1096,38 @@ after the fact (\Cref{rem:quadratic}):
 \section{Averaging as an LMO over Past Samples}
 \label{app:matnormal}
 \nikhil{Needs work.}
-\Cref{alg:ours} computes its update directions in a metric set by two diagonal
-curvature factors $P$ and $Q$, stored as the vectors $p\in\R^{d_{\mathrm{out}}}$
-and $q\in\R^{d_{\mathrm{in}}}$ that weight the output and input coordinates of
-the layer. The factors model the second moment of the per-sample gradients of
-the merged weight $W=W_0+BA$: with $G_i=\nabla_W\ell_{x_i}$ the gradient on
-sample $x_i$ and $g_i=\vec(G_i)$ (\Cref{lem:gradprop}),
-\[
-  \Sigma=\frac1n\sum_{i=1}^n g_ig_i^\top\approx Q\otimes P .
-\]
-This is the Kronecker approximation~\eqref{eq:pq-factor} of the main text. This
-appendix derives how the optimizer estimates the factors.
+\Cref{alg:ours} feeds its direction step averaged quantities: a momentum in
+place of the batch gradient, and diagonal curvature factors $P,Q$, stored as
+the vectors $p,q$, maintained by an EMA. The averaging itself is standard
+practice. This appendix interprets what the averaged step computes and
+derives the estimator behind the stored $p,q$.
 
-The estimator is shaped by what the optimizer can afford and observe. The full
-$\Sigma$ is $d_{\mathrm{out}}d_{\mathrm{in}}\times d_{\mathrm{out}}d_{\mathrm{in}}$
-and cannot be stored, and backpropagation provides only the factor gradients
-$G_A=B^\top G$ and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} of the merged-weight
-gradient $G$, never $G$ itself. The optimizer therefore keeps only the vectors
-$p,q$, updates them once per step from the factor gradients (the last phase of
-\Cref{alg:ours}), and normalizes a factor to unit $\ell_\infty$ norm whenever it
-is used, $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$.
-
-We first interpret the two averages the optimizer runs --- the momentum and the
-EMA behind $p,q$ --- as the per-sample LMO of \Cref{sec:sample-loss-lmo} posed
-over all past samples with exponentially decaying weights, whose constraints
-relax as in the main text to a preconditioned spectral bound built from the
-weighted second moment of those samples (\Cref{sec:weighted-lmo}). We then
-recover the factors as the fixed point of two coupled maps built from the
-factor gradients (\Cref{lem:fixed-point-consistency}), and finally give the
-online update that tracks this fixed point~\eqref{eq:ours-klcoupling}.
+The interpretation rests on three observations. First, posed over all past
+samples with decaying weights, the per-sample LMO~\eqref{eq:sample-lmo}
+depends on the history through exactly two aggregates, a weighted gradient
+average and a weighted second moment, and the two averages of \Cref{alg:ours}
+compute exactly these (\Cref{sec:weighted-lmo}). Second, the weighted second
+moment can be estimated in the Kronecker form the step uses, as the fixed
+point of two coupled maps built from the factor gradients
+(\Cref{lem:fixed-point-consistency}) tracked by an online
+EMA~\eqref{eq:ours-klcoupling}, and the update of \Cref{alg:ours} follows.
+Third, the placement of the $\ell_\infty$ normalization is forced: the update
+is scale-free, but the average is not (\Cref{sec:scale-placement}).
 
 \subsection{The weighted LMO}
 \label{sec:weighted-lmo}
-The per-sample LMO~\eqref{eq:sample-lmo} poses its objective and constraints on
-the current minibatch alone. \Cref{alg:ours} instead feeds the direction step
-averaged quantities: the momentum $\widehat M$ in place of the batch gradient,
-and factors $P,Q$ maintained by an EMA. The averaging itself is standard
-practice. This subsection interprets what the averaged step computes: the same
-LMO posed over all past samples, with the exponentially decaying weights the
-averages induce. We pose everything for the weight matrix $W$, as in
-\Cref{sec:sample-loss-lmo}, and transfer to the LoRA factors at the end of the
-subsection.
+The per-sample LMO~\eqref{eq:sample-lmo} poses its objective and constraints
+on the current minibatch alone. We now pose it over all past minibatches with
+decaying weights, and identify the aggregates the weighted problem needs with
+the averages \Cref{alg:ours} runs.
 
-\paragraph{Averaging in \Cref{alg:ours}.} Index optimizer steps by $s$ and
-the $n_s$ samples of the step-$s$ minibatch by $i$, and write $G_{s,i}$ for
-the per-sample gradient of the weight matrix (the gradient $G_i$
+\paragraph{The weighted family.} Index optimizer steps by $s$ and the $n_s$
+samples of the step-$s$ minibatch by $i$, and write $G_{s,i}$ for the
+per-sample gradient of the weight matrix (the gradient $G_i$
 of~\eqref{eq:sample-lmo}, drawn at step $s$), $g_{s,i}=\vec(G_{s,i})$, and
-$G_s=\frac1{n_s}\sum_iG_{s,i}$ for the batch gradient. At step $t$, the first
-and last phases of \Cref{alg:ours} run two exponential averages, the momentum
-with look-ahead (here for $W$) and the curvature EMA,
-\[
-\begin{aligned}
-  M_{t+1}&=\beta_1M_t+(1-\beta_1)G_t,
-  &\qquad
-  \widehat M_t&=\beta_1M_{t+1}+(1-\beta_1)G_t,\\
-  p_{t+1}&=\beta_2p_t+(1-\beta_2)\widehat p_t,
-  &\qquad
-  q_{t+1}&=\beta_2q_t+(1-\beta_2)\widehat q_t,
-\end{aligned}
-\]
-with $\widehat p_t,\widehat q_t$ the minibatch estimates of the curvature
-factors~\eqref{eq:ours-klcoupling}. Unrolled, each average weights the history
-with exponentially decaying weights,
-\[
-  \widehat M_t=\sum_{s\le t}m_{t,s}\,G_s,
-  \qquad
-  p_t=(1-\beta_2^t)\sum_{s<t}w_{t,s}\,\widehat p_s,
-  \qquad
-  q_t=(1-\beta_2^t)\sum_{s<t}w_{t,s}\,\widehat q_s,
-\]
-where $m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}$ for $s<t$,
-$m_{t,t}=1-\beta_1^2$, and the
-$w_{t,s}=(1-\beta_2)\beta_2^{t-1-s}/(1-\beta_2^t)$ sum to one.
-
-\paragraph{The weighted LMO.} We now pose~\eqref{eq:sample-lmo} over the
-weighted history and show below that the resulting problem reproduces the
-update of \Cref{alg:ours}. The momentum weights the objective by $m_{t,s}$, and the
-curvature EMA weights each constraint by $w_{t,s,i}=w_{t,s}/n_s$, the weight
-of batch $s$ split equally across its samples:
+$G_s=\frac1{n_s}\sum_iG_{s,i}$ for the batch gradient. For nonnegative
+objective weights $m_{t,s}$ and constraint weights $w_{t,s,i}$, the weighted
+extension of~\eqref{eq:sample-lmo} at step $t$ is
 \begin{equation}\label{eq:weighted-sample-lmo}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -1184,73 +1138,85 @@ of batch $s$ split equally across its samples:
   \end{array}
 \end{equation}
 Each past sample keeps its loss-change bound, at the strength
-$\tau/\sqrt{w_{t,s,i}}$ that decays with age. The objective includes the
-current batch while the constraints do not, mirroring the algorithm's phase
-order: the momentum is updated before the direction step, the curvature
-factors after. In the limit $\beta_1,\beta_2\to0$ the objective and
-constraint weights collapse onto their most recent batches,
+$\tau/\sqrt{w_{t,s,i}}$, tight for large weights and loose for small ones.
+The square root places the weights so that the relaxation below aggregates
+them into a weighted second moment.
+
+\paragraph{Two aggregates.} The objective of~\eqref{eq:weighted-sample-lmo}
+is $\ip{\overline G_t,\Delta W}$ with
+$\overline G_t=\sum_{s\le t}m_{t,s}G_s$, a weighted average of the batch
+gradients. The constraints reduce to one aggregate as well, through the
+outergradient relaxation of \Cref{sec:sample-loss-lmo}. The rescaled
+gradients $z_{t,s,i}=\sqrt{w_{t,s,i}}\,g_{s,i}$ are rank one, and their
+weighted second moment
+\[
+  \overline\Sigma=\sum_{s<t}\sum_{i=1}^{n_s}w_{t,s,i}\,g_{s,i}g_{s,i}^\top
+\]
+is the sum of their outer products. The leverage bound of \Cref{lem:gradprop}
+therefore applies, each $z_{t,s,i}$ lies in the outergradient set
+$\mathcal{G}(\overline\Sigma)$ of~\eqref{eq:outgrad}, and the constraints
+relax, exactly as in~\eqref{eq:polorafull-hard}, to
+\[
+  \max_{\tilde G\in\mathcal{G}(\overline\Sigma)}\ip{\tilde G,\Delta W}\le\tau .
+\]
+The relaxed problem therefore depends on the history only through the
+weighted gradient average $\overline G_t$ and the weighted second moment
+$\overline\Sigma$.
+
+\paragraph{Matching the aggregates to \Cref{alg:ours}.} An EMA computes
+exactly such an aggregate, with geometrically decaying weights, in one
+recursion. Choosing the weights that the two EMAs of \Cref{alg:ours} induce
+therefore makes the aggregates the quantities the algorithm maintains. For the objective, the momentum
+phase, written for the weight matrix,
+\[
+  M_{t+1}=\beta_1M_t+(1-\beta_1)G_t,
+  \qquad
+  \widehat M_t=\beta_1M_{t+1}+(1-\beta_1)G_t,
+\]
+unrolls to $\widehat M_t=\sum_{s\le t}m_{t,s}G_s$ with
+$m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}$ for $s<t$ and
+$m_{t,t}=1-\beta_1^2$, so the objective aggregate is the look-ahead momentum,
+$\overline G_t=\widehat M_t$. For the constraints, take
+$w_{t,s,i}=w_{t,s}/n_s$ with
+$w_{t,s}=(1-\beta_2)\beta_2^{t-1-s}/(1-\beta_2^t)$, the weight that an EMA
+with the curvature decay $\beta_2$ gives batch $s$, split equally across its
+samples. The next subsection shows that the optimizer estimates exactly this
+$\overline\Sigma$ and recovers the update of \Cref{alg:ours} from the two
+aggregates.
+
+The objective includes the current batch while the constraints do not,
+mirroring the algorithm's phase order: the momentum is updated before the
+direction step, the curvature factors after. In the limit
+$\beta_1,\beta_2\to0$ the weights collapse onto the most recent batches
 and~\eqref{eq:weighted-sample-lmo} reduces to the per-sample
 LMO~\eqref{eq:sample-lmo} with constants absorbed into $\tau$. Positive decay
 rates extend the same problem over the history. Overall scale is immaterial
 on both sides, since the LMO is used only for the direction.
 
-\paragraph{Recovering the weight-matrix update.} The derivation of
-\Cref{sec:sample-loss-lmo} now applies step for step, with the weighted second
-moment
-\[
-  \overline\Sigma=\sum_{s<t}\sum_{i=1}^{n_s}w_{t,s,i}\,g_{s,i}g_{s,i}^\top
-\]
-in place of the minibatch second moment $\Sigma$:
-\begin{enumerate}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-\item The rescaled gradients $z_{t,s,i}=\sqrt{w_{t,s,i}}\,g_{s,i}$ are rank
-one and $\overline\Sigma$ is the sum of their outer products, so the leverage bound
-of \Cref{lem:gradprop} applies, each $z_{t,s,i}$ lies in the outergradient
-set $\mathcal{G}(\overline\Sigma)$ of~\eqref{eq:outgrad}, and the constraints relax
-to $\max_{\tilde G\in\mathcal{G}(\overline\Sigma)}\ip{\tilde G,\Delta W}\le\tau$ as
-in~\eqref{eq:polorafull-hard}.
-\item A Kronecker fit $\overline\Sigma\approx Q\otimes P$, as
-in~\eqref{eq:pq-factor}, turns this constraint into the preconditioned
-spectral bound of~\eqref{eq:polorafull}
-(\Cref{lem:pseudogradient-spectral}, constants absorbed into $\tau$).
-\end{enumerate}
-The solution is the update~\eqref{eq:polorafull-update} for $W$, with the
-momentum $\widehat M_t$ in place of the batch gradient and the fitted factors
-in the metric.
+\subsection{From the weighted second moment to the update}
+The momentum is maintained directly, but $\overline\Sigma$ involves
+per-sample outer products the optimizer never sees. This subsection builds
+the estimator \Cref{alg:ours} runs instead --- batch-level,
+Kronecker-factored, online --- and then assembles the update.
 
-\paragraph{From $W$ to the LoRA factors.} The passage to LoRA is the same as
-in the main text: replacing $\Delta W$ by the linearized product
-update~\eqref{eq:DeltaW-lin} and controlling the magnitudes separately gives
-the direction step~\eqref{eq:factor-directions} and the
-rescaling~\eqref{eq:ours-rho}. One approximation is specific to the averaging.
-\Cref{alg:ours} maintains its momentum on the factor gradients, $M_A$
-averaging $B_s^\top G_s$ with the weights $m_{t,s}$, because $G$ itself is
-never materialized. If the factors are constant over the averaging window,
-this equals $B^\top\widehat M_t$ exactly, and likewise for
-$\widehat M_tA^\top$. Otherwise the difference is
-$\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, first order in the factor drift over
-the window. The weighted LMO therefore reproduces the update \Cref{alg:ours}
-takes. The missing ingredient is the fit, and the rest of this appendix
-estimates the Kronecker factors of $\overline\Sigma$ from what the optimizer
-observes.
-
-\paragraph{Estimation.} Backpropagation materializes only batch gradients,
-never per-sample ones, so the optimizer estimates $\overline\Sigma$ with each batch
-collapsed to its mean, replacing the within-batch average
-$\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product $g_sg_s^\top$ of
-the batch gradient $g_s=\vec(G_s)$ --- the substitution behind the second
-moments of Adam~\cite{adam} and Shampoo~\cite{shampoo}, exact at batch size
-one. Writing
+\paragraph{Estimation at batch granularity.} Backpropagation materializes
+only batch gradients, never per-sample ones, so the optimizer estimates
+$\overline\Sigma$ with each batch collapsed to its mean, replacing the
+within-batch average $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer
+product $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$ --- the
+substitution behind the second moments of Adam~\cite{adam} and
+Shampoo~\cite{shampoo}, exact at batch size one. Writing
 \[
   \mathbb{E}_t[\phi(G)]=\sum_{s<t}w_{t,s}\,\phi(G_s)
 \]
-for the weighted average over past batch gradients --- the same weights that
-unroll the curvature EMA --- the estimate of $\overline\Sigma$ is
-$\mathbb{E}_t[gg^\top]$, which an EMA with decay $\beta_2$ computes exactly,
+for the average over past batch gradients with the weights of
+\Cref{sec:weighted-lmo}, the estimate of $\overline\Sigma$ is
+$\mathbb{E}_t[gg^\top]$, and an EMA with decay $\beta_2$ computes it exactly,
 up to the immaterial debiasing scalar $1-\beta_2^t$.
 
-\subsection{Kronecker fixed point}
-It remains to recover the factors from $\mathbb{E}_t[gg^\top]$. Following the
-Kronecker-factored second moments of Shampoo~\cite{shampoo} and
+\paragraph{Kronecker fixed point.} Even $\mathbb{E}_t[gg^\top]$ is too large
+to form, so the optimizer recovers its Kronecker factors directly. Following
+the Kronecker-factored second moments of Shampoo~\cite{shampoo} and
 KL-Shampoo~\cite{klshampoo}, we fit the model
 \begin{equation}\label{e-diag-kron-second-mom-model}
   \mathbb{E}_t[gg^\top]\approx\kappa_t\,(Q\otimes P),
@@ -1316,7 +1282,7 @@ therefore the normalized fixed point of these maps,
 the same fixed point KL-Shampoo uses to fit its Kronecker-factored second
 moment~\cite{klshampoo}.
 
-\subsection{Online estimator}
+\paragraph{Online estimator.}
 The fixed point of \Cref{lem:fixed-point-consistency} is defined through the
 weighted average $\mathbb{E}_t$, which the optimizer cannot evaluate, so
 \methodname{} takes one stochastic step toward it per optimizer step.
@@ -1343,10 +1309,38 @@ replaces $\mathbb{E}_t$ by the current minibatch, and takes one EMA step:
 The next direction step uses $P_{t+1},Q_{t+1}$ (\Cref{alg:ours}). Since
 $\widehat q_t$ is a minibatch draw of $T_Q(P_t)$,
 \Cref{lem:fixed-point-consistency} implies the stored $q_t$ tracks
-$\kappa_t\diag(Q)$. The $\ell_\infty$ normalization is applied to $q_{t+1}$ only
-when it forms $Q_{t+1}$ for the next step, never to $\widehat q_t$ inside the
-average. This placement is settled by two facts: the update is scale-free, and
-the average is not.
+$\kappa_t\diag(Q)$.
+
+\paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
+factors in place of $\overline\Sigma$, the outergradient constraint of
+\Cref{sec:weighted-lmo} becomes the preconditioned spectral bound
+of~\eqref{eq:polorafull} (\Cref{lem:pseudogradient-spectral}, constants
+absorbed into $\tau$). The solution is the
+update~\eqref{eq:polorafull-update} for $W$, with the momentum
+$\widehat M_t$ in place of the batch gradient. Passing to LoRA as in the
+main text, through the linearized product update~\eqref{eq:DeltaW-lin} and
+the separate magnitude control, gives the direction
+step~\eqref{eq:factor-directions} and the rescaling~\eqref{eq:ours-rho}.
+Under the linearization the objective decomposes as
+\[
+  \ip{\widehat M_t,\,\Delta B\,A+B\,\Delta A}
+  =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A}.
+\]
+The factor momenta of \Cref{alg:ours} stand in for these pairings, $M_A$
+averaging $B_s^\top G_s$ with the weights $m_{t,s}$, since $G$ itself is
+never materialized. If the factors are constant over the averaging window,
+$M_A=B^\top\widehat M_t$ exactly, and likewise for $\widehat M_tA^\top$.
+Otherwise the difference is $\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, first
+order in the factor drift over the window. The weighted LMO, with the
+algorithm's own averages as its data, therefore reproduces the update
+\Cref{alg:ours} takes.
+
+\subsection{Normalization placement}
+\label{sec:scale-placement}
+The $\ell_\infty$ normalization is applied to $q_{t+1}$ only when it forms
+$Q_{t+1}$ for the next step~\eqref{eq:ours-klcoupling}, never to
+$\widehat q_t$ inside the average. This placement is settled by two facts:
+the update is scale-free, and the average is not.
 
 \paragraph{The update is scale-free.} The direction step ignores the scale of
 the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
