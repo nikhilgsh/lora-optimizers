@@ -1053,23 +1053,36 @@ from a single LoRA LMO.
 \section{Estimating the Curvature Factors}
 \label{app:matnormal}
 \nikhil{Needs work.}
-For a single LoRA layer, \Cref{alg:ours} preconditions the factor gradients with
-the diagonal curvature factors $P$ and $Q$, the Kronecker factors of the
-merged-weight gradient second moment $\Sigma\approx Q\otimes P$~\eqref{eq:pq-factor}:
-$P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ weights the output coordinates
-and $Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ the input coordinates. As in
-the main text, $P$ and $Q$ are the \emph{normalized} representative of this
-factorization ($\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$), formed from the
-stored diagonal vectors $p,q$ as $P=\diag(p/\norm{p}_\infty)$ and
-$Q=\diag(q/\norm{q}_\infty)$; we drop ``normalized'' below where it is clear from
-context. The second moment
+\Cref{alg:ours} preconditions the factor gradients of each LoRA layer with two
+diagonal curvature factors,
+\[
+  P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}},
+  \qquad
+  Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}},
+\]
+weighting the output and input coordinates respectively. They are the Kronecker
+factors of the merged-weight gradient second moment, $\Sigma\approx Q\otimes P$
+\eqref{eq:pq-factor}. This appendix derives how the optimizer estimates them.
+
+\paragraph{What is stored.} The full second moment
 $\Sigma\in\R^{d_{\mathrm{out}}d_{\mathrm{in}}\times d_{\mathrm{out}}d_{\mathrm{in}}}$
-is too large to store, so the optimizer keeps only $p,q$ and updates them online
-(the Curvature Update phase of \Cref{alg:ours}). This appendix (i) makes the
-estimation target a recency-weighted second moment, (ii) characterizes the
-factors as the fixed point of a coupled map, and (iii) gives the online
-estimator, showing why the factors are normalized before they enter the estimate
-rather than after.
+is too large to store, so the optimizer keeps only the diagonal vectors $p,q$ and
+updates them online (the Curvature Update phase of \Cref{alg:ours}). From these it
+forms the \emph{normalized} factors
+\[
+  P=\diag(p/\norm{p}_\infty),
+  \qquad
+  Q=\diag(q/\norm{q}_\infty),
+\]
+so that $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$, matching the
+representative used in the main text; we drop ``normalized'' below where it is
+clear from context.
+
+\paragraph{Outline.} We (i) identify the estimation target as a recency-weighted
+second moment (\Cref{lem:ema-weighted-cov}), (ii) characterize the factors as the
+fixed point of a coupled map (\Cref{lem:fixed-point-consistency}), and (iii) give
+the online estimator, and show why the running average is taken over the raw
+minibatch estimates, with normalization applied only when a factor is used.
 
 \subsection{Recency-weighted target}
 At step $s$, let $x_{s,i}$ be an input activation to the layer. The merged
@@ -1223,9 +1236,9 @@ minibatch, and takes one EMA step:
 The next direction step uses $P_{t+1},Q_{t+1}$ (\Cref{alg:ours}). Since
 $\widehat q_t$ is a minibatch draw of $T_Q(P_t)$,
 \Cref{lem:fixed-point-consistency} gives that the raw $q_t$ tracks
-$\kappa_t\diag(Q)$; the $\ell_\infty$ normalization is applied to $q_t$ only when
+$\kappa_t\diag(Q)$. The $\ell_\infty$ normalization is applied to $q_t$ only when
 it forms $P_{t+1}$ and the direction, never to $\widehat q_t$ before the average.
-The next two results say why.
+\Cref{prop:scale-sensitivity} and the following remark say why.
 
 \begin{proposition}[Scale sensitivity of the estimator]\label{prop:scale-sensitivity}
 Fix the minibatch and $B$. Scaling the factor fed into $C_A$ by $a>0$ scales the
@@ -1243,17 +1256,21 @@ $\widehat q_t=\frac1r\diag(G_A^\top C_A^{-1}G_A)$ scales by $a^{-1}$.
 \end{proof}
 
 \begin{remark}[Average in raw units]
-The ordering in~\eqref{eq:ours-klcoupling} follows from one fact: the update is
-scale-free but the average is not. For a fixed factor the direction is invariant
-to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, so a single step does not depend on
-the representative. The EMA does (\Cref{prop:scale-sensitivity}): normalizing each
-minibatch estimate before the average would run the nonlinear
-$N(v)=v/\norm{v}_\infty$ inside the sum, and $N$ does not commute with averaging,
+The ordering in~\eqref{eq:ours-klcoupling} --- average the raw estimates
+$\widehat q_t$, and normalize only when the factor is used --- follows from one
+fact: the update is scale-free, but the average is not.
+\begin{itemize}
+\item \textbf{The update is scale-free.} For a fixed factor the direction is
+invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, so a single step does not
+depend on which representative is used.
+\item \textbf{The average is not.} By \Cref{prop:scale-sensitivity}, normalizing
+each minibatch estimate before the average would run the nonlinear map
+$N(v)=v/\norm{v}_\infty$ inside the sum, and $N$ does not commute with averaging:
 \[
   N\!\Big(\textstyle\sum_s w_s\,\widehat q_s\Big)\;\ne\;\sum_s w_s\,N(\widehat q_s).
 \]
-A noise model makes the cost concrete. Suppose each minibatch estimate is the
-true factor up to its magnitude $\kappa_s$ and zero-mean noise,
+\item \textbf{Why normalizing first biases the estimate.} Model each minibatch
+estimate as the true factor up to its magnitude $\kappa_s$ plus zero-mean noise,
 $\widehat q_s=\kappa_s\diag(Q)+\varepsilon_s$ with $\mathbb{E}[\varepsilon_s]=0$.
 Averaging in raw units gives
 \[
@@ -1264,9 +1281,10 @@ whose direction concentrates on $\diag(Q)$ as the noise averages down, each
 minibatch weighted by its magnitude $\kappa_s$. Normalizing first instead forms
 $N(\widehat q_s)=N\!\big(\diag(Q)+\varepsilon_s/\kappa_s\big)$, so a low-magnitude
 minibatch (small $\kappa_s$) is noise-dominated yet enters with the full weight
-$w_s$, biasing $\sum_s w_s N(\widehat q_s)$ away from $\diag(Q)$. This is the same
-reason momentum precedes normalization in normalized SGD~\cite{cutkosky_nigt} and
-orthogonalization in Muon~\cite{denoise_ortho}.
+$w_s$, biasing the estimate away from $\diag(Q)$.
+\end{itemize}
+This is the same reason momentum precedes normalization in normalized
+SGD~\cite{cutkosky_nigt} and orthogonalization in Muon~\cite{denoise_ortho}.
 \end{remark}
 
 \section{Numerical Subroutines}
