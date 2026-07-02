@@ -1137,52 +1137,52 @@ LMO posed over all past samples, with the exponentially decaying weights the
 averages induce.
 
 Index optimizer steps by $s$ and the $n_s$ samples of the step-$s$ minibatch by
-$i$; let $G_{s,i}$ be the per-sample gradient of the merged weight,
-$g_{s,i}=\vec(G_{s,i})$, and $G_s=\frac1{n_s}\sum_iG_{s,i}$ the batch gradient.
-Weight the history geometrically across batches with the curvature decay
-$\beta_2$ of \Cref{alg:ours}, and equally within each batch,
+$i$. Write $G_{s,i}$ for the per-sample gradient of the merged weight,
+$g_{s,i}=\vec(G_{s,i})$, and $G_s=\frac1{n_s}\sum_iG_{s,i}$ for the batch
+gradient. Weight the history geometrically across batches with the curvature
+decay $\beta_2$ of \Cref{alg:ours}, and equally within each batch,
 \[
   w_{t,s,i}=\frac{w_{t,s}}{n_s},
   \qquad
   w_{t,s}=\frac{(1-\beta_2)\beta_2^{t-1-s}}{1-\beta_2^t},
 \]
-so that the weights sum to one. The weighted extension of~\eqref{eq:sample-lmo}
-at step $t$ is
-\begin{equation}\label{eq:weighted-sample-lmo}
- \begin{array}{ll}
-  \underset{\Delta W}{\mathrm{minimize}} &
-  \displaystyle\ip{\widehat M_t, \Delta W}
-  =\sum_{s\le t} m_{t,s}\,\ip{G_s, \Delta W} \\[2pt]
-  \mbox{subject to} &
-  \sqrt{w_{t,s,i}}\,\bigl|\ip{G_{s,i}, \Delta W}\bigr|
-  \le \tau, \qquad s<t,\ i=1,\dots,n_s,
-  \end{array}
-\end{equation}
-where $\widehat M_t$ is the look-ahead momentum of \Cref{alg:ours} and
-$m_{t,s}\ge0$ are the weights it induces (unrolled below). Both halves
-of~\eqref{eq:weighted-sample-lmo} are thus weighted sums over the history ---
-the two averages of \Cref{alg:ours}, each with its own decay rate. The
-objective includes the current batch while the constraints do not, mirroring
-the phase order of \Cref{alg:ours}: the momentum is updated before the
-direction step, the curvature factors after. In the limit $\beta_1,\beta_2\to0$
-both sets of weights collapse onto the newest batch each half sees,
-and~\eqref{eq:weighted-sample-lmo} reduces to the per-sample
-LMO~\eqref{eq:sample-lmo} with constants absorbed into $\tau$; positive decay
-rates extend the same problem over the history.
-
-\paragraph{Objective.} Unrolling the momentum phase of \Cref{alg:ours} --- the
-buffer update followed by the look-ahead --- gives
+so that the weights sum to one. The momentum phase of \Cref{alg:ours} --- the
+buffer update followed by the look-ahead --- weights the same history.
+Unrolling it gives
 \[
-  \widehat M_t=\beta_1^2\,M_t+(1-\beta_1^2)\,G_t,
+  \widehat M_t=\beta_1^2\,M_t+(1-\beta_1^2)\,G_t
+  =\sum_{s\le t}m_{t,s}\,G_s,
   \qquad
   M_t=(1-\beta_1)\sum_{s<t}\beta_1^{t-1-s}G_s ,
 \]
-so the objective weights are $m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}$ for
-$s<t$ and $m_{t,t}=1-\beta_1^2$: every batch gradient seen so far enters with
-nonnegative weight, decaying geometrically with age and with the newest batch
-upweighted (weight $1-\beta_1^2$ in place of the buffer's $1-\beta_1$). The
-overall scale of the objective is immaterial since the LMO is used only for
-the direction. \Cref{alg:ours} maintains the momentum of the factor
+with weights $m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}$ for $s<t$ and
+$m_{t,t}=1-\beta_1^2$. The weighted extension of~\eqref{eq:sample-lmo} at step
+$t$ is
+\begin{equation}\label{eq:weighted-sample-lmo}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \displaystyle\sum_{s\le t} m_{t,s}\,\ip{G_s, \Delta W} \\[2pt]
+  \mbox{subject to} &
+  \sqrt{w_{t,s,i}}\,\bigl|\ip{G_{s,i}, \Delta W}\bigr|
+  \le \tau, \qquad s<t,\ i=1,\dots,n_s.
+  \end{array}
+\end{equation}
+Both halves of~\eqref{eq:weighted-sample-lmo} are weighted sums over the
+history --- the two averages of \Cref{alg:ours}, each with its own decay rate.
+The objective includes the current batch while the constraints do not,
+mirroring the phase order of \Cref{alg:ours}: the momentum is updated before
+the direction step, the curvature factors after. In the limit
+$\beta_1,\beta_2\to0$ both sets of weights collapse onto the newest batch each
+half sees, and~\eqref{eq:weighted-sample-lmo} reduces to the per-sample
+LMO~\eqref{eq:sample-lmo} with constants absorbed into $\tau$. Positive decay
+rates extend the same problem over the history.
+
+\paragraph{Objective.} By the unrolling above the objective equals
+$\ip{\widehat M_t,\Delta W}$, so the direction step follows the look-ahead
+momentum. The weights $m_{t,s}$ are nonnegative and decay geometrically with
+age, with the newest batch upweighted (weight $1-\beta_1^2$ in place of the
+buffer's $1-\beta_1$). The overall scale of the objective is immaterial since
+the LMO is used only for the direction. \Cref{alg:ours} maintains the momentum of the factor
 gradients $B^\top G$ and $GA^\top$ rather than of $G$ itself, which agrees with
 $B^\top\widehat M_t$ and $\widehat M_tA^\top$ when the factors move slowly over
 the averaging window, in the same spirit as the linearized product
@@ -1263,20 +1263,38 @@ each map recovers the other factor up to the shared scalar $\kappa_t$.
 \end{lemma}
 \begin{proof}
 Write $G=[g_1,\dots,g_{d_{\mathrm{in}}}]$ in columns, so that $g=\vec(G)$
-stacks them and the model $\mathbb{E}_t[gg^\top]=\kappa_t(Q\otimes P)$ reads
-blockwise as $\mathbb{E}_t[g_jg_k^\top]=\kappa_t Q_{jk}P$. For any symmetric
-$X\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
+stacks them. Both sides of the model
+$\mathbb{E}_t[gg^\top]=\kappa_t(Q\otimes P)$ are then
+$d_{\mathrm{in}}\times d_{\mathrm{in}}$ arrays of
+$d_{\mathrm{out}}\times d_{\mathrm{out}}$ blocks. Block $(j,k)$ of $gg^\top$
+is $g_jg_k^\top$, and block $(j,k)$ of $Q\otimes P$ is $Q_{jk}P$, so the model
+states
+\[
+  \mathbb{E}_t[g_jg_k^\top]=\kappa_t\,Q_{jk}\,P .
+\]
+For any symmetric $X\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$, entry
+$(j,k)$ of $G^\top XG$ is $g_j^\top Xg_k=\ip{X,\,g_jg_k^\top}$, so
 \[
   \mathbb{E}_t[G^\top X G]_{jk}
-  =\mathbb{E}_t\ip{X,\,g_jg_k^\top}
-  =\ip{X,\,\kappa_t Q_{jk}P}
+  =\ip{X,\,\mathbb{E}_t[g_jg_k^\top]}
+  =\kappa_t Q_{jk}\ip{X,P}
   =\kappa_t\Tr(XP)\,Q_{jk},
 \]
-so $\mathbb{E}_t[G^\top XG]=\kappa_t\Tr(XP)\,Q$. Taking $X=B C_A^{-1}B^\top$,
-so that $G^\top XG=G_A^\top C_A^{-1}G_A$, gives
-$\Tr(XP)=\Tr(C_A^{-1}B^\top P B)=\Tr(I_r)=r$ and hence
-$T_Q(P)=\kappa_t\diag(Q)$. The claim for $T_P$ follows by exchanging the roles
-of rows and columns ($A\leftrightarrow B$, $P\leftrightarrow Q$).
+that is, $\mathbb{E}_t[G^\top XG]=\kappa_t\Tr(XP)\,Q$. Now take
+$X=BC_A^{-1}B^\top$. This choice produces the matrix that $T_Q$ averages,
+since $G_A=B^\top G$ gives
+$G_A^\top C_A^{-1}G_A=G^\top BC_A^{-1}B^\top G=G^\top XG$, and it makes the
+trace a constant, since $C_A=B^\top PB$ and cyclicity give
+$\Tr(XP)=\Tr(C_A^{-1}B^\top PB)=\Tr(C_A^{-1}C_A)=\Tr(I_r)=r$. Therefore
+\[
+  T_Q(P)=\tfrac1r\diag\!\big(\mathbb{E}_t[G^\top XG]\big)
+  =\tfrac1r\diag(\kappa_t\,r\,Q)=\kappa_t\diag(Q).
+\]
+The claim for $T_P$ is the same computation on the rows of $G$. Blockwise the
+model reads $\mathbb{E}_t[\tilde g_a\tilde g_b^\top]=\kappa_t\,P_{ab}\,Q$ for
+the rows $\tilde g_a^\top$ of $G$, and $X=A^\top C_B^{-1}A$ gives
+$G_BC_B^{-1}G_B^\top=GXG^\top$ with
+$\Tr(XQ)=\Tr(C_B^{-1}AQA^\top)=\Tr(I_r)=r$.
 \end{proof}
 
 The inner $C_A^{-1}$ calibrates the recovered scale: it makes the trace in the
@@ -1347,7 +1365,7 @@ $\widehat q_t=\frac1r\diag(G_A^\top C_A^{-1}G_A)$ scales by $a^{-1}$.
 \paragraph{Average in raw units.} Scale enters the EMA~\eqref{eq:ours-klcoupling}
 from both sides. The input side is \Cref{prop:scale-sensitivity}: the estimate
 scales inversely with the factor fed into $C_A$, so the input must arrive at a
-fixed scale --- normalized. On the output side, normalizing each estimate
+fixed scale, which the $\ell_\infty$ normalization provides. On the output side, normalizing each estimate
 before averaging would run $N(v)=v/\norm{v}_\infty$ inside the sum, and $N$
 does not commute with averaging. Model each estimate as the factor at its
 minibatch magnitude plus zero-mean noise,
