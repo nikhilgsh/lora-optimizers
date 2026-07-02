@@ -1181,8 +1181,8 @@ $w_{t,s,i}=w_{t,s}/n_s$ with
 $w_{t,s}=(1-\beta_2)\beta_2^{t-1-s}/(1-\beta_2^t)$, the weight that an EMA
 with the curvature decay $\beta_2$ gives batch $s$, split equally across its
 samples. The next subsection shows that the optimizer estimates exactly this
-$\overline\Sigma$ and recovers the update of \Cref{alg:ours} from the two
-aggregates.
+$\overline\Sigma$, reconciles the factor-form momentum that \Cref{alg:ours}
+stores, and recovers the update from the two aggregates.
 
 The objective includes the current batch while the constraints do not,
 mirroring the algorithm's phase order: the momentum is updated before the
@@ -1194,10 +1194,13 @@ rates extend the same problem over the history. Overall scale is immaterial
 on both sides, since the LMO is used only for the direction.
 
 \subsection{From the weighted second moment to the update}
-The momentum is maintained directly, but $\overline\Sigma$ involves
-per-sample outer products the optimizer never sees. This subsection builds
-the estimator \Cref{alg:ours} runs instead --- batch-level,
-Kronecker-factored, online --- and then assembles the update.
+Estimating $\overline\Sigma$ must work from what the optimizer sees. In LoRA
+the weight matrix is the product $W=W_0+BA$~\eqref{eq:lora}, and
+backpropagation provides only the factor gradients $G_A=B^\top G$ and
+$G_B=GA^\top$~\eqref{e-grad-wrt-factors} of its gradient $G$, never $G$
+itself. This subsection builds the estimator \Cref{alg:ours} runs under
+these constraints --- batch-level, Kronecker-factored, online --- and then
+assembles the update.
 
 \paragraph{Estimation at batch granularity.} Backpropagation materializes
 only batch gradients, never per-sample ones, so the optimizer estimates
@@ -1225,12 +1228,10 @@ where $P,Q$ are the normalized factors
 ($\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$) and the scalar $\kappa_t>0$
 carries the magnitude that the normalization removes.
 
-An estimate must be computable from what the optimizer sees: the factor
-gradients $G_A=B^\top G$ and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} that a
-merged-weight gradient $G$ induces at the current factors $A=A_t$, $B=B_t$, and
-the $r\times r$ matrices $C_A=B^\top PB$
-and $C_B=AQA^\top$~\eqref{eq:ours-closure} it already forms for the direction
-step. From these ingredients, given one factor we can estimate the other:
+The estimate must use the factor gradients, evaluated at the current factors
+$A=A_t$, $B=B_t$, and may reuse the $r\times r$ matrices $C_A=B^\top PB$ and
+$C_B=AQA^\top$~\eqref{eq:ours-closure} that the direction step already forms.
+From these ingredients, given one factor we can estimate the other:
 \[
   T_Q(P)=\frac1r\diag\!\left(\mathbb{E}_t[G_A^\top C_A^{-1}G_A]\right),
   \qquad
