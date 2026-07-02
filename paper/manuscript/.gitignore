@@ -10,6 +10,7 @@
 *.run.xml
 *.synctex.gz
 *.toc
+*.ptc
 *-blx.bib
 # Compiled manuscript PDF (figure PDFs under figs/ ARE tracked — Overleaf needs them)
 main.pdf

@@ -565,7 +565,7 @@ Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the mag
 \label{sec:exp-taskdep}
 To probe the effect of the LoRA rank and of the finetuning dataset on the performance of \methodname{}, we vary the rank while finetuning on math and vary the dataset from code to a low-resource language underrepresented in the pretraining mix.
 
-\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, the step speedup of \methodname{} over Adam grows too (\Cref{tab:rank}; learning curves in \Cref{fig:curves-rank}). \methodname{} also exhibits learning rate transfer: its optimal learning rate is stable across rank, whereas Adam's shifts (\Cref{fig:lr_transfer}). We also observe reduced sensitivity to the learning rate compared to Adam.
+\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, the step speedup of \methodname{} over Adam grows too (\Cref{tab:rank}; learning curves in \Cref{fig:curves}(c)). \methodname{} also exhibits learning rate transfer: its optimal learning rate is stable across rank, whereas Adam's shifts (\Cref{fig:lr_transfer}). We also observe reduced sensitivity to the learning rate compared to Adam.
 
 \begin{table}[t]
 \centering\small
@@ -1626,39 +1626,6 @@ the wall (\Cref{tab:breadth}).
 %   Qwen2.5-1.5B C_opt 1.8e12 / C_fb 2.4e14 = 0.73%
 %   Llama-3-8B   C_opt 3.0e12 / C_fb 1.1e15 = 0.27%
 
-\section{Additional Learning Curves}
-\label{app:curves}
-\Cref{tab:breadth} shows steps-to-Adam across model families on code and math.
-\Cref{fig:curves-breadth,fig:curves-breadth-math} complement this by plotting the
-evaluation loss over the training steps on each corpus.
-\Cref{fig:curves-rank} shows the evaluation loss over training steps across different ranks.
-Each panel shows Adam
-and \methodname{} at their optimal learning rates. The settings already drawn as curves in the main text
-(\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated here.
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=\linewidth]{figA_breadth.pdf}
-  \caption{\textbf{\methodname{} speedup over Adam across model families (code).} Evaluation loss over training steps across OLMo-2-1B, Llama-3.2-1B, Llama-3-8B (Qwen2.5-1.5B is in \Cref{fig:ood}) models
-  finetuned on code dataset at rank $r = 256$. }
-  \label{fig:curves-breadth}
-\end{figure}
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=\linewidth]{figA_breadth_math.pdf}
-  \caption{\textbf{\methodname{} speedup over Adam across model families (math).} Evaluation loss over training steps across OLMo-2-1B, Qwen2.5-1.5B, Llama-3-8B (Llama-3.2-1B is in \Cref{fig:hero}) models
-  finetuned on math (OpenMathInstruct-2) at rank $r = 256$. }
-  \label{fig:curves-breadth-math}
-\end{figure}
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=\linewidth]{figA_rank.pdf}
-  \caption{\textbf{\methodname{} speedup over Adam across different ranks.} Evaluation loss over training steps on Llama-3.2-1B finetuned on math dataset at each rank $r\in\{32,64,128\}$ ($r = 256$ is in \Cref{fig:hero}).}
-  \label{fig:curves-rank}
-\end{figure}
-
 \section{Factor Self-Balancing}
 \label{app:gauge}
 By \eqref{eq:ours-rho}, the update size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. The rescaling $(A,B)\mapsto(cA,c^{-1}B)$ preserves the product $BA$, so the layer's output is unchanged. It does change $\norm{A}_2$ and $\norm{B}_2$, shifting $\rho$. Among such rescalings, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style update sizes \cite{loramuon}.
@@ -1670,6 +1637,20 @@ In our runs this problem does not arise, because the factors balance dynamically
   \includegraphics[width=0.6\linewidth]{fig_gauge.pdf}
   \caption{\textbf{Factor norm self-balancing in \methodname{}.} Spectral-norm ratio $\norm{B}_2/\norm{A}_2$ over training steps for Llama-3.2-1B finetuned on math dataset at each rank; it settles near $1$.}
   \label{fig:gauge}
+\end{figure}
+
+\section{Additional Learning Curves}
+\label{app:curves}
+\Cref{tab:breadth} shows steps-to-Adam across model families on code and math.
+\Cref{fig:curves} complements this with the evaluation loss over training steps: rows~(a)
+and~(b) span the model families on code and math, and row~(c) the rank ladder. Each panel
+shows Adam and \methodname{} at their optimal learning rates.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figA_curves.pdf}
+  \caption{\textbf{\methodname{} speedup over Adam across settings.} Evaluation loss over training steps, Adam vs \methodname{} at each setting's best learning rate. \textbf{(a)}~model families finetuned on code and \textbf{(b)}~on math, at rank $r = 256$; \textbf{(c)}~the rank ladder on Llama-3.2-1B (math). The dashed span marks the steps \methodname{} saves in reaching Adam's final loss. Settings already drawn as curves in the main text (\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated.}
+  \label{fig:curves}
 \end{figure}
 
 \stopcontents[app]
