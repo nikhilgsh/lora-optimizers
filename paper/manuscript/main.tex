@@ -3,10 +3,14 @@
 \usepackage{amssymb,amsmath,amsthm,amsbsy,amsfonts}
 \usepackage{mathtools}
 \usepackage[letterpaper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{libertinus}
+\usepackage{microtype}
 \usepackage{bm}
 \usepackage{graphicx}
 \usepackage{float}        % [H] keeps trailing appendix figures with their section
 \usepackage{booktabs}
+\usepackage[font={small},labelfont={bf,up}]{caption}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \usepackage{thmtools,thm-restate}
@@ -18,8 +22,9 @@
 % Unnumbered bold phase labels inside algorithm blocks.
 \algnewcommand{\Phase}[1]{\Statex\textbf{#1}}
 \usepackage{enumitem}
+\usepackage{titletoc}
 \usepackage{xcolor}
-\usepackage[colorlinks,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage[colorlinks,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
 \usepackage[nameinlink]{cleveref}
 \usepackage[firstinits=true,backend=bibtex,style=numeric-comp,citestyle=numeric-comp,sorting=nyt,url=false,arxiv=false,isbn=false,doi=false]{biblatex}
 \bibliography{references}
@@ -436,11 +441,13 @@ and so setting
 \label{eq:ours-rho}
 \end{equation}
 ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ and $D_B$ from \eqref{eq:factor-directions} gives the updates
-\[
+\begin{equation}
 \Delta A = -\rho\,\frac{D_A}{\norm{D_A}_2},
 \qquad
 \Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
-\]
+\tag{PoLoRA}
+\label{eq:polora-update}
+\end{equation}
 \paragraph{Optimizer step.} To reduce overhead, the curvature factors $P$ and $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}. We also employ standard averaging techniques: an exponential moving average (EMA) momentum with look-ahead for the gradients, and an EMA for $P$ and $Q$. The Kronecker factorization~\eqref{eq:pq-factor} is fixed only up to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$; the update is invariant to it, but the EMA estimate of the factors is not (\Cref{app:matnormal}), so we use the normalized representative $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$. To ensure fast optimizer steps we use power iteration for estimating spectral norms (\Cref{app:smax}) and Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} for the matrix sign and inverse square roots (\Cref{app:gramns}). For stability, we use relative damping in the inverse square roots
 (\Cref{app:damping}). The resulting step is summarized in \Cref{alg:ours}. 
 
@@ -678,13 +685,17 @@ These limitations also point to several future directions. One is to design bett
 
 % ===========================================================================
 \clearpage
-\tableofcontents
 \appendix
 % cleveref: render post-appendix sections as "Appendix N", not "Section N"
 \crefname{appendix}{Appendix}{Appendices}
 \Crefname{appendix}{Appendix}{Appendices}
 \crefalias{section}{appendix}
 \crefalias{subsection}{appendix}
+% Appendix-scoped table of contents (only appendix sections), on its own page.
+\startcontents[app]
+\section*{Appendix Contents}
+\printcontents[app]{}{1}{\setcounter{tocdepth}{2}}
+\clearpage
 \section{Experimental Details}
 \label{app:exp}
 This section gives the full configuration behind \Cref{sec:exp-setup}. Within each setting (a model, a dataset, and a rank), the optimizer and its learning rate are the only things we vary; everything in \Cref{tab:config} is held fixed. For each optimizer we sweep the learning rate and report the run with the lowest held-out loss.
@@ -1023,28 +1034,38 @@ and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\to
 
 \section{Extended Prior Work}
 \label{app:related-spectral}
-\nikhil{should be fleshed out more, especially spectron.}
-Here we will better contextualize how
- \methodname{} relates to other spectral and curvature-aware
-optimizers (\Cref{sec:related}).
+Here we compare \methodname{} in more detail to two methods of \Cref{sec:related} that each
+match one of its components: curvature preconditioning (Mousse) and factor-step magnitude
+control (Spectron).
 
 \paragraph{Mousse.}
-Mousse fixes its trust region by a Shampoo curvature $H\approx(R\otimes L)^{1/2}$, with
-$L$ and $R$ being the moving averages of $GG^\top$ and $G^\top G$. Preconditioning by
-$H^{1/2}=(R\otimes L)^{1/4}$ gives the update
+Mousse~\cite{mousse} preconditions a matrix-sign step by a Kronecker curvature, on the full
+weight matrix. Its curvature is the Shampoo estimate $H\approx(R\otimes L)^{1/2}$, with $L,R$
+the moving averages of $GG^\top$ and $G^\top G$. Preconditioning the gradient by
+$H^{1/2}=(R\otimes L)^{1/4}$ gives
 \[
   \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
 \]
-\methodname{} instead uses the gradient second moment $\Sigma\approx Q\otimes P$ as the
-curvature matrix, preconditioning by $P^{-1/2}$ and $Q^{-1/2}$ (\Cref{alg:ours}), an inverse square root
-rather than the fourth-root power of Mousse. The first-order LoRA product map then contracts
-these to the $r\times r$ matrices $C_A=B^\top P B$ and $C_B=AQA^\top$.
+\methodname{} preconditions the same step but by the per-sample gradient second moment
+$\Sigma\approx Q\otimes P$~\eqref{eq:pq-factor} at the inverse square root $P^{-1/2},Q^{-1/2}$,
+rather than the Shampoo second moment at the fourth root. It also acts on the LoRA product
+rather than the full weight, the product map contracting $P,Q$ to the $r\times r$ matrices
+$C_A=B^\top P B$ and $C_B=AQA^\top$~\eqref{eq:ours-closure}.
 
 \paragraph{Spectron.}
-Spectron \cite{spectron} bounds the induced product update by rescaling orthogonalized
-factor steps with the current factor norms, in native low-rank pretraining. It is close in
-spirit to the magnitude control in \methodname{} but is not curvature-aware and is not derived
-from a single LoRA LMO.
+Spectron~\cite{spectron} addresses native low-rank pretraining, where every weight is a
+product $W=BA$ with no frozen base and the rescaling $(A,B)\mapsto(cA,c^{-1}B)$ can drive
+$\norm{\Delta W}_2$ unboundedly while $W$ stays fixed. It controls this by rescaling both
+orthogonalized factor steps to a common spectral norm $\rho_{\mathrm S}$, without curvature
+preconditioning and without an LMO derivation. \methodname{} rescales the same way to a common
+$\rho$, the two rules differing only by the $+1$ in Spectron's denominator, which folds the
+dropped quadratic term $\Delta B\Delta A$ into the bound where \methodname{} accounts for it
+after the fact (\Cref{rem:quadratic}):
+\[
+  \rho_{\mathrm S}=\frac{\eta}{\norm{A}_2+\norm{B}_2+1}
+  \qquad\text{vs.}\qquad
+  \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2}.
+\]
 
 % ===========================================================================
 \section{Estimating the Curvature Factors}
@@ -1453,7 +1474,7 @@ momentum direction until the curvature estimate becomes nonzero.
 
 
 
-\section{FLOP Overhead of the Optimizer}
+\section{FLOP Overhead per Optimizer Step}
 \label{app:flops}
 The wall-clock measurements in \Cref{sec:exp-walltime} depend on the hardware, so
 we also report leading matmul FLOP counts, which do not.  We count one
@@ -1605,7 +1626,7 @@ the wall (\Cref{tab:breadth}).
 %   Qwen2.5-1.5B C_opt 1.8e12 / C_fb 2.4e14 = 0.73%
 %   Llama-3-8B   C_opt 3.0e12 / C_fb 1.1e15 = 0.27%
 
-\section{Per-Setting Learning Curves}
+\section{Additional Learning Curves}
 \label{app:curves}
 \Cref{tab:breadth} shows steps-to-Adam across model families on code and math.
 \Cref{fig:curves-breadth,fig:curves-breadth-math} complement this by plotting the
@@ -1651,5 +1672,5 @@ In our runs this problem does not arise, because the factors balance dynamically
   \label{fig:gauge}
 \end{figure}
 
-
+\stopcontents[app]
 \end{document}
