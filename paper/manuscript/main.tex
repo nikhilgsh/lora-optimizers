@@ -772,19 +772,17 @@ where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i}$ is the
 output-side gradient.
 \end{proof}
 
+We verify that the per-sample LMO~\eqref{eq:sample-lmo} is well-posed.
 \begin{proposition}[Well-posedness of the per-sample LMO]
 \label{prop:wellposed}
-Let $G=\tfrac1n\sum_{i=1}^n G_i$. The per-sample LMO~\eqref{eq:sample-lmo} has a
-finite optimal value, attained at some $\Delta W^\star$ with
-$\ip{G,\Delta W^\star}\in[-\tau,\tau]$.
+Let $G_1,\dots,G_n$ be the per-sample gradients in~\eqref{eq:sample-lmo} and $G=\tfrac1n\sum_{i=1}^n G_i$. Then the per-sample LMO~\eqref{eq:sample-lmo} attains a finite minimum.
 \end{proposition}
 \begin{proof}
-The feasible set is a nonempty polyhedron, since it contains $\Delta W=0$. On it
-$|\ip{G,\Delta W}|\le\tfrac1n\sum_i|\ip{G_i,\Delta W}|\le\tau$, so the linear
-objective is bounded below, and a linear function bounded below on a nonempty
-polyhedron attains its infimum. The minimizer need not be unique, since the
-objective is constant along $\operatorname{span}\{G_i\}^\perp$, but \methodname{}
-relaxes~\eqref{eq:sample-lmo} rather than solving it.
+The feasible set is a nonempty polyhedron, since it contains $\Delta W=0$. For every feasible $\Delta W$,
+\[
+|\ip{G,\Delta W}|\le\tfrac1n\sum_{i=1}^n|\ip{G_i,\Delta W}|\le\tau,
+\]
+so the objective $\ip{G,\Delta W}$ is bounded below by $-\tau$. A linear function bounded below on a nonempty polyhedron attains its minimum~\cite{bertsimas1997introduction}, which gives the claim. The minimizer need not be unique, since the objective is constant along $\operatorname{span}\{G_i\}^\perp$.
 \end{proof}
 
 Next we solve the spectral-norm LMO whose solution is the Muon update direction (\Cref{sec:muon}).
