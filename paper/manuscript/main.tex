@@ -286,7 +286,7 @@ Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the s
   \label{eq:sample-lmo}
 \end{equation}
 This LMO has a finite optimum (\Cref{prop:wellposed}).
-Since we do not have efficient direct access to the per-input gradients $G_i$, we will now define an \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the inequality
+Since we do not have efficient direct access to the per-input gradients $G_i$, we will now define a centrally symmetric \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the inequality
 \begin{equation} \label{eq:outgrad1}
     \max_{i=1,\ldots, n}  |\ip{G_i, \Delta W}|
     \leq   \max_{\tilde G \in \mathcal{G}} \; \ip{\tilde G, \Delta W},
@@ -335,7 +335,7 @@ and KFAC~\cite{kfac}, let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ a
 \end{equation}
 Fortunately the above can be simplified. By~\Cref{lem:pseudogradient-spectral} the constraint in~\eqref{eq:polorafull-hard} can be re-written using the identity 
 \[ 
-\max_{G \in \mathcal{G}(Q \otimes P)}\ip{G, \Delta W}  
+\max_{\tilde G \in \mathcal{G}(Q \otimes P)}\ip{\tilde G, \Delta W}
 = \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2.
 \]
 Then \eqref{eq:polorafull-hard} can be rewritten as
