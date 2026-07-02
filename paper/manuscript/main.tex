@@ -1264,20 +1264,20 @@ each map recovers the other factor up to the shared scalar $\kappa_t$.
 \begin{proof}
 With $g=\vec(G)$ column-stacked, the model reads
 $\mathbb{E}_t[G_{aj}G_{bk}]=\kappa_t Q_{jk}P_{ab}$, so for any symmetric
-$M\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
+$X\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$,
 \[
 \begin{aligned}
-  \mathbb{E}_t[G^\top M G]_{jk}
-  &=\sum_{a,b}M_{ab}\,\mathbb{E}_t[G_{aj}G_{bk}]
+  \mathbb{E}_t[G^\top X G]_{jk}
+  &=\sum_{a,b}X_{ab}\,\mathbb{E}_t[G_{aj}G_{bk}]
   &&\\
-  &=\kappa_t Q_{jk}\sum_{a,b}M_{ab}P_{ab}
-  =\kappa_t\Tr(MP)\,Q_{jk} .
+  &=\kappa_t Q_{jk}\sum_{a,b}X_{ab}P_{ab}
+  =\kappa_t\Tr(XP)\,Q_{jk} .
 \end{aligned}
 \]
-Taking $M=B C_A^{-1}B^\top$ gives $\Tr(MP)=\Tr(C_A^{-1}B^\top P B)=\Tr(I_r)=r$,
+Taking $X=B C_A^{-1}B^\top$ gives $\Tr(XP)=\Tr(C_A^{-1}B^\top P B)=\Tr(I_r)=r$,
 so with $G_A=B^\top G$,
 \[
-  T_Q(P)=\tfrac1r\diag\!\left(\mathbb{E}_t[G^\top M G]\right)
+  T_Q(P)=\tfrac1r\diag\!\left(\mathbb{E}_t[G^\top X G]\right)
   =\tfrac1r\diag(\kappa_t r\,Q)=\kappa_t\diag(Q).
 \]
 The claim for $T_P$ follows by exchanging $A\leftrightarrow B$ and the two index
