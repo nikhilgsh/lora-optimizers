@@ -1124,7 +1124,7 @@ relax as in the main text to a preconditioned spectral bound built from the
 weighted second moment of those samples (\Cref{sec:weighted-lmo}). We then
 recover the factors as the fixed point of two coupled maps built from the
 factor gradients (\Cref{lem:fixed-point-consistency}), and finally give the
-online update that tracks this fixed point (\Cref{prop:scale-sensitivity}).
+online update that tracks this fixed point~\eqref{eq:ours-klcoupling}.
 
 \subsection{The weighted LMO}
 \label{sec:weighted-lmo}
@@ -1262,39 +1262,31 @@ $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$, then
 each map recovers the other factor up to the shared scalar $\kappa_t$.
 \end{lemma}
 \begin{proof}
-Write $G=[g_1,\dots,g_{d_{\mathrm{in}}}]$ in columns, so that $g=\vec(G)$
-stacks them. Both sides of the model
-$\mathbb{E}_t[gg^\top]=\kappa_t(Q\otimes P)$ are then
-$d_{\mathrm{in}}\times d_{\mathrm{in}}$ arrays of
-$d_{\mathrm{out}}\times d_{\mathrm{out}}$ blocks. Block $(j,k)$ of $gg^\top$
-is $g_jg_k^\top$, and block $(j,k)$ of $Q\otimes P$ is $Q_{jk}P$, so the model
-states
+Let $X\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ be symmetric with
+spectral decomposition $X=\sum_l\lambda_l x_lx_l^\top$, so that
+$G^\top XG=\sum_l\lambda_l(G^\top x_l)(G^\top x_l)^\top$. Vectorizing gives
+$G^\top x=(I_{d_{\mathrm{in}}}\otimes x^\top)\,g$ for any
+$x\in\R^{d_{\mathrm{out}}}$, so the model and the mixed-product identity
+$(A\otimes B)(C\otimes D)=AC\otimes BD$ yield
 \[
-  \mathbb{E}_t[g_jg_k^\top]=\kappa_t\,Q_{jk}\,P .
+  \mathbb{E}_t\big[(G^\top x)(G^\top x)^\top\big]
+  =(I\otimes x^\top)\,\mathbb{E}_t[gg^\top]\,(I\otimes x)
+  =\kappa_t\,(I\otimes x^\top)(Q\otimes P)(I\otimes x)
+  =\kappa_t\,(x^\top Px)\,Q .
 \]
-For any symmetric $X\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$, entry
-$(j,k)$ of $G^\top XG$ is $g_j^\top Xg_k=\ip{X,\,g_jg_k^\top}$, so
-\[
-  \mathbb{E}_t[G^\top X G]_{jk}
-  =\ip{X,\,\mathbb{E}_t[g_jg_k^\top]}
-  =\kappa_t Q_{jk}\ip{X,P}
-  =\kappa_t\Tr(XP)\,Q_{jk},
-\]
-that is, $\mathbb{E}_t[G^\top XG]=\kappa_t\Tr(XP)\,Q$. Now take
-$X=BC_A^{-1}B^\top$. This choice produces the matrix that $T_Q$ averages,
-since $G_A=B^\top G$ gives
-$G_A^\top C_A^{-1}G_A=G^\top BC_A^{-1}B^\top G=G^\top XG$, and it makes the
-trace a constant, since $C_A=B^\top PB$ and cyclicity give
+Summing over the decomposition and using
+$\sum_l\lambda_l\,x_l^\top Px_l=\Tr(XP)$ gives
+$\mathbb{E}_t[G^\top XG]=\kappa_t\Tr(XP)\,Q$. Now take $X=BC_A^{-1}B^\top$.
+This choice produces the matrix that $T_Q$ averages, since $G_A=B^\top G$
+gives $G_A^\top C_A^{-1}G_A=G^\top BC_A^{-1}B^\top G=G^\top XG$, and it makes
+the trace a constant, since $C_A=B^\top PB$ and cyclicity give
 $\Tr(XP)=\Tr(C_A^{-1}B^\top PB)=\Tr(C_A^{-1}C_A)=\Tr(I_r)=r$. Therefore
 \[
   T_Q(P)=\tfrac1r\diag\!\big(\mathbb{E}_t[G^\top XG]\big)
   =\tfrac1r\diag(\kappa_t\,r\,Q)=\kappa_t\diag(Q).
 \]
-The claim for $T_P$ is the same computation on the rows of $G$. Blockwise the
-model reads $\mathbb{E}_t[\tilde g_a\tilde g_b^\top]=\kappa_t\,P_{ab}\,Q$ for
-the rows $\tilde g_a^\top$ of $G$, and $X=A^\top C_B^{-1}A$ gives
-$G_BC_B^{-1}G_B^\top=GXG^\top$ with
-$\Tr(XQ)=\Tr(C_B^{-1}AQA^\top)=\Tr(I_r)=r$.
+The claim for $T_P$ holds by the same argument with the roles of rows and
+columns exchanged ($A\leftrightarrow B$, $P\leftrightarrow Q$).
 \end{proof}
 
 The inner $C_A^{-1}$ calibrates the recovered scale: it makes the trace in the
@@ -1347,25 +1339,17 @@ removes what remains (likewise for $P$). The update therefore needs only the
 direction of the stored vector, never the magnitude $\kappa_t$ carried by the
 fit~\eqref{e-diag-kron-second-mom-model}, and normalizing at use costs nothing.
 
-\begin{proposition}[Scale sensitivity of the estimator]\label{prop:scale-sensitivity}
-Fix the minibatch and $B$. Scaling the factor fed into $C_A$ by $a>0$ scales the
-estimate inversely,
+\paragraph{The average is scale-sensitive.} Scale enters the
+EMA~\eqref{eq:ours-klcoupling} from both sides. On the input side, the
+estimate scales inversely with the factor fed into $C_A$,
 \[
-  \widehat q_t(aP_t)=a^{-1}\,\widehat q_t(P_t).
+  \widehat q_t(aP_t)=a^{-1}\,\widehat q_t(P_t)
+  \qquad(a>0),
 \]
-Hence an unnormalized factor with a step-dependent scale $a_s$ enters the
-EMA~\eqref{eq:ours-klcoupling} with its weight $(1-\beta_2)\beta_2^{t-1-s}$
-multiplied by $1/a_s$, corrupting the EMA weights.
-\end{proposition}
-\begin{proof}
-$C_A=B^\top(aP_t)B=aB^\top P_t B$, so $C_A^{-1}=a^{-1}(B^\top P_t B)^{-1}$ and
-$\widehat q_t=\frac1r\diag(G_A^\top C_A^{-1}G_A)$ scales by $a^{-1}$.
-\end{proof}
-
-\paragraph{Average in raw units.} Scale enters the EMA~\eqref{eq:ours-klcoupling}
-from both sides. The input side is \Cref{prop:scale-sensitivity}: the estimate
-scales inversely with the factor fed into $C_A$, so the input must arrive at a
-fixed scale, which the $\ell_\infty$ normalization provides. On the output side, normalizing each estimate
+since $C_A=B^\top(aP_t)B=a\,B^\top P_tB$. An input factor carrying a
+step-dependent scale $a_s$ would therefore enter the average with its weight
+multiplied by $1/a_s$. Normalizing the factor at use fixes its scale and
+protects the weights. On the output side, normalizing each estimate
 before averaging would run $N(v)=v/\norm{v}_\infty$ inside the sum, and $N$
 does not commute with averaging. Model each estimate as the factor at its
 minibatch magnitude plus zero-mean noise,
