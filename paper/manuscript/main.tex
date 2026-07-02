@@ -81,7 +81,7 @@
 \begin{abstract}
 Low-rank adaptation (LoRA) makes finetuning large language models cheaper, but it is usually trained with Adam, which treats the two LoRA factors as unrelated parameters. This ignores the fact that the model is changed through their product. We introduce PoLoRA, 
 a Preconditioned Orthogonalized LoRA 
- optimizer. PoLoRA combines three ingredients: a product-aware update direction, its curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
+ optimizer. PoLoRA combines three ingredients: a product-aware update direction,  curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
  From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal curvature factors.
  We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding less than 3\% per-step overhead.
  It also has a more stable best learning rate across LoRA ranks than Adam.
@@ -141,7 +141,14 @@ Our open source implementation is available at:
 \end{quote}
 
 
-The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname{}. We first review Muon as a spectral-norm linear minimization oracle in \Cref{sec:muon}. We then adapt this view to LoRA products in \Cref{sec:product-muon} to arrive at Product Muon. \Cref{sec:sample-loss-lmo} derives our curvature-aware update from a per-sample loss-change constraint and turns it into a practical factor update with magnitude control. \Cref{sec:exp} evaluates the method. The main comparison in \Cref{sec:exp-main} measures step and wall-clock speedups over Adam, with the headline behavior shown in \Cref{fig:hero} and the full breadth summarized in \Cref{tab:breadth}. \Cref{sec:exp-ablation} separates the roles of curvature and magnitude control, while \Cref{sec:exp-taskdep} studies rank transfer and distribution shift. Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.\nikhil{roadmap repeats \Cref{sec:method} opening and the \Cref{sec:exp} opening (per-experiment breakdown). Worth trimming anywhere?}
+The rest of the paper proceeds as follows. \Cref{sec:method} both motivates and derives \methodname{}.
+% , where in we first review Muon as a spectral-norm linear minimization oracle in \Cref{sec:muon}, then adapt this view to LoRA products in \Cref{sec:product-muon} to arrive at Product Muon. \Cref{sec:sample-loss-lmo} derives our curvature-aware update from a per-sample loss-change constraint and turns it into a practical factor update with magnitude control. 
+\Cref{sec:exp} evaluates \methodname{}, comparing it both it terms of step and wall-clock speedups over Adam and other baslines.
+% , with the headline behavior shown in \Cref{fig:hero} and the full breadth summarized in \Cref{tab:breadth}. 
+\Cref{sec:exp-ablation} separates the roles of curvature and magnitude control.
+% while \Cref{sec:exp-taskdep} studies rank transfer and distribution shift. 
+Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.
+% \nikhil{roadmap repeats \Cref{sec:method} opening and the \Cref{sec:exp} opening (per-experiment breakdown). Worth trimming anywhere?}
 
 % This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update.
 % Our contributions are:
@@ -811,7 +818,7 @@ The feasible set is a nonempty polyhedron, since it contains $\Delta W=0$. For e
 \[
 |\ip{G,\Delta W}|\le\tfrac1n\sum_{i=1}^n|\ip{G_i,\Delta W}|\le\tau,
 \]
-so the objective $\ip{G,\Delta W}$ is bounded below by $-\tau$. A linear function bounded below on a nonempty polyhedron attains its minimum~\cite{bertsimas1997introduction}, which gives the claim. The minimizer need not be unique, since the objective is constant along $\operatorname{span}\{G_i\}^\perp$.
+so the objective $\ip{G,\Delta W}$ is bounded below by $-\tau$. A linear function bounded below on a nonempty polyhedron attains its minimum~\cite{bertsimas1997introduction}, which gives the claim. The minimizer need not be unique, since the objective is constant along $\operatorname{span}\{G_1,\ldots,G_n\}^\perp$.
 \end{proof}
 
 Next we solve the spectral-norm LMO whose solution is the Muon update direction (\Cref{sec:muon}).
