@@ -137,7 +137,7 @@ We evaluate \methodname{} through an extensive numerical study spanning multiple
 \noindent
 Our open source implementation is available at:
 \begin{quote}\centering
-{\color{blue}\url{https://github.com/XXX}}
+{\color{blue}\url{https://github.com/nikhilgsh/polora}}
 \end{quote}
 
 
@@ -176,7 +176,7 @@ The rest of the paper proceeds as follows. \Cref{sec:method} derives \methodname
 To derive the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the constrained steepest descent perspective~\cite{crawshaw2026exploration}, which is often referred to as the  linear minimization oracle (LMO) perspective~\cite{pmlr-v267-pethick25a}. 
 % This perspective views the Muon update as minimizing the linearized loss subject to controlling the spectral norm of the update. 
 Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon method. 
-In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates.
+In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
 % A LoRA adapter changes the model through the product $BA$ of its two
 % factors~\eqref{eq:lora}, while the optimizer acts on $A$ and $B$. This section
 % derives an update that treats the adapter as a matrix update while still
@@ -448,7 +448,8 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 \tag{PoLoRA}
 \label{eq:polora-update}
 \end{equation}
-\paragraph{Optimizer step.} To reduce overhead, the curvature factors $P$ and $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}. We also employ standard averaging techniques: an exponential moving average (EMA) momentum with look-ahead for the gradients, and an EMA for $P$ and $Q$. The Kronecker factorization~\eqref{eq:pq-factor} is fixed only up to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$; the update is invariant to it, but the EMA estimate of the factors is not (\Cref{app:matnormal}), so we use the normalized representative $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$. To ensure fast optimizer steps we use power iteration for estimating spectral norms (\Cref{app:smax}) and Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} for the matrix sign and inverse square roots (\Cref{app:gramns}). For stability, we use relative damping in the inverse square roots
+The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
+\paragraph{Optimizer step.} To reduce overhead, the curvature factors $P$ and $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}. We also employ standard averaging techniques: an exponential moving average (EMA) momentum with look-ahead for the gradients, and an EMA for $P$ and $Q$. \Cref{app:matnormal} interprets both averages as the per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples with exponentially decaying weights, the momentum forming its objective and the estimated $P,Q$ its constraint set. The Kronecker factorization~\eqref{eq:pq-factor} is fixed only up to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$; the update is invariant to it, but the EMA estimate of the factors is not (\Cref{app:matnormal}), so we normalize each factor to unit $\ell_\infty$ norm, $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$. To ensure fast optimizer steps we use power iteration for estimating spectral norms (\Cref{app:smax}) and Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} for the matrix sign and inverse square roots (\Cref{app:gramns}). For stability, we use relative damping in the inverse square roots
 (\Cref{app:damping}). The resulting step is summarized in \Cref{alg:ours}. 
 
 \begin{algorithm}[t]
@@ -475,7 +476,7 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
 \State $A\gets A-\rho\,D_A/\norm{D_A}_2, \qquad B\gets B-\rho\,D_B/\norm{D_B}_2$
 \Statex
-\Phase{Curvature Update}
+\Phase{Update to Curvature Factors}
 \State $q\gets\beta_2\, q+(1-\beta_2)\diag\big(G_A^\top C_A^{-1} G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}
 \State $p\gets\beta_2\, p+(1-\beta_2)\diag\big(G_B\, C_B^{-1} G_B^\top\big)/r$
 \end{algorithmic}
@@ -736,21 +737,38 @@ LR schedule            & constant \\
 \label{tab:config}
 \end{table}
 
-\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimum. All other optimizer hyperparameters are fixed (\Cref{tab:optim-config}).
+\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimum. All other optimizer hyperparameters are fixed: \Cref{tab:optim-config} lists the baseline settings, and \Cref{tab:polora-config} the \methodname{} settings.
 \begin{table}[ht]
 \centering\small
-\begin{tabular}{@{}lccccc@{}}
+\begin{tabular}{@{}lcccc@{}}
 \toprule
- & Adam & Muon & iMuon & LoRA-RITE & \methodname{} \\
+ & Adam & Muon & iMuon & LoRA-RITE \\
 \midrule
-$\beta_1$                 & $0.9$     & $0.9$ & $0.95$ & $0.9$     & $0.9$ \\
-$\beta_2$                 & $0.999$   & ---   & ---    & $0.999$   & $0.99$ \\
-$\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ & --- \\
-Newton--Schulz iterations & ---       & $8$   & $5$    & ---       & $8$ \\
+$\beta_1$                 & $0.9$     & $0.9$ & $0.95$ & $0.9$     \\
+$\beta_2$                 & $0.999$   & ---   & ---    & $0.999$   \\
+$\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ \\
+Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 \bottomrule
 \end{tabular}
-\caption{Per-optimizer hyperparameters. $\beta_1$ is the momentum decay, $\beta_2$ the second-moment decay for Adam and LoRA-RITE and the curvature-EMA decay for \methodname{}, and $\varepsilon$ the numerical-stability constant. \methodname{} additionally applies relative damping $\delta=10^{-4}$ (\Cref{app:damping}).}
+\caption{Baseline hyperparameters. $\beta_1$ is the momentum decay, $\beta_2$ the second-moment decay, and $\varepsilon$ the numerical-stability constant.}
 \label{tab:optim-config}
+\end{table}
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+setting & value \\
+\midrule
+momentum decay $\beta_1$                                      & $0.9$ \\
+curvature decay $\beta_2$                                     & $0.99$ \\
+Gram Newton--Schulz iterations (\Cref{app:gramns})            & $8$ \\
+power iterations per spectral-norm estimate (\Cref{app:smax}) & $8$ \\
+relative damping $\delta$ (\Cref{app:damping})                & $10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\caption{\methodname{} hyperparameters.}
+\label{tab:polora-config}
 \end{table}
 
 \paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip is not, so we do not apply the \Cref{tab:config} clip to LoRA-RITE.
@@ -1068,125 +1086,163 @@ after the fact (\Cref{rem:quadratic}):
 \]
 
 % ===========================================================================
-\section{Estimating the Curvature Factors}
+\section{Averaging as an LMO over Past Samples}
 \label{app:matnormal}
 \nikhil{Needs work.}
-\Cref{alg:ours} preconditions the factor gradients of each LoRA layer with two
-diagonal curvature factors,
+\Cref{alg:ours} computes its update directions in a metric set by two diagonal
+curvature factors $P$ and $Q$, stored as the vectors $p\in\R^{d_{\mathrm{out}}}$
+and $q\in\R^{d_{\mathrm{in}}}$ that weight the output and input coordinates of
+the layer. The factors model the second moment of the per-sample gradients of
+the merged weight $W=W_0+BA$: with $G_i=\nabla_W\ell_{x_i}$ the gradient on
+sample $x_i$ and $g_i=\vec(G_i)$ (\Cref{lem:gradprop}),
 \[
-  P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}},
+  \Sigma=\frac1n\sum_{i=1}^n g_ig_i^\top\approx Q\otimes P .
+\]
+This is the Kronecker approximation~\eqref{eq:pq-factor} of the main text. This
+appendix derives how the optimizer estimates the factors.
+
+The estimator is shaped by what the optimizer can afford and observe. The full
+$\Sigma$ is $d_{\mathrm{out}}d_{\mathrm{in}}\times d_{\mathrm{out}}d_{\mathrm{in}}$
+and cannot be stored, and backpropagation provides only the factor gradients
+$G_A=B^\top G$ and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} of the merged-weight
+gradient $G$, never $G$ itself. The optimizer therefore keeps only the vectors
+$p,q$, updates them once per step from the factor gradients (the last phase of
+\Cref{alg:ours}), and normalizes a factor to unit $\ell_\infty$ norm whenever it
+is used, $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$.
+
+We first interpret the two averages the optimizer runs --- the momentum and the
+EMA behind $p,q$ --- as the per-sample LMO of \Cref{sec:sample-loss-lmo} posed
+over all past samples with exponentially decaying weights, whose constraints
+relax as in the main text to a preconditioned spectral bound built from the
+weighted second moment of those samples (\Cref{sec:weighted-lmo}). We then
+recover the factors as the fixed point of two coupled maps built from the
+factor gradients (\Cref{lem:fixed-point-consistency}), and finally give the
+online update that tracks this fixed point (\Cref{prop:scale-sensitivity}).
+
+\subsection{The weighted LMO}
+\label{sec:weighted-lmo}
+The per-sample LMO~\eqref{eq:sample-lmo} poses its objective and constraints on
+the current minibatch alone. \Cref{alg:ours} instead feeds the direction step
+averaged quantities: the momentum $\widehat M$ in place of the batch gradient,
+and factors $P,Q$ maintained by an EMA. The averaging itself is standard
+practice. This subsection interprets what the averaged step computes: the same
+LMO posed over all past samples, with the exponentially decaying weights the
+averages induce.
+
+Index optimizer steps by $s$ and the $n_s$ samples of the step-$s$ minibatch by
+$i$; let $G_{s,i}$ be the per-sample gradient of the merged weight,
+$g_{s,i}=\vec(G_{s,i})$, and $G_s=\frac1{n_s}\sum_iG_{s,i}$ the batch gradient.
+Weight the history geometrically across batches with the curvature decay
+$\beta_2$ of \Cref{alg:ours}, and equally within each batch,
+\[
+  w_{t,s,i}=\frac{w_{t,s}}{n_s},
   \qquad
-  Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}},
+  w_{t,s}=\frac{(1-\beta_2)\beta_2^{t-1-s}}{1-\beta_2^t},
 \]
-weighting the output and input coordinates respectively. They are the Kronecker
-factors of the merged-weight gradient second moment, $\Sigma\approx Q\otimes P$
-\eqref{eq:pq-factor}. This appendix derives how the optimizer estimates them.
+so that the weights sum to one. The weighted extension of~\eqref{eq:sample-lmo}
+at step $t$ is
+\begin{equation}\label{eq:weighted-sample-lmo}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \displaystyle\ip{\widehat M_t, \Delta W}
+  =\sum_{s\le t} m_{t,s}\,\ip{G_s, \Delta W} \\[2pt]
+  \mbox{subject to} &
+  \sqrt{w_{t,s,i}}\,\bigl|\ip{G_{s,i}, \Delta W}\bigr|
+  \le \tau, \qquad s<t,\ i=1,\dots,n_s,
+  \end{array}
+\end{equation}
+where $\widehat M_t$ is the look-ahead momentum of \Cref{alg:ours} and
+$m_{t,s}\ge0$ are the weights it induces (unrolled below). Both halves
+of~\eqref{eq:weighted-sample-lmo} are thus weighted sums over the history ---
+the two averages of \Cref{alg:ours}, each with its own decay rate. The
+objective includes the current batch while the constraints do not, mirroring
+the phase order of \Cref{alg:ours}: the momentum is updated before the
+direction step, the curvature factors after. In the limit $\beta_1,\beta_2\to0$
+both sets of weights collapse onto the newest batch each half sees,
+and~\eqref{eq:weighted-sample-lmo} reduces to the per-sample
+LMO~\eqref{eq:sample-lmo} with constants absorbed into $\tau$; positive decay
+rates extend the same problem over the history.
 
-\paragraph{What is stored.} The full second moment
-$\Sigma\in\R^{d_{\mathrm{out}}d_{\mathrm{in}}\times d_{\mathrm{out}}d_{\mathrm{in}}}$
-is too large to store, so the optimizer keeps only the diagonal vectors $p,q$ and
-updates them online (the Curvature Update phase of \Cref{alg:ours}). From these it
-forms the \emph{normalized} factors
+\paragraph{Objective.} Unrolling the momentum phase of \Cref{alg:ours} --- the
+buffer update followed by the look-ahead --- gives
 \[
-  P=\diag(p/\norm{p}_\infty),
+  \widehat M_t=\beta_1^2\,M_t+(1-\beta_1^2)\,G_t,
   \qquad
-  Q=\diag(q/\norm{q}_\infty),
+  M_t=(1-\beta_1)\sum_{s<t}\beta_1^{t-1-s}G_s ,
 \]
-so that $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$, matching the
-representative used in the main text; we drop ``normalized'' below where it is
-clear from context.
+so the objective weights are $m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}$ for
+$s<t$ and $m_{t,t}=1-\beta_1^2$: every batch gradient seen so far enters with
+nonnegative weight, decaying geometrically with age and with the newest batch
+upweighted (weight $1-\beta_1^2$ in place of the buffer's $1-\beta_1$). The
+overall scale of the objective is immaterial since the LMO is used only for
+the direction. \Cref{alg:ours} maintains the momentum of the factor
+gradients $B^\top G$ and $GA^\top$ rather than of $G$ itself, which agrees with
+$B^\top\widehat M_t$ and $\widehat M_tA^\top$ when the factors move slowly over
+the averaging window, in the same spirit as the linearized product
+update~\eqref{eq:DeltaW-lin}.
 
-\paragraph{Outline.} We (i) identify the estimation target as a recency-weighted
-second moment (\Cref{lem:ema-weighted-cov}), (ii) characterize the factors as the
-fixed point of a coupled map (\Cref{lem:fixed-point-consistency}), and (iii) give
-the online estimator, and show why the running average is taken over the raw
-minibatch estimates, with normalization applied only when a factor is used.
-
-\subsection{Recency-weighted target}
-At step $s$, let $x_{s,i}$ be an input activation to the layer. The merged
-weight, per-example gradient (with $G_{s,i}\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$
-and $g_{s,i}=\vec(G_{s,i})\in\R^{d_{\mathrm{out}}d_{\mathrm{in}}}$), minibatch
-second moment, and raw EMA are
+\paragraph{Constraints.} Each past sample keeps its loss-change bound, at a
+strength that decays with age: the bound on sample $(s,i)$ is
+$\tau/\sqrt{w_{t,s,i}}$, tight for recent samples and loose for old ones. The
+outergradient relaxation of \Cref{sec:sample-loss-lmo} carries over. Writing
+$z_{t,s,i}=\sqrt{w_{t,s,i}}\,g_{s,i}$, the constraints
+of~\eqref{eq:weighted-sample-lmo} read $|\ip{z_{t,s,i},\Delta W}|\le\tau$, the
+rescaled gradients are still rank one, and their weighted second moment
 \[
-\begin{aligned}
-  W_s &= W_0+B_sA_s,\\
-  G_{s,i} &= \nabla_W\ell_{x_{s,i}}(W_sx_{s,i}),
-  \qquad
-  g_{s,i} = \vec(G_{s,i}),\\
-  \Sigma_s &= \frac1{n_s}\sum_i g_{s,i}g_{s,i}^\top,\\
-  V_{s+1} &= \beta_2V_s+(1-\beta_2)\Sigma_s,
-  \qquad
-  V_0=0 ,
-\end{aligned}
+  \Sigma_t=\sum_{s<t}\sum_{i=1}^{n_s}w_{t,s,i}\,g_{s,i}g_{s,i}^\top
+  =\sum_{s<t}\sum_{i=1}^{n_s}z_{t,s,i}z_{t,s,i}^\top
 \]
-where $n_s$ is the minibatch size and $\beta_2$ the curvature decay coefficient.
-The raw EMA $V_t$ is a second moment over a recency-weighted, finite set of past
-examples.
+is the sum of their outer products, so the leverage bound of
+\Cref{lem:gradprop} applies and each $z_{t,s,i}$ lies in the outergradient set
+$\mathcal{G}(\Sigma_t)$ of~\eqref{eq:outgrad}. Applying
+\Cref{lem:pseudogradient-spectral} to a Kronecker fit of $\Sigma_t$ then turns
+the constraints into the preconditioned spectral bound of~\eqref{eq:polorafull},
+with constants absorbed into $\tau$ as before. The factors the optimizer needs
+are the Kronecker factors of the weighted second moment $\Sigma_t$.
 
-\begin{lemma}[EMA is a recency-weighted second moment]\label{lem:ema-weighted-cov}
-For $s<t$ define the weights and their weighted average,
+\paragraph{Estimation.} Backpropagation materializes only batch gradients,
+never per-sample ones, so the optimizer estimates $\Sigma_t$ with each batch
+collapsed to its mean, replacing the within-batch average
+$\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product $g_sg_s^\top$ of
+the batch gradient $g_s=\vec(G_s)$ --- the substitution behind the second
+moments of Adam~\cite{adam} and Shampoo~\cite{shampoo}, exact at batch size
+one. Writing
 \[
-  w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-1-s}}{(1-\beta_2^t)\,n_s},
-  \qquad
-  \mathbb{E}_t[\phi(G)]=\sum_{s<t}\sum_{i=1}^{n_s} w_{t,s,i}\,\phi(G_{s,i}) .
+  \mathbb{E}_t[\phi(G)]=\sum_{s<t}w_{t,s}\,\phi(G_s)
 \]
-The weights sum to one, and $V_t=(1-\beta_2^t)\,\mathbb{E}_t[gg^\top]$.
-\end{lemma}
-\begin{proof}
-Unrolling the recursion from $V_0=0$ and regrouping,
-\[
-\begin{aligned}
-  V_t
-  &=(1-\beta_2)\sum_{s<t}\beta_2^{t-1-s}\Sigma_s
-  &&\text{(unroll)}\\
-  &=\sum_{s<t}\sum_{i=1}^{n_s}\frac{(1-\beta_2)\beta_2^{t-1-s}}{n_s}\,g_{s,i}g_{s,i}^\top
-  &&\text{(expand $\Sigma_s$)}\\
-  &=(1-\beta_2^t)\sum_{s<t}\sum_{i=1}^{n_s} w_{t,s,i}\,g_{s,i}g_{s,i}^\top
-  &&\bigl(1-\beta_2^t=(1-\beta_2)\textstyle\sum_{s<t}\beta_2^{t-1-s}\bigr),
-\end{aligned}
-\]
-which equals $(1-\beta_2^t)\,\mathbb{E}_t[gg^\top]$; summing $w_{t,s,i}$ over
-$s,i$ gives one.
-\end{proof}
-
-The debiasing scalar $1-\beta_2^t$ only rescales $V_t$, so the estimation target
-is the weighted second moment $\mathbb{E}_t[gg^\top]$.
-
-\begin{remark}[Leverage of the weighted gradients]
-Writing $z_{t,s,i}=\sqrt{w_{t,s,i}}\,g_{s,i}$, the weighted second moment is a
-sum of rank-one terms,
-\[
-  \mathbb{E}_t[gg^\top]=\sum_{s<t}\sum_i z_{t,s,i}z_{t,s,i}^\top ,
-\]
-so the leverage bound of \Cref{lem:gradprop} holds verbatim for the rescaled
-gradients $z_{t,s,i}$: the per-sample loss control of \Cref{sec:sample-loss-lmo}
-carries over to the recency-weighted second moment.
-\end{remark}
+for the weighted average over past batch gradients, the estimate of $\Sigma_t$
+is $\mathbb{E}_t[gg^\top]$. An EMA with decay $\beta_2$ computes these averages
+exactly: unrolling $v_{s+1}=\beta_2v_s+(1-\beta_2)\phi(G_s)$ from $v_0=0$ gives
+$v_t=(1-\beta_2^t)\,\mathbb{E}_t[\phi(G)]$ by the geometric sum
+$(1-\beta_2)\sum_{s<t}\beta_2^{t-1-s}=1-\beta_2^t$, and the debiasing scalar
+$1-\beta_2^t$ only rescales, which is again immaterial.
 
 \subsection{Kronecker fixed point}
-We fit the weighted second moment by a Kronecker product of the two diagonal
-factors, following the Kronecker-factored second moment of Shampoo~\cite{shampoo}
-and KL-Shampoo~\cite{klshampoo}:
+It remains to recover the factors from $\mathbb{E}_t[gg^\top]$. Following the
+Kronecker-factored second moments of Shampoo~\cite{shampoo} and
+KL-Shampoo~\cite{klshampoo}, we fit the model
 \begin{equation}\label{e-diag-kron-second-mom-model}
   \mathbb{E}_t[gg^\top]\approx\kappa_t\,(Q\otimes P),
 \end{equation}
-where $P,Q$ are the normalized factors ($\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$)
-and the scalar $\kappa_t>0$ carries the overall magnitude that the normalization
-removes. At the current factors $A=A_t$, $B=B_t$, a merged-weight gradient $G$
-induces the factor gradients $G_A=B^\top G$ and $G_B=GA^\top$~\eqref{e-grad-wrt-factors}.
-Given one normalized factor, the coupled maps that return the other are
+where $P,Q$ are the normalized factors
+($\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$) and the scalar $\kappa_t>0$
+carries the magnitude that the normalization removes.
+
+An estimate must be computable from what the optimizer sees: the factor
+gradients $G_A=B^\top G$ and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} that a
+merged-weight gradient $G$ induces at the current factors $A=A_t$, $B=B_t$, and
+the $r\times r$ matrices $C_A=B^\top PB$
+and $C_B=AQA^\top$~\eqref{eq:ours-closure} it already forms for the direction
+step. From these ingredients, given one factor we can estimate the other:
 \[
-\begin{aligned}
-  T_Q(P)
-  &=\frac1r\diag\!\left(\mathbb{E}_t[G_A^\top C_A^{-1}G_A]\right),
-  &\quad C_A&=B^\top P B,\\
-  T_P(Q)
-  &=\frac1r\diag\!\left(\mathbb{E}_t[G_B C_B^{-1}G_B^\top]\right),
-  &\quad C_B&=A Q A^\top,
-\end{aligned}
+  T_Q(P)=\frac1r\diag\!\left(\mathbb{E}_t[G_A^\top C_A^{-1}G_A]\right),
+  \qquad
+  T_P(Q)=\frac1r\diag\!\left(\mathbb{E}_t[G_B C_B^{-1}G_B^\top]\right).
 \]
-with $C_A,C_B$ the $r\times r$ matrices of~\eqref{eq:ours-closure}. The next
-lemma shows these maps are consistent with the Kronecker model.
+Each map needs the other factor as its input (through $C_A$ or $C_B$), so a
+consistent pair is a fixed point of the two maps. The next lemma confirms that,
+under the model~\eqref{e-diag-kron-second-mom-model}, the maps recover the
+factors.
 
 \begin{lemma}[Fixed-point consistency]\label{lem:fixed-point-consistency}
 If $\mathbb{E}_t[gg^\top]=\kappa_t(Q\otimes P)$ with $P,Q$ diagonal and
@@ -1221,22 +1277,26 @@ The claim for $T_P$ follows by exchanging $A\leftrightarrow B$ and the two index
 sets.
 \end{proof}
 
-The factors are therefore the normalized fixed point of these maps,
+The inner $C_A^{-1}$ calibrates the recovered scale: it makes the trace in the
+proof exactly $\Tr(C_A^{-1}B^\top PB)=r$, independent of the current $B$ and $P$,
+so $T_Q(P)$ returns $\kappa_t\diag(Q)$ with no leftover constant. The factors are
+therefore the normalized fixed point of these maps,
 \[
   \diag(Q)=\frac{T_Q(P)}{\norm{T_Q(P)}_\infty},
   \qquad
   \diag(P)=\frac{T_P(Q)}{\norm{T_P(Q)}_\infty},
 \]
-the normalized fixed point KL-Shampoo uses to fit its Kronecker-factored second
+the same fixed point KL-Shampoo uses to fit its Kronecker-factored second
 moment~\cite{klshampoo}.
 
 \subsection{Online estimator}
-\methodname{} takes one relaxed stochastic step toward the fixed point of
-\Cref{lem:fixed-point-consistency} per optimizer step. From the stored $p_t,q_t$
-it forms the normalized factors $P_t=\diag(p_t/\norm{p_t}_\infty)$,
-$Q_t=\diag(q_t/\norm{q_t}_\infty)$ and the closures $C_A=B^\top P_t B$,
-$C_B=A Q_t A^\top$~\eqref{eq:ours-closure}, replaces $\mathbb{E}_t$ by the current
-minibatch, and takes one EMA step:
+The fixed point of \Cref{lem:fixed-point-consistency} is defined through the
+weighted average $\mathbb{E}_t$, which the optimizer cannot evaluate, so
+\methodname{} takes one stochastic step toward it per optimizer step.
+From the stored $p_t,q_t$ it forms the normalized factors
+$P_t=\diag(p_t/\norm{p_t}_\infty)$, $Q_t=\diag(q_t/\norm{q_t}_\infty)$ and the
+$r\times r$ matrices $C_A=B^\top P_tB$, $C_B=AQ_tA^\top$~\eqref{eq:ours-closure},
+replaces $\mathbb{E}_t$ by the current minibatch, and takes one EMA step:
 \begin{equation}\label{eq:ours-klcoupling}
 \begin{aligned}
   \widehat q_t
@@ -1253,10 +1313,19 @@ minibatch, and takes one EMA step:
 \end{equation}
 The next direction step uses $P_{t+1},Q_{t+1}$ (\Cref{alg:ours}). Since
 $\widehat q_t$ is a minibatch draw of $T_Q(P_t)$,
-\Cref{lem:fixed-point-consistency} gives that the raw $q_t$ tracks
-$\kappa_t\diag(Q)$. The $\ell_\infty$ normalization is applied to $q_t$ only when
-it forms $P_{t+1}$ and the direction, never to $\widehat q_t$ before the average.
-\Cref{prop:scale-sensitivity} and the following remark say why.
+\Cref{lem:fixed-point-consistency} implies the stored $q_t$ tracks
+$\kappa_t\diag(Q)$. The $\ell_\infty$ normalization is applied to $q_{t+1}$ only
+when it forms $Q_{t+1}$ for the next step, never to $\widehat q_t$ inside the
+average. This placement is settled by two facts: the update is scale-free, and
+the average is not.
+
+\paragraph{The update is scale-free.} The direction step ignores the scale of
+the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
+$C_B^{-1/2}$ by $c^{-1/2}$, the matrix sign absorbs the scalar, and the
+division by $\norm{D_A}_2$ and $\norm{D_B}_2$ when the magnitudes are set
+removes what remains (likewise for $P$). The update therefore needs only the
+direction of the stored vector, never the magnitude $\kappa_t$ carried by the
+fit~\eqref{e-diag-kron-second-mom-model}, and normalizing at use costs nothing.
 
 \begin{proposition}[Scale sensitivity of the estimator]\label{prop:scale-sensitivity}
 Fix the minibatch and $B$. Scaling the factor fed into $C_A$ by $a>0$ scales the
@@ -1264,9 +1333,9 @@ estimate inversely,
 \[
   \widehat q_t(aP_t)=a^{-1}\,\widehat q_t(P_t).
 \]
-Hence an unnormalized factor with a step-dependent scale $a_s$ enters the EMA of
-\Cref{lem:ema-weighted-cov} with its weight $(1-\beta_2)\beta_2^{t-1-s}$
-multiplied by $1/a_s$, corrupting the recency weighting.
+Hence an unnormalized factor with a step-dependent scale $a_s$ enters the
+EMA~\eqref{eq:ours-klcoupling} with its weight $(1-\beta_2)\beta_2^{t-1-s}$
+multiplied by $1/a_s$, corrupting the EMA weights.
 \end{proposition}
 \begin{proof}
 $C_A=B^\top(aP_t)B=aB^\top P_t B$, so $C_A^{-1}=a^{-1}(B^\top P_t B)^{-1}$ and
@@ -1274,13 +1343,15 @@ $\widehat q_t=\frac1r\diag(G_A^\top C_A^{-1}G_A)$ scales by $a^{-1}$.
 \end{proof}
 
 \begin{remark}[Average in raw units]
-The ordering in~\eqref{eq:ours-klcoupling} --- average the raw estimates
-$\widehat q_t$, and normalize only when the factor is used --- follows from one
-fact: the update is scale-free, but the average is not.
+The ordering in~\eqref{eq:ours-klcoupling} averages the raw estimates
+$\widehat q_t$ and normalizes only when the factor is used. It rests on one
+fact: the update is scale-free, but the average is not. Below,
+$w_s=(1-\beta_2)\beta_2^{t-1-s}$ are the per-step weights of the unrolled
+EMA~\eqref{eq:ours-klcoupling}.
 \begin{itemize}
-\item \textbf{The update is scale-free.} For a fixed factor the direction is
-invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, so a single step does not
-depend on which representative is used.
+\item \textbf{The update is scale-free.} A single step uses $q$ only through
+$q/\norm{q}_\infty$, so it depends on the shape of the stored vector, not its
+magnitude.
 \item \textbf{The average is not.} By \Cref{prop:scale-sensitivity}, normalizing
 each minibatch estimate before the average would run the nonlinear map
 $N(v)=v/\norm{v}_\infty$ inside the sum, and $N$ does not commute with averaging:
@@ -1317,7 +1388,7 @@ optimizer steps so it starts near the top singular vector.  A cold or stale star
 can under-estimate $\norm{M}_2$; since the optimizer divides by this estimate,
 that would inflate the update and risk destabilizing training.  We therefore
 return the larger of the power-iteration value and the largest row norm of $M$, a
-lower bound on $\norm{M}_2$.
+lower bound on $\norm{M}_2$.  We use $K=8$ iterations.
 
 \begin{algorithm}[ht]
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
@@ -1617,9 +1688,13 @@ it is dominated by the large feed-forward matrices, which have the smallest frac
 \paragraph{Why the Gram form.} All of the dependence on $K$ sits in the $32Kr^3$ term, the
 Gram Newton--Schulz. It computes the matrix sign and the curvature inverse square roots by
 iterating on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
-(\Cref{app:gramns}), which is about $d/r$ cheaper per iteration. Iterating on the factor
-instead would make the optimizer step roughly $1.5\times$ costlier, increasing its share of
+(\Cref{app:gramns}), which is about $d/(2r)$ cheaper per iteration. Iterating on the factor
+instead would make the optimizer step roughly $2\times$ costlier, increasing its share of
 the wall (\Cref{tab:breadth}).
+% Factor-NS counterfactual at the same K=8: per sign, K(4r^2 d + 2r^3) rectangular vs
+% 4r^2 d + 8Kr^3 Gram (form + recover + iterations); whole-step C_opt ratio
+% (40r^2 D + 160r^3 n_pairs)/(12r^2 D + 256r^3 n_pairs) per block:
+% ~2.05 Llama-3.2-1B / ~2.1 OLMo-2-1B / ~2.0 Qwen2.5-1.5B / ~2.5 Llama-3-8B (r=256).
 % Underlying counts (computed from each config.json), all-linear, r=256, T=32768, K=8:
 %   OLMo-2-1B    C_opt 1.1e12 / C_fb 2.2e14 = 0.49%
 %   Llama-3.2-1B C_opt 1.0e12 / C_fb 1.9e14 = 0.56%
