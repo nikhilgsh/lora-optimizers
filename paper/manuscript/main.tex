@@ -143,7 +143,7 @@ Our open source implementation is available at:
 
 The rest of the paper proceeds as follows. \Cref{sec:method} both motivates and derives \methodname{}.
 % , where in we first review Muon as a spectral-norm linear minimization oracle in \Cref{sec:muon}, then adapt this view to LoRA products in \Cref{sec:product-muon} to arrive at Product Muon. \Cref{sec:sample-loss-lmo} derives our curvature-aware update from a per-sample loss-change constraint and turns it into a practical factor update with magnitude control. 
-\Cref{sec:exp} evaluates \methodname{}, comparing it both it terms of step and wall-clock speedups over Adam and other baslines.
+\Cref{sec:exp} evaluates \methodname{}, comparing it in terms of step and wall-clock speedups over Adam and other baselines.
 % , with the headline behavior shown in \Cref{fig:hero} and the full breadth summarized in \Cref{tab:breadth}. 
 \Cref{sec:exp-ablation} separates the roles of curvature and magnitude control.
 % while \Cref{sec:exp-taskdep} studies rank transfer and distribution shift. 
@@ -1349,7 +1349,7 @@ $C_A=B^\top(aP_t)B=aB^\top P_t B$, so $C_A^{-1}=a^{-1}(B^\top P_t B)^{-1}$ and
 $\widehat q_t=\frac1r\diag(G_A^\top C_A^{-1}G_A)$ scales by $a^{-1}$.
 \end{proof}
 
-\paragraph{The average is not.} Scale enters the EMA~\eqref{eq:ours-klcoupling}
+\paragraph{Average in raw units.} Scale enters the EMA~\eqref{eq:ours-klcoupling}
 from both sides. The input side is \Cref{prop:scale-sensitivity}: the estimate
 scales inversely with the factor fed into $C_A$, so the input must arrive at a
 fixed scale --- normalized. On the output side, normalizing each estimate
