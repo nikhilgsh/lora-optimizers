@@ -267,27 +267,28 @@ The justification of using the spectral norm in Muon is that it is conservative,
 But what really matters in the end is final loss. 
 Thus we adapt this conservative approach to instead ensure that no single activation results in a large change in the \emph{loss}, that is, we want
 \begin{equation}\label{eq:loss-diff}
-     \ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)\leq \tau, \qquad  i=1,\ldots, n.
+     |\ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)|\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
-This bound would prevent every single input from spiking the current batch loss. But the loss is nonlinear and nonconvex, so we replace it with a local linearization,
+Since the loss is nonlinear and nonconvex, we replace it with a local linearization,
 \[  
 \ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \ip{G_i, \Delta W}. 
 \]
-Replacing the spectral-norm constraint in~\eqref{eq:lmo} with the per-sample bounds~\eqref{eq:loss-diff} linearized as above gives
+Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the spectral-norm constraint in~\eqref{eq:lmo} gives
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
   \ip{G, \Delta W} \\
   \mbox{subject to} &
   \displaystyle  
-\ip{G_i, \Delta W} 
+|\ip{G_i, \Delta W}|
   \le \tau, \qquad i=1,\ldots, n.
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
+This LMO has a finite optimum (\Cref{prop:wellposed}).
 Since we do not have efficient direct access to the per-input gradients $G_i$, we will now define an \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the inequality
 \begin{equation} \label{eq:outgrad1}
-    \max_{i=1,\ldots, n}  \ip{G_i, \Delta W}  
+    \max_{i=1,\ldots, n}  |\ip{G_i, \Delta W}|
     \leq   \max_{\tilde G \in \mathcal{G}} \; \ip{\tilde G, \Delta W},
 \end{equation} 
 to impose  that the right-hand side of \eqref{eq:outgrad1} 
@@ -777,6 +778,21 @@ $x_i \mapsto W x_i$, so
 \]
 where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i}$ is the
 output-side gradient.
+\end{proof}
+
+\begin{proposition}[Well-posedness of the per-sample LMO]
+\label{prop:wellposed}
+Let $G=\tfrac1n\sum_{i=1}^n G_i$. The per-sample LMO~\eqref{eq:sample-lmo} has a
+finite optimal value, attained at some $\Delta W^\star$ with
+$\ip{G,\Delta W^\star}\in[-\tau,\tau]$.
+\end{proposition}
+\begin{proof}
+The feasible set is a nonempty polyhedron, since it contains $\Delta W=0$. On it
+$|\ip{G,\Delta W}|\le\tfrac1n\sum_i|\ip{G_i,\Delta W}|\le\tau$, so the linear
+objective is bounded below, and a linear function bounded below on a nonempty
+polyhedron attains its infimum. The minimizer need not be unique, since the
+objective is constant along $\operatorname{span}\{G_i\}^\perp$, but \methodname{}
+relaxes~\eqref{eq:sample-lmo} rather than solving it.
 \end{proof}
 
 Next we solve the spectral-norm LMO whose solution is the Muon update direction (\Cref{sec:muon}).
