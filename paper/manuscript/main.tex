@@ -1177,26 +1177,14 @@ which corresponds to $\overline G_t=\sum_{s\le t}m_{t,s}G_s$ with $m_{t,s}=\beta
 \]
 which corresponds to $w_{t,s,i} = (1-\beta_2)\beta_2^{t-1-s}/n_s$.
 
-The same moves as in the main text now apply with $\overline G_t$ and
-$\overline\Sigma_t$ in place of the batch quantities. Writing
-$\overline\Sigma_t$ in the Kronecker form of~\eqref{eq:pq-factor},
-$\overline\Sigma_t\approx\kappa_t\,(Q\otimes P)$, the relaxed
-problem~\eqref{eq:weighted-relaxed} becomes the preconditioned spectral
-LMO~\eqref{eq:polorafull} with $\widehat M_t$ in place of the batch gradient
-(\Cref{lem:pseudogradient-spectral}), and the scalar $\kappa_t$ does not
-affect its solution, since the LMO sets only the direction. What remains is
-to estimate $P$ and $Q$ from the factor gradients, which the next subsection
-builds; the $\ell_\infty$ normalization of the stored $p,q$ is placed to
-protect exactly that EMA estimation (\Cref{sec:scale-placement}).
+As before, since $\overline \Sigma_t$ is too large, if we make the Kronecker factor approximation $\overline\Sigma_t\approx Q\otimes P$ then following the same logic as in the main text with $\overline G_t$ and
+$\overline\Sigma_t$ in place of $G_t$ and $\Sigma_t$
+\nikhil{reference?}
+leads us to the LMO ... which is the analog of ... What remains is to actually estimate $P$ and $Q$ from the available data, which we discuss in the next subsection.
 
 \subsection{From the weighted second moment to the update}
-Estimating $\overline\Sigma_t$ must work from what the optimizer sees. In LoRA
-the weight matrix is the product $W=W_0+BA$~\eqref{eq:lora}, and
-backpropagation provides only the factor gradients $G_A=B^\top G$ and
-$G_B=GA^\top$~\eqref{e-grad-wrt-factors} of its gradient $G$, never $G$
-itself. This subsection builds the estimator \Cref{alg:ours} runs under
-these constraints --- batch-level, Kronecker-factored, online --- and then
-assembles the update.
+We now discuss how to estimate the Kronecker factors of $\overline\Sigma_t$ using the data the optimizer sees. In LoRA training, backpropagation allows efficient access to the factor gradients $G_A=B^\top G$ and
+$G_B=GA^\top$~\eqref{e-grad-wrt-factors}, so we will build our estimator using these quantities.
 
 \paragraph{Estimation at batch granularity.} Backpropagation materializes
 only batch gradients, never per-sample ones, so the optimizer estimates
