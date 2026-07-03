@@ -329,9 +329,11 @@ The last issue is that $\Sigma$ is too large to store or use directly, so we rep
 \paragraph{Kronecker approximation.}
 Following the Kronecker-factored approximations used by Shampoo~\cite{shampoo, klshampoo}
 and KFAC~\cite{kfac}, let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
-     \begin{equation} \label{eq:pq-factor}
-     \Sigma  \approx Q \otimes P.\end{equation}
-     Using the factorization above, if we use the outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following LMO
+\begin{equation} \label{eq:pq-factor}
+     \Sigma  \approx Q \otimes P.
+\end{equation}
+\nikhil{should clarify that we are ignoring the $P$, $Q$ estimation issue for now.}
+Using the factorization above, if we use the outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following LMO
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -1096,7 +1098,7 @@ factors from the factor gradients, arriving at the $p,q$ recursion of
 \Cref{alg:ours}, and recovers the update. \Cref{sec:scale-placement}
 explains why $p,q$ are normalized at use, never inside the average.
 
-\subsection{The weighted LMO}
+\subsection{The Weighted LMO}
 \label{sec:weighted-lmo}
 The LMO~\eqref{eq:sample-lmo} states its objective and constraints with
 the current minibatch alone. To avoid overfitting the update to a single
@@ -1112,7 +1114,7 @@ extension of~\eqref{eq:sample-lmo} at step $t$ to be
   \displaystyle\sum_{s\le t} m_{t,s}\,\ip{G_s, \Delta W} \\[2pt]
   \mbox{subject to} &
   \sqrt{w_{t,s,i}}\,\bigl|\ip{G_{s,i}, \Delta W}\bigr|
-  \le \tau, \qquad s<t,\ i=1,\dots,n_s.
+  \le \tau, \qquad s\le t,\ i=1,\dots,n_s.
   \end{array}
 \end{equation}
 
@@ -1121,7 +1123,7 @@ depends on the history only through two aggregate quantities,
 \[
 \overline G_t=\sum_{s\le t}m_{t,s}G_s,
 \qquad
-\overline\Sigma_t = \sum_{s<t}\sum_{i=1}^{n_s}w_{t,s,i}\,g_{s,i}g_{s,i}^\top,
+\overline\Sigma_t = \sum_{s\le t}\sum_{i=1}^{n_s}w_{t,s,i}\,g_{s,i}g_{s,i}^\top,
 \]
 the weighted average of the batch gradients and the weighted second moment
 of the per-sample gradients. The objective in~\eqref{eq:weighted-sample-lmo}
@@ -1154,8 +1156,8 @@ momentum scheme of \Cref{alg:ours},
 since this emphasizes decreasing the loss on recent batches. For the constraints, a reasonable choice is an EMA of the within-batch
 second moments,
 \[
-  \overline\Sigma_{t+1}
-  =\beta_2\,\overline\Sigma_t
+  \overline\Sigma_t
+  =\beta_2\,\overline\Sigma_{t-1}
   +(1-\beta_2)\,\frac1{n_t}\sum_{i=1}^{n_t}g_{t,i}g_{t,i}^\top,
 \]
 since this gives tighter constraints on recent batches. Unrolling the two recursions gives the induced weights
@@ -1165,7 +1167,7 @@ since this gives tighter constraints on recent batches. Unrolling the two recurs
   \qquad
   m_{t,t}=1-\beta_1^2,
   \qquad
-  w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-1-s}}{n_s}.
+  w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-s}}{n_s}.
 \]
 
 As before, $\overline\Sigma_t$ cannot be used directly. It is built from
@@ -1176,12 +1178,12 @@ $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product $g_sg_s^\top$
 of the batch gradient $g_s=\vec(G_s)$. This substitution underlies the
 second moments of Adam~\cite{adam} and Shampoo~\cite{shampoo}, and is
 exact at batch size one. Under it the weights $w_{t,s,i}$ sum within each
-batch to $w_{t,s}=(1-\beta_2)\beta_2^{t-1-s}$, so the collapsed estimate
-is a weighted average over past batch gradients,
+batch to $w_{t,s}=(1-\beta_2)\beta_2^{t-s}$, so the collapsed estimate
+is a weighted average over batch gradients,
 \[
   \overline\Sigma_t\approx\E_t[gg^\top],
   \qquad\text{where}\qquad
-  \E_t[\phi(G)]=\sum_{s<t}w_{t,s}\,\phi(G_s).
+  \E_t[\phi(G)]=\sum_{s\le t}w_{t,s}\,\phi(G_s).
 \]
 Second, to address the size, we assume the Kronecker-factored form
 of~\eqref{eq:pq-factor}, with $P,Q$ diagonal as in \Cref{alg:ours}. Since
@@ -1194,7 +1196,7 @@ $\kappa_t>0$ carry the magnitude:
 The next subsection estimates the factors $P,Q$ from the quantities the
 optimizer computes.
 
-\subsection{Estimating the two moments from the factor gradients}
+\subsection{Estimating the Moments}
 \label{sec:weighted-estimation}
 In LoRA training, backpropagation gives the factor gradients $G_A=B^\top G$
 and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} at no extra cost, while
@@ -1306,16 +1308,22 @@ are now in place: the factor momenta stand in for the objective, and the
 fitted factors in place of $\overline\Sigma_t$ turn the constraint
 of~\eqref{eq:weighted-relaxed} into the preconditioned spectral bound
 of~\eqref{eq:polorafull} (\Cref{lem:pseudogradient-spectral}; constants
-absorbed into $\tau$). The relaxed problem is then the LMO of the main
+absorbed into $\tau$). One index discrepancy remains: \Cref{alg:ours}
+updates the curvature factors after the direction step, so step $t$ uses
+the estimate of $\overline\Sigma_{t-1}$ rather than $\overline\Sigma_t$,
+the newest batch's weight $1-\beta_2$ arriving one step late. The relaxed
+problem is then the LMO of the main
 text with $\widehat M_t$ in place of the batch gradient, and the passage
 to LoRA of \Cref{sec:sample-loss-lmo} returns the update \Cref{alg:ours}
 takes.
 
-\subsection{Normalization placement}
+\subsection{Normalization Placement}
 \label{sec:scale-placement}
-The $\ell_\infty$ normalization is applied to $q_{t+1}$ only when it forms
-$Q_{t+1}$ for the next step~\eqref{eq:ours-klcoupling}, never to
-$\widehat q_t$ inside the average.
+The estimator~\eqref{eq:ours-klcoupling} averages the raw estimates
+$\widehat q_t$ and normalizes only when the stored $q_{t+1}$ forms
+$Q_{t+1}$ for the next step. Normalizing each estimate before averaging
+is a potential alternative. The placement matters because scale
+means nothing to the update but changes what the average computes.
 
 \paragraph{The update is scale-free.} The direction step ignores the scale of
 the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
