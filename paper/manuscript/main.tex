@@ -1091,9 +1091,9 @@ factors $P,Q$, formed from vectors $p,q$ that an EMA updates each step.
 Both averages are standard practice. This appendix interprets them as the
 data of the per-sample LMO~\eqref{eq:sample-lmo} posed over all past
 samples. \Cref{sec:weighted-lmo} states the weighted problem and reduces
-its data to two moments, a weighted average of the batch gradients and a
+its data to two weighted moments, a weighted average of the batch gradients and a
 weighted second moment of the per-sample gradients, the latter approximated
-in Kronecker form. \Cref{sec:weighted-estimation} estimates both moments
+in Kronecker form. \Cref{sec:weighted-estimation} estimates both weighted moments
 from the factor gradients, arriving at the $p,q$ recursion and the factor
 momenta of \Cref{alg:ours}, and recovers the update.
 \Cref{sec:scale-placement} explains why $p,q$ are normalized at use, never
@@ -1119,8 +1119,8 @@ extension of~\eqref{eq:sample-lmo} at step $t$ to be
   \end{array}
 \end{equation}
 
-\paragraph{The two moments.} The problem~\eqref{eq:weighted-sample-lmo}
-depends on the history only through two moments,
+\paragraph{The two weighted moments.} The problem~\eqref{eq:weighted-sample-lmo}
+depends on the history only through two weighted moments,
 \[
 \overline G_t=\sum_{s\le t}m_{t,s}G_s,
 \qquad
@@ -1197,7 +1197,7 @@ $\kappa_t>0$ carry the magnitude:
 The next subsection estimates the factors $P,Q$ from the quantities the
 optimizer computes.
 
-\subsection{Estimating the Moments}
+\subsection{Estimating the Weighted Moments}
 \label{sec:weighted-estimation}
 In LoRA training, backpropagation gives the factor gradients $G_A=B^\top G$
 and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} at no extra cost, while
