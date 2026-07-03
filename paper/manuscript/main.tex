@@ -1098,7 +1098,9 @@ explains why $p,q$ are normalized at use, never inside the average.
 
 \subsection{The weighted LMO}
 \label{sec:weighted-lmo}
-The motivational LMO~\eqref{eq:sample-lmo} based on controlling the per-sample loss change states its objective and constraints using only the current minibatch. However, it is sensible for the LMO to consider all the data that we have seen, in order to not overfit to the current minibatch. This motivates us to consider a family of LMOs which augment \eqref{eq:sample-lmo} by incorporating information, weighted appropriately, from previous minibatches.
+The LMO~\eqref{eq:sample-lmo} states its objective and constraints with
+the current minibatch alone. To avoid overfitting the update to a single
+batch, we extend it over all past minibatches with decaying weights.
 
 \paragraph{The weighted family.} Let us index the optimizer step with $s$ and use $i$ to index the samples in the size $n_s$ minibatch at step $s$. Then we can write $G_{s,i}$ for the
 per-sample gradient of the weight matrix, $g_{s,i}=\vec(G_{s,i})$, and
@@ -1126,9 +1128,9 @@ of the per-sample gradients. The objective in~\eqref{eq:weighted-sample-lmo}
 is trivially $\ip{\overline G_t,\Delta W}$. The constraints can be
 transformed into a single constraint through the outergradient relaxation of
 \Cref{sec:sample-loss-lmo}: the rescaled gradients
-$z_{t,s,i}=\sqrt{w_{t,s,i}}\,g_{s,i}$ are rank one and their outer products
+$\sqrt{w_{t,s,i}}\,g_{s,i}$ are rank one and their outer products
 sum to $\overline\Sigma_t$, so the leverage bound of \Cref{lem:gradprop}
-places each $z_{t,s,i}$ in the outergradient set
+places each of them in the outergradient set
 $\mathcal{G}(\overline\Sigma_t)$ of~\eqref{eq:outgrad}, and the constraints
 relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem is
 \begin{equation}\label{eq:weighted-relaxed}
@@ -1141,8 +1143,9 @@ relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem is
 \end{equation}
 
 \paragraph{Choosing the weights.} 
-For the objective, a reasonable choice is to set $\overline G_t$ to the
-look-ahead momentum buffer $\widehat M_t$ of \Cref{alg:ours},
+For the objective, a reasonable choice is to set $\overline G_t$ to a
+look-ahead momentum $\widehat M_t$ of the batch gradients, mirroring the
+momentum scheme of \Cref{alg:ours},
 \[
   M_{t+1}=\beta_1M_t+(1-\beta_1)G_t,
   \qquad
@@ -1181,49 +1184,48 @@ is a weighted average over past batch gradients,
   \E_t[\phi(G)]=\sum_{s<t}w_{t,s}\,\phi(G_s).
 \]
 Second, to address the size, we assume the Kronecker-factored form
-of~\eqref{eq:pq-factor},
-\begin{equation}\label{eq:weighted-kron}
-  \E_t[gg^\top]\approx Q\otimes P.
+of~\eqref{eq:pq-factor}, with $P,Q$ diagonal as in \Cref{alg:ours}. Since
+$Q\otimes P$ is unchanged by the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, we
+normalize $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$ and let a scalar
+$\kappa_t>0$ carry the magnitude:
+\begin{equation}\label{e-diag-kron-second-mom-model}
+  \E_t[gg^\top]\approx\kappa_t\,(Q\otimes P).
 \end{equation}
 The next subsection estimates the factors $P,Q$ from the quantities the
 optimizer computes.
 
-\subsection{From the weighted second moment to the update}
+\subsection{Estimating the two moments from the factor gradients}
 \label{sec:weighted-estimation}
-In LoRA training, backpropagation gives efficient access to the factor
-gradients $G_A=B^\top G$ and $G_B=GA^\top$~\eqref{e-grad-wrt-factors}, so
-we build the estimator from these quantities.
+In LoRA training, backpropagation gives the factor gradients $G_A=B^\top G$
+and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} at no extra cost, while
+forming the full gradient $G$ would take a $d_{\mathrm{out}}\times
+d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what the
+low-rank structure avoids. We therefore build both estimates from the
+factor gradients.
 
-\paragraph{Kronecker fixed point.} With the
-factorization~\eqref{eq:weighted-kron} in place, the optimizer estimates
-the factors $P,Q$ directly, never forming $\E_t[gg^\top]$. Since the
-rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$ leaves $Q\otimes P$ unchanged, we fix
-the scale by normalization, fitting the model
-\begin{equation}\label{e-diag-kron-second-mom-model}
-  \E_t[gg^\top]\approx\kappa_t\,(Q\otimes P),
-\end{equation}
-with $P,Q$ diagonal, $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$, and
-the scalar $\kappa_t>0$ carrying the magnitude the normalization removes.
-Following KL-Shampoo~\cite{klshampoo}, we estimate each factor from the
-other through the factor gradients~\eqref{e-grad-wrt-factors} at the
-current factors and the $r\times r$ matrices $C_A=B^\top PB$ and
-$C_B=AQA^\top$~\eqref{eq:ours-closure} that the direction step already
-forms:
+\paragraph{Kronecker fixed point.} Following KL-Shampoo~\cite{klshampoo},
+we estimate each factor of~\eqref{e-diag-kron-second-mom-model} from the
+other, using only the factor gradients~\eqref{e-grad-wrt-factors} and the
+$r\times r$ matrices $C_A=B^\top PB$, $C_B=AQA^\top$~\eqref{eq:ours-closure}
+that the direction step already forms:
 \[
   T_Q(P)=\frac1r\diag\!\left(\E_t[G_A^\top C_A^{-1}G_A]\right),
   \qquad
   T_P(Q)=\frac1r\diag\!\left(\E_t[G_B C_B^{-1}G_B^\top]\right).
 \]
 A consistent pair is thus a fixed point of the coupled maps, and under the
-model the maps recover the factors exactly.
+model the maps recover the factors up to a shared scalar.
 
 \begin{lemma}[Fixed-point consistency]\label{lem:fixed-point-consistency}
 If the model~\eqref{e-diag-kron-second-mom-model} holds with equality, then
 \[
   T_Q(P)=\kappa_t\diag(Q),
   \qquad
-  T_P(Q)=\kappa_t\diag(P).
+  T_P(Q)=\kappa_t\diag(P),
 \]
+and normalizing recovers the factors exactly:
+$T_Q(P)/\norm{T_Q(P)}_\infty=\diag(Q)$ and
+$T_P(Q)/\norm{T_P(Q)}_\infty=\diag(P)$.
 \end{lemma}
 \begin{proof}
 The model implies that, for any symmetric $X$,
@@ -1252,16 +1254,9 @@ where the second equality uses $G_A=B^\top G$, the third the identity with
 $X=BC_A^{-1}B^\top$ and cyclicity of the trace, and the last
 $C_A=B^\top PB$. The claim for $T_P$ holds by the same argument with rows
 and columns exchanged ($A\leftrightarrow B$, $P\leftrightarrow Q$).
+Finally, $\norm{\diag Q}_\infty=1$ gives $\norm{T_Q(P)}_\infty=\kappa_t$,
+so dividing by the norm removes the scalar.
 \end{proof}
-
-Since the model pins $\norm{\diag Q}_\infty=1$, the norm of the map output
-is the scalar itself, $\norm{T_Q(P)}_\infty=\kappa_t$, so $\ell_\infty$
-normalization recovers the factors exactly:
-\[
-  \frac{T_Q(P)}{\norm{T_Q(P)}_\infty}=\diag(Q),
-  \qquad
-  \frac{T_P(Q)}{\norm{T_P(Q)}_\infty}=\diag(P).
-\]
 
 \paragraph{Online estimator.}
 The maps involve the weighted average $\E_t$, which the optimizer cannot
@@ -1289,36 +1284,38 @@ $\kappa_t\diag(Q)$, and the normalization on the last line returns
 $\diag(Q)$. KL-Shampoo justifies this coupled EMA as a stochastic
 proximal-gradient step on its estimation objective~\cite{klshampoo}.
 
-\paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
-factors in place of $\overline\Sigma_t$, the outergradient constraint of
-\Cref{sec:weighted-lmo} becomes the preconditioned spectral bound
-of~\eqref{eq:polorafull} (\Cref{lem:pseudogradient-spectral}, constants
-absorbed into $\tau$). The solution is the
-update~\eqref{eq:polorafull-update} for $W$, with the momentum
-$\widehat M_t$ in place of the batch gradient. Passing to LoRA as in the
-main text, through the linearized product update~\eqref{eq:DeltaW-lin} and
-the separate magnitude control, gives the direction
-step~\eqref{eq:factor-directions} and the rescaling~\eqref{eq:ours-rho}.
-Under the linearization the objective decomposes as
+\paragraph{Factor momenta.} The objective
+of~\eqref{eq:weighted-relaxed} is $\ip{\widehat M_t,\Delta W}$, but
+\Cref{alg:ours} never materializes $G$ and so cannot form $\widehat M_t$.
+It does not need to: under the linearized product
+update~\eqref{eq:DeltaW-lin} the objective decomposes as
 \[
   \ip{\widehat M_t,\,\Delta B\,A+B\,\Delta A}
-  =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A}.
+  =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A},
 \]
-The factor momenta of \Cref{alg:ours} stand in for these pairings, $M_A$
-averaging $B_s^\top G_s$ with the weights $m_{t,s}$, since $G$ itself is
-never materialized. If the factors are constant over the averaging window,
-$M_A=B^\top\widehat M_t$ exactly, and likewise for $\widehat M_tA^\top$.
-Otherwise the difference is $\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, first
-order in the factor drift over the window. The weighted LMO, with the
-algorithm's own averages as its data, therefore reproduces the update
-\Cref{alg:ours} takes.
+so the update depends on $\widehat M_t$ only through the two matrices
+$\widehat M_tA^\top$ and $B^\top\widehat M_t$. The factor momenta estimate
+precisely these: $\widehat M_A$ averages $B_s^\top G_s$ with the same
+weights $m_{t,s}$. If the factors are constant over the averaging window,
+$\widehat M_A=B^\top\widehat M_t$ exactly; otherwise the difference,
+$\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
+drift over the window.
+
+\paragraph{Recovering the update of \Cref{alg:ours}.} Both substitutions
+are now in place: the factor momenta stand in for the objective, and the
+fitted factors in place of $\overline\Sigma_t$ turn the constraint
+of~\eqref{eq:weighted-relaxed} into the preconditioned spectral bound
+of~\eqref{eq:polorafull} (\Cref{lem:pseudogradient-spectral}; constants
+absorbed into $\tau$). The relaxed problem is then the LMO of the main
+text with $\widehat M_t$ in place of the batch gradient, and the passage
+to LoRA of \Cref{sec:sample-loss-lmo} returns the update \Cref{alg:ours}
+takes.
 
 \subsection{Normalization placement}
 \label{sec:scale-placement}
 The $\ell_\infty$ normalization is applied to $q_{t+1}$ only when it forms
 $Q_{t+1}$ for the next step~\eqref{eq:ours-klcoupling}, never to
-$\widehat q_t$ inside the average. This placement is settled by two facts:
-the update is scale-free, and the average is not.
+$\widehat q_t$ inside the average.
 
 \paragraph{The update is scale-free.} The direction step ignores the scale of
 the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
