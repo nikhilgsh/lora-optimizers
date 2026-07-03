@@ -1187,10 +1187,19 @@ Unrolling the two recursions gives the induced weights
   w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-1-s}}{n_s}.
 \]
 
-As before, since $\overline \Sigma_t$ is too large, if we make the Kronecker factor approximation $\overline\Sigma_t\approx Q\otimes P$ then following the same logic as in the main text with $\overline G_t$ and
-$\overline\Sigma_t$ in place of $G_t$ and $\Sigma_t$
-\nikhil{reference?}
-leads us to the LMO ... which is the analog of ... What remains is to actually estimate $P$ and $Q$ from the available data, which we discuss in the next subsection.
+As before, since $\overline \Sigma_t$ is too large, if we make the Kronecker factor approximation $\overline\Sigma_t\approx Q\otimes P$ as in~\eqref{eq:pq-factor}, then following the same logic as in the main text with $\overline G_t$ and
+$\overline\Sigma_t$ in place of $G$ and $\Sigma$
+(\Cref{lem:pseudogradient-spectral}) leads us to the LMO
+\begin{equation}\label{eq:weighted-polorafull}
+\begin{array}{ll}
+\underset{\Delta W}{\mathrm{minimize}} &
+\ip{\overline G_t, \Delta W} \\[2pt]
+\mathrm{subject~ to} &
+\displaystyle
+\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq \tau,
+\end{array}
+\end{equation}
+which is the analog of~\eqref{eq:polorafull}, with constants again absorbed into $\tau$. What remains is to actually estimate $P$ and $Q$ from the available data, which we discuss in the next subsection.
 
 \subsection{From the weighted second moment to the update}
 We now discuss how to estimate the Kronecker factors of $\overline\Sigma_t$ using the data the optimizer sees. In LoRA training, backpropagation allows efficient access to the factor gradients $G_A=B^\top G$ and
