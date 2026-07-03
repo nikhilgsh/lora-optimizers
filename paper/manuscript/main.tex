@@ -1089,14 +1089,15 @@ after the fact (\Cref{rem:quadratic}):
 momenta $M_A,M_B$ in place of the factor gradients, and the curvature
 factors $P,Q$, formed from vectors $p,q$ that an EMA updates each step.
 Both averages are standard practice. This appendix interprets them as the
-per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples.
-\Cref{sec:weighted-lmo} states the weighted problem and reduces its data to
-two aggregates, a weighted average of the batch gradients and a weighted
-second moment of the per-sample gradients, the latter approximated in
-Kronecker form. \Cref{sec:weighted-estimation} estimates the Kronecker
-factors from the factor gradients, arriving at the $p,q$ recursion of
-\Cref{alg:ours}, and recovers the update. \Cref{sec:scale-placement}
-explains why $p,q$ are normalized at use, never inside the average.
+data of the per-sample LMO~\eqref{eq:sample-lmo} posed over all past
+samples. \Cref{sec:weighted-lmo} states the weighted problem and reduces
+its data to two moments, a weighted average of the batch gradients and a
+weighted second moment of the per-sample gradients, the latter approximated
+in Kronecker form. \Cref{sec:weighted-estimation} estimates both moments
+from the factor gradients, arriving at the $p,q$ recursion and the factor
+momenta of \Cref{alg:ours}, and recovers the update.
+\Cref{sec:scale-placement} explains why $p,q$ are normalized at use, never
+inside the average.
 
 \subsection{The Weighted LMO}
 \label{sec:weighted-lmo}
@@ -1118,8 +1119,8 @@ extension of~\eqref{eq:sample-lmo} at step $t$ to be
   \end{array}
 \end{equation}
 
-\paragraph{Weighted aggregates.} The problem~\eqref{eq:weighted-sample-lmo}
-depends on the history only through two aggregate quantities,
+\paragraph{The two moments.} The problem~\eqref{eq:weighted-sample-lmo}
+depends on the history only through two moments,
 \[
 \overline G_t=\sum_{s\le t}m_{t,s}G_s,
 \qquad
@@ -1170,7 +1171,7 @@ since this gives tighter constraints on recent batches. Unrolling the two recurs
   w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-s}}{n_s}.
 \]
 
-As before, $\overline\Sigma_t$ cannot be used directly. It is built from
+As in the main text, $\overline\Sigma_t$ cannot be used directly. It is built from
 per-sample gradients that backpropagation never materializes, and it is
 too large to store. We therefore approximate it in two steps. First, we
 collapse each batch to its mean, replacing the within-batch average
@@ -1311,7 +1312,10 @@ of~\eqref{eq:polorafull} (\Cref{lem:pseudogradient-spectral}; constants
 absorbed into $\tau$). One index discrepancy remains: \Cref{alg:ours}
 updates the curvature factors after the direction step, so step $t$ uses
 the estimate of $\overline\Sigma_{t-1}$ rather than $\overline\Sigma_t$,
-the newest batch's weight $1-\beta_2$ arriving one step late. The relaxed
+the newest batch's weight $1-\beta_2$ arriving one step late. This
+ordering avoids a second formation and inversion of $C_A$ and $C_B$ per
+step, and it displaces only a $1-\beta_2$ fraction of the constraint
+weight by a single step, so we keep it. The relaxed
 problem is then the LMO of the main
 text with $\widehat M_t$ in place of the batch gradient, and the passage
 to LoRA of \Cref{sec:sample-loss-lmo} returns the update \Cref{alg:ours}
