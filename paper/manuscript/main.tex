@@ -1084,38 +1084,17 @@ after the fact (\Cref{rem:quadratic}):
 \section{Averaging as an LMO over Past Samples}
 \label{app:matnormal}
 \Cref{alg:ours} feeds its direction step averaged quantities: the factor
-momenta $M_A,M_B$ in place of the factor gradients, and the curvature factors
-$P=\diag(p/\norm{p}_\infty)$, $Q=\diag(q/\norm{q}_\infty)$, formed from
-vectors $p,q$ that an EMA updates each step. Both averages are standard
-practice. This appendix interprets them jointly, as the two halves of the
-per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples: the
-momentum forms its objective, and the stored $p,q$ estimate its constraint
-set.
-
-Three observations make this precise.
-\begin{enumerate}[leftmargin=1.7em,itemsep=2pt,topsep=2pt]
-\item \textbf{Two moments summarize the history.} Posed over all past
-samples with decaying weights, the per-sample LMO depends on the history
-only through two moments: a weighted first moment $\overline G_t$ of the
-batch gradients, which the momentum of \Cref{alg:ours} computes, and a
-weighted second moment $\overline\Sigma_t$ of the per-sample gradients
-(\Cref{sec:weighted-lmo}).
-\item \textbf{The second moment is estimated online, in Kronecker form.}
-$\overline\Sigma_t$ is too large to form and is built from per-sample
-gradients the optimizer never sees, so it is fit in the Kronecker-factored
-form the direction step uses. The factors of the fit are the fixed point of
-two coupled maps built from the factor gradients
-(\Cref{lem:fixed-point-consistency}), and the $p,q$
-recursion~\eqref{eq:ours-klcoupling} takes one EMA step toward that fixed
-point per optimizer step. With the fitted factors in place, the weighted
-LMO reproduces the update of \Cref{alg:ours}.
-\item \textbf{Normalize at use, not inside the average.} The Kronecker fit
-determines $p,q$ only up to scale, which the $\ell_\infty$ normalization
-above fixes. The direction step ignores the scale of $P,Q$, while
-normalizing inside the EMA would up-weight noise-dominated minibatches, so
-\Cref{alg:ours} averages the raw estimates and normalizes only when forming
-$P,Q$ (\Cref{sec:scale-placement}).
-\end{enumerate}
+momenta $M_A,M_B$ in place of the factor gradients, and the curvature
+factors $P,Q$, formed from vectors $p,q$ that an EMA updates each step.
+Both averages are standard practice. This appendix interprets them as the
+per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples.
+\Cref{sec:weighted-lmo} states the weighted problem and reduces its data to
+two aggregates, a weighted average of the batch gradients and a weighted
+second moment of the per-sample gradients, the latter approximated in
+Kronecker form. \Cref{sec:weighted-estimation} estimates the Kronecker
+factors from the factor gradients, arriving at the $p,q$ recursion of
+\Cref{alg:ours}, and recovers the update. \Cref{sec:scale-placement}
+explains why $p,q$ are normalized at use, never inside the average.
 
 \subsection{The weighted LMO}
 \label{sec:weighted-lmo}
@@ -1210,6 +1189,7 @@ The next subsection estimates the factors $P,Q$ from the quantities the
 optimizer computes.
 
 \subsection{From the weighted second moment to the update}
+\label{sec:weighted-estimation}
 In LoRA training, backpropagation gives efficient access to the factor
 gradients $G_A=B^\top G$ and $G_B=GA^\top$~\eqref{e-grad-wrt-factors}, so
 we build the estimator from these quantities.
@@ -1274,28 +1254,39 @@ $C_A=B^\top PB$. The claim for $T_P$ holds by the same argument with rows
 and columns exchanged ($A\leftrightarrow B$, $P\leftrightarrow Q$).
 \end{proof}
 
+Since the model pins $\norm{\diag Q}_\infty=1$, the norm of the map output
+is the scalar itself, $\norm{T_Q(P)}_\infty=\kappa_t$, so $\ell_\infty$
+normalization recovers the factors exactly:
+\[
+  \frac{T_Q(P)}{\norm{T_Q(P)}_\infty}=\diag(Q),
+  \qquad
+  \frac{T_P(Q)}{\norm{T_P(Q)}_\infty}=\diag(P).
+\]
+
 \paragraph{Online estimator.}
 The maps involve the weighted average $\E_t$, which the optimizer cannot
 evaluate, so \methodname{} substitutes the current minibatch and takes one
 EMA step toward the fixed point per optimizer step,
 \begin{equation}\label{eq:ours-klcoupling}
 \begin{aligned}
-  \widehat q_t
-  &= \frac1r\diag\!\left(G_A^\top C_A^{-1}G_A\right),
+  \widehat q_t &= \frac1r\diag\!\left(G_A^\top C_A^{-1}G_A\right),
   &
-  q_{t+1}
-  &= \beta_2q_t+(1-\beta_2)\widehat q_t,\\
-  \widehat p_t
-  &= \frac1r\diag\!\left(G_B C_B^{-1}G_B^\top\right),
+  \widehat p_t &= \frac1r\diag\!\left(G_B C_B^{-1}G_B^\top\right),
+  \\
+  q_{t+1} &= \beta_2q_t+(1-\beta_2)\widehat q_t,
   &
-  p_{t+1}
-  &= \beta_2p_t+(1-\beta_2)\widehat p_t .
+  p_{t+1} &= \beta_2p_t+(1-\beta_2)\widehat p_t,
+  \\
+  Q_{t+1} &= \diag\!\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
+  &
+  P_{t+1} &= \diag\!\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr),
 \end{aligned}
 \end{equation}
-with $C_A,C_B$ formed at the current normalized factors (\Cref{alg:ours}).
+with $C_A,C_B$ formed from $P_t,Q_t$ as in~\eqref{eq:ours-closure}.
 Since $\widehat q_t$ is a minibatch draw of $T_Q(P_t)$,
 \Cref{lem:fixed-point-consistency} implies the stored $q_t$ tracks
-$\kappa_t\diag(Q)$. KL-Shampoo justifies this coupled EMA as a stochastic
+$\kappa_t\diag(Q)$, and the normalization on the last line returns
+$\diag(Q)$. KL-Shampoo justifies this coupled EMA as a stochastic
 proximal-gradient step on its estimation objective~\cite{klshampoo}.
 
 \paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
