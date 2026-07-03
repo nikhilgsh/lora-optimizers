@@ -1246,27 +1246,33 @@ If the model~\eqref{e-diag-kron-second-mom-model} holds with equality, then
 \]
 \end{lemma}
 \begin{proof}
-For symmetric $X$, decompose $X=\sum_l\lambda_l x_lx_l^\top$, so that
-$G^\top XG=\sum_l\lambda_l(G^\top x_l)(G^\top x_l)^\top$. Since
-$G^\top x=(I_{d_{\mathrm{in}}}\otimes x^\top)\,g$, the model and the
-mixed-product identity give
+The model implies that, for any symmetric $X$,
 \[
-  \mathbb{E}_t\big[(G^\top x)(G^\top x)^\top\big]
+  \E_t[G^\top XG]=\kappa_t\,\Tr(XP)\,Q .
+\]
+To see this, decompose $X=\sum_l\lambda_l x_lx_l^\top$ and note that
+$G^\top x=(I_{d_{\mathrm{in}}}\otimes x^\top)\,g$ for any vector $x$, so
+the model and the mixed-product identity give
+\[
+  \E_t\big[(G^\top x)(G^\top x)^\top\big]
   =\kappa_t\,(I\otimes x^\top)(Q\otimes P)(I\otimes x)
   =\kappa_t\,(x^\top Px)\,Q,
 \]
-and summing over the decomposition,
-$\mathbb{E}_t[G^\top XG]=\kappa_t\Tr(XP)\,Q$. Taking $X=BC_A^{-1}B^\top$
-turns the left side into $\mathbb{E}_t[G_A^\top C_A^{-1}G_A]$ and gives
-$\Tr(XP)=\Tr(C_A^{-1}B^\top PB)=r$, so
-$T_Q(P)=\tfrac1r\diag(\kappa_t\,r\,Q)=\kappa_t\diag(Q)$. The claim for $T_P$
-holds by the same argument with rows and columns exchanged
-($A\leftrightarrow B$, $P\leftrightarrow Q$).
+and summing over the decomposition yields the identity. Applying it,
+\[
+\begin{aligned}
+  r\,T_Q(P)
+  &=\diag\!\big(\E_t[G_A^\top C_A^{-1}G_A]\big)
+   =\diag\!\big(\E_t[G^\top(BC_A^{-1}B^\top)G]\big)\\
+  &=\kappa_t\,\Tr\!\big(C_A^{-1}B^\top PB\big)\diag(Q)
+   =\kappa_t\,r\,\diag(Q),
+\end{aligned}
+\]
+where the second equality uses $G_A=B^\top G$, the third the identity with
+$X=BC_A^{-1}B^\top$ and cyclicity of the trace, and the last
+$C_A=B^\top PB$. The claim for $T_P$ holds by the same argument with rows
+and columns exchanged ($A\leftrightarrow B$, $P\leftrightarrow Q$).
 \end{proof}
-
-The inner $C_A^{-1}$ calibrates the scale by making the trace in the proof
-exactly $r$. After the $\ell_\infty$ normalization removes $\kappa_t$, the
-factors are the fixed point of the coupled maps.
 
 \paragraph{Online estimator.}
 The maps involve the weighted average $\E_t$, which the optimizer cannot
