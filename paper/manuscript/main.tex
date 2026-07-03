@@ -743,16 +743,30 @@ LR schedule            & constant \\
 \label{tab:config}
 \end{table}
 
-\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimum. All other optimizer hyperparameters are fixed, with momentum decay $\beta_1$, second-moment decay $\beta_2$, and stability constant $\varepsilon$:
+\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimum. All other optimizer hyperparameters are fixed. \Cref{tab:optim-config} lists the baseline settings; \methodname{} uses:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \textbf{Adam}: $\beta_1=0.9$, $\beta_2=0.999$, $\varepsilon=10^{-8}$.
-  \item \textbf{Muon}: $\beta_1=0.9$, $8$ Newton--Schulz iterations.
-  \item \textbf{iMuon}: $\beta_1=0.95$, $5$ Newton--Schulz iterations.
-  \item \textbf{LoRA-RITE}: $\beta_1=0.9$, $\beta_2=0.999$, $\varepsilon=10^{-6}$.
-  \item \textbf{\methodname{}}: $\beta_1=0.9$, $\beta_2=0.99$, $8$ Gram Newton--Schulz iterations (\Cref{app:gramns}), $8$ power iterations per spectral-norm estimate (\Cref{app:smax}), and relative damping $\delta=10^{-4}$ (\Cref{app:damping}).
+  \item momentum decay $\beta_1=0.9$ and curvature decay $\beta_2=0.99$,
+  \item $8$ Gram Newton--Schulz iterations (\Cref{app:gramns}),
+  \item $8$ power iterations per spectral-norm estimate (\Cref{app:smax}),
+  \item relative damping $\delta=10^{-4}$ (\Cref{app:damping}).
 \end{itemize}
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & Adam & Muon & iMuon & LoRA-RITE \\
+\midrule
+$\beta_1$                 & $0.9$     & $0.9$ & $0.95$ & $0.9$     \\
+$\beta_2$                 & $0.999$   & ---   & ---    & $0.999$   \\
+$\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ \\
+Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
+\bottomrule
+\end{tabular}
+\caption{Baseline hyperparameters. $\beta_1$ is the momentum decay, $\beta_2$ the second-moment decay, and $\varepsilon$ the numerical-stability constant.}
+\label{tab:optim-config}
+\end{table}
 
-\paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters listed above. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip is not, so we do not apply the \Cref{tab:config} clip to LoRA-RITE.
+\paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip is not, so we do not apply the \Cref{tab:config} clip to LoRA-RITE.
 
 \paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. Eval-loss values are hardware-independent. Reproducing all our experiments takes about $850$ GPU-hours.
 
