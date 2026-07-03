@@ -1217,13 +1217,13 @@ Shampoo~\cite{shampoo}, exact at batch size one. Writing
 \]
 for the average over past batch gradients with the weights of
 \Cref{sec:weighted-lmo}, the estimate of $\overline\Sigma_t$ is
-$\mathbb{E}_t[gg^\top]$, and an EMA with decay $\beta_2$ computes it exactly,
-up to the immaterial debiasing scalar $1-\beta_2^t$.
+$\mathbb{E}_t[gg^\top]$.
 
-\paragraph{Kronecker fixed point.} Even $\mathbb{E}_t[gg^\top]$ is too large
-to form, so the optimizer recovers its Kronecker factors directly. Following
-the Kronecker-factored second moments of Shampoo~\cite{shampoo} and
-KL-Shampoo~\cite{klshampoo}, we fit the model
+\paragraph{Kronecker fixed point.} With the factorization
+$\overline\Sigma_t\approx Q\otimes P$ of \Cref{sec:weighted-lmo} in place,
+the optimizer estimates the factors $P,Q$ directly, never forming
+$\mathbb{E}_t[gg^\top]$. The factorization leaves the scale of the factors
+free, so we fix it by normalization, fitting the model
 \begin{equation}\label{e-diag-kron-second-mom-model}
   \mathbb{E}_t[gg^\top]\approx\kappa_t\,(Q\otimes P),
 \end{equation}
