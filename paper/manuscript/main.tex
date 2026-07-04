@@ -331,7 +331,8 @@ To compute $\Sigma$ efficiently in~\Cref{lem:gradprop}, we use a Kronecker appro
 \begin{equation} \label{eq:pq-factor}
      \Sigma  \approx Q \otimes P.
 \end{equation}
-% In particular, here we will use the KL-Shampoo method for computing the factors~\cite{klshampoo} in our experiments.
+We treat $P$ and $Q$ as given for now, returning to their estimation at
+the end of the section and in \Cref{sec:weighted-estimation}.
 
 Using the factorization above, if we use the outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following LMO
 \begin{equation}
@@ -456,9 +457,15 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 \tag{PoLoRA}
 \label{eq:polora-update}
 \end{equation}
-The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
-\paragraph{Optimizer step.} To reduce overhead, the curvature factors $P$ and $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}, but where the diagonal factors are updated using the KL-shampoo technique~\cite{klshampoo}, see~\Cref{sec:weighted-estimation} for details. We also employ standard averaging techniques: an exponential moving average (EMA) momentum with look-ahead for the gradients, and an EMA for $P$ and $Q$. \Cref{app:matnormal} interprets both averages as the per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples with exponentially decaying weights, the momentum forming its objective and the estimated $P,Q$ its constraint set. The Kronecker factorization~\eqref{eq:pq-factor} is fixed only up to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$; the update is invariant to it, but the EMA estimate of the factors is not (\Cref{app:matnormal}), so we normalize each factor to unit $\ell_\infty$ norm, $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$. To ensure fast optimizer steps we use power iteration for estimating spectral norms (\Cref{app:smax}) and Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} for the matrix sign and inverse square roots (\Cref{app:gramns}). For stability, we use relative damping in the inverse square roots
-(\Cref{app:damping}). The resulting step is summarized in \Cref{alg:ours}. 
+The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs we observe that $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
+\paragraph{Optimizer step.} To produce a performant and practical optimizer, we combine the above with the following additional ingredients:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor}, and fit them to second moments of the factor gradients, adapting KL-Shampoo~\cite{klshampoo} (\Cref{sec:weighted-estimation}).
+  \item \emph{Averaging.} The step averages its inputs over past batches: an exponential moving average (EMA) momentum with look-ahead replaces the factor gradients, and an EMA accumulates the curvature estimates. \Cref{app:matnormal} interprets both averages as the data of the per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples.
+  \item \emph{Normalization.} The Kronecker factorization~\eqref{eq:pq-factor} leaves a free scale, the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. The direction~\eqref{eq:factor-directions} is invariant to this rescaling, but the EMA is not: estimates made at different steps would carry different scales into the average (\Cref{sec:scale-placement}). We therefore normalize each factor to unit $\ell_\infty$ norm at use, $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$.
+  \item \emph{Fast numerical subroutines.} Power iteration estimates the spectral norms (\Cref{app:smax}), and Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} compute the matrix sign and inverse square roots (\Cref{app:gramns}), with relative damping for stability (\Cref{app:damping}).
+\end{itemize}
+The resulting step is summarized in \Cref{alg:ours}.
 
 \begin{algorithm}[t]
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
@@ -1085,12 +1092,16 @@ after the fact (\Cref{rem:quadratic}):
 % ===========================================================================
 \section{Averaging as an LMO over Past Samples}
 \label{app:matnormal}
-\Cref{alg:ours} feeds its direction step averaged quantities: the factor
-momenta $M_A,M_B$ in place of the factor gradients, and the curvature
-factors $P,Q$, formed from vectors $p,q$ that an EMA updates each step.
-Both averages are standard practice. This appendix interprets them as the
-data of the per-sample LMO~\eqref{eq:sample-lmo} posed over all past
-samples. \Cref{sec:weighted-lmo} states the weighted problem and reduces
+\Cref{alg:ours} averages over past batches in two places: the factor
+momenta $\widehat M_A,\widehat M_B$ replace the factor gradients in the
+direction step~\eqref{eq:factor-directions}, and an EMA accumulates the
+vectors $p,q$ that form the curvature factors $P,Q$. Both averages are
+standard practice, and this appendix interprets them as the data of one
+problem, the per-sample LMO~\eqref{eq:sample-lmo} of
+\Cref{sec:sample-loss-lmo} posed over all past samples with
+exponentially decaying weights.
+
+\Cref{sec:weighted-lmo} states the weighted problem and reduces
 its data to two weighted moments, a weighted average of the batch gradients and a
 weighted second moment of the per-sample gradients, the latter approximated
 in Kronecker form. \Cref{sec:weighted-estimation} estimates both weighted moments
@@ -1203,66 +1214,127 @@ In LoRA training, backpropagation gives the factor gradients $G_A=B^\top G$
 and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} at no extra cost, while
 forming the full gradient $G$ would take a $d_{\mathrm{out}}\times
 d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what the
-low-rank structure avoids. We therefore build both estimates from the
-factor gradients.
+low-rank structure avoids. We therefore pose the estimation of $p$ and
+$q$ on the factor gradients.
 
-\paragraph{Coupled estimators.} Following KL-Shampoo~\cite{klshampoo},
-we estimate each factor of~\eqref{e-diag-kron-second-mom-model} from the
-other, using only the factor gradients~\eqref{e-grad-wrt-factors} and the
-$r\times r$ matrices $C_A=B^\top PB$, $C_B=AQA^\top$~\eqref{eq:ours-closure}
-that the direction step already forms:
+\paragraph{Moments of the factor gradients.} We first derive what the
+model implies for their moments. Since
+$\vec(G_A)=(I\otimes B^\top)\vec(G)$ and conjugation preserves Kronecker
+structure, $(I\otimes B^\top)(Q\otimes P)(I\otimes B)=Q\otimes B^\top PB$,
+the model~\eqref{e-diag-kron-second-mom-model} gives
+\begin{equation}\label{eq:observable-moments}
+  \E_t\big[\vec(G_A)\vec(G_A)^\top\big]=\kappa_t\,Q\otimes C_A,
+  \qquad
+  \E_t\big[\vec(G_B^\top)\vec(G_B^\top)^\top\big]=\kappa_t\,P\otimes C_B,
+\end{equation}
+with $C_A=B^\top PB$ and $C_B=AQA^\top$ the $r\times r$
+matrices of~\eqref{eq:ours-closure}
+(the second identity follows the same way after transposing $G$, which
+swaps the two sides of the model). Since $P$ and $Q$ are diagonal, both
+moments are block diagonal: column $j$ of $G_A$ has weighted second
+moment $\kappa_t\,q_j\,C_A$, and row $i$ of $G_B$ has
+$\kappa_t\,p_i\,C_B$, so each entry of a factor scales a common
+$r\times r$ block.
+
+\paragraph{Fitting the factors.} Write
+$\Sigma_A=\E_t[\vec(G_A)\vec(G_A)^\top]$ for the observed moment and
+$\widetilde q=\kappa_t\,q$ for the scaled factor, absorbing the magnitude
+that normalization later removes. The candidate family
+$\{\widetilde Q\otimes C_A:\widetilde Q=\diag(\widetilde q)\}$ has
+$d_{\mathrm{in}}$ parameters while $\Sigma_A$ has on the order of
+$(rd_{\mathrm{in}})^2$ entries, so away from the exact model no candidate
+reproduces $\Sigma_A$, and an estimator must choose how to weigh the
+mismatch. We make that choice explicit with a divergence $D$ between
+positive definite matrices, requiring two properties:
+(i) $D$ adds across block-diagonal pairs,
+$D(\Sigma,S)=\sum_jD(\Sigma_j,S_j)$ whenever $\Sigma$ and $S$ are block
+diagonal with blocks $\Sigma_j$ and $S_j$ of matching sizes; and
+(ii) the best scalar multiple of $S$ approximating $\Sigma$,
+$c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)$, exists, is unique, and is
+homogeneous, $c^\star(a\Sigma,S)=a\,c^\star(\Sigma,S)$ for $a>0$. The
+fit is
+\begin{equation}\label{eq:factor-fit}
+  \widehat q
+  =\argmin_{\widetilde q>0}\;
+  D\big(\Sigma_A,\;\widetilde Q\otimes C_A\big),
+\end{equation}
+and symmetrically $\widehat p$ from the second moment of the rows of
+$G_B$. Each problem takes the other factor as given, through $C_A$ and
+$C_B$, so the two fits are coupled, and in practice each is posed with
+the stored estimate of the other factor. The next lemma shows the
+coupling is sound.
+
+\begin{lemma}[Consistency]\label{lem:consistency}
+Let $D$ satisfy (i) and (ii). If the
+model~\eqref{e-diag-kron-second-mom-model} holds with equality, then for
+any diagonal $\widehat P\succ0$ the fit~\eqref{eq:factor-fit} posed with
+$\widehat C_A=B^\top\widehat PB$ returns
+\[
+  \widehat q=\kappa_t\,c^\star\big(C_A,\widehat C_A\big)\,\diag(Q),
+  \qquad C_A=B^\top PB,
+\]
+so $\widehat q/\norm{\widehat q}_\infty=\diag(Q)$. The same holds for
+the fit for $p$ with the roles of the two factors exchanged.
+\end{lemma}
+\begin{proof}
+Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
+diagonal with $j$th block $\kappa_t\,q_j\,C_A$, and the candidate
+$\widetilde Q\otimes\widehat C_A$ is block diagonal with $j$th block
+$\widetilde q_j\,\widehat C_A$. By (i) the objective
+in~\eqref{eq:factor-fit} is
+$\sum_jD(\kappa_t q_jC_A,\,\widetilde q_j\widehat C_A)$, one term per
+coordinate, and by (ii) the $j$th term is minimized at
+$\widetilde q_j=\kappa_t\,q_j\,c^\star(C_A,\widehat C_A)$. The factor
+$\kappa_t\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and
+$\norm{\diag Q}_\infty=1$, so the normalization removes it.
+\end{proof}
+
+\paragraph{The log-determinant divergence.} Following
+KL-Shampoo~\cite{klshampoo}, we choose the log-determinant divergence
+\[
+  D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
+\]
+where $d$ is the common dimension. It satisfies (i) since traces and
+log-determinants add across blocks, and (ii) with scalar fit
+$c^\star(\Sigma,S)=\Tr(\Sigma S^{-1})/d$. Substituting
+$S=\widetilde Q\otimes C_A$ into~\eqref{eq:factor-fit} and dropping
+terms that do not depend on $\widetilde q$, the objective separates
+across coordinates,
+\[
+  \sum_{j}\Big(\frac{s_j}{\widetilde q_j}+r\log\widetilde q_j\Big),
+  \qquad
+  s_j=\E_t\big[(G_A^\top C_A^{-1}G_A)_{jj}\big],
+\]
+and is minimized at $\widetilde q_j=s_j/r$. With the same computation
+for $p$, the fits are
 \[
   T_Q(P)=\frac1r\diag\!\left(\E_t[G_A^\top C_A^{-1}G_A]\right),
   \qquad
   T_P(Q)=\frac1r\diag\!\left(\E_t[G_B C_B^{-1}G_B^\top]\right).
 \]
-Each map needs the other factor as its input. The next lemma confirms
-that, under the model, each map recovers one factor from the other.
+The moment $\Sigma_A$ enters only through the $r\times r$ products
+inside $s_j$, so it is never formed, and the fits consume only the
+factor gradients and the matrices $C_A$, $C_B$ that the direction step
+already uses.
 
-\begin{lemma}[Consistency]\label{lem:fixed-point-consistency}
-If the model~\eqref{e-diag-kron-second-mom-model} holds with equality, then
+\paragraph{The von Neumann divergence.} The divergence is where the
+estimator is decided. The von Neumann divergence
+$D(\Sigma,S)=\Tr(\Sigma\log\Sigma-\Sigma\log S-\Sigma+S)$ also satisfies
+(i) and (ii), with scalar fit $c^\star(\Sigma,S)=\Tr(\Sigma)/\Tr(S)$,
+and the same substitution yields
 \[
-  T_Q(P)=\kappa_t\diag(Q),
-  \qquad
-  T_P(Q)=\kappa_t\diag(P),
+  \widetilde q_j=\E_t\big[(G_A^\top G_A)_{jj}\big]/\Tr(C_A),
 \]
-and normalizing recovers the factors exactly:
-$T_Q(P)/\norm{T_Q(P)}_\infty=\diag(Q)$ and
-$T_P(Q)/\norm{T_P(Q)}_\infty=\diag(P)$.
-\end{lemma}
-\begin{proof}
-The model implies that, for any symmetric $X$,
-\[
-  \E_t[G^\top XG]=\kappa_t\,\Tr(XP)\,Q .
-\]
-To see this, decompose $X=\sum_l\lambda_l x_lx_l^\top$ and note that
-$G^\top x=(I_{d_{\mathrm{in}}}\otimes x^\top)\,g$ for any vector $x$, so
-the model and the mixed-product identity give
-\[
-  \E_t\big[(G^\top x)(G^\top x)^\top\big]
-  =\kappa_t\,(I\otimes x^\top)(Q\otimes P)(I\otimes x)
-  =\kappa_t\,(x^\top Px)\,Q,
-\]
-and summing over the decomposition yields the identity. Applying it,
-\[
-\begin{aligned}
-  r\,T_Q(P)
-  &=\diag\!\big(\E_t[G_A^\top C_A^{-1}G_A]\big)
-   =\diag\!\big(\E_t[G^\top(BC_A^{-1}B^\top)G]\big)\\
-  &=\kappa_t\,\Tr\!\big(C_A^{-1}B^\top PB\big)\diag(Q)
-   =\kappa_t\,r\,\diag(Q),
-\end{aligned}
-\]
-where the second equality uses $G_A=B^\top G$, the third the identity with
-$X=BC_A^{-1}B^\top$ and cyclicity of the trace, and the last
-$C_A=B^\top PB$. The claim for $T_P$ holds by the same argument with rows
-and columns exchanged ($A\leftrightarrow B$, $P\leftrightarrow Q$).
-Finally, $\norm{\diag Q}_\infty=1$ gives $\norm{T_Q(P)}_\infty=\kappa_t$,
-so dividing by the norm removes the scalar.
-\end{proof}
+the raw second moment of the factor gradient, with $C_A$ entering only
+through a scalar that the normalization removes. This mirrors the
+correspondence established in KL-Shampoo between the von Neumann
+divergence and Adafactor-style moment matching~\cite{klshampoo}. Both
+choices recover the factors under the model (\Cref{lem:consistency}).
+They differ off the model, where the log-determinant fit weighs the
+average by $C_A^{-1}$ and the von Neumann fit ignores it.
 
 \paragraph{Online estimator.}
-The maps involve the weighted average $\E_t$, which the optimizer cannot
+The maps $T_Q,T_P$ involve the weighted average $\E_t$, which the optimizer cannot
 evaluate, so \methodname{} accumulates the same average online, evaluating
 both maps on the current batch, with the stored estimates $P_t,Q_t$ in
 place of the model factors in $C_A,C_B$,
@@ -1287,7 +1359,30 @@ matches $T_Q(P_t)$ term by term, except that each $\widehat q_s$ used the
 matrices of its own step ($B_s$, $P_s$) while $T_Q(P_t)$ applies the
 current ones to every past gradient. The difference is first order in the
 drift of $B$ and $P$ over the effective window of the weights. The last
-line applies the normalization of \Cref{lem:fixed-point-consistency}.
+line applies the normalization of \Cref{lem:consistency}.
+
+\paragraph{Comparison with KL-Shampoo.} The estimation above follows
+KL-Shampoo~\cite{klshampoo} in fitting the Kronecker factors by
+divergence minimization, with the log-determinant divergence producing
+coupled fits. It differs in three ways.
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \emph{Nothing is stochastic.} KL-Shampoo fits the second moment
+  of a stationary gradient distribution. Here $\E_t$ is a weighted sum
+  over the realized gradients, not an expectation, and the statements
+  above hold for an arbitrary gradient stream.
+  \item \emph{The observables are the factor gradients.} KL-Shampoo fits
+  dense factors to the second moment of the weight gradient $G$. Here
+  each diagonal factor is fit to the second moment of its own factor
+  gradient, $G$ is never formed, and the two fits are coupled through
+  $C_A$ and $C_B$.
+  \item \emph{Nothing needs to converge.} KL-Shampoo justifies its
+  moving average as a stochastic proximal-gradient step on the
+  divergence objective, so its estimates are correct in the limit. Here
+  the recursion computes the weighted moments exactly,
+  \Cref{lem:consistency} makes each fit exact under the model even when
+  the estimate of the other factor is inexact, and the drift of the
+  online estimator is the only approximation.
+\end{itemize}
 
 \paragraph{Factor momenta.} The objective
 of~\eqref{eq:weighted-relaxed} is $\ip{\widehat M_t,\Delta W}$, but
