@@ -218,8 +218,9 @@ A solution to~\eqref{eq:lmo} is given by the matrix sign of the gradient~\cite{b
 \]
 where $\msign(G)=UV^\top$ and $G=U\Sigma V^\top$ is the reduced SVD (see~\Cref{lem:muon-lmo}). 
 
-In practice, Muon uses the momentum estimate of the gradients
-and a polynomial approximation to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}). Next we show how to adapt this LMO to be aware of the product structure in LoRA~\eqref{eq:lora}.
+In practice, Muon replaces the gradient with its momentum, an exponential
+moving average (EMA) of past gradients, and uses a polynomial approximation
+to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}). Next we show how to adapt this LMO to be aware of the product structure in LoRA~\eqref{eq:lora}.
 
 \subsection{Product Muon}\label{sec:product-muon}
 Consider a LoRA step that updates the two factors $A$ and $B$ as follows
@@ -460,9 +461,9 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs we observe that $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
 \paragraph{Optimizer step.} To produce a performant and practical optimizer, we combine the above with the following additional ingredients:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Averaging.} The step uses quantities which average over past batches. Momentum with look-ahead replaces the factor gradients, and an EMA is used to update $P$ and $Q$. \Cref{app:matnormal} interprets this averaging in terms of a per-sample LMO like~\eqref{eq:sample-lmo}, but weighted over past samples.
-  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor}, and fit them using second moments of the factor gradients, like in KL-Shampoo~\cite{klshampoo} (\Cref{sec:weighted-estimation}).
-  \item \emph{Normalization.} The Kronecker factorization~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor to have its maximum entry be one (\Cref{sec:scale-placement}).
+  \item \emph{Averaging.} The step uses quantities that average over past batches. Momentum with look-ahead replaces the factor gradients, and an EMA updates $P$ and $Q$. \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended over past samples.
+  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor}, and fit them using second moments of the factor gradients, as in KL-Shampoo~\cite{klshampoo} (\Cref{sec:weighted-estimation}).
+  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor to have its maximum entry be one (\Cref{sec:scale-placement}).
   \item \emph{Fast numerical subroutines.} The spectral norms are estimated using power iteration (\Cref{app:smax}). Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} are used to compute the matrix sign and inverse square roots (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
 \end{itemize}
 The resulting step is summarized in \Cref{alg:ours}.
