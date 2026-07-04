@@ -327,12 +327,12 @@ By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus we can use this 
 The last issue is that $\Sigma$ is too large to store or use directly, so we replace it with a structured approximation.
 
 \paragraph{Kronecker approximation.}
-Following the Kronecker-factored approximations used by Shampoo~\cite{shampoo}
-and KFAC~\cite{kfac}, let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q  \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}} $ be symmetric positive definite matrices such that
+To compute $\Sigma$ efficiently in~\Cref{lem:gradprop}, we use a Kronecker approximation~\cite{shampoo,kfac}. Let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$ be symmetric positive definite matrices such that
 \begin{equation} \label{eq:pq-factor}
      \Sigma  \approx Q \otimes P.
 \end{equation}
-\nikhil{should clarify that we are ignoring the $P$, $Q$ estimation issue for now.}
+% In particular, here we will use the KL-Shampoo method for computing the factors~\cite{lin2026understanding} in our experiments.
+
 Using the factorization above, if we use the outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following LMO
 \begin{equation}
  \begin{array}{ll}
@@ -457,7 +457,7 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 \label{eq:polora-update}
 \end{equation}
 The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
-\paragraph{Optimizer step.} To reduce overhead, the curvature factors $P$ and $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}. We also employ standard averaging techniques: an exponential moving average (EMA) momentum with look-ahead for the gradients, and an EMA for $P$ and $Q$. \Cref{app:matnormal} interprets both averages as the per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples with exponentially decaying weights, the momentum forming its objective and the estimated $P,Q$ its constraint set. The Kronecker factorization~\eqref{eq:pq-factor} is fixed only up to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$; the update is invariant to it, but the EMA estimate of the factors is not (\Cref{app:matnormal}), so we normalize each factor to unit $\ell_\infty$ norm, $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$. To ensure fast optimizer steps we use power iteration for estimating spectral norms (\Cref{app:smax}) and Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} for the matrix sign and inverse square roots (\Cref{app:gramns}). For stability, we use relative damping in the inverse square roots
+\paragraph{Optimizer step.} To reduce overhead, the curvature factors $P$ and $Q$ are taken to be diagonal, like in Adafactor \cite{adafactor}, but where the diagonal factors are updated using the KL-shampoo technique~\cite{lin2026understanding}, see~\Cref{sec:weighted-estimation} for details. We also employ standard averaging techniques: an exponential moving average (EMA) momentum with look-ahead for the gradients, and an EMA for $P$ and $Q$. \Cref{app:matnormal} interprets both averages as the per-sample LMO~\eqref{eq:sample-lmo} posed over all past samples with exponentially decaying weights, the momentum forming its objective and the estimated $P,Q$ its constraint set. The Kronecker factorization~\eqref{eq:pq-factor} is fixed only up to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$; the update is invariant to it, but the EMA estimate of the factors is not (\Cref{app:matnormal}), so we normalize each factor to unit $\ell_\infty$ norm, $P=\diag(p/\norm{p}_\infty)$ and $Q=\diag(q/\norm{q}_\infty)$. To ensure fast optimizer steps we use power iteration for estimating spectral norms (\Cref{app:smax}) and Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} for the matrix sign and inverse square roots (\Cref{app:gramns}). For stability, we use relative damping in the inverse square roots
 (\Cref{app:damping}). The resulting step is summarized in \Cref{alg:ours}. 
 
 \begin{algorithm}[t]
