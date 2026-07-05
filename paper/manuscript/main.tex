@@ -1186,29 +1186,34 @@ since this gives tighter constraints on recent batches. Unrolling the two recurs
   w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-s}}{n_s}.
 \]
 
-As in the main text, $\overline\Sigma_t$ cannot be used directly. It is built from
-per-sample gradients that backpropagation never materializes, and it is
-too large to store. We therefore approximate it in two steps. First, we
-collapse each batch to its mean, replacing the within-batch average
-$\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product $g_sg_s^\top$
-of the batch gradient $g_s=\vec(G_s)$. This substitution underlies the
-second moments of Adam~\cite{adam} and Shampoo~\cite{shampoo}, and is
-exact at batch size one. Under it the weights $w_{t,s,i}$ sum within each
-batch to $w_{t,s}=(1-\beta_2)\beta_2^{t-s}$, so the collapsed estimate
-is a weighted average over batch gradients,
-\[
-  \overline\Sigma_t\approx\E_t[gg^\top],
-  \qquad\text{where}\qquad
-  \E_t[\phi(G)]=\sum_{s\le t}w_{t,s}\,\phi(G_s).
-\]
-Second, to address the size, we assume the Kronecker-factored form
-of~\eqref{eq:pq-factor}, with $P,Q$ diagonal as in \Cref{alg:ours}. Since
-$Q\otimes P$ is unchanged by the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, we
-normalize $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$ and let a scalar
-$\kappa_t>0$ carry the magnitude:
-\begin{equation}\label{e-diag-kron-second-mom-model}
-  \E_t[gg^\top]\approx\kappa_t\,(Q\otimes P).
-\end{equation}
+\paragraph{Approximating the second moment.} As in the main text,
+$\overline\Sigma_t$ cannot be used directly. It is built from per-sample
+gradients that backpropagation never materializes, and it is too large
+to store. Two approximations remove the two obstacles.
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \emph{Batch collapse.} We replace the within-batch average
+  $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product
+  $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$. This substitution
+  underlies the second moments of Adam~\cite{adam} and
+  Shampoo~\cite{shampoo}, and it is exact at batch size one. Under it
+  the weights $w_{t,s,i}$ sum within each batch to
+  $w_{t,s}=(1-\beta_2)\beta_2^{t-s}$, so the collapsed estimate is a
+  weighted average over batch gradients,
+  \[
+    \overline\Sigma_t\approx\E_t[gg^\top],
+    \qquad\text{where}\qquad
+    \E_t[\phi(G)]=\sum_{s\le t}w_{t,s}\,\phi(G_s).
+  \]
+  \item \emph{Kronecker factorization.} To address the size, we assume
+  the Kronecker-factored form of~\eqref{eq:pq-factor}, with $P,Q$
+  diagonal as in \Cref{alg:ours}. Since $Q\otimes P$ is unchanged by the
+  rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, we normalize
+  $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$ and let a scalar
+  $\kappa_t>0$ carry the magnitude:
+  \begin{equation}\label{e-diag-kron-second-mom-model}
+    \E_t[gg^\top]\approx\kappa_t\,(Q\otimes P).
+  \end{equation}
+\end{itemize}
 The next subsection estimates the factors $P,Q$ from the quantities the
 optimizer computes.
 
@@ -1251,9 +1256,10 @@ For a divergence $D$ between positive definite matrices, the fits are
 \end{equation}
 The divergence resolves an overdetermined fit: the candidate family
 $\{\widetilde Q\otimes C_A\}$ has $d_{\mathrm{in}}$ parameters while
-$\Sigma_A$ has on the order of $(rd_{\mathrm{in}})^2$ entries, so away
-from the exact model no candidate reproduces $\Sigma_A$, and $D$ decides
-how the mismatch is weighed. We require two properties of $D$:
+$\Sigma_A$ has on the order of $(rd_{\mathrm{in}})^2$ entries, and
+similarly for the fit for $p$. Away from the exact model, no candidate
+reproduces the observed moment, and $D$ decides how the mismatch is
+weighed. We require two properties of $D$:
 \begin{itemize}[leftmargin=2.2em,itemsep=1pt,topsep=2pt]
   \item[(i)] \emph{additivity across blocks:}
   $D(\Sigma,S)=\sum_jD(\Sigma_j,S_j)$ whenever $\Sigma$ and $S$ are
