@@ -462,8 +462,8 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \paragraph{Optimizer step.} To produce a performant and practical optimizer, we combine the above with the following additional ingredients:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \emph{Averaging.} The step uses quantities that average over past batches. Momentum with look-ahead replaces the factor gradients, and an EMA updates $P$ and $Q$. \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended over past samples.
-  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor}, and fit them using second moments of the factor gradients, as in KL-Shampoo~\cite{klshampoo} (\Cref{sec:weighted-estimation}).
-  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor to have its maximum entry be one (\Cref{sec:scale-placement}).
+  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor}, and fit them to second moments of the factor gradients, adapting KL-Shampoo~\cite{klshampoo} (\Cref{sec:weighted-estimation}).
+  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (\Cref{sec:scale-placement}).
   \item \emph{Fast numerical subroutines.} The spectral norms are estimated using power iteration (\Cref{app:smax}). Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} are used to compute the matrix sign and inverse square roots (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
 \end{itemize}
 The resulting step is summarized in \Cref{alg:ours}.
