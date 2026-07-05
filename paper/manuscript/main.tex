@@ -1109,7 +1109,7 @@ main text, the second moment is too large to form, so we approximate it
 in Kronecker form. In \Cref{sec:weighted-estimation}, we estimate the
 second moment from the factor gradients and obtain the $p,q$ recursion
 of \Cref{alg:ours}. The factor momenta supply the part of the average
-that the update needs. We then substitute the two estimates into the
+that the update needs. We then substitute the estimates into the
 relaxed problem and recover the update~\eqref{eq:polora-update}. In
 \Cref{sec:scale-placement}, we justify placing the normalization after
 the average rather than inside it.
@@ -1178,7 +1178,7 @@ moments,
   +(1-\beta_2)\,\frac1{n_t}\sum_{i=1}^{n_t}g_{t,i}g_{t,i}^\top.
 \]
 This choice gives tighter constraints on recent batches. Unrolling the
-two recursions gives the induced weights
+recursions gives the induced weights
 \[
   m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}
   \quad(s<t),
@@ -1269,7 +1269,7 @@ weighed. We require two properties of $D$:
   satisfies $c^\star(a\Sigma,S)=a\,c^\star(\Sigma,S)$ for $a>0$.
 \end{itemize}
 Each fit takes the other factor as given ($C_A$ contains $P$, and
-$C_B$ contains $Q$), so the two fits are coupled. In practice, each is
+$C_B$ contains $Q$), so the fits are coupled. In practice, each is
 posed with the stored estimate of the other factor. The next lemma
 shows the coupling is sound.
 
@@ -1403,7 +1403,7 @@ update~\eqref{eq:DeltaW-lin} the objective decomposes as
   \ip{\widehat M_t,\,\Delta B\,A+B\,\Delta A}
   =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A},
 \]
-so the update depends on $\widehat M_t$ only through the two matrices
+so the update depends on $\widehat M_t$ only through
 $\widehat M_tA^\top$ and $B^\top\widehat M_t$. The factor momenta estimate
 precisely these: $\widehat M_A$ averages $B_s^\top G_s$ and
 $\widehat M_B$ averages $G_sA_s^\top$, with the same weights $m_{t,s}$.
