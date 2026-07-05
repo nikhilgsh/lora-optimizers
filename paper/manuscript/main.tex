@@ -1167,16 +1167,18 @@ momentum scheme of \Cref{alg:ours},
 \[
   M_{t+1}=\beta_1M_t+(1-\beta_1)G_t,
   \qquad
-  \widehat M_t=\beta_1M_{t+1}+(1-\beta_1)G_t,
+  \widehat M_t=\beta_1M_{t+1}+(1-\beta_1)G_t.
 \]
-since this emphasizes decreasing the loss on recent batches. For the constraints, a reasonable choice is an EMA of the within-batch
-second moments,
+This choice emphasizes decreasing the loss on recent batches. For the
+constraints, a reasonable choice is an EMA of the within-batch second
+moments,
 \[
   \overline\Sigma_t
   =\beta_2\,\overline\Sigma_{t-1}
-  +(1-\beta_2)\,\frac1{n_t}\sum_{i=1}^{n_t}g_{t,i}g_{t,i}^\top,
+  +(1-\beta_2)\,\frac1{n_t}\sum_{i=1}^{n_t}g_{t,i}g_{t,i}^\top.
 \]
-since this gives tighter constraints on recent batches. Unrolling the two recursions gives the induced weights
+This choice gives tighter constraints on recent batches. Unrolling the
+two recursions gives the induced weights
 \[
   m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}
   \quad(s<t),
@@ -1204,10 +1206,10 @@ to store. Two approximations remove the two obstacles.
     \qquad\text{where}\qquad
     \E_t[\phi(G)]=\sum_{s\le t}w_{t,s}\,\phi(G_s).
   \]
-  \item \emph{Kronecker factorization.} To address the size, we assume
-  the Kronecker-factored form of~\eqref{eq:pq-factor}, with $P,Q$
-  diagonal as in \Cref{alg:ours}. Since $Q\otimes P$ is unchanged by the
-  rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, we normalize
+  \item \emph{Kronecker factorization.} To address the second obstacle,
+  we assume the Kronecker-factored form of~\eqref{eq:pq-factor}, with
+  $P,Q$ diagonal as in \Cref{alg:ours}. Since $Q\otimes P$ is unchanged
+  by the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, we fix
   $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$ and let a scalar
   $\kappa_t>0$ carry the magnitude:
   \begin{equation}\label{e-diag-kron-second-mom-model}
@@ -1226,8 +1228,8 @@ factor gradients.
 
 \paragraph{Moments of the factor gradients.} Since
 $\vec(G_A)=(I\otimes B^\top)\vec(G)$ and conjugation acts factorwise on
-a Kronecker product, the model~\eqref{e-diag-kron-second-mom-model}
-gives
+a Kronecker product, the second-moment
+model~\eqref{e-diag-kron-second-mom-model} gives
 \begin{equation}\label{eq:observable-moments}
   \Sigma_A:=\E_t\big[\vec(G_A)\vec(G_A)^\top\big]=\kappa_t\,Q\otimes C_A,
   \qquad
@@ -1238,22 +1240,22 @@ of~\eqref{eq:ours-closure} (the second identity follows after
 transposing $G$).
 
 \paragraph{Fitting the factors.} We recover the factors by fitting the
-model to the observed moments. Write $\widetilde q=\kappa_t\,q$ and
-$\widetilde p=\kappa_t\,p$ for the scaled factors, absorbing the
+second-moment model to the observed moments~\eqref{eq:observable-moments}. Write $\tilde q=\kappa_t\,q$ and
+$\tilde p=\kappa_t\,p$ for the scaled factors, absorbing the
 magnitude that the normalization later removes, and let
-$\widetilde Q=\diag(\widetilde q)$ and $\widetilde P=\diag(\widetilde p)$.
+$\tilde Q=\diag(\tilde q)$ and $\tilde P=\diag(\tilde p)$.
 For a divergence $D$ between positive definite matrices, the fits are
 \begin{equation}\label{eq:factor-fit}
   \widehat q
-  =\argmin_{\widetilde q>0}\;
-  D\big(\Sigma_A,\;\widetilde Q\otimes C_A\big),
+  =\argmin_{\tilde q>0}\;
+  D\big(\Sigma_A,\;\tilde Q\otimes C_A\big),
   \qquad
   \widehat p
-  =\argmin_{\widetilde p>0}\;
-  D\big(\Sigma_B,\;\widetilde P\otimes C_B\big).
+  =\argmin_{\tilde p>0}\;
+  D\big(\Sigma_B,\;\tilde P\otimes C_B\big).
 \end{equation}
 The divergence resolves an overdetermined fit: the candidate family
-$\{\widetilde Q\otimes C_A\}$ has $d_{\mathrm{in}}$ parameters while
+$\{\tilde Q\otimes C_A\}$ has $d_{\mathrm{in}}$ parameters while
 $\Sigma_A$ has on the order of $(rd_{\mathrm{in}})^2$ entries, and
 similarly for the fit for $p$. Away from the exact model, no candidate
 reproduces the observed moment, and $D$ decides how the mismatch is
@@ -1266,10 +1268,10 @@ weighed. We require two properties of $D$:
   $c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)$ exists, is unique, and
   satisfies $c^\star(a\Sigma,S)=a\,c^\star(\Sigma,S)$ for $a>0$.
 \end{itemize}
-Each fit takes the other factor as given, through $C_A$ and $C_B$, so
-the two fits are coupled, and in practice each is posed with the stored
-estimate of the other factor. The next lemma shows the coupling is
-sound.
+Each fit takes the other factor as given ($C_A$ contains $P$, and
+$C_B$ contains $Q$), so the two fits are coupled. In practice, each is
+posed with the stored estimate of the other factor. The next lemma
+shows the coupling is sound.
 
 \begin{lemma}[Consistency]\label{lem:consistency}
 Let $D$ satisfy (i) and (ii), and let the
@@ -1288,27 +1290,27 @@ $\widehat p/\norm{\widehat p}_\infty=\diag(P)$.
 \begin{proof}
 Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
 diagonal with $j$th block $\kappa_t\,q_j\,C_A$, and the candidate
-$\widetilde Q\otimes\widehat C_A$ is block diagonal with $j$th block
-$\widetilde q_j\,\widehat C_A$. By (i) the objective
+$\tilde Q\otimes\widehat C_A$ is block diagonal with $j$th block
+$\tilde q_j\,\widehat C_A$. By (i) the objective
 in~\eqref{eq:factor-fit} is
-$\sum_jD(\kappa_t q_jC_A,\,\widetilde q_j\widehat C_A)$, one term per
+$\sum_jD(\kappa_t q_jC_A,\,\tilde q_j\widehat C_A)$, one term per
 coordinate, and by (ii) the $j$th term is minimized at
-$\widetilde q_j=\kappa_t\,q_j\,c^\star(C_A,\widehat C_A)$. The factor
+$\tilde q_j=\kappa_t\,q_j\,c^\star(C_A,\widehat C_A)$. The factor
 $\kappa_t\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and
 $\norm{\diag Q}_\infty=1$, so the normalization removes it. The claim
 for $\widehat p$ follows with the roles of the two factors exchanged.
 \end{proof}
 
 \paragraph{Choosing the divergence.} The choice of divergence
-determines the estimator. Two choices satisfy (i) and (ii), and we use
-the first.
+determines the estimator. We consider two divergences that satisfy (i)
+and (ii), and we use the first.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
   \item \emph{Log-determinant} (following KL-Shampoo~\cite{klshampoo}):
   $D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d$, where $d$
   is the common dimension. It satisfies (i) since traces and
   log-determinants add across blocks, and (ii) with scalar fit
   $c^\star(\Sigma,S)=\Tr(\Sigma S^{-1})/d$. Substituting
-  $S=\widetilde Q\otimes C_A$ into~\eqref{eq:factor-fit} separates the
+  $S=\tilde Q\otimes C_A$ into~\eqref{eq:factor-fit} separates the
   objective across coordinates, and the minimizers are
   \[
     T_Q(P)=\frac1r\diag\!\left(\E_t[G_A^\top C_A^{-1}G_A]\right),
@@ -1316,7 +1318,7 @@ the first.
     T_P(Q)=\frac1r\diag\!\left(\E_t[G_B C_B^{-1}G_B^\top]\right).
   \]
   The moments $\Sigma_A,\Sigma_B$ enter only through these $r\times r$
-  products, so they are never formed, and the fits consume only the
+  products, so neither is ever formed, and the fits consume only the
   factor gradients and the matrices $C_A$, $C_B$ that the direction
   step already uses.
   \item \emph{Von Neumann}:
@@ -1325,9 +1327,9 @@ the first.
   $c^\star(\Sigma,S)=\Tr(\Sigma)/\Tr(S)$. The same substitution yields
   the raw second moments of the factor gradients,
   \[
-    \widetilde q_j=\E_t\big[(G_A^\top G_A)_{jj}\big]/\Tr(C_A),
+    \tilde q_j=\E_t\big[(G_A^\top G_A)_{jj}\big]/\Tr(C_A),
     \qquad
-    \widetilde p_i=\E_t\big[(G_B G_B^\top)_{ii}\big]/\Tr(C_B),
+    \tilde p_i=\E_t\big[(G_B G_B^\top)_{ii}\big]/\Tr(C_B),
   \]
   with $C_A$, $C_B$ entering only through scalars that the
   normalization removes. This mirrors the correspondence established in
@@ -1359,7 +1361,8 @@ $P_t,Q_t$ in place of the model factors in $C_A,C_B$,
   P_{t+1} &= \diag\!\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr).
 \end{aligned}
 \end{equation}
-The last line applies the normalization of \Cref{lem:consistency}.
+The last line applies the normalization that \Cref{lem:consistency}
+justifies.
 Unrolled, the recursion applies the weights $w_{t,s}$ of
 \Cref{sec:weighted-lmo} to the per-step estimates, so the stored $q_t$
 matches $T_Q(P_t)$ term by term up to one discrepancy. Each
@@ -1402,9 +1405,11 @@ update~\eqref{eq:DeltaW-lin} the objective decomposes as
 \]
 so the update depends on $\widehat M_t$ only through the two matrices
 $\widehat M_tA^\top$ and $B^\top\widehat M_t$. The factor momenta estimate
-precisely these: $\widehat M_A$ averages $B_s^\top G_s$ with the same
-weights $m_{t,s}$. If the factors are constant over the averaging window,
-$\widehat M_A=B^\top\widehat M_t$ exactly; otherwise the difference,
+precisely these: $\widehat M_A$ averages $B_s^\top G_s$ and
+$\widehat M_B$ averages $G_sA_s^\top$, with the same weights $m_{t,s}$.
+If the factors are constant over the averaging window,
+$\widehat M_A=B^\top\widehat M_t$ and $\widehat M_B=\widehat M_tA^\top$
+exactly. Otherwise the difference for $\widehat M_A$,
 $\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
 drift over the window.
 
@@ -1431,10 +1436,11 @@ scale means nothing to the update but changes what the average computes.
 \paragraph{The update is scale-free.} The direction step ignores the scale of
 the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
 $C_B^{-1/2}$ by $c^{-1/2}$, the matrix sign absorbs the scalar, and the
-division by $\norm{D_A}_2$ and $\norm{D_B}_2$ when the magnitudes are set
-removes what remains (likewise for $P$). The update therefore needs only the
-direction of the stored vector, never the magnitude $\kappa_t$ carried by the
-fit~\eqref{e-diag-kron-second-mom-model}, and normalizing at use costs nothing.
+division by $\norm{D_A}_2$ and $\norm{D_B}_2$ in the magnitude step
+removes what remains (likewise for $P$). The update therefore needs only
+the direction of the stored vectors, never the magnitude $\kappa_t$ in
+the model~\eqref{e-diag-kron-second-mom-model}, and normalizing at use
+costs nothing.
 
 \paragraph{The average is scale-sensitive.} Each estimate scales
 inversely with the stored factor it uses,
@@ -1444,14 +1450,15 @@ inversely with the stored factor it uses,
   \widehat p_t(aQ_t)=a^{-1}\,\widehat p_t(Q_t)
   \qquad(a>0),
 \]
-since $C_A=B^\top(aP_t)B=a\,B^\top P_tB$ and likewise for $C_B$. An input factor carrying a
-step-dependent scale $a_s$ would therefore enter the average with its weight
-multiplied by $1/a_s$, corrupting the weights chosen in
-\Cref{sec:weighted-lmo}. Normalizing the factor at use fixes its scale and
+since $C_A=B^\top(aP_t)B=a\,B^\top P_tB$ and likewise for $C_B$. If the
+stored factor carried a step-dependent scale $a_s$, the estimate at
+step $s$ would enter the average with its weight multiplied by $1/a_s$,
+corrupting the weights chosen in \Cref{sec:weighted-lmo}. Normalizing the factor at use fixes its scale and
 protects the weights. Normalizing each estimate before averaging instead
-would put $N(v)=v/\norm{v}_\infty$ inside the sum, where it does not commute
-with the mean: a noise-dominated estimate is rescaled to full size and enters
-with full weight, so the noise no longer averages down. The estimates are
+would put $N(v)=v/\norm{v}_\infty$ inside the sum, where it does not
+commute with the mean. A noise-dominated estimate would be rescaled to
+full size and enter with full weight, so the noise no longer averages
+down. The estimates are
 therefore averaged as produced and normalized only at use, the same order in
 which momentum precedes normalization in normalized SGD~\cite{cutkosky_nigt}
 and orthogonalization in Muon~\cite{denoise_ortho}.
