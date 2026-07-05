@@ -1147,10 +1147,10 @@ equals $\ip{\overline G_t,\Delta W}$ by linearity. For the constraints, the
 outergradient relaxation of \Cref{sec:sample-loss-lmo} applies unchanged.
 The rescaled gradients
 $\sqrt{w_{t,s,i}}\,g_{s,i}$ are rank one and their outer products
-sum to $\overline\Sigma_t$, so the leverage bound of \Cref{lem:gradprop}
-places each of them in the outergradient set
-$\mathcal{G}(\overline\Sigma_t)$ of~\eqref{eq:outgrad}, and the constraints
-relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem is
+sum to $\overline\Sigma_t$. The leverage bound of \Cref{lem:gradprop}
+therefore places each of them in the outergradient set
+$\mathcal{G}(\overline\Sigma_t)$ of~\eqref{eq:outgrad}, and the
+constraints relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem is
 \begin{equation}\label{eq:weighted-relaxed}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -1214,16 +1214,14 @@ to store. Two approximations remove the two obstacles.
     \E_t[gg^\top]\approx\kappa_t\,(Q\otimes P).
   \end{equation}
 \end{itemize}
-The next subsection estimates the factors $P,Q$ from the quantities the
-optimizer computes.
 
 \subsection{Estimating the Weighted Moments}
 \label{sec:weighted-estimation}
 In LoRA training, backpropagation gives the factor gradients $G_A=B^\top G$
-and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} at no extra cost, while
-forming the full gradient $G$ would take a $d_{\mathrm{out}}\times
-d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what the
-low-rank structure avoids. We therefore estimate $p$ and $q$ from the
+and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
+the full gradient $G$, by contrast, would take a $d_{\mathrm{out}}\times
+d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
+the low-rank structure avoids. We therefore estimate $p$ and $q$ from the
 factor gradients.
 
 \paragraph{Moments of the factor gradients.} Since
@@ -1274,16 +1272,18 @@ estimate of the other factor. The next lemma shows the coupling is
 sound.
 
 \begin{lemma}[Consistency]\label{lem:consistency}
-Let $D$ satisfy (i) and (ii). If the
-model~\eqref{e-diag-kron-second-mom-model} holds with equality, then for
-any diagonal $\widehat P\succ0$ the fit~\eqref{eq:factor-fit} posed with
-$\widehat C_A=B^\top\widehat PB$ returns
+Let $D$ satisfy (i) and (ii), and let the
+model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
+diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
+fits~\eqref{eq:factor-fit} posed with $\widehat C_A=B^\top\widehat PB$
+and $\widehat C_B=A\widehat QA^\top$ return
 \[
   \widehat q=\kappa_t\,c^\star\big(C_A,\widehat C_A\big)\,\diag(Q),
-  \qquad C_A=B^\top PB,
+  \qquad
+  \widehat p=\kappa_t\,c^\star\big(C_B,\widehat C_B\big)\,\diag(P),
 \]
-so $\widehat q/\norm{\widehat q}_\infty=\diag(Q)$. The same holds for
-the fit for $p$ with the roles of the two factors exchanged.
+so $\widehat q/\norm{\widehat q}_\infty=\diag(Q)$ and
+$\widehat p/\norm{\widehat p}_\infty=\diag(P)$.
 \end{lemma}
 \begin{proof}
 Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
@@ -1295,7 +1295,8 @@ $\sum_jD(\kappa_t q_jC_A,\,\widetilde q_j\widehat C_A)$, one term per
 coordinate, and by (ii) the $j$th term is minimized at
 $\widetilde q_j=\kappa_t\,q_j\,c^\star(C_A,\widehat C_A)$. The factor
 $\kappa_t\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and
-$\norm{\diag Q}_\infty=1$, so the normalization removes it.
+$\norm{\diag Q}_\infty=1$, so the normalization removes it. The claim
+for $\widehat p$ follows with the roles of the two factors exchanged.
 \end{proof}
 
 \paragraph{Choosing the divergence.} The choice of divergence
@@ -1358,21 +1359,21 @@ $P_t,Q_t$ in place of the model factors in $C_A,C_B$,
   P_{t+1} &= \diag\!\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr).
 \end{aligned}
 \end{equation}
+The last line applies the normalization of \Cref{lem:consistency}.
 Unrolled, the recursion applies the weights $w_{t,s}$ of
 \Cref{sec:weighted-lmo} to the per-step estimates, so the stored $q_t$
 matches $T_Q(P_t)$ term by term up to one discrepancy. Each
 $\widehat q_s$ used the matrices of its own step ($B_s$, $P_s$), while
 $T_Q(P_t)$ applies the current ones to every past gradient. The
 difference is first order in the drift of $B$ and $P$ over the effective
-window of the weights. The last
-line applies the normalization of \Cref{lem:consistency}.
+window of the weights.
 
 \paragraph{Comparison with KL-Shampoo.} The estimation above follows
 KL-Shampoo~\cite{klshampoo} in fitting the Kronecker factors by
 divergence minimization, with the log-determinant divergence producing
 coupled fits. It differs in three ways.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Nothing is stochastic.} KL-Shampoo fits the second moment
+  \item \emph{No distributional assumptions.} KL-Shampoo fits the second moment
   of a stationary gradient distribution. Here $\E_t$ is a weighted sum
   over the realized gradients, not an expectation, and the statements
   above hold for an arbitrary gradient stream.
@@ -1381,7 +1382,7 @@ coupled fits. It differs in three ways.
   each diagonal factor is fit to the second moment of its own factor
   gradient, $G$ is never formed, and the two fits are coupled through
   $C_A$ and $C_B$.
-  \item \emph{Nothing needs to converge.} KL-Shampoo justifies its
+  \item \emph{Valid at every step.} KL-Shampoo justifies its
   moving average as a stochastic proximal-gradient step on the
   divergence objective, so its estimates are correct in the limit. Here
   the recursion computes the weighted moments exactly,
@@ -1407,32 +1408,25 @@ $\widehat M_A=B^\top\widehat M_t$ exactly; otherwise the difference,
 $\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
 drift over the window.
 
-\paragraph{Recovering the update of \Cref{alg:ours}.} Both substitutions
-are now in place: the factor momenta estimate the objective, and the
-fitted factors in place of $\overline\Sigma_t$ turn the constraint
-of~\eqref{eq:weighted-relaxed} into the preconditioned spectral bound
-of~\eqref{eq:polorafull} (\Cref{lem:pseudogradient-spectral}; constants
-absorbed into $\tau$). One index discrepancy remains: \Cref{alg:ours}
-updates the curvature factors after the direction step, so step $t$ uses
-the estimate of $\overline\Sigma_{t-1}$ rather than $\overline\Sigma_t$,
-the newest batch's weight $1-\beta_2$ arriving one step late. This
-ordering avoids a second formation and inversion of $C_A$ and $C_B$ per
-step, and it displaces only a $1-\beta_2$ fraction of the constraint
-weight by a single step, so we keep it. The relaxed
-problem is then the preconditioned spectral LMO~\eqref{eq:polorafull}
-with $\widehat M_t$ in place of the batch gradient. As in the main text,
-we make the update product-aware by replacing $\Delta W$ with the
-linearized product update~\eqref{eq:DeltaW-lin}, and the direction and
-magnitude steps of \Cref{sec:sample-loss-lmo} return the update of
-\Cref{alg:ours}.
+\paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
+$P,Q$ in place of $\overline\Sigma_t$, the weighted
+problem~\eqref{eq:weighted-relaxed} becomes the preconditioned spectral
+LMO~\eqref{eq:polorafull} with gradient $\widehat M_t$
+(\Cref{lem:pseudogradient-spectral}). With the factor momenta in place
+of the factor gradients, the direction and magnitude steps of
+\Cref{sec:sample-loss-lmo} then return the update~\eqref{eq:polora-update}.
+One discrepancy remains: \Cref{alg:ours} updates the curvature factors
+after the direction step, so step $t$ uses the estimate of
+$\overline\Sigma_{t-1}$, which avoids a second formation and inversion
+of $C_A$ and $C_B$ per step.
 
 \subsection{Normalization Placement}
 \label{sec:scale-placement}
 The estimator~\eqref{eq:ours-klcoupling} averages the raw estimates
-$\widehat q_t$ and normalizes only when the stored $q_{t+1}$ forms
-$Q_{t+1}$ for the next step, rather than normalizing each estimate
-before it enters the average. The placement matters because scale
-means nothing to the update but changes what the average computes.
+$\widehat q_t,\widehat p_t$ and normalizes only when the stored vectors
+form $Q_{t+1},P_{t+1}$ for the next step, rather than normalizing each
+estimate before it enters the average. The placement matters because
+scale means nothing to the update but changes what the average computes.
 
 \paragraph{The update is scale-free.} The direction step ignores the scale of
 the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
@@ -1442,13 +1436,15 @@ removes what remains (likewise for $P$). The update therefore needs only the
 direction of the stored vector, never the magnitude $\kappa_t$ carried by the
 fit~\eqref{e-diag-kron-second-mom-model}, and normalizing at use costs nothing.
 
-\paragraph{The average is scale-sensitive.} The estimate scales inversely
-with the factor used to form $C_A$,
+\paragraph{The average is scale-sensitive.} Each estimate scales
+inversely with the stored factor it uses,
 \[
-  \widehat q_t(aP_t)=a^{-1}\,\widehat q_t(P_t)
+  \widehat q_t(aP_t)=a^{-1}\,\widehat q_t(P_t),
+  \qquad
+  \widehat p_t(aQ_t)=a^{-1}\,\widehat p_t(Q_t)
   \qquad(a>0),
 \]
-since $C_A=B^\top(aP_t)B=a\,B^\top P_tB$. An input factor carrying a
+since $C_A=B^\top(aP_t)B=a\,B^\top P_tB$ and likewise for $C_B$. An input factor carrying a
 step-dependent scale $a_s$ would therefore enter the average with its weight
 multiplied by $1/a_s$, corrupting the weights chosen in
 \Cref{sec:weighted-lmo}. Normalizing the factor at use fixes its scale and
