@@ -1,0 +1,156 @@
+
+\paragraph{Approximating the second moment.} As discussed in~\Cref{sec:sample-loss-lmo} in the main text ,
+$\overline\Sigma_t$ cannot be directly estimated or even stored. 
+This is because it depends on the  per-sample
+gradients that backpropagation never materializes, and it is too large
+to store. Two approximations remove the two obstacles.
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \emph{Batch collapse.} We replace the within-batch average
+  $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product
+  $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$. This substitution
+  underlies the second moments of Adam~\cite{adam} and
+  Shampoo~\cite{shampoo}, and it is exact at batch size one. Under it
+  the weights $w_{t,s,i}$ sum within each batch to
+  $w_{t,s}=(1-\beta_2)\beta_2^{t-s}$, so the collapsed estimate is a
+  weighted average over batch gradients,
+  \[
+    \overline\Sigma_t\approx\E_t[gg^\top],
+    \qquad\text{where}\qquad
+    \E_t[\phi(G)]=\sum_{s\le t}w_{t,s}\,\phi(G_s).
+  \]
+  \item \emph{Kronecker factorization.} We assume the
+  Kronecker-factored form of~\eqref{eq:pq-factor}, with
+  $P,Q$ diagonal as in \Cref{alg:ours}. Since $Q\otimes P$ is unchanged
+  by the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, we fix
+  $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$ and let an additional scalar
+  $\kappa_t>0$ carry the magnitude:
+  \begin{equation}\label{e-diag-kron-second-mom-model}
+    \E_t[gg^\top]\approx\kappa_t\,(Q\otimes P).
+  \end{equation}
+\end{itemize}
+
+\subsection{Estimating the Weighted Moments}
+\label{sec:weighted-estimation}
+In LoRA training, backpropagation gives the factor gradients $G_A=B^\top G$
+and $G_B=GA^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
+the full gradient $G$, by contrast, would take a $d_{\mathrm{out}}\times
+d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
+the low-rank structure avoids. We therefore estimate $P$ and $Q$ from the
+factor gradients. \rob{$p$ and $q$ need to defined for this section, or at least a reminder}
+
+\paragraph{Moments of the factor gradients.} Since
+$\vec(G_A)=(I\otimes B^\top)\vec(G)$ and conjugation acts factorwise on
+a Kronecker product, the second-moment
+model~\eqref{e-diag-kron-second-mom-model} gives
+\begin{equation}\label{eq:observable-moments}
+  \Sigma_A:=\E_t\big[\vec(G_A)\vec(G_A)^\top\big] \approx\kappa_t\,Q\otimes C_A,
+  \qquad
+  \Sigma_B:=\E_t\big[\vec(G_B^\top)\vec(G_B^\top)^\top\big] \approx \kappa_t\,P\otimes C_B,
+\end{equation}
+\rob{These identities are only true if $A$ and $B$ do not change over iterations. We need to at least spell this out.}
+where $C_A=B^\top PB$ and $C_B=AQA^\top$ are both the $r\times r$ matrices, and the second approximation in~\eqref{eq:observable-moments} follows by
+transposing $G$.
+
+\paragraph{Fitting the factors.} We recover the factors by fitting the
+second-moment model to the observed moments~\eqref{eq:observable-moments}. Write $\tilde q=\kappa_t\,q$ and
+$\tilde p=\kappa_t\,p$ for the scaled factors, 
+\rob{It should be $q=\sqrt{\kappa_t}\,q$ and $\tilde p=\sqrt{\kappa_t}\,p$ ?}
+absorbing the
+magnitude that the normalization later removes, and let
+$\tilde Q=\diag(\tilde q)$ and $\tilde P=\diag(\tilde p)$.
+For a divergence $D$ between positive definite matrices, the fits are
+\begin{equation}\label{eq:factor-fit}
+  \widehat q
+  =\argmin_{\tilde q>0}\;
+  D\big(\Sigma_A,\;\tilde Q\otimes C_A\big),
+  \qquad
+  \widehat p
+  =\argmin_{\tilde p>0}\;
+  D\big(\Sigma_B,\;\tilde P\otimes C_B\big).
+\end{equation}
+The divergence resolves an overdetermined fit: the candidate family
+$\{\tilde Q\otimes C_A\}$ has $d_{\mathrm{in}}$ parameters while
+$\Sigma_A$ has on the order of $(rd_{\mathrm{in}})^2$ entries, and
+similarly for the fit for $p$. Away from the exact model, no candidate
+reproduces the observed moment, and $D$ decides how the mismatch is
+weighed. We require two properties of $D$:
+\begin{enumerate}[label=(\roman*),ref=(\roman*),leftmargin=2.2em,itemsep=1pt,topsep=2pt]
+  \item\label{it:block-additive} \emph{additivity across blocks:}
+  $D(\Sigma,S)=\sum_jD(\Sigma_j,S_j)$ whenever $\Sigma$ and $S$ are
+  block diagonal with blocks $\Sigma_j$ and $S_j$ of matching sizes;
+  \item\label{it:scalar-fit} \emph{a homogeneous scalar fit:} the best scalar multiple
+  $c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)$ exists, is unique, and
+  satisfies $c^\star(a\Sigma,S)=a\,c^\star(\Sigma,S)$ for $a>0$.
+\end{enumerate}
+Each fit takes the other factor as given ($C_A$ contains $P$, and
+$C_B$ contains $Q$), so the fits are coupled. In practice, each is
+posed with the stored estimate of the other factor. The next lemma
+shows the coupling is sound.
+
+\begin{lemma}[Consistency]\label{lem:consistency}
+Let $D$ satisfy \ref{it:block-additive} and \ref{it:scalar-fit}, and let the
+model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
+diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
+fits~\eqref{eq:factor-fit} posed with $\widehat C_A=B^\top\widehat PB$
+and $\widehat C_B=A\widehat QA^\top$ return
+\[
+  \widehat q=\kappa_t\,c^\star\big(C_A,\widehat C_A\big)\,\diag(Q),
+  \qquad
+  \widehat p=\kappa_t\,c^\star\big(C_B,\widehat C_B\big)\,\diag(P),
+\]
+so $\widehat q/\norm{\widehat q}_\infty=\diag(Q)$ and
+$\widehat p/\norm{\widehat p}_\infty=\diag(P)$.
+\end{lemma}
+\begin{proof}
+Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
+diagonal with $j$th block $\kappa_t\,q_j\,C_A$, and the candidate
+$\tilde Q\otimes\widehat C_A$ is block diagonal with $j$th block
+$\tilde q_j\,\widehat C_A$. By \ref{it:block-additive} the objective
+in~\eqref{eq:factor-fit} is
+$\sum_jD(\kappa_t q_jC_A,\,\tilde q_j\widehat C_A)$, one term per
+coordinate, and by \ref{it:scalar-fit} the $j$th term is minimized at
+$\tilde q_j=\kappa_t\,q_j\,c^\star(C_A,\widehat C_A)$. The factor
+$\kappa_t\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and
+$\norm{\diag Q}_\infty=1$, so the normalization removes it. The claim
+for $\widehat p$ follows with the roles of the two factors exchanged.
+\end{proof}
+
+\paragraph{Choosing the divergence.} The choice of divergence
+determines the estimator. We consider two divergences that satisfy
+\ref{it:block-additive} and \ref{it:scalar-fit}. \methodname{} uses the first.
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \emph{Log-determinant} (following KL-Shampoo~\cite{klshampoo}):
+  $D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d$, where $d$
+  is the common dimension. It satisfies \ref{it:block-additive} since traces and
+  log-determinants add across blocks, and \ref{it:scalar-fit} with scalar fit
+  $c^\star(\Sigma,S)=\Tr(\Sigma S^{-1})/d$. Substituting
+  $S=\tilde Q\otimes C_A$ into~\eqref{eq:factor-fit} separates the
+  objective across coordinates, and the minimizers are
+  \[
+    T_Q(P)=\frac1r\diag\!\left(\E_t[G_A^\top C_A^{-1}G_A]\right),
+    \qquad
+    T_P(Q)=\frac1r\diag\!\left(\E_t[G_B C_B^{-1}G_B^\top]\right).
+  \]
+  The moments $\Sigma_A,\Sigma_B$ enter only through these products, so
+  neither is ever formed, and the fits consume only the factor
+  gradients and the $r\times r$ matrices $C_A$, $C_B$ that the
+  direction step already uses.
+  \item \emph{Von Neumann}:
+  $D(\Sigma,S)=\Tr(\Sigma\log\Sigma-\Sigma\log S-\Sigma+S)$ also
+  satisfies \ref{it:block-additive} and \ref{it:scalar-fit}, with scalar fit
+  $c^\star(\Sigma,S)=\Tr(\Sigma)/\Tr(S)$. The same substitution yields
+  the raw second moments of the factor gradients,
+  \[
+    \tilde q_j=\E_t\big[(G_A^\top G_A)_{jj}\big]/\Tr(C_A),
+    \qquad
+    \tilde p_i=\E_t\big[(G_B G_B^\top)_{ii}\big]/\Tr(C_B),
+  \]
+  with $C_A$, $C_B$ entering only through scalars that the
+  normalization removes. This mirrors the correspondence established in
+  KL-Shampoo between the von Neumann divergence and Adafactor-style
+  moment matching~\cite{klshampoo}.
+\end{itemize}
+Both choices recover the factors under the model
+(\Cref{lem:consistency}) up to a scaling factor. Where they differ is that the
+log-determinant fit weighs the average by $C_A^{-1}$, where-as the von
+Neumann does not.
