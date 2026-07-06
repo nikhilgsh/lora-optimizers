@@ -459,18 +459,14 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 \label{eq:polora-update}
 \end{equation}
 The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs we observe that $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
-\paragraph{Optimizer step.} 
-We now combine the above into one method which we call \methodname{}, see~\Cref{alg:ours}.
-In addition to the above, we also add the following ingredients to make \methodname{} a more practical method:
-% To produce a performant and practical optimizer, we combine the above  with the following additional ingredients:
+\paragraph{Optimizer step.}
+\methodname{}, summarized in \Cref{alg:ours}, makes the update~\eqref{eq:polora-update} practical with the following ingredients:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Averaging.} We use EMA (Exponential moving averaging) to approximate both the gradient through its momentum estimator (see line~\ref{ln:mom}) and the $P$ and $Q$ factors (see lines~\ref{ln:pmom} and~\ref{ln:qmom}). In addition, we also use a look-ahead step for our gradient estimates (line~\ref{ln:mom}). We discuss how these momentum estimates fit within our framework for deducing \methodname{} in~\Cref{app:matnormal}.
-  % The step uses quantities that average over past batches. Momentum with look-ahead replaces the factor gradients, and an EMA updates $P$ and $Q$. \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended over past samples.
-  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor}, see line~\ref{ln:pqnorm}. To estimate $P$ and $Q$ from the second moment of past gradients, we us the KL-Shampoo~\cite{klshampoo} updated and adapt it to diagonal matrices, see lines~\ref{ln:pmom} and~\ref{ln:qmom}. We discuss the updates of $P$ and $Q$ in detail in \Cref{sec:weighted-estimation}.
-  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one, see line~\ref{ln:pqnorm} and \Cref{sec:scale-placement} for details.
-  \item \emph{Fast numerical subroutines.} To estimate the spectral norm in line~\ref{ln:spectralnormupdate}  we use the power iteration (\Cref{app:smax}). Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} are used to compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral}, see \Cref{app:gramns} for details. We also use relative dampening for stability in the inverses (\Cref{app:damping}).
+  \item \emph{Averaging.} Momentum with look-ahead replaces the factor gradients (line~\ref{ln:mom}), and an EMA accumulates the vectors $p,q$ that form the curvature factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}). \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended over past samples.
+  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to diagonal factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{sec:weighted-estimation}).
+  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{sec:scale-placement}).
+  \item \emph{Fast numerical subroutines.} We estimate the spectral norms in lines~\ref{ln:rho} and~\ref{ln:spectralnormupdate} by power iteration (\Cref{app:smax}). Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral} (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
 \end{itemize}
-% The resulting step is summarized in \Cref{alg:ours}.
 
 \begin{algorithm}[t]
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
@@ -493,7 +489,7 @@ In addition to the above, we also add the following ingredients to make \methodn
 \State $D_B\gets P^{-1/2}\,\msign\big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$  \label{ln:Bspectral}
 \Statex
 \Phase{Balancing Magnitude}
-\State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}}
+\State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}} \label{ln:rho}
 \State $A\gets A-\rho\,D_A/\norm{D_A}_2, \qquad B\gets B-\rho\,D_B/\norm{D_B}_2$ \label{ln:spectralnormupdate}
 \Statex
 \Phase{Update to Curvature Factors}
