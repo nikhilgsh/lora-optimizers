@@ -1283,19 +1283,19 @@ other factor, $\widehat C_A=B^\top\widehat PB$ and
 $\widehat C_B=A\widehat QA^\top$ for diagonal
 $\widehat P,\widehat Q\succ0$, which couples the two fits:
 \begin{equation}\label{eq:factor-fit}
-  \widehat q
+  \hat{q}(\widehat P)
   =\argmin_{q>0}\;
   D\big(\Sigma_A,\; \diag(q) \otimes \widehat C_A\big),
   \qquad
-  \widehat p
+  \hat{p}(\widehat Q)
   =\argmin_{p>0}\;
   D\big(\Sigma_B,\;\diag(p) \otimes \widehat C_B\big).
 \end{equation}
 The minimizers are
 \[
-  \widehat q(\widehat P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top \widehat C_A^{-1}G_{A,s}]\right),
+  \hat{q}(\widehat P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top \widehat C_A^{-1}G_{A,s}]\right),
   \qquad
-  \widehat p(\widehat Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} \widehat C_B^{-1}G_{B,s}^\top]\right).
+  \hat{p}(\widehat Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} \widehat C_B^{-1}G_{B,s}^\top]\right).
 \]
 For fixed positive definite $\Sigma$ and $S$, the best scalar multiple
 of $S$ is
@@ -1309,30 +1309,30 @@ diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
 fits~\eqref{eq:factor-fit} posed with $\widehat C_A=B^\top\widehat PB$
 and $\widehat C_B=A\widehat QA^\top$ return
 \[
-  \widehat q=\kappa\,c^\star\big(C^\star_A,\widehat C_A\big)\,\diag(Q^\star),
+  \hat{q}(\widehat P)=\kappa\,c^\star\big(C^\star_A,\widehat C_A\big)\,\diag(Q^\star),
   \qquad
-  \widehat p=\kappa\,c^\star\big(C^\star_B,\widehat C_B\big)\,\diag(P^\star),
+  \hat{p}(\widehat Q)=\kappa\,c^\star\big(C^\star_B,\widehat C_B\big)\,\diag(P^\star),
 \]
-so $\widehat q/\norm{\widehat q}_\infty=\diag(Q^\star)$ and
-$\widehat p/\norm{\widehat p}_\infty=\diag(P^\star)$.
+so $\hat{q}/\norm{\hat{q}}_\infty=\diag(Q^\star)$ and
+$\hat{p}/\norm{\hat{p}}_\infty=\diag(P^\star)$.
 \end{lemma}
 \begin{proof}
 Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
-diagonal with $j$th block $\kappa\,q^\star_j\,C^\star_A$, and a candidate
-$\diag(\tilde q)\otimes\widehat C_A$ is block diagonal with $j$th block
-$\tilde q_j\,\widehat C_A$. Traces and log-determinants add across
-blocks, so the objective in~\eqref{eq:factor-fit} is
-$\sum_jD(\kappa q^\star_jC^\star_A,\,\tilde q_j\widehat C_A)$, one term per
+diagonal with $j$th block $\kappa\,q^\star_j\,C^\star_A$, and the candidate
+$\diag(q)\otimes\widehat C_A$ of~\eqref{eq:factor-fit} at a point $q>0$
+is block diagonal with $j$th block $q_j\,\widehat C_A$. Traces and
+log-determinants add across blocks, so the objective is
+$\sum_jD(\kappa q^\star_jC^\star_A,\,q_j\widehat C_A)$, one term per
 coordinate, and the $j$th term is minimized at its best scalar
 multiple,
 \[
-\tilde q_j=c^\star(\kappa q^\star_jC^\star_A,\widehat C_A)
+\hat{q}_j=c^\star(\kappa q^\star_jC^\star_A,\widehat C_A)
 =\kappa\,q^\star_j\,c^\star(C^\star_A,\widehat C_A).
 \]
 The factor
 $\kappa\,c^\star(C^\star_A,\widehat C_A)$ is the same for every $j$, and
 $\norm{\diag Q^\star}_\infty=1$, so the normalization removes it. The claim
-for $\widehat p$ follows with the roles of the two factors exchanged.
+for $\hat{p}$ follows with the roles of the two factors exchanged.
 \end{proof}
 
 \nikhil{this pargraph is confusing and can use some detail. i don't really understand what the result / takeaway is.}
@@ -1343,13 +1343,13 @@ evaluating both maps on the current batch with the stored estimates
 $P_t,Q_t$ in place of the model factors in $C_{A,t},C_{B,t}$,
 \begin{equation}\label{eq:ours-klcoupling}
 \begin{aligned}
-  \widehat q_t &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
+  \hat{q}_t &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
   &
-  \widehat p_t &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
+  \hat{p}_t &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
   \\
-  q_{t+1} &= \beta_2q_t+(1-\beta_2)\widehat q_t,
+  q_{t+1} &= \beta_2q_t+(1-\beta_2)\hat{q}_t,
   &
-  p_{t+1} &= \beta_2p_t+(1-\beta_2)\widehat p_t,
+  p_{t+1} &= \beta_2p_t+(1-\beta_2)\hat{p}_t,
   \\
   Q_{t+1} &= \diag\!\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
   &
@@ -1361,7 +1361,7 @@ justifies.
 Unrolled, the recursion weights the per-step estimates by the
 $w_{t,s}$ of \Cref{sec:weighted-lmo}, so the stored $q_t$ matches
 $T_Q(P_t)$ term by term up to one discrepancy. Each
-$\widehat q_s$ used the matrices of its own step ($B_s$, $P_s$), while
+$\hat{q}_s$ used the matrices of its own step ($B_s$, $P_s$), while
 $T_Q(P_t)$ applies the current ones to every past gradient. The
 difference is first order in the drift of $B$ and $P$ over the effective
 window of the weights.
@@ -1427,7 +1427,7 @@ of $C_A$ and $C_B$ per step.
 \label{sec:scale-placement}
 \nikhil{normalizes what? the placement of what? scale means nothing is weird non-academic phrasing. the statements only become clear in the next paragraph.}
 The estimator~\eqref{eq:ours-klcoupling} averages the raw estimates
-$\widehat q_t,\widehat p_t$ and normalizes only when the stored vectors
+$\hat{q}_t,\hat{p}_t$ and normalizes only when the stored vectors
 form $Q_{t+1},P_{t+1}$ for the next step, rather than normalizing each
 estimate before it enters the average. The placement matters because
 scale means nothing to the update but changes what the average computes.
@@ -1446,9 +1446,9 @@ costs nothing.
 \paragraph{The average is scale-sensitive.} Each curvature factor estimate scales
 inversely with the stored factor it uses in the coupled fit,
 \[
-  \widehat q_t(aP_t)=a^{-1}\,\widehat q_t(P_t),
+  \hat{q}_t(aP_t)=a^{-1}\,\hat{q}_t(P_t),
   \qquad
-  \widehat p_t(aQ_t)=a^{-1}\,\widehat p_t(Q_t)
+  \hat{p}_t(aQ_t)=a^{-1}\,\hat{p}_t(Q_t)
   \qquad(a>0),
 \]
 since $C_A=B^\top(aP_t)B=a\,B^\top P_tB$ and likewise for $C_B$. If the
