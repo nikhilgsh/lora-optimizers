@@ -1102,14 +1102,10 @@ per-sample LMO~\eqref{eq:sample-lmo} extended over all past samples
 with decaying weights.
 
 In \Cref{sec:weighted-lmo}, we state the weighted problem and apply the
-outergradient relaxation of \Cref{sec:sample-loss-lmo}. The relaxed
-problem depends on the history only through an average of the batch
-gradients and a second moment of the per-sample gradients. As in the
-main text, the second moment is too large to form, so we approximate it
-as a Kronecker product. In \Cref{sec:weighted-estimation}, we estimate the
-second moment from the factor gradients and obtain the $p,q$ recursion
-of \Cref{alg:ours}. We then substitute the estimates into the
-relaxed problem and recover the update~\eqref{eq:polora-update}. In
+outergradient relaxation of \Cref{sec:sample-loss-lmo}. In
+\Cref{sec:weighted-estimation}, we estimate the moments of the relaxed
+problem from the factor gradients, obtaining the $p,q$ recursion of
+\Cref{alg:ours} and recovering the update~\eqref{eq:polora-update}. In
 \Cref{sec:scale-placement}, we justify placing the normalization after
 the average rather than inside it.
 
@@ -1443,10 +1439,9 @@ protects the weights. Normalizing each estimate before averaging instead
 would put $N(v)=v/\norm{v}_\infty$ inside the sum, where it does not
 commute with the mean. A noise-dominated estimate would be rescaled to
 full size and enter with full weight, so the noise no longer averages
-down. The estimates are
-therefore averaged as produced and normalized only at use, the same order in
-which momentum precedes normalization in normalized SGD~\cite{cutkosky_nigt}
-and precedes orthogonalization in Muon~\cite{denoise_ortho}.
+down. Averaging first and normalizing at use is the order in which momentum
+precedes normalization in normalized SGD~\cite{cutkosky_nigt} and
+precedes orthogonalization in Muon~\cite{denoise_ortho}.
 
 \section{Numerical Subroutines}
 \label{app:primitives}
