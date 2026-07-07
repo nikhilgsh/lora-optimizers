@@ -300,7 +300,7 @@ Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the s
 This per-sample LMO is well-posed (\Cref{prop:wellposed}), but its constraints are not directly usable, since we lack efficient access to the per-input gradients $G_i$. We therefore define a centrally symmetric \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the inequality
 \begin{equation} \label{eq:outgrad1}
     \max_{i=1,\ldots, n}  |\ip{G_i, \Delta W}|
-    \leq   \max_{\tilde G \in \mathcal{G}} \; \ip{\tilde G, \Delta W},
+    \leq   \max_{\widetilde{G} \in \mathcal{G}} \; \ip{\widetilde{G}, \Delta W},
 \end{equation} 
 to impose  that the right-hand side of \eqref{eq:outgrad1} 
 is less than $\tau$. 
@@ -319,10 +319,10 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
 \noindent The above properties motivate the choice of the following outergradient set
 \begin{equation} 
 \label{eq:outgrad} 
-\mathcal{G}(\Sigma) := \left \{ \tilde G = b x^\top ~\bigg |~  
+\mathcal{G}(\Sigma) := \left \{ \widetilde{G} = b x^\top ~\bigg |~  
 b\in\mathbb{R}^{d_{\mathrm{out}}},
     \ x\in\mathbb{R}^{d_{\mathrm{in}}}, \
-\ip{\Sigma^\dagger \vec(\tilde G), \vec(\tilde G)} \leq n \right \}.
+\ip{\Sigma^\dagger \vec(\widetilde{G}), \vec(\widetilde{G})} \leq n \right \}.
 \end{equation}
 By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus we can use this $\mathcal{G}$ in our upper bound~\eqref{eq:outgrad1}.
 The last issue is that $\Sigma$ is too large to store or use directly, so we replace it with a structured approximation.
@@ -342,14 +342,14 @@ Using the factorization above in the outergradient set~\eqref{eq:outgrad} and re
   \ip{G, \Delta W} \\[2pt]
 \mbox{subject to} &
   \displaystyle  
-\max_{\tilde G \in \mathcal{G}(Q \otimes P)} \ip{\tilde G, \Delta W} 
+\max_{\widetilde{G} \in \mathcal{G}(Q \otimes P)} \ip{\widetilde{G}, \Delta W} 
   \le \tau.
   \end{array}
   \label{eq:polorafull-hard} 
 \end{equation}
 By~\Cref{lem:pseudogradient-spectral}, the constraint in~\eqref{eq:polorafull-hard} satisfies the identity
 \[
-\max_{\tilde G \in \mathcal{G}(Q \otimes P)}\ip{\tilde G, \Delta W}
+\max_{\widetilde{G} \in \mathcal{G}(Q \otimes P)}\ip{\widetilde{G}, \Delta W}
 = \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2,
 \]
 so that \eqref{eq:polorafull-hard} becomes
@@ -867,7 +867,7 @@ and let $\Sigma=Q\otimes P$. Recall the outergradient set~\eqref{eq:outgrad},
 \]
 Then for every $\Delta W\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
 \[
-  \max_{\tilde G \in \mathcal{G}(\Sigma)} \ip{ \tilde G , \Delta W}
+  \max_{\widetilde{G} \in \mathcal{G}(\Sigma)} \ip{ \widetilde{G} , \Delta W}
   =\sqrt{n}\norm{P^{1/2}\Delta W Q^{1/2}}_2 .
 \]
 \end{lemma}
@@ -890,7 +890,7 @@ $\norm{u}_2^2\norm{v}_2^2\leq n$ and the objective becomes
 \]
 Maximizing over the balls gives the spectral norm,
 \[
-\max_{\tilde G\in\mathcal{G}(\Sigma)}\ip{\tilde G,\Delta W}
+\max_{\widetilde{G}\in\mathcal{G}(\Sigma)}\ip{\widetilde{G},\Delta W}
 =\max_{\norm{u}_2\norm{v}_2\leq\sqrt{n}}u^\top P^{1/2}\Delta W Q^{1/2}v
 =\sqrt{n}\,\norm{P^{1/2}\Delta W Q^{1/2}}_2. \qedhere
 \]
@@ -1010,10 +1010,10 @@ is again equivalent to \eqref{eq:product-muon-step}. Our experiments benchmark t
 \paragraph{iMuon, with momentum.} The official implementation of iMuon with momentum (their Appendix~K) does not
 use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
 It instead first combines the two factor
-look-aheads $\tilde G_A=G_A+\beta m_A$ and $\tilde G_B=G_B+\beta m_B$ (buffers $m_A,m_B$,
+look-aheads $\widetilde{G}_A=G_A+\beta m_A$ and $\widetilde{G}_B=G_B+\beta m_B$ (buffers $m_A,m_B$,
 with parameter $\beta$) into a single ambient matrix, then uses that matrix as input
 \begin{equation*}
-  \widehat M=\tilde G_B A+B\tilde G_A .
+  \widehat M=\widetilde{G}_B A+B\widetilde{G}_A .
 \end{equation*}
 Turning momentum off ($\beta=0$) removes the buffers but not the recombination, i.e.,
 \begin{equation*}
@@ -1161,7 +1161,7 @@ constraints relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem 
   \underset{\Delta W}{\mathrm{minimize}} &
   \ip{\overline G_t, \Delta W} \\[2pt]
   \mbox{subject to} &
-  \displaystyle\max_{\tilde G\in\mathcal{G}(\overline\Sigma_t)}\ip{\tilde G,\Delta W}\le\tau .
+  \displaystyle\max_{\widetilde{G}\in\mathcal{G}(\overline\Sigma_t)}\ip{\widetilde{G},\Delta W}\le\tau .
   \end{array}
 \end{equation}
 
@@ -1204,9 +1204,10 @@ these obstacles in turn.
   \item \emph{Batch collapse.} We replace the within-batch average
   $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product
   $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$. This substitution
-  underlies the second moments of AdaGrad~\cite{adagrad}, Adam~\cite{adam},
-  and Shampoo~\cite{shampoo}, which all accumulate outer products of
-  batch gradients, and is exact at batch size one. Under it
+  underlies the second moments of AdaGrad~\cite{adagrad} and its
+  relatives such as Adam~\cite{adam} and Shampoo~\cite{shampoo}, which
+  all accumulate outer products of batch gradients, and is exact at
+  batch size one. Under it
   the weights $w_{t,s,i}$ sum within each batch to
   $w_{t,s}=(1-\beta_2)\beta_2^{t-s}$, so the collapsed estimate is a
   weighted average over batch gradients,
@@ -1216,13 +1217,15 @@ these obstacles in turn.
     \E_{s \leq t}[\phi(G_s)]=\sum_{s\le t}w_{t,s}\,\phi(G_s).
   \]
   \item \emph{Kronecker factorization.} We assume the
-  Kronecker-factored form of~\eqref{eq:pq-factor}, with
-  $P,Q$ diagonal as in \Cref{alg:ours}. Since $Q\otimes P$ is unchanged
-  by the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, we fix
-  $\norm{\diag P}_\infty=\norm{\diag Q}_\infty=1$ and let an additional scalar
+  Kronecker-factored form of~\eqref{eq:pq-factor} with diagonal
+  factors, written $P^\star,Q^\star$ to distinguish the model factors
+  from the estimates $P,Q$ that \Cref{alg:ours} stores. Since
+  $Q^\star\otimes P^\star$ is unchanged by the rescaling
+  $(P^\star,Q^\star)\mapsto(aP^\star,a^{-1}Q^\star)$, we fix
+  $\norm{\diag P^\star}_\infty=\norm{\diag Q^\star}_\infty=1$ and let an additional scalar
   $\kappa_t>0$ carry the magnitude:
   \begin{equation}\label{e-diag-kron-second-mom-model}
-    \E_{s \leq t}[g_sg_s^\top]\approx\kappa_t\,(Q_t\otimes P_t).
+    \E_{s \leq t}[g_sg_s^\top]\approx\kappa_t\,(Q^\star_t\otimes P^\star_t).
   \end{equation}
 \end{itemize}
 
@@ -1232,7 +1235,7 @@ In LoRA training, backpropagation gives the factor gradients $G_{A,s}=B_s^\top G
 and $G_{B,s}=G_sA_s^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
 the full gradient $G_s$, by contrast, would take a $d_{\mathrm{out}}\times
 d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
-the low-rank structure avoids. We therefore estimate $P$ and $Q$ from the
+the low-rank structure avoids. We therefore estimate $P^\star$ and $Q^\star$ from the
 second moment of the factor gradients. The estimates rest on one
 standing approximation.
 
@@ -1242,7 +1245,7 @@ weights $m_{t,s}$ and $w_{t,s}$, so that inside any weighted average we
 may replace the factors at past steps by their current values.
 \end{assumption}
 
-\paragraph{Moments of the factor gradients.} To estimate $P$ and $Q$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient. To this end, note that
+\paragraph{Moments of the factor gradients.} To estimate $P^\star$ and $Q^\star$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient. To this end, note that
 $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of the gradient of $A$ is given by
 \begin{align*}
  \Sigma_{A,t} &:=  \E_{s \leq t}\big[ \vec(G_{A,s})  \vec(G_{A,s})^\top\big]  \\
@@ -1252,47 +1255,53 @@ $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of 
 where in the last line we approximated $B_s$ by $B_t$ so that it comes out of the expectation. The error of this exchange is first order in the drift of $B$ (\Cref{as:slow-drift}). Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
 \begin{align*}
  \Sigma_{A,t} 
-   &\approx  \kappa_t\,  (I\otimes B_t^\top)  (Q_t\otimes P_t)  (I\otimes B_t) \; = \kappa_t\,   Q_t\otimes  (B_t^\top P_t B_t),
+   &\approx  \kappa_t\,  (I\otimes B_t^\top)  (Q^\star_t\otimes P^\star_t)  (I\otimes B_t) \; = \kappa_t\,   Q^\star_t\otimes  (B_t^\top P^\star_t B_t),
 \end{align*} 
 where the equality uses the mixed-product rule of Kronecker products.
 Using analogous arguments for the gradient of $B$, we arrive at the following approximations
 \begin{align}
-  \Sigma_{A,t} & =\E_{s \leq t}\big[\vec(G_{A,s})\vec(G_{A,s})^\top\big] \approx\kappa_t\,Q_t\otimes C_{A,t} \nonumber \\
-  \Sigma_{B,t}&=\E_{s \leq t}\big[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\big] \approx \kappa_t\,P_t\otimes C_{B,t}, \label{eq:observable-moments}
+  \Sigma_{A,t} & =\E_{s \leq t}\big[\vec(G_{A,s})\vec(G_{A,s})^\top\big] \approx\kappa_t\,Q^\star_t\otimes C^\star_{A,t} \nonumber \\
+  \Sigma_{B,t}&=\E_{s \leq t}\big[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\big] \approx \kappa_t\,P^\star_t\otimes C^\star_{B,t}, \label{eq:observable-moments}
 \end{align}
-where $C_{A,t}=B_t^\top P_tB_t$ and $C_{B,t}=A_tQ_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure}.
+where $C^\star_{A,t}=B_t^\top P^\star_tB_t$ and $C^\star_{B,t}=A_tQ^\star_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure} evaluated at the model factors.
 
-\nikhil{first sentence here feels a bit weak and feels repeated to much previously. also is following kl-shampoo a bit too gratuitious?}
-\paragraph{Fitting the factors.} We recover the factors $P$ and $Q$ by fitting the
-second-moment model to the observed moments~\eqref{eq:observable-moments}. Since we focus just on the current step, we omit the
-the subscript $t$ below. Following KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
-divergence
+\paragraph{Fitting the factors.} We recover the model factors $P^\star$
+and $Q^\star$ by fitting the second-moment model to the observed
+moments~\eqref{eq:observable-moments}, dropping the subscript $t$ since
+all quantities are at the current step. Following
+KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
+divergence~\cite{logdetdiv}
 \[
   D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
 \]
-defined for positive definite matrices $\Sigma$ and $S$ of common dimension $d$. 
-\nikhil{the following sentence doesn't belong here}
-Note that for a fixed $\Sigma$ and $S$ the optimal scaling of $S$ is
-$c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$. The fits are
+defined for positive definite matrices $\Sigma$ and $S$ of common
+dimension $d$. Away from the exact model, no candidate reproduces the
+observed moment, and the divergence decides how the mismatch is
+weighed. Because $C^\star_A$ contains $P^\star$ and $C^\star_B$
+contains $Q^\star$, each fit must be posed with an estimate of the
+other factor, $\widehat C_A=B^\top\widehat PB$ and
+$\widehat C_B=A\widehat QA^\top$ for diagonal
+$\widehat P,\widehat Q\succ0$, which couples the two fits:
 \begin{equation}\label{eq:factor-fit}
   \widehat q
   =\argmin_{q>0}\;
-  D\big(\Sigma_A,\; \diag(q) \otimes C_A\big),
+  D\big(\Sigma_A,\; \diag(q) \otimes \widehat C_A\big),
   \qquad
   \widehat p
   =\argmin_{p>0}\;
-  D\big(\Sigma_B,\;\diag(p) \otimes C_B\big).
+  D\big(\Sigma_B,\;\diag(p) \otimes \widehat C_B\big).
 \end{equation}
-Since $C_A$ contains $P$ and $C_B$ contains $Q$, the fits are coupled. In practice, each fit is
-posed with the current estimate of the other factor. The minimizers are
+The minimizers are
 \[
-  \widehat q(P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top C_A^{-1}G_{A,s}]\right),
+  \widehat q(\widehat P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top \widehat C_A^{-1}G_{A,s}]\right),
   \qquad
-  \widehat p(Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} C_B^{-1}G_{B,s}^\top]\right).
+  \widehat p(\widehat Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} \widehat C_B^{-1}G_{B,s}^\top]\right).
 \]
-The next lemma shows the coupled fit is consistent.
-
-\nikhil{the usage of $p$, $q$, $P$, $Q$, and the hat versions might be confusing to readers. We might want a starred version for the optimal / ground truth factors?}
+For fixed positive definite $\Sigma$ and $S$, the best scalar multiple
+of $S$ is
+$c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$. The
+next lemma shows the coupled fits are consistent even when posed with
+inexact estimates.
 
 \begin{lemma}[Consistency]\label{lem:consistency}
 Let the model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
@@ -1300,29 +1309,29 @@ diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
 fits~\eqref{eq:factor-fit} posed with $\widehat C_A=B^\top\widehat PB$
 and $\widehat C_B=A\widehat QA^\top$ return
 \[
-  \widehat q=\kappa\,c^\star\big(C_A,\widehat C_A\big)\,\diag(Q),
+  \widehat q=\kappa\,c^\star\big(C^\star_A,\widehat C_A\big)\,\diag(Q^\star),
   \qquad
-  \widehat p=\kappa\,c^\star\big(C_B,\widehat C_B\big)\,\diag(P),
+  \widehat p=\kappa\,c^\star\big(C^\star_B,\widehat C_B\big)\,\diag(P^\star),
 \]
-so $\widehat q/\norm{\widehat q}_\infty=\diag(Q)$ and
-$\widehat p/\norm{\widehat p}_\infty=\diag(P)$.
+so $\widehat q/\norm{\widehat q}_\infty=\diag(Q^\star)$ and
+$\widehat p/\norm{\widehat p}_\infty=\diag(P^\star)$.
 \end{lemma}
 \begin{proof}
 Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
-diagonal with $j$th block $\kappa\,q_j\,C_A$, and the candidate
-$\tilde Q\otimes\widehat C_A$ is block diagonal with $j$th block
+diagonal with $j$th block $\kappa\,q^\star_j\,C^\star_A$, and a candidate
+$\diag(\tilde q)\otimes\widehat C_A$ is block diagonal with $j$th block
 $\tilde q_j\,\widehat C_A$. Traces and log-determinants add across
 blocks, so the objective in~\eqref{eq:factor-fit} is
-$\sum_jD(\kappa q_jC_A,\,\tilde q_j\widehat C_A)$, one term per
+$\sum_jD(\kappa q^\star_jC^\star_A,\,\tilde q_j\widehat C_A)$, one term per
 coordinate, and the $j$th term is minimized at its best scalar
-multiple, 
+multiple,
 \[
-\tilde q_j=c^\star(\kappa q_jC_A,\widehat C_A)
-=\kappa\,q_j\,c^\star(C_A,\widehat C_A).
+\tilde q_j=c^\star(\kappa q^\star_jC^\star_A,\widehat C_A)
+=\kappa\,q^\star_j\,c^\star(C^\star_A,\widehat C_A).
 \]
 The factor
-$\kappa\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and
-$\norm{\diag Q}_\infty=1$, so the normalization removes it. The claim
+$\kappa\,c^\star(C^\star_A,\widehat C_A)$ is the same for every $j$, and
+$\norm{\diag Q^\star}_\infty=1$, so the normalization removes it. The claim
 for $\widehat p$ follows with the roles of the two factors exchanged.
 \end{proof}
 
@@ -1553,10 +1562,10 @@ The two uses differ only in the matrix $S$ and scalar $\gamma$ we pass to
         \msign(X)=(XX^\top)^{-1/2}X=QX/\sqrt{\gamma}.
     \]
     \item \textbf{Inverse square root.}
-    Damp $C\succ 0$ to $\hat C=C+\delta\lambda_{\max}(C)I$ (\Cref{app:damping}) and
-    call \Cref{alg:gramns} with $S=\hat C$ and $\gamma=\Tr(\hat C)$, giving
+    Damp $C\succ 0$ to $\widehat{C}=C+\delta\lambda_{\max}(C)I$ (\Cref{app:damping}) and
+    call \Cref{alg:gramns} with $S=\widehat{C}$ and $\gamma=\Tr(\widehat{C})$, giving
     \[
-        C^{-1/2}\approx\hat C^{-1/2}=Q/\sqrt{\gamma}.
+        C^{-1/2}\approx\widehat{C}^{-1/2}=Q/\sqrt{\gamma}.
     \]
 \end{itemize}
 
@@ -1588,13 +1597,13 @@ Each inverse square root in \Cref{alg:ours} is damped so that directions of
 nearly zero curvature are not amplified without bound.  For a positive
 semidefinite curvature matrix $C = U\operatorname{diag}(\lambda)U^\top \in \mathbb{R}^{r\times r}$,
 we damp by $\delta$ relative to the top eigenvalue; \Cref{alg:gramns} then
-normalizes by $\gamma=\Tr(\hat C)$,
+normalizes by $\gamma=\Tr(\widehat{C})$,
 \[
-    \hat C = C + \lambda_{\max}\delta I,
+    \widehat{C} = C + \lambda_{\max}\delta I,
     \qquad
-    \widetilde C = \hat C/\gamma .
+    \widetilde C = \widehat{C}/\gamma .
 \]
-Since $\hat C \succ 0$, the trace $\gamma$, the normalized spectrum, and the resulting
+Since $\widehat{C} \succ 0$, the trace $\gamma$, the normalized spectrum, and the resulting
 inverse square root are all bounded,
 \[
     \lambda_{\max}(1+\delta) \ \le\ \gamma
