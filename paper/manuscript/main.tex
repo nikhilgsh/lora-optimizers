@@ -1108,15 +1108,24 @@ after the average.
 
 \subsection{The Weighted LMO}
 \label{sec:weighted-lmo}
-\nikhil{this motivation comes with no preamble, potentially it should be previewed earlier. we should also start giving some intuition / justification for the weighting to have recency bias which aligns with how EMAs operate.}
-To avoid overfitting the update to the current minibatch, we extend the
-LMO~\eqref{eq:sample-lmo} over all past minibatches with decaying
-weights.
+A single minibatch gives a noisy objective and only a handful of
+constraints, so an update fit to it alone overfits that minibatch. We
+therefore extend the LMO~\eqref{eq:sample-lmo} over all past
+minibatches. Because older gradients were computed at older weights,
+their information about the current loss degrades with age, so the
+extension discounts them with decaying weights. This recency bias is
+exactly what the momentum and EMA choices below implement.
 
-\paragraph{The weighted problem.} Let $s$ index the optimizer steps and $i$ the samples of the size-$n_s$ minibatch at step $s$. Write $G_{s,i}$ for the
-per-sample gradient of the weight matrix, $g_{s,i}=\vec(G_{s,i})$, and
-$G_s=\frac1{n_s}\sum_iG_{s,i}$ for the batch gradient. For nonnegative weights $m_{t,s}$ and $w_{t,s,i}$, we define the weighted
-extension of~\eqref{eq:sample-lmo} at step $t$ to be
+\paragraph{The weighted problem.} Let $s$ index the optimizer steps and $i$ the samples of the size-$n_s$ minibatch at step $s$. Write $G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)$ for the
+per-sample gradient taken at the weights of its own step, $g_{s,i}=\vec(G_{s,i})$, and
+$G_s=\frac1{n_s}\sum_iG_{s,i}$ for the batch gradient. For nonnegative
+weights $m_{t,s}$ and $w_{t,s,i}$, the extension
+of~\eqref{eq:sample-lmo} we want at step $t$ bounds the linearized
+change of each past sample's loss at the current weights,
+$\sqrt{w_{t,s,i}}\,\bigl|\ip{\nabla\ell_{x_{s,i}}(W_t),\Delta W}\bigr|\le\tau$.
+For $s<t$ these gradients are unavailable, since each sample was
+backpropagated at its own step rather than at $W_t$. We therefore pose
+the constraints with the stored gradients in their place,
 \begin{equation}\label{eq:weighted-sample-lmo}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -1126,18 +1135,14 @@ extension of~\eqref{eq:sample-lmo} at step $t$ to be
   \le \tau, \qquad s=1, \ldots, t,\quad i=1,\dots,n_s.
   \end{array}
 \end{equation}
-\nikhil{this part is confusing i don't understand it. constraint controls it, what is "it"? also the last sentence is untrue for arbitrary weights.}
-For $s<t$ the constraint uses $G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)$, the
-gradient of the sample's loss at the weights of its own step. The
-linearized change of the same loss at the current weights $W_t$ is
-$\ip{\nabla\ell_{x_{s,i}}(W_t),\Delta W}$, so the constraint controls
-it up to the drift term
-$\ip{\nabla\ell_{x_{s,i}}(W_t)-G_{s,i},\Delta W}$. The decaying weights
-put the loosest constraints on the stalest gradients since $\tau/\sqrt{w_{t,s,i}}$ grows with $t-s$.
+Each constraint in~\eqref{eq:weighted-sample-lmo} differs from the one
+we want by the drift term
+$\ip{\nabla\ell_{x_{s,i}}(W_t)-G_{s,i},\Delta W}$.
 
-\nikhil{this first sentence is untrue, it's only true after the relaxation.}
-\paragraph{The two weighted moments.} The problem~\eqref{eq:weighted-sample-lmo}
-depends on the history only through two weighted moments,
+\paragraph{The two weighted moments.} We apply the outergradient
+relaxation of \Cref{sec:sample-loss-lmo} to~\eqref{eq:weighted-sample-lmo},
+which leads to a problem that depends on the history only through two
+weighted moments,
 \[
 \overline G_t=\sum_{s\le t}m_{t,s}G_s,
 \qquad
@@ -1145,13 +1150,11 @@ depends on the history only through two weighted moments,
 \]
 the weighted average of the batch gradients and the weighted second moment
 of the per-sample gradients. The objective in~\eqref{eq:weighted-sample-lmo}
-equals $\ip{\overline G_t,\Delta W}$ by linearity. For the constraints, the
-outergradient relaxation of \Cref{sec:sample-loss-lmo} is unchanged.
-The outer products of rescaled gradients
-$\sqrt{w_{t,s,i}}\,g_{s,i}$
-sum to $\overline\Sigma_t$. The leverage bound of \Cref{lem:gradprop}
-therefore places each of them in the outergradient set
-$\mathcal{G}(\overline\Sigma_t)$ of~\eqref{eq:outgrad}, and the
+already equals $\ip{\overline G_t,\Delta W}$ by linearity. For the
+constraints, the outer products of the rescaled gradients
+$\sqrt{w_{t,s,i}}\,g_{s,i}$ sum to $\overline\Sigma_t$, so the leverage
+bound of \Cref{lem:gradprop} places each of them in the outergradient
+set $\mathcal{G}(\overline\Sigma_t)$ of~\eqref{eq:outgrad} and the
 constraints relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem is
 \begin{equation}\label{eq:weighted-relaxed}
  \begin{array}{ll}
@@ -1181,7 +1184,6 @@ moments,
   =\beta_2\,\overline\Sigma_{t-1}
   +(1-\beta_2)\,\frac1{n_t}\sum_{i=1}^{n_t}g_{t,i}g_{t,i}^\top.
 \]
-\nikhil{there is some redundancy in this remark with previous remarks. need to sort that out. this could act as a forward reference.}
 This choice gives tighter constraints on recent batches. Unrolling the
 recursions gives the induced weights
 \[
