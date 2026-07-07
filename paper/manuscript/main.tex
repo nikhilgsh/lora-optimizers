@@ -1095,8 +1095,8 @@ vectors $p,q$ that form the curvature factors $P,Q$. Both averages are
 standard practice, and this appendix interprets them through the
 per-sample LMO~\eqref{eq:sample-lmo} extended over all past samples
 with decaying weights.
-\Cref{sec:weighted-lmo} extends the per-sample LMO over past samples
-and shows that the history enters the relaxed problem only through two
+\Cref{sec:weighted-lmo} states this weighted extension and shows that
+the history enters the relaxed problem only through two
 weighted moments, an average of the batch gradients and a second moment
 of the per-sample gradients. \Cref{sec:weighted-estimation} estimates
 both moments from the factor gradients alone, obtaining the $p,q$
@@ -1241,7 +1241,7 @@ the objective and the model factors $P^\star,Q^\star$ for the
 constraint. The estimates rest on one standing approximation.
 
 \begin{assumption}[Slow drift]\label{as:slow-drift}
-The factors $A$ and $B$ change slowly over the effective window of the weights $m_{t,s}$ and $w_{t,s}$, so that to first-order we can replace factors at past steps by their current values.
+The factors $A$ and $B$ change slowly over the effective window of the weights $m_{t,s}$ and $w_{t,s}$, so that to first order we can replace factors at past steps by their current values.
 \end{assumption}
 
 \paragraph{Factor momenta.} Under the linearized product
@@ -1383,7 +1383,7 @@ $\Sigma_A,\Sigma_B$ themselves. Unrolled, the recursion weights the
 per-step estimates by exactly the $w_{t,s}$ of \Cref{sec:weighted-lmo},
 so the stored $q_t$ matches the full fit $\hat{q}(P_t)$ except that
 each past estimate $\hat{q}_s(P_s)$ used the matrices of its own step,
-where the full fit applies the current ones to every past gradient. The
+whereas the full fit applies the current ones to every past gradient. The
 difference is first order in the drift of $B$ and $P$ over the
 effective window of the weights. Up to that drift, the stored vectors
 are the consistent fits of \Cref{lem:consistency}.
@@ -1457,11 +1457,12 @@ from,
   \hat{p}_t(aQ_t)=a^{-1}\,\hat{p}_t(Q_t)
   \qquad(a>0),
 \]
-since $B^\top(aP_t)B=a\,C_A$, and likewise for $C_B$. Normalizing after
+since $C_A=B^\top PB$~\eqref{eq:ours-closure} is linear in $P$, and
+likewise $C_B$ in $Q$. Normalizing after
 averaging gives every stored factor the same scale
 ($\norm{\diag P_t}_\infty=1$ at every step), so the estimates enter the
-average on a common footing. Were the factor at step $s$ instead
-normalized to a step-varying scale $a_s$, the identity above would scale
+average on a common footing. Were the stored factor at step $s$ left carrying a step-varying scale
+$a_s$ instead, the identity above would scale
 $\hat{q}_s$ by $1/a_s$, so it would enter with effective weight
 $w_{t,s}/a_s$ rather than the $w_{t,s}$ chosen in \Cref{sec:weighted-lmo}.
 Normalizing the per-step estimates themselves before averaging would fail
