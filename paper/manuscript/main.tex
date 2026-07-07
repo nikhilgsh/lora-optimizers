@@ -61,7 +61,7 @@
 \newtheorem{definition}{Definition}
 \theoremstyle{remark}
 \newtheorem{remark}{Remark}
-\theoremstyle{assumption}
+\theoremstyle{definition}
 \newtheorem{assumption}{Assumption}
 \usepackage[colorinlistoftodos,bordercolor=orange,backgroundcolor=orange!20,linecolor=orange]{todonotes}
 
@@ -1097,6 +1097,14 @@ standard practice, and this appendix interprets them through the
 per-sample LMO~\eqref{eq:sample-lmo} extended over all past samples
 with decaying weights.
 
+\begin{assumption}[Slow drift]\label{as:slow-drift}
+We make one approximation throughout this appendix: the factors drift
+slowly over the effective window of the averaging weights, letting us
+combine quantities from different steps as if the factors were fixed.
+The drift itself is set by the update, which moves the factors by
+spectral norm $\rho$~\eqref{eq:polora-update} each step.
+\end{assumption}
+
 In \Cref{sec:weighted-lmo}, we state the weighted problem and apply the
 outergradient relaxation of \Cref{sec:sample-loss-lmo}. In
 \Cref{sec:weighted-estimation}, we estimate the moments of the relaxed
@@ -1235,7 +1243,7 @@ $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of 
  &=  \E_{s \leq t}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
    &\approx  (I\otimes B_t^\top) \E_{s \leq t}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
 \end{align*}  
-where in the last line we used $g_s = \vec(G_s)$ and approximated $B_s$ by $B_t$ so that it can come out of the expectation. The error of this exchange is first order in the drift of $B$ over the effective window of the weights. Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
+where in the last line we used $g_s = \vec(G_s)$ and approximated $B_s$ by $B_t$ so that it can come out of the expectation. The error of this exchange is first order in the drift of $B$ (\Cref{as:slow-drift}). Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
 \begin{align*}
  \Sigma_{A,t} 
    &\approx  \kappa_t\,  (I\otimes B_t^\top)  (Q_t\otimes P_t)  (I\otimes B_t) \; = \kappa_t\,   Q_t\otimes  (B_t^\top P_t B_t),
@@ -1388,7 +1396,7 @@ If the factors are constant over the averaging window,
 $\widehat M_A=B_t^\top\widehat M_t$ and $\widehat M_B=\widehat M_tA_t^\top$
 exactly. Otherwise the difference for $\widehat M_A$,
 $\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
-drift over the effective window of the weights.
+drift (\Cref{as:slow-drift}).
 
 \paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
 $P,Q$ in place of $\overline\Sigma_t$, the weighted
