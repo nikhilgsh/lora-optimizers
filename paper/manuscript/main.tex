@@ -1101,10 +1101,10 @@ weighted moments, an average of the batch gradients and a second moment
 of the per-sample gradients. \Cref{sec:weighted-estimation} estimates
 both moments from the factor gradients alone, obtaining the $p,q$
 recursion of \Cref{alg:ours} and recovering the
-update~\eqref{eq:polora-update}. \Cref{sec:scale-placement} shows why
-the normalization comes after the average, since the update is
-invariant to the scale of the curvature factors while the average is
-not.
+update~\eqref{eq:polora-update}. \Cref{sec:scale-placement} shows that
+the update ignores the scale of the curvature factors while the average
+that estimates them does not, which is why the normalization comes
+after the average.
 
 \subsection{The Weighted LMO}
 \label{sec:weighted-lmo}
