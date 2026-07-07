@@ -458,10 +458,11 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \paragraph{Optimizer step.}
 \methodname{}, summarized in \Cref{alg:ours}, makes the update~\eqref{eq:polora-update} practical with the following ingredients:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Averaging.} Momentum with look-ahead replaces the factor gradients (line~\ref{ln:mom}), and an EMA accumulates the vectors $p,q$ that form the curvature factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}). \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended over past samples.
+  \item \emph{Averaging.} Momentum with look-ahead replaces the factor gradients (line~\ref{ln:mom}), and an EMA accumulates the vectors $p,q$ that form the curvature factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}). \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended to also include past samples.
+  \nikhil{is it fair or undersell to claim we are just adapting kl-shampoo to diagonal?}
   \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to diagonal factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{sec:weighted-estimation}).
   \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{sec:scale-placement}).
-  \item \emph{Fast numerical subroutines.} We estimate the spectral norms in lines~\ref{ln:rho} and~\ref{ln:spectralnormupdate} by power iteration (\Cref{app:smax}). Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral} (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
+  \item \emph{Fast numerical subroutines.} We estimate the spectral norms in lines~\ref{ln:rho} and~\ref{ln:spectralnormupdate} by power iteration (\Cref{app:smax}). We use Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} to compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral} (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
 \end{itemize}
 
 \begin{algorithm}[t]
@@ -1096,15 +1097,15 @@ vectors $p,q$ that form the curvature factors $P,Q$. Both averages are
 standard practice, and this appendix interprets them through the
 per-sample LMO~\eqref{eq:sample-lmo} extended over all past samples
 with decaying weights.
-
+\nikhil{is this the right place for this? "averaging weights" is not clear yet. letting us combine quantities is vague and unclear. the last sentence is nonsense, and probably best to remove or heavily clarify}
 \begin{assumption}[Slow drift]\label{as:slow-drift}
-We make one approximation throughout this appendix: the factors drift
+We make one approximation throughout this appendix: the factors $A$ and $B$ drift
 slowly over the effective window of the averaging weights, letting us
 combine quantities from different steps as if the factors were fixed.
 The drift itself is set by the update, which moves the factors by
 spectral norm $\rho$~\eqref{eq:polora-update} each step.
 \end{assumption}
-
+\nikhil{this roadmap doesn't provide the reader with any clarity. what's the upshot in each section?}
 In \Cref{sec:weighted-lmo}, we state the weighted problem and apply the
 outergradient relaxation of \Cref{sec:sample-loss-lmo}. In
 \Cref{sec:weighted-estimation}, we estimate the moments of the relaxed
@@ -1115,6 +1116,7 @@ the average rather than inside it.
 
 \subsection{The Weighted LMO}
 \label{sec:weighted-lmo}
+\nikhil{this motivation comes with no preamble, potentially it should be previewed earlier. we should also start giving some intuition / justification for the weighting to have recency bias which aligns with how EMAs operate.}
 To avoid overfitting the update to the current minibatch, we extend the
 LMO~\eqref{eq:sample-lmo} over all past minibatches with decaying
 weights.
@@ -1132,16 +1134,16 @@ extension of~\eqref{eq:sample-lmo} at step $t$ to be
   \le \tau, \qquad s=1, \ldots, t,\quad i=1,\dots,n_s.
   \end{array}
 \end{equation}
+\nikhil{this part is confusing i don't understand it. constraint controls it, what is "it"? also the last sentence is untrue for arbitrary weights.}
 For $s<t$ the constraint uses $G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)$, the
 gradient of the sample's loss at the weights of its own step. The
 linearized change of the same loss at the current weights $W_t$ is
 $\ip{\nabla\ell_{x_{s,i}}(W_t),\Delta W}$, so the constraint controls
 it up to the drift term
 $\ip{\nabla\ell_{x_{s,i}}(W_t)-G_{s,i},\Delta W}$. The decaying weights
-put the loosest constraints on the stalest gradients: the bound on
-$|\ip{G_{s,i},\Delta W}|$ is $\tau/\sqrt{w_{t,s,i}}$, growing with the
-age $t-s$.
+put the loosest constraints on the stalest gradients since $\tau/\sqrt{w_{t,s,i}}$ grows with $t-s$.
 
+\nikhil{this first sentence is untrue, it's only true after the relaxation.}
 \paragraph{The two weighted moments.} The problem~\eqref{eq:weighted-sample-lmo}
 depends on the history only through two weighted moments,
 \[
@@ -1171,7 +1173,7 @@ constraints relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem 
 
 
 \paragraph{Choosing the weights.} 
-For the objective, we set $\overline G_t$ to a
+For the objective in \eqref{eq:weighted-relaxed}, we set $\overline G_t$ to a
 look-ahead momentum $\widehat M_t$ of the batch gradients, mirroring the
 momentum scheme of \Cref{alg:ours},
 \[
@@ -1180,13 +1182,14 @@ momentum scheme of \Cref{alg:ours},
   \widehat M_t=\beta_1M_{t+1}+(1-\beta_1)G_t.
 \]
 This choice emphasizes decreasing the loss on recent batches. For the
-constraints, we use an EMA of the within-batch second
+constraints in \eqref{eq:weighted-relaxed}, we use an EMA of the within-batch second
 moments,
 \[
   \overline\Sigma_t
   =\beta_2\,\overline\Sigma_{t-1}
   +(1-\beta_2)\,\frac1{n_t}\sum_{i=1}^{n_t}g_{t,i}g_{t,i}^\top.
 \]
+\nikhil{there is some redundancy in this remark with previous remarks. need to sort that out. this could act as a forward reference.}
 This choice gives tighter constraints on recent batches. Unrolling the
 recursions gives the induced weights
 \[
@@ -1201,8 +1204,11 @@ recursions gives the induced weights
 \paragraph{Approximating the second moment.} As discussed in~\Cref{sec:sample-loss-lmo},
 $\overline\Sigma_t$ cannot be used directly. It is built from per-sample
 gradients that backpropagation never materializes, and it is too large
-to store. Two approximations remove the two obstacles.
+to store. 
+\nikhil{the two obstacles makes it sound like the reader should already know what they are}
+Two approximations remove the two obstacles.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+    \nikhil{the Adam connection is unknown to me...both the adam and shampoo references here just boil down to the adagrad approximation right?}
   \item \emph{Batch collapse.} We replace the within-batch average
   $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product
   $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$. This substitution
@@ -1243,7 +1249,7 @@ $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of 
  &=  \E_{s \leq t}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
    &\approx  (I\otimes B_t^\top) \E_{s \leq t}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
 \end{align*}  
-where in the last line we used $g_s = \vec(G_s)$ and approximated $B_s$ by $B_t$ so that it can come out of the expectation. The error of this exchange is first order in the drift of $B$ (\Cref{as:slow-drift}). Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
+where in the last line we approximated $B_s$ by $B_t$ so came out of the expectation. The error of this exchange is first order in the drift of $B$ (\Cref{as:slow-drift}). Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
 \begin{align*}
  \Sigma_{A,t} 
    &\approx  \kappa_t\,  (I\otimes B_t^\top)  (Q_t\otimes P_t)  (I\otimes B_t) \; = \kappa_t\,   Q_t\otimes  (B_t^\top P_t B_t),
@@ -1256,47 +1262,37 @@ Using analogous arguments for the gradient of $B$, we arrive at the following ap
 \end{align}
 where $C_{A,t}=B_t^\top P_tB_t$ and $C_{B,t}=A_tQ_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure}.
 
-\paragraph{Fitting the factors.} We recover the factors by fitting the
-second-moment model to the observed moments~\eqref{eq:observable-moments}. All quantities in the fits are taken at the current step, so we drop
-the subscript $t$.
-Following KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
+\nikhil{first sentence here feels a bit weak and feels repeated to much previously. also is following kl-shampoo a bit too gratuitious?}
+\paragraph{Fitting the factors.} We recover the factors $P$ and $Q$ by fitting the
+second-moment model to the observed moments~\eqref{eq:observable-moments}. Since we focus just on the current step, we omit the
+the subscript $t$ below. Following KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
 divergence
 \[
   D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
 \]
-defined for positive definite matrices of common dimension $d$, whose
-best scalar multiple is
-$c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$.
-With diagonal candidates $\tilde Q=\diag(\tilde q)$ and
-$\tilde P=\diag(\tilde p)$, the fits are
+defined for positive definite matrices $\Sigma$ and $S$ of common dimension $d$. 
+\nikhil{the following sentence doesn't belong here}
+Note that for a fixed $\Sigma$ and $S$ the optimal scaling of $S$ is
+$c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$. The fits are
 \begin{equation}\label{eq:factor-fit}
   \widehat q
-  =\argmin_{\tilde q>0}\;
-  D\big(\Sigma_A,\;\tilde Q\otimes C_A\big),
+  =\argmin_{q>0}\;
+  D\big(\Sigma_A,\; \diag(q) \otimes C_A\big),
   \qquad
   \widehat p
-  =\argmin_{\tilde p>0}\;
-  D\big(\Sigma_B,\;\tilde P\otimes C_B\big).
+  =\argmin_{p>0}\;
+  D\big(\Sigma_B,\;\diag(p) \otimes C_B\big).
 \end{equation}
-The divergence resolves an overdetermined fit: the candidate family
-$\{\tilde Q\otimes C_A\}$ has $d_{\mathrm{in}}$ parameters while
-$\Sigma_A$ has on the order of $(rd_{\mathrm{in}})^2$ entries, and
-similarly for the fit for $p$. Away from the exact model, no candidate
-reproduces the observed moment, and $D$ decides how the mismatch is
-weighed. Each fit takes the other factor as given ($C_A$ contains $P$,
-and $C_B$ contains $Q$), so the fits are coupled. In practice, each is
-posed with the stored estimate of the other factor. Substituting
-$S=\tilde Q\otimes C_A$ into~\eqref{eq:factor-fit} separates the
-objective across coordinates, and the minimizers are
+Since $C_A$ contains $P$ and $C_B$ contains $Q$, the fits are coupled. In practice, each fit is
+posed with the current estimate of the other factor. The minimizers are
 \[
-  T_Q(P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top C_A^{-1}G_{A,s}]\right),
+  \widehat q(P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top C_A^{-1}G_{A,s}]\right),
   \qquad
-  T_P(Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} C_B^{-1}G_{B,s}^\top]\right).
+  \widehat p(Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} C_B^{-1}G_{B,s}^\top]\right).
 \]
-The moments $\Sigma_A,\Sigma_B$ enter only through these products, so
-neither is ever formed, and the fits consume only the factor gradients
-and the $r\times r$ matrices $C_A$, $C_B$ that the direction step
-already uses. The next lemma shows the coupling is sound.
+The next lemma shows the coupled fit is consistent.
+
+\nikhil{the usage of $p$, $q$, $P$, $Q$, and the hat versions might be confusing to readers. We might want a starred version for the optimal / ground truth factors?}
 
 \begin{lemma}[Consistency]\label{lem:consistency}
 Let the model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
@@ -1330,6 +1326,7 @@ $\norm{\diag Q}_\infty=1$, so the normalization removes it. The claim
 for $\widehat p$ follows with the roles of the two factors exchanged.
 \end{proof}
 
+\nikhil{this pargraph is confusing and can use some detail. i don't really understand what the result / takeaway is.}
 \paragraph{Online estimator.}
 The maps $T_Q,T_P$ involve the weighted average $\E_{s \leq t}$, which the optimizer cannot
 evaluate. \methodname{} therefore accumulates the same average online,
@@ -1360,6 +1357,7 @@ $T_Q(P_t)$ applies the current ones to every past gradient. The
 difference is first order in the drift of $B$ and $P$ over the effective
 window of the weights.
 
+\nikhil{phrasing is confusing. it sounds like it's following, but then says its different.}
 \paragraph{Comparison with KL-Shampoo.} The estimation above follows
 KL-Shampoo~\cite{klshampoo} in fitting the Kronecker factors by
 divergence minimization, with the log-determinant divergence producing
@@ -1374,6 +1372,7 @@ coupled fits. It differs in three ways.
   each diagonal factor is fit to the second moment of its own factor
   gradient, $G$ is never formed, and the two fits are coupled through
   $C_A$ and $C_B$.
+  \nikhil{this item is confusing. how is the fit exact when the estimate is inexact? the last clause of the last sentence feels bolted on. maybe should be separate?}
   \item \emph{Valid at every step.} KL-Shampoo justifies its
   moving average as a stochastic proximal-gradient step on the
   divergence objective, so its estimates are correct in the limit. Here
@@ -1383,6 +1382,7 @@ coupled fits. It differs in three ways.
   online estimator is the only approximation.
 \end{itemize}
 
+\nikhil{the "never materializes" G comment is overrepeated. the reader is disoriented by the next paragraph, it doesn't seem to follow from a natural progression. might belong earlier. also the "it does not need to" is really clunky writing. also think only the last two sentences are important.}
 \paragraph{Factor momenta.} The objective
 of~\eqref{eq:weighted-relaxed} is $\ip{\widehat M_t,\Delta W}$, but
 \Cref{alg:ours} never materializes $G$ and so cannot form $\widehat M_t$.
@@ -1402,11 +1402,11 @@ exactly. Otherwise the difference for $\widehat M_A$,
 $\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
 drift (\Cref{as:slow-drift}).
 
+\nikhil{the first two sentence are confusing. what concretely happens in each sentence? one discrepancy with what? this is colon structure crutch}
 \paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
-$P,Q$ in place of $\overline\Sigma_t$, the weighted
+$P,Q$ in place of $\overline\Sigma_t$ and $\overline G_t = \widehat M_t$, the weighted
 problem~\eqref{eq:weighted-relaxed} becomes the preconditioned spectral
-LMO~\eqref{eq:polorafull} with gradient $\widehat M_t$
-(\Cref{lem:pseudogradient-spectral}). With the factor momenta in place
+LMO~\eqref{eq:polorafull}. With the factor momenta in place
 of the factor gradients, the direction and magnitude steps of
 \Cref{sec:sample-loss-lmo} then return the update~\eqref{eq:polora-update}.
 One discrepancy remains: \Cref{alg:ours} updates the curvature factors
@@ -1416,12 +1416,14 @@ of $C_A$ and $C_B$ per step.
 
 \subsection{Normalization Placement}
 \label{sec:scale-placement}
+\nikhil{normalizes what? the placement of what? scale means nothing is weird non-academic phrasing. the statements only become clear in the next paragraph.}
 The estimator~\eqref{eq:ours-klcoupling} averages the raw estimates
 $\widehat q_t,\widehat p_t$ and normalizes only when the stored vectors
 form $Q_{t+1},P_{t+1}$ for the next step, rather than normalizing each
 estimate before it enters the average. The placement matters because
 scale means nothing to the update but changes what the average computes.
 
+\nikhil{removes what remains feels imprecise and non-academic. what is what remains referring to? costs nothing seems like a strong statement made for no good reason.}
 \paragraph{The update is scale-free.} The direction step ignores the scale of
 the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
 $C_B^{-1/2}$ by $c^{-1/2}$, the matrix sign absorbs the scalar, and the
@@ -1431,8 +1433,9 @@ the direction of the stored vectors, never the magnitude $\kappa_t$ in
 the model~\eqref{e-diag-kron-second-mom-model}, and normalizing at use
 costs nothing.
 
-\paragraph{The average is scale-sensitive.} Each estimate scales
-inversely with the stored factor it uses,
+\nikhil{what does "step-dependent scale" mean? why is this a corruption? this paragraph is too casual and imprecise. either compress or clarify? N(v) is extraneous notation. what does noise no longer averages down mean?}
+\paragraph{The average is scale-sensitive.} Each curvature factor estimate scales
+inversely with the stored factor it uses in the coupled fit,
 \[
   \widehat q_t(aP_t)=a^{-1}\,\widehat q_t(P_t),
   \qquad
