@@ -1196,18 +1196,17 @@ recursions gives the induced weights
 \]
 
 \paragraph{Approximating the second moment.} As discussed in~\Cref{sec:sample-loss-lmo},
-$\overline\Sigma_t$ cannot be used directly. It is built from per-sample
-gradients that backpropagation never materializes, and it is too large
-to store. 
-\nikhil{the two obstacles makes it sound like the reader should already know what they are}
-Two approximations remove the two obstacles.
-\nikhil{the Adam connection is unknown to me...both the adam and shampoo references here just boil down to the adagrad approximation right?}
+$\overline\Sigma_t$ cannot be used directly, for two reasons: it is
+built from per-sample gradients that backpropagation never
+materializes, and it is too large to store. Two approximations remove
+these obstacles in turn.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
   \item \emph{Batch collapse.} We replace the within-batch average
   $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product
   $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$. This substitution
-  underlies the second moments of Adam~\cite{adam} and
-  Shampoo~\cite{shampoo}, and it is exact at batch size one. Under it
+  underlies the second moments of AdaGrad~\cite{adagrad}, Adam~\cite{adam},
+  and Shampoo~\cite{shampoo}, which all accumulate outer products of
+  batch gradients, and is exact at batch size one. Under it
   the weights $w_{t,s,i}$ sum within each batch to
   $w_{t,s}=(1-\beta_2)\beta_2^{t-s}$, so the collapsed estimate is a
   weighted average over batch gradients,
@@ -1250,7 +1249,7 @@ $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of 
  &=  \E_{s \leq t}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
    &\approx  (I\otimes B_t^\top) \E_{s \leq t}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
 \end{align*}  
-where in the last line we approximated $B_s$ by $B_t$ so came out of the expectation. The error of this exchange is first order in the drift of $B$ (\Cref{as:slow-drift}). Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
+where in the last line we approximated $B_s$ by $B_t$ so that it comes out of the expectation. The error of this exchange is first order in the drift of $B$ (\Cref{as:slow-drift}). Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
 \begin{align*}
  \Sigma_{A,t} 
    &\approx  \kappa_t\,  (I\otimes B_t^\top)  (Q_t\otimes P_t)  (I\otimes B_t) \; = \kappa_t\,   Q_t\otimes  (B_t^\top P_t B_t),
