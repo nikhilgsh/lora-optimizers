@@ -1122,11 +1122,10 @@ exactly what the momentum and EMA choices below implement.
 $i$ the samples of the size-$n_s$ minibatch at step $s$. Write
 $G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)$ for the per-sample gradient, $g_{s,i}=\vec(G_{s,i})$, and
 $G_s=\frac1{n_s}\sum_iG_{s,i}$ for the  batch gradient.
-For
-nonnegative weights $m_{t,s}$ and $w_{t,s,i}$, the extension
-of~\eqref{eq:sample-lmo} we want at step $t$ minimizes the
-recency-weighted loss subject to a bound on the linearized change of
-each past sample's loss, both evaluated at the current weights $W_t$,
+
+Let
+$m_{t,s}$ and $w_{t,s}$ be nonnegative weights that put more weight on recent samples, that is, for $s$ closer to $t$, see ~\eqref{eq:EMAweights} for precise definition further down.  We now re-write the loss and constraint in 
+~\eqref{eq:sample-lmo} with these weights, both evaluated at the current weights $W_t$:
 \begin{equation}\label{eq:weighted-sample-lmo}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -1210,14 +1209,14 @@ moments,
 \]
 This choice gives tighter constraints on recent batches. Unrolling the
 recursions gives the induced weights
-\[
+\begin{equation}\label{eq:EMAweights}
   m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}
   \quad(s<t),
   \qquad
   m_{t,t}=1-\beta_1^2,
   \qquad
-  w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-s}}{n_s}.
-\]
+  w_{t,s }=\frac{(1-\beta_2)\beta_2^{t-s}}{n_s}.
+\end{equation}
 
 \paragraph{Approximating the second moment.} As discussed in~\Cref{sec:sample-loss-lmo},
 $\overline\Sigma_t$ cannot be used directly, for two reasons: it is
