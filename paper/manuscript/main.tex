@@ -1240,9 +1240,7 @@ second moment of the factor gradients. The estimates rest on one
 standing approximation.
 
 \begin{assumption}[Slow drift]\label{as:slow-drift}
-The factors $A$ and $B$ change slowly over the effective window of the
-weights $m_{t,s}$ and $w_{t,s}$, so that inside any weighted average we
-may replace the factors at past steps by their current values.
+The factors $A$ and $B$ change slowly over the effective window of the weights $m_{t,s}$ and $w_{t,s}$, so that to first-order we can replace factors at past steps by their current values.
 \end{assumption}
 
 \paragraph{Moments of the factor gradients.} To estimate $P^\star$ and $Q^\star$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient. To this end, note that
@@ -1335,21 +1333,24 @@ $\norm{\diag Q^\star}_\infty=1$, so the normalization removes it. The claim
 for $\hat{p}$ follows with the roles of the two factors exchanged.
 \end{proof}
 
-\nikhil{this pargraph is confusing and can use some detail. i don't really understand what the result / takeaway is.}
 \paragraph{Online estimator.}
-The maps $T_Q,T_P$ involve the weighted average $\E_{s \leq t}$, which the optimizer cannot
-evaluate. \methodname{} therefore accumulates the same average online,
-evaluating both maps on the current batch with the stored estimates
-$P_t,Q_t$ in place of the model factors in $C_{A,t},C_{B,t}$,
+The minimizers $\hat{q}(\widehat P)$ and $\hat{p}(\widehat Q)$ average
+over all past factor gradients through $\E_{s \leq t}$, which the
+optimizer cannot revisit. \methodname{} therefore accumulates the same
+average online. At each step, it evaluates the fits
+of~\eqref{eq:factor-fit} on the current batch alone (write
+$\hat{q}_t,\hat{p}_t$ for these single-batch fits), posed with the
+stored factors through $C_{A,t}=B_t^\top P_tB_t$ and
+$C_{B,t}=A_tQ_tA_t^\top$, and folds the results into running averages,
 \begin{equation}\label{eq:ours-klcoupling}
 \begin{aligned}
-  \hat{q}_t &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
+  \hat{q}_t(P_t) &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
   &
-  \hat{p}_t &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
+  \hat{p}_t(Q_t) &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
   \\
-  q_{t+1} &= \beta_2q_t+(1-\beta_2)\hat{q}_t,
+  q_{t+1} &= \beta_2q_t+(1-\beta_2)\hat{q}_t(P_t),
   &
-  p_{t+1} &= \beta_2p_t+(1-\beta_2)\hat{p}_t,
+  p_{t+1} &= \beta_2p_t+(1-\beta_2)\hat{p}_t(Q_t),
   \\
   Q_{t+1} &= \diag\!\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
   &
@@ -1357,20 +1358,21 @@ $P_t,Q_t$ in place of the model factors in $C_{A,t},C_{B,t}$,
 \end{aligned}
 \end{equation}
 The last line applies the normalization that \Cref{lem:consistency}
-justifies.
-Unrolled, the recursion weights the per-step estimates by the
-$w_{t,s}$ of \Cref{sec:weighted-lmo}, so the stored $q_t$ matches
-$T_Q(P_t)$ term by term up to one discrepancy. Each
-$\hat{q}_s$ used the matrices of its own step ($B_s$, $P_s$), while
-$T_Q(P_t)$ applies the current ones to every past gradient. The
-difference is first order in the drift of $B$ and $P$ over the effective
-window of the weights.
+justifies, and the fits consume only the factor gradients and the
+$r\times r$ matrices $C_{A,t},C_{B,t}$, never the moments
+$\Sigma_A,\Sigma_B$ themselves. Unrolled, the recursion weights the
+per-step estimates by exactly the $w_{t,s}$ of \Cref{sec:weighted-lmo},
+so the stored $q_t$ matches the full fit $\hat{q}(P_t)$ except that
+each past estimate $\hat{q}_s(P_s)$ used the matrices of its own step,
+where the full fit applies the current ones to every past gradient. The
+difference is first order in the drift of $B$ and $P$ over the
+effective window of the weights. Up to that drift, the stored vectors
+are the consistent fits of \Cref{lem:consistency}.
 
-\nikhil{phrasing is confusing. it sounds like it's following, but then says its different.}
-\paragraph{Comparison with KL-Shampoo.} The estimation above follows
-KL-Shampoo~\cite{klshampoo} in fitting the Kronecker factors by
-divergence minimization, with the log-determinant divergence producing
-coupled fits. It differs in three ways.
+\paragraph{Comparison with KL-Shampoo.} KL-Shampoo~\cite{klshampoo}
+also fits Kronecker factors by minimizing the log-determinant
+divergence, and its moving average has the same shape
+as~\eqref{eq:ours-klcoupling}. The two schemes differ in three ways.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \emph{No distributional assumptions.} KL-Shampoo fits the second moment
   of a stationary gradient distribution. Here $\E_{s \leq t}$ is a weighted sum
@@ -1381,14 +1383,14 @@ coupled fits. It differs in three ways.
   each diagonal factor is fit to the second moment of its own factor
   gradient, $G$ is never formed, and the two fits are coupled through
   $C_A$ and $C_B$.
-  \nikhil{this item is confusing. how is the fit exact when the estimate is inexact? the last clause of the last sentence feels bolted on. maybe should be separate?}
   \item \emph{Valid at every step.} KL-Shampoo justifies its
   moving average as a stochastic proximal-gradient step on the
   divergence objective, so its estimates are correct in the limit. Here
-  the recursion computes the weighted moments exactly,
-  \Cref{lem:consistency} makes each fit exact under the model even when
-  the estimate of the other factor is inexact, and the drift of the
-  online estimator is the only approximation.
+  the recursion computes the weighted moments exactly at every step,
+  and \Cref{lem:consistency} shows that posing a fit with an inexact
+  estimate of the other factor only rescales its output, a scale the
+  normalization removes. The one remaining approximation is the drift
+  of the online estimator.
 \end{itemize}
 
 \nikhil{the "never materializes" G comment is overrepeated. the reader is disoriented by the next paragraph, it doesn't seem to follow from a natural progression. might belong earlier. also the "it does not need to" is really clunky writing. also think only the last two sentences are important.}
