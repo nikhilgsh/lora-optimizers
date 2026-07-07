@@ -1132,6 +1132,15 @@ extension of~\eqref{eq:sample-lmo} at step $t$ to be
   \le \tau, \qquad s=1, \ldots, t,\quad i=1,\dots,n_s.
   \end{array}
 \end{equation}
+For $s<t$ the constraint uses $G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)$, the
+gradient of the sample's loss at the weights of its own step. The
+linearized change of the same loss at the current weights $W_t$ is
+$\ip{\nabla\ell_{x_{s,i}}(W_t),\Delta W}$, so the constraint controls
+it up to the drift term
+$\ip{\nabla\ell_{x_{s,i}}(W_t)-G_{s,i},\Delta W}$. The decaying weights
+put the loosest constraints on the stalest gradients: the bound on
+$|\ip{G_{s,i},\Delta W}|$ is $\tau/\sqrt{w_{t,s,i}}$, growing with the
+age $t-s$.
 
 \paragraph{The two weighted moments.} The problem~\eqref{eq:weighted-sample-lmo}
 depends on the history only through two weighted moments,
@@ -1189,9 +1198,8 @@ recursions gives the induced weights
   w_{t,s,i}=\frac{(1-\beta_2)\beta_2^{t-s}}{n_s}.
 \]
 
-\paragraph{Approximating the second moment.} As discussed in~\Cref{sec:sample-loss-lmo} in the main text ,
-$\overline\Sigma_t$ cannot be directly estimated or even stored. 
-This is because it depends on the  per-sample
+\paragraph{Approximating the second moment.} As discussed in~\Cref{sec:sample-loss-lmo},
+$\overline\Sigma_t$ cannot be used directly. It is built from per-sample
 gradients that backpropagation never materializes, and it is too large
 to store. Two approximations remove the two obstacles.
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
@@ -1228,34 +1236,39 @@ d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
 the low-rank structure avoids. We therefore estimate $P$ and $Q$ from the
 second moment of the factor gradients. 
 
-\paragraph{Moments of the factor gradients.}   To estimate $P$ and $Q$ through only the factor gradients, we need to establish a link between the second moment of the factors, and the second moment of the batch gradient. To this end, note that
-$\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of factor $A$ is given by
+\paragraph{Moments of the factor gradients.} To estimate $P$ and $Q$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient. To this end, note that
+$\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of the gradient of $A$ is given by
 \begin{align*}
  \Sigma_{A,t} &:=  \E_{s \leq t}\big[ \vec(G_{A,s})  \vec(G_{A,s})^\top\big]  \\
  &=  \E_{s \leq t}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
    &\approx  (I\otimes B_t^\top) \E_{s \leq t}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
 \end{align*}  
-where in the last line we used $g_s = \vec{G_s}$ and we  approximated $B_s$ by $B_t$ so that it can come out of the expectation. Now using~\eqref{e-diag-kron-second-mom-model}  in the above gives
+where in the last line we used $g_s = \vec(G_s)$ and approximated $B_s$ by $B_t$ so that it can come out of the expectation. The error of this exchange is first order in the drift of $B$ over the effective window of the weights. Now using~\eqref{e-diag-kron-second-mom-model} in the above gives
 \begin{align*}
  \Sigma_{A,t} 
    &\approx  \kappa_t\,  (I\otimes B_t^\top)  (Q_t\otimes P_t)  (I\otimes B_t) \; = \kappa_t\,   Q_t\otimes  (B_t^\top P_t B_t),
 \end{align*} 
-where in the equality we used the mixed product-rule of Kronecker products.
-Using analogous arguments for the second moment of the $B$ factor, we arrive at the following approximations
+where the equality uses the mixed-product rule of Kronecker products.
+Using analogous arguments for the gradient of $B$, we arrive at the following approximations
 \begin{align}
   \Sigma_{A,t} & =\E_{s \leq t}\big[\vec(G_{A,s})\vec(G_{A,s})^\top\big] \approx\kappa_t\,Q_t\otimes C_{A,t} \nonumber \\
-  \Sigma_{B,t}&=\E_{s \leq t}\big[\vec(G_{B,t}^\top)\vec(G_{B,t}^\top)^\top\big] \approx \kappa_t\,P_t\otimes C_{B,t}, \label{eq:observable-moments}
+  \Sigma_{B,t}&=\E_{s \leq t}\big[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\big] \approx \kappa_t\,P_t\otimes C_{B,t}, \label{eq:observable-moments}
 \end{align}
-where $C_{A,t}=B_t^\top P_tB_t$ and $C_{B,t}=A_tQ_tA_t^\top$ are both  $r\times r$ matrices.
+where $C_{A,t}=B_t^\top P_tB_t$ and $C_{B,t}=A_tQ_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure}.
 
 \paragraph{Fitting the factors.} We recover the factors by fitting the
-second-moment model to the observed moments~\eqref{eq:observable-moments}. Write $\tilde q=\kappa_t\,q$ and
-$\tilde p=\kappa_t\,p$ for the scaled factors, 
-\rob{It should be $q=\sqrt{\kappa_t}\,q$ and $\tilde p=\sqrt{\kappa_t}\,p$ ?}
-absorbing the
-magnitude that the normalization later removes, and let
-$\tilde Q=\diag(\tilde q)$ and $\tilde P=\diag(\tilde p)$.
-For a divergence $D$ between positive definite matrices, the fits are
+second-moment model to the observed moments~\eqref{eq:observable-moments}. All quantities in the fits are taken at the current step, so we drop
+the subscript $t$.
+Following KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
+divergence
+\[
+  D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
+\]
+defined for positive definite matrices of common dimension $d$, whose
+best scalar multiple is
+$c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$.
+With diagonal candidates $\tilde Q=\diag(\tilde q)$ and
+$\tilde P=\diag(\tilde p)$, the fits are
 \begin{equation}\label{eq:factor-fit}
   \widehat q
   =\argmin_{\tilde q>0}\;
@@ -1270,98 +1283,59 @@ $\{\tilde Q\otimes C_A\}$ has $d_{\mathrm{in}}$ parameters while
 $\Sigma_A$ has on the order of $(rd_{\mathrm{in}})^2$ entries, and
 similarly for the fit for $p$. Away from the exact model, no candidate
 reproduces the observed moment, and $D$ decides how the mismatch is
-weighed. We require two properties of $D$:
-\begin{enumerate}[label=(\roman*),ref=(\roman*),leftmargin=2.2em,itemsep=1pt,topsep=2pt]
-  \item\label{it:block-additive} \emph{additivity across blocks:}
-  $D(\Sigma,S)=\sum_jD(\Sigma_j,S_j)$ whenever $\Sigma$ and $S$ are
-  block diagonal with blocks $\Sigma_j$ and $S_j$ of matching sizes;
-  \item\label{it:scalar-fit} \emph{a homogeneous scalar fit:} the best scalar multiple
-  $c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)$ exists, is unique, and
-  satisfies $c^\star(a\Sigma,S)=a\,c^\star(\Sigma,S)$ for $a>0$.
-\end{enumerate}
-Each fit takes the other factor as given ($C_A$ contains $P$, and
-$C_B$ contains $Q$), so the fits are coupled. In practice, each is
-posed with the stored estimate of the other factor. The next lemma
-shows the coupling is sound.
+weighed. Each fit takes the other factor as given ($C_A$ contains $P$,
+and $C_B$ contains $Q$), so the fits are coupled. In practice, each is
+posed with the stored estimate of the other factor. Substituting
+$S=\tilde Q\otimes C_A$ into~\eqref{eq:factor-fit} separates the
+objective across coordinates, and the minimizers are
+\[
+  T_Q(P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top C_A^{-1}G_{A,s}]\right),
+  \qquad
+  T_P(Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} C_B^{-1}G_{B,s}^\top]\right).
+\]
+The moments $\Sigma_A,\Sigma_B$ enter only through these products, so
+neither is ever formed, and the fits consume only the factor gradients
+and the $r\times r$ matrices $C_A$, $C_B$ that the direction step
+already uses. The next lemma shows the coupling is sound.
 
 \begin{lemma}[Consistency]\label{lem:consistency}
-Let $D$ satisfy \ref{it:block-additive} and \ref{it:scalar-fit}, and let the
-model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
+Let the model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
 diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
 fits~\eqref{eq:factor-fit} posed with $\widehat C_A=B^\top\widehat PB$
 and $\widehat C_B=A\widehat QA^\top$ return
 \[
-  \widehat q=\kappa_t\,c^\star\big(C_A,\widehat C_A\big)\,\diag(Q),
+  \widehat q=\kappa\,c^\star\big(C_A,\widehat C_A\big)\,\diag(Q),
   \qquad
-  \widehat p=\kappa_t\,c^\star\big(C_B,\widehat C_B\big)\,\diag(P),
+  \widehat p=\kappa\,c^\star\big(C_B,\widehat C_B\big)\,\diag(P),
 \]
 so $\widehat q/\norm{\widehat q}_\infty=\diag(Q)$ and
 $\widehat p/\norm{\widehat p}_\infty=\diag(P)$.
 \end{lemma}
 \begin{proof}
 Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
-diagonal with $j$th block $\kappa_t\,q_j\,C_A$, and the candidate
+diagonal with $j$th block $\kappa\,q_j\,C_A$, and the candidate
 $\tilde Q\otimes\widehat C_A$ is block diagonal with $j$th block
-$\tilde q_j\,\widehat C_A$. By \ref{it:block-additive} the objective
-in~\eqref{eq:factor-fit} is
-$\sum_jD(\kappa_t q_jC_A,\,\tilde q_j\widehat C_A)$, one term per
-coordinate, and by \ref{it:scalar-fit} the $j$th term is minimized at
-$\tilde q_j=\kappa_t\,q_j\,c^\star(C_A,\widehat C_A)$. The factor
-$\kappa_t\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and
+$\tilde q_j\,\widehat C_A$. Traces and log-determinants add across
+blocks, so the objective in~\eqref{eq:factor-fit} is
+$\sum_jD(\kappa q_jC_A,\,\tilde q_j\widehat C_A)$, one term per
+coordinate, and the $j$th term is minimized at its best scalar
+multiple, $\tilde q_j=c^\star(\kappa q_jC_A,\widehat C_A)
+=\kappa\,q_j\,c^\star(C_A,\widehat C_A)$. The factor
+$\kappa\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and
 $\norm{\diag Q}_\infty=1$, so the normalization removes it. The claim
 for $\widehat p$ follows with the roles of the two factors exchanged.
 \end{proof}
-
-\paragraph{Choosing the divergence.} The choice of divergence
-determines the estimator. We consider two divergences that satisfy
-\ref{it:block-additive} and \ref{it:scalar-fit}. \methodname{} uses the first.
-\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-  \item \emph{Log-determinant} (following KL-Shampoo~\cite{klshampoo}):
-  $D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d$, where $d$
-  is the common dimension. It satisfies \ref{it:block-additive} since traces and
-  log-determinants add across blocks, and \ref{it:scalar-fit} with scalar fit
-  $c^\star(\Sigma,S)=\Tr(\Sigma S^{-1})/d$. Substituting
-  $S=\tilde Q\otimes C_A$ into~\eqref{eq:factor-fit} separates the
-  objective across coordinates, and the minimizers are
-  \[
-    T_Q(P)=\frac1r\diag\!\left(\E_{s \leq t}[G_A^\top C_A^{-1}G_A]\right),
-    \qquad
-    T_P(Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_B C_B^{-1}G_B^\top]\right).
-  \]
-  The moments $\Sigma_A,\Sigma_B$ enter only through these products, so
-  neither is ever formed, and the fits consume only the factor
-  gradients and the $r\times r$ matrices $C_A$, $C_B$ that the
-  direction step already uses.
-  \item \emph{Von Neumann}:
-  $D(\Sigma,S)=\Tr(\Sigma\log\Sigma-\Sigma\log S-\Sigma+S)$ also
-  satisfies \ref{it:block-additive} and \ref{it:scalar-fit}, with scalar fit
-  $c^\star(\Sigma,S)=\Tr(\Sigma)/\Tr(S)$. The same substitution yields
-  the raw second moments of the factor gradients,
-  \[
-    \tilde q_j=\E_{s \leq t}\big[(G_A^\top G_A)_{jj}\big]/\Tr(C_A),
-    \qquad
-    \tilde p_i=\E_{s \leq t}\big[(G_B G_B^\top)_{ii}\big]/\Tr(C_B),
-  \]
-  with $C_A$, $C_B$ entering only through scalars that the
-  normalization removes. This mirrors the correspondence established in
-  KL-Shampoo between the von Neumann divergence and Adafactor-style
-  moment matching~\cite{klshampoo}.
-\end{itemize}
-Both choices recover the factors under the model
-(\Cref{lem:consistency}) up to a scaling factor. Where they differ is that the
-log-determinant fit weighs the average by $C_A^{-1}$, where-as the von
-Neumann does not.
 
 \paragraph{Online estimator.}
 The maps $T_Q,T_P$ involve the weighted average $\E_{s \leq t}$, which the optimizer cannot
 evaluate. \methodname{} therefore accumulates the same average online,
 evaluating both maps on the current batch with the stored estimates
-$P_t,Q_t$ in place of the model factors in $C_A,C_B$,
+$P_t,Q_t$ in place of the model factors in $C_{A,t},C_{B,t}$,
 \begin{equation}\label{eq:ours-klcoupling}
 \begin{aligned}
-  \widehat q_t &= \frac1r\diag\!\left(G_A^\top C_A^{-1}G_A\right),
+  \widehat q_t &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
   &
-  \widehat p_t &= \frac1r\diag\!\left(G_B C_B^{-1}G_B^\top\right),
+  \widehat p_t &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
   \\
   q_{t+1} &= \beta_2q_t+(1-\beta_2)\widehat q_t,
   &
@@ -1419,10 +1393,10 @@ $\widehat M_tA^\top$ and $B^\top\widehat M_t$. The factor momenta estimate
 precisely these: $\widehat M_A$ averages $B_s^\top G_s$ and
 $\widehat M_B$ averages $G_sA_s^\top$, with the same weights $m_{t,s}$.
 If the factors are constant over the averaging window,
-$\widehat M_A=B^\top\widehat M_t$ and $\widehat M_B=\widehat M_tA^\top$
+$\widehat M_A=B_t^\top\widehat M_t$ and $\widehat M_B=\widehat M_tA_t^\top$
 exactly. Otherwise the difference for $\widehat M_A$,
 $\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
-drift over the window.
+drift over the effective window of the weights.
 
 \paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
 $P,Q$ in place of $\overline\Sigma_t$, the weighted
