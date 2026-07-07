@@ -1109,8 +1109,8 @@ after the average.
 \subsection{The Weighted LMO}
 \label{sec:weighted-lmo}
 A single minibatch gives a noisy objective and only a handful of
-constraints, so an update fit to it alone overfits that minibatch. We
-therefore extend the LMO~\eqref{eq:sample-lmo} over all past
+constraints, so an update fit to it alone overfits that minibatch. To
+counter this, we extend the LMO~\eqref{eq:sample-lmo} over all past
 minibatches. Because older gradients were computed at older weights,
 their information about the current loss degrades with age, so the
 extension discounts them with decaying weights. This recency bias is
@@ -1124,8 +1124,8 @@ of~\eqref{eq:sample-lmo} we want at step $t$ bounds the linearized
 change of each past sample's loss at the current weights,
 $\sqrt{w_{t,s,i}}\,\bigl|\ip{\nabla\ell_{x_{s,i}}(W_t),\Delta W}\bigr|\le\tau$.
 For $s<t$ these gradients are unavailable, since each sample was
-backpropagated at its own step rather than at $W_t$. We therefore pose
-the constraints with the stored gradients in their place,
+backpropagated at its own step rather than at $W_t$. We pose the
+constraints with the stored gradients in their place,
 \begin{equation}\label{eq:weighted-sample-lmo}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -1235,13 +1235,32 @@ In LoRA training, backpropagation gives the factor gradients $G_{A,s}=B_s^\top G
 and $G_{B,s}=G_sA_s^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
 the full gradient $G_s$, by contrast, would take a $d_{\mathrm{out}}\times
 d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
-the low-rank structure avoids. We therefore estimate $P^\star$ and $Q^\star$ from the
-second moment of the factor gradients. The estimates rest on one
-standing approximation.
+the low-rank structure avoids. We estimate both weighted moments of \Cref{sec:weighted-lmo}
+from the factor gradients alone, taking the momentum $\widehat M_t$ for
+the objective and the model factors $P^\star,Q^\star$ for the
+constraint. The estimates rest on one standing approximation.
 
 \begin{assumption}[Slow drift]\label{as:slow-drift}
 The factors $A$ and $B$ change slowly over the effective window of the weights $m_{t,s}$ and $w_{t,s}$, so that to first-order we can replace factors at past steps by their current values.
 \end{assumption}
+
+\paragraph{Factor momenta.} Under the linearized product
+update~\eqref{eq:DeltaW-lin}, the objective of~\eqref{eq:weighted-relaxed}
+decomposes as
+\[
+  \ip{\widehat M_t,\,\Delta B\,A+B\,\Delta A}
+  =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A},
+\]
+so the update depends on $\widehat M_t$ only through
+$\widehat M_tA^\top$ and $B^\top\widehat M_t$. The factor momenta
+$\widehat M_A,\widehat M_B$ of \Cref{alg:ours} (line~\ref{ln:mom})
+estimate precisely these, with $\widehat M_A$ averaging $B_s^\top G_s$
+and $\widehat M_B$ averaging $G_sA_s^\top$ under the same weights
+$m_{t,s}$. If the factors are constant over the averaging window,
+$\widehat M_A=B_t^\top\widehat M_t$ and $\widehat M_B=\widehat M_tA_t^\top$
+exactly. Otherwise the difference for $\widehat M_A$,
+$\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
+drift (\Cref{as:slow-drift}).
 
 \paragraph{Moments of the factor gradients.} To estimate $P^\star$ and $Q^\star$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient. To this end, note that
 $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of the gradient of $A$ is given by
@@ -1336,8 +1355,8 @@ for $\hat{p}$ follows with the roles of the two factors exchanged.
 \paragraph{Online estimator.}
 The minimizers $\hat{q}(\widehat P)$ and $\hat{p}(\widehat Q)$ average
 over all past factor gradients through $\E_{s \leq t}$, which the
-optimizer cannot revisit. \methodname{} therefore accumulates the same
-average online. At each step, it evaluates the fits
+optimizer cannot revisit. \methodname{} accumulates the same average
+online instead. At each step, it evaluates the fits
 of~\eqref{eq:factor-fit} on the current batch alone (write
 $\hat{q}_t,\hat{p}_t$ for these single-batch fits), posed with the
 stored factors through $C_{A,t}=B_t^\top P_tB_t$ and
@@ -1393,77 +1412,64 @@ as~\eqref{eq:ours-klcoupling}. Our approach differs in the following ways:
   of the online estimator.
 \end{itemize}
 
-\nikhil{the "never materializes" G comment is overrepeated. the reader is disoriented by the next paragraph, it doesn't seem to follow from a natural progression. might belong earlier. also the "it does not need to" is really clunky writing. also think only the last two sentences are important.}
-\paragraph{Factor momenta.} The objective
-of~\eqref{eq:weighted-relaxed} is $\ip{\widehat M_t,\Delta W}$, but
-\Cref{alg:ours} never materializes $G$ and so cannot form $\widehat M_t$.
-It does not need to: under the linearized product
-update~\eqref{eq:DeltaW-lin} the objective decomposes as
-\[
-  \ip{\widehat M_t,\,\Delta B\,A+B\,\Delta A}
-  =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A},
-\]
-so the update depends on $\widehat M_t$ only through
-$\widehat M_tA^\top$ and $B^\top\widehat M_t$. The factor momenta estimate
-precisely these: $\widehat M_A$ averages $B_s^\top G_s$ and
-$\widehat M_B$ averages $G_sA_s^\top$, with the same weights $m_{t,s}$.
-If the factors are constant over the averaging window,
-$\widehat M_A=B_t^\top\widehat M_t$ and $\widehat M_B=\widehat M_tA_t^\top$
-exactly. Otherwise the difference for $\widehat M_A$,
-$\sum_{s\le t}m_{t,s}(B_s-B_t)^\top G_s$, is first order in the factor
-drift (\Cref{as:slow-drift}).
-
-\nikhil{the first two sentence are confusing. what concretely happens in each sentence? one discrepancy with what? this is colon structure crutch}
-\paragraph{Recovering the update of \Cref{alg:ours}.} With the fitted
-$P,Q$ in place of $\overline\Sigma_t$ and $\overline G_t = \widehat M_t$, the weighted
-problem~\eqref{eq:weighted-relaxed} becomes the preconditioned spectral
-LMO~\eqref{eq:polorafull}. With the factor momenta in place
-of the factor gradients, the direction and magnitude steps of
-\Cref{sec:sample-loss-lmo} then return the update~\eqref{eq:polora-update}.
-One discrepancy remains: \Cref{alg:ours} updates the curvature factors
-after the direction step, so step $t$ uses the estimate of
-$\overline\Sigma_{t-1}$, which avoids a second formation and inversion
-of $C_A$ and $C_B$ per step.
+\paragraph{Recovering the update of \Cref{alg:ours}.} Substituting the
+fitted model $\kappa_t(Q_t\otimes P_t)$ for $\overline\Sigma_t$ and the
+look-ahead momentum $\widehat M_t$ for $\overline G_t$ turns the
+weighted problem~\eqref{eq:weighted-relaxed} into the preconditioned
+spectral LMO~\eqref{eq:polorafull}
+(\Cref{lem:pseudogradient-spectral}). Solving it with the direction and
+magnitude steps of \Cref{sec:sample-loss-lmo}, with the factor momenta
+standing in for the factor gradients, returns the
+update~\eqref{eq:polora-update}. The only departure of \Cref{alg:ours}
+from this derivation is that the curvature factors update after the
+direction step, so step $t$ runs on the estimate from step $t-1$, which
+avoids a second formation and inversion of $C_A$ and $C_B$ per step.
 
 \subsection{Normalization Placement}
 \label{sec:scale-placement}
-\nikhil{normalizes what? the placement of what? scale means nothing is weird non-academic phrasing. the statements only become clear in the next paragraph.}
-The estimator~\eqref{eq:ours-klcoupling} averages the raw estimates
-$\hat{q}_t,\hat{p}_t$ and normalizes only when the stored vectors
-form $Q_{t+1},P_{t+1}$ for the next step, rather than normalizing each
-estimate before it enters the average. The placement matters because
-scale means nothing to the update but changes what the average computes.
+\methodname{} normalizes the accumulated vectors $q_{t+1},p_{t+1}$ to unit
+largest entry when it forms the next-step factors
+$Q_{t+1},P_{t+1}$~\eqref{eq:ours-klcoupling}, rather than normalizing each
+per-step estimate $\hat{q}_t,\hat{p}_t$ before it enters the average.
+Normalizing the accumulated vectors does not change the update, which
+depends only on the direction of the stored factors. Normalizing each
+estimate first would change the average, which is sensitive to the scale
+of those estimates.
 
-\nikhil{removes what remains feels imprecise and non-academic. what is what remains referring to? costs nothing seems like a strong statement made for no good reason.}
-\paragraph{The update is scale-free.} The direction step ignores the scale of
-the factor it is given: $Q\mapsto cQ$ with $c>0$ scales $Q^{-1/2}$ and
-$C_B^{-1/2}$ by $c^{-1/2}$, the matrix sign absorbs the scalar, and the
-division by $\norm{D_A}_2$ and $\norm{D_B}_2$ in the magnitude step
-removes what remains (likewise for $P$). The update therefore needs only
-the direction of the stored vectors, never the magnitude $\kappa_t$ in
-the model~\eqref{e-diag-kron-second-mom-model}, and normalizing at use
-costs nothing.
+\paragraph{The update is scale-free.} The update depends on the stored
+factors only through their direction. Under a rescaling $Q\mapsto cQ$
+($c>0$), both $Q^{-1/2}$ and $C_B^{-1/2}=(AQA^\top)^{-1/2}$ pick up a
+factor $c^{-1/2}$. Inside the matrix sign this scalar has no effect, since
+the sign is scale-invariant. Outside it, the scalar multiplies $D_A$ and
+$D_B$ by $c^{-1/2}$, which the division by $\norm{D_A}_2$ and
+$\norm{D_B}_2$ in the magnitude step cancels. The factor $P$ enters the
+same way. The update therefore sees only the direction of the stored
+factors, never the magnitude $\kappa_t$ of the
+model~\eqref{e-diag-kron-second-mom-model}, so normalizing the accumulated
+vectors leaves it unchanged.
 
-\nikhil{what does "step-dependent scale" mean? why is this a corruption? this paragraph is too casual and imprecise. either compress or clarify? N(v) is extraneous notation. what does noise no longer averages down mean?}
-\paragraph{The average is scale-sensitive.} Each curvature factor estimate scales
-inversely with the stored factor it uses in the coupled fit,
+\paragraph{The average is scale-sensitive.} The coupled fit makes each
+per-step estimate scale inversely with the stored factor it is computed
+from,
 \[
   \hat{q}_t(aP_t)=a^{-1}\,\hat{q}_t(P_t),
   \qquad
   \hat{p}_t(aQ_t)=a^{-1}\,\hat{p}_t(Q_t)
   \qquad(a>0),
 \]
-since $C_A=B^\top(aP_t)B=a\,B^\top P_tB$ and likewise for $C_B$. If the
-stored factor carried a step-dependent scale $a_s$, the estimate at
-step $s$ would enter the average with its weight multiplied by $1/a_s$,
-corrupting the weights chosen in \Cref{sec:weighted-lmo}. Normalizing the factor at use fixes its scale and
-protects the weights. Normalizing each estimate before averaging instead
-would put $N(v)=v/\norm{v}_\infty$ inside the sum, where it does not
-commute with the mean. A noise-dominated estimate would be rescaled to
-full size and enter with full weight, so the noise no longer averages
-down. Averaging first and normalizing at use is the order in which momentum
-precedes normalization in normalized SGD~\cite{cutkosky_nigt} and
-precedes orthogonalization in Muon~\cite{denoise_ortho}.
+since $B^\top(aP_t)B=a\,C_A$, and likewise for $C_B$. Normalizing after
+averaging gives every stored factor the same scale
+($\norm{\diag P_t}_\infty=1$ at every step), so the estimates enter the
+average on a common footing. Were the factor at step $s$ instead
+normalized to a step-varying scale $a_s$, the identity above would scale
+$\hat{q}_s$ by $1/a_s$, so it would enter with effective weight
+$w_{t,s}/a_s$ rather than the $w_{t,s}$ chosen in \Cref{sec:weighted-lmo}.
+Normalizing the per-step estimates themselves before averaging would fail
+for a second reason. Normalization is nonlinear and does not commute with
+the mean, so per-step noise that cancels in the raw average would survive.
+This average-then-normalize order is the one by which momentum precedes
+normalization in normalized SGD~\cite{cutkosky_nigt} and orthogonalization
+in Muon~\cite{denoise_ortho}.
 
 \section{Numerical Subroutines}
 \label{app:primitives}
