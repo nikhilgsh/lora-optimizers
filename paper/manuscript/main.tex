@@ -335,7 +335,7 @@ To compute $\Sigma$ efficiently in~\Cref{lem:gradprop}, we use a Kronecker appro
 We treat $P$ and $Q$ as given for now, returning to their estimation at
 the end of the section and in \Cref{sec:weighted-estimation}.
 
-Using the factorization above, if we use the outergradient set~\eqref{eq:outgrad} to relax the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, then we arrive at the following LMO
+Using the factorization above in the outergradient set~\eqref{eq:outgrad} and relaxing the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, we arrive at the following LMO
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -347,12 +347,12 @@ Using the factorization above, if we use the outergradient set~\eqref{eq:outgrad
   \end{array}
   \label{eq:polorafull-hard} 
 \end{equation}
-Fortunately the above can be simplified. By~\Cref{lem:pseudogradient-spectral} the constraint in~\eqref{eq:polorafull-hard} can be re-written using the identity 
-\[ 
+By~\Cref{lem:pseudogradient-spectral}, the constraint in~\eqref{eq:polorafull-hard} satisfies the identity
+\[
 \max_{\tilde G \in \mathcal{G}(Q \otimes P)}\ip{\tilde G, \Delta W}
-= \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2.
+= \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2,
 \]
-Then \eqref{eq:polorafull-hard} can be rewritten as
+so that \eqref{eq:polorafull-hard} becomes
 \begin{equation}
 \begin{array}{ll}
 \underset{\Delta W}{\mathrm{minimize}} &
@@ -408,7 +408,7 @@ C_A = B^\top P B,
 C_B = A Q A^\top .
 \label{eq:ours-closure}
 \end{equation}
-By definition of the spectral norm, and using the above definitions of $C_A$ and $C_B$,  the left hand side of the two constraints in \eqref{eq:decoupled-direction-lmo} can be re-written as
+By definition of the spectral norm, and using the definitions in~\eqref{eq:ours-closure}, the left-hand side of the two constraints in \eqref{eq:decoupled-direction-lmo} can be re-written as
 \begin{equation} \label{eq:collapse-constraint}
 \norm{P^{1/2}B\Delta A Q^{1/2}}_2=\norm{C_A^{1/2}\Delta A Q^{1/2}}_2,
 \qquad
@@ -429,11 +429,8 @@ Since substituting~\eqref{eq:collapse-constraint} into~\eqref{eq:decoupled-direc
   \label{eq:factor-directions}
 \end{equation}
 give the factor update directions.
-% We therefore leave the budgets free and set the step magnitude directly through the learning rate $\eta$.
 
 \paragraph{Magnitude.}
-% It remains to choose the step magnitude. 
-% Using the LMO budgets $\tau_A$ and $\tau_B$ directly would tie the magnitude to the LMO geometry rather than to the merged-weight update.
 Having derived the direction, we now set the magnitude directly rather than through the budget $\tau$, controlling the size of the factor updates in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta W}_2
@@ -455,7 +452,6 @@ ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ an
 \Delta A = -\rho\,\frac{D_A}{\norm{D_A}_2},
 \qquad
 \Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
-\tag{PoLoRA}
 \label{eq:polora-update}
 \end{equation}
 The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs we observe that $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
@@ -1115,7 +1111,7 @@ To avoid overfitting the update to the current minibatch, we extend the
 LMO~\eqref{eq:sample-lmo} over all past minibatches with decaying
 weights.
 
-\paragraph{The weighted family.} Let $s$ index the optimizer steps and $i$ the samples of the size-$n_s$ minibatch at step $s$. Write $G_{s,i}$ for the
+\paragraph{The weighted problem.} Let $s$ index the optimizer steps and $i$ the samples of the size-$n_s$ minibatch at step $s$. Write $G_{s,i}$ for the
 per-sample gradient of the weight matrix, $g_{s,i}=\vec(G_{s,i})$, and
 $G_s=\frac1{n_s}\sum_iG_{s,i}$ for the batch gradient. For nonnegative weights $m_{t,s}$ and $w_{t,s,i}$, we define the weighted
 extension of~\eqref{eq:sample-lmo} at step $t$ to be
@@ -1167,7 +1163,7 @@ constraints relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem 
 
 
 \paragraph{Choosing the weights.} 
-For the objective, we set $\overline G_t$ as a
+For the objective, we set $\overline G_t$ to a
 look-ahead momentum $\widehat M_t$ of the batch gradients, mirroring the
 momentum scheme of \Cref{alg:ours},
 \[
@@ -1344,9 +1340,9 @@ $P_t,Q_t$ in place of the model factors in $C_{A,t},C_{B,t}$,
 \end{equation}
 The last line applies the normalization that \Cref{lem:consistency}
 justifies.
-Unrolled, the recursion applies the weights $w_{t,s}$ of
-\Cref{sec:weighted-lmo} to the per-step estimates, so the stored $q_t$
-matches $T_Q(P_t)$ term by term up to one discrepancy. Each
+Unrolled, the recursion weights the per-step estimates by the
+$w_{t,s}$ of \Cref{sec:weighted-lmo}, so the stored $q_t$ matches
+$T_Q(P_t)$ term by term up to one discrepancy. Each
 $\widehat q_s$ used the matrices of its own step ($B_s$, $P_s$), while
 $T_Q(P_t)$ applies the current ones to every past gradient. The
 difference is first order in the drift of $B$ and $P$ over the effective
