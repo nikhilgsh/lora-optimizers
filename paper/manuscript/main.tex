@@ -1105,7 +1105,7 @@ update~\eqref{eq:polora-update}. \Cref{sec:scale-placement} shows that
 the update ignores the scale of the curvature factors while the average
 that estimates them does not, which is why the normalization comes
 after the average.
-\rob{What is the "relaxed problem"?}
+\rob{What is the "relaxed problem"? Starting from "\Cref{sec:weighted-lmo} states this" the above is hard to understand }
 
 
 \subsection{The Weighted LMO}
@@ -1121,7 +1121,8 @@ exactly what the momentum and EMA choices below implement.
 \paragraph{The weighted problem.} Let $s$ index the optimizer steps and
 $i$ the samples of the size-$n_s$ minibatch at step $s$. Write
 $G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)$ for the per-sample gradient, $g_{s,i}=\vec(G_{s,i})$, and
-$G_s=\frac1{n_s}\sum_iG_{s,i}$ for the  batch gradient. For
+$G_s=\frac1{n_s}\sum_iG_{s,i}$ for the  batch gradient.
+For
 nonnegative weights $m_{t,s}$ and $w_{t,s,i}$, the extension
 of~\eqref{eq:sample-lmo} we want at step $t$ minimizes the
 recency-weighted loss subject to a bound on the linearized change of
