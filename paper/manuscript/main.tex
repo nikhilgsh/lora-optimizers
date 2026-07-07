@@ -458,9 +458,7 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \paragraph{Optimizer step.}
 \methodname{}, summarized in \Cref{alg:ours}, makes the update~\eqref{eq:polora-update} practical with the following ingredients:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Averaging.} Momentum with look-ahead replaces the factor gradients (line~\ref{ln:mom}), and an EMA accumulates the vectors $p,q$ that form the curvature factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}). \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended to also include past samples.
-  \nikhil{is it fair or undersell to claim we are just adapting kl-shampoo to diagonal?}
-  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to diagonal factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{sec:weighted-estimation}).
+  \item \emph{Averaging.} Momentum with look-ahead replaces the factor gradients (line~\ref{ln:mom}), and an EMA accumulates the vectors $p,q$ that form the curvature factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}). \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended to also include past samples.  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to diagonal factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{sec:weighted-estimation}).
   \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{sec:scale-placement}).
   \item \emph{Fast numerical subroutines.} We estimate the spectral norms in lines~\ref{ln:rho} and~\ref{ln:spectralnormupdate} by power iteration (\Cref{app:smax}). We use Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} to compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral} (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
 \end{itemize}
@@ -1097,22 +1095,16 @@ vectors $p,q$ that form the curvature factors $P,Q$. Both averages are
 standard practice, and this appendix interprets them through the
 per-sample LMO~\eqref{eq:sample-lmo} extended over all past samples
 with decaying weights.
-\nikhil{is this the right place for this? "averaging weights" is not clear yet. letting us combine quantities is vague and unclear. the last sentence is nonsense, and probably best to remove or heavily clarify}
-\begin{assumption}[Slow drift]\label{as:slow-drift}
-We make one approximation throughout this appendix: the factors $A$ and $B$ drift
-slowly over the effective window of the averaging weights, letting us
-combine quantities from different steps as if the factors were fixed.
-The drift itself is set by the update, which moves the factors by
-spectral norm $\rho$~\eqref{eq:polora-update} each step.
-\end{assumption}
-\nikhil{this roadmap doesn't provide the reader with any clarity. what's the upshot in each section?}
-In \Cref{sec:weighted-lmo}, we state the weighted problem and apply the
-outergradient relaxation of \Cref{sec:sample-loss-lmo}. In
-\Cref{sec:weighted-estimation}, we estimate the moments of the relaxed
-problem from the factor gradients, obtaining the $p,q$ recursion of
-\Cref{alg:ours} and recovering the update~\eqref{eq:polora-update}. In
-\Cref{sec:scale-placement}, we justify placing the normalization after
-the average rather than inside it.
+\Cref{sec:weighted-lmo} extends the per-sample LMO over past samples
+and shows that the history enters the relaxed problem only through two
+weighted moments, an average of the batch gradients and a second moment
+of the per-sample gradients. \Cref{sec:weighted-estimation} estimates
+both moments from the factor gradients alone, obtaining the $p,q$
+recursion of \Cref{alg:ours} and recovering the
+update~\eqref{eq:polora-update}. \Cref{sec:scale-placement} shows why
+the normalization comes after the average, since the update is
+invariant to the scale of the curvature factors while the average is
+not.
 
 \subsection{The Weighted LMO}
 \label{sec:weighted-lmo}
@@ -1207,8 +1199,8 @@ gradients that backpropagation never materializes, and it is too large
 to store. 
 \nikhil{the two obstacles makes it sound like the reader should already know what they are}
 Two approximations remove the two obstacles.
+\nikhil{the Adam connection is unknown to me...both the adam and shampoo references here just boil down to the adagrad approximation right?}
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-    \nikhil{the Adam connection is unknown to me...both the adam and shampoo references here just boil down to the adagrad approximation right?}
   \item \emph{Batch collapse.} We replace the within-batch average
   $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product
   $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$. This substitution
@@ -1240,7 +1232,14 @@ and $G_{B,s}=G_sA_s^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
 the full gradient $G_s$, by contrast, would take a $d_{\mathrm{out}}\times
 d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
 the low-rank structure avoids. We therefore estimate $P$ and $Q$ from the
-second moment of the factor gradients. 
+second moment of the factor gradients. The estimates rest on one
+standing approximation.
+
+\begin{assumption}[Slow drift]\label{as:slow-drift}
+The factors $A$ and $B$ change slowly over the effective window of the
+weights $m_{t,s}$ and $w_{t,s}$, so that inside any weighted average we
+may replace the factors at past steps by their current values.
+\end{assumption}
 
 \paragraph{Moments of the factor gradients.} To estimate $P$ and $Q$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient. To this end, note that
 $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of the gradient of $A$ is given by
