@@ -164,7 +164,6 @@ Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling 
 % \nikhil{I think we want the contributions to be more concise and punchy.}
 % \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
 % \item We give a new viewpoint for motivating spectral methods (like Muon) that  also incorporates curvature preconditioning. Instead of using a spectral constraint on the update, we introduce a sensitivity constraint. Our sensitivity constraint imposes that the change in the per-sample loss is bounded. Preconditioner spectral descent naturally arises from using this constraint, after also introducing approximations to make it tractable
-% % \rob{This current explanation is incomprehensible}
 % %   \item We derive a new curvature metric from a per-sample loss-change constraint,
 % %   yielding a preconditioned spectral-norm linear minimization oracle and a
 % %   product-aware LoRA approximation.
@@ -1095,11 +1094,11 @@ vectors $p,q$ that form the curvature factors $P,Q$. Both averages are
 standard practice, and this appendix interprets them through the
 per-sample LMO~\eqref{eq:sample-lmo} extended over all past samples
 with decaying weights.
-\Cref{sec:weighted-lmo} states this weighted extension and applies the
-outergradient relaxation of \Cref{sec:sample-loss-lmo}. The relaxed
-problem~\eqref{eq:weighted-relaxed} depends on the history only through
-two weighted moments, an average of the batch gradients and a second
-moment of the per-sample gradients. \Cref{sec:weighted-estimation} estimates
+\Cref{sec:weighted-lmo} states this weighted extension and shows that
+the history enters the problem only through two
+weighted moments, an average of the batch gradients and a second moment
+of the per-sample gradients.
+\Cref{sec:weighted-estimation} estimates
 both moments from the factor gradients alone, obtaining the $p,q$
 recursion of \Cref{alg:ours} and recovering the
 update~\eqref{eq:polora-update}. \Cref{sec:scale-placement} explains
@@ -1107,7 +1106,6 @@ why \Cref{alg:ours} normalizes the accumulated vectors $p,q$ after the
 average rather than normalizing each per-step estimate before it. The
 update is invariant to the scale of the curvature factors, but the
 average that estimates them depends on that scale.
-\rob{What is the "relaxed problem"? Starting from "\Cref{sec:weighted-lmo} states this" the above is hard to understand }
 
 
 \subsection{The Weighted LMO}
@@ -1147,25 +1145,28 @@ with these weights, both evaluated at the current weights $W_t$:
   \le \tau, \qquad s=1, \ldots, t,\quad i=1,\dots,n_s.
   \end{array}
 \end{equation}
-This is the ideal problem, scoring every past sample by its loss at the
-current weights $W_t$. It is exact, and we carry it through the
-outergradient relaxation before substituting the computed gradients
-for the current-weight ones via \Cref{as:slow-drift}.
+%%\rob{There's a lot of terms/adjectives that make for poor math writing. For instance ..etc Terms that don't mean anything precise, are not defined, and only used once. This is a type of writing that works well in a more literary setting, but only adds confusion in a math/science setting. I suspect this is because some of the text is generated.}
+Problem~\eqref{eq:weighted-sample-lmo} uses the gradients
+$\nabla\ell_{x_{s,i}}(W_t)$, available only for the current batch
+$s=t$. We first apply the outergradient relaxation of
+\Cref{sec:sample-loss-lmo}, then substitute the gradients computed at
+each past step via \Cref{as:slow-drift}.
 
 \paragraph{The two weighted moments.} Applying the outergradient
 relaxation of \Cref{sec:sample-loss-lmo} to~\eqref{eq:weighted-sample-lmo}
-leaves a problem that depends on the history only through two weighted
-moments of the current-weight gradients,
+leaves a problem that depends on the history only through two
+weighted moments, given by
 \[
 \overline G_t=\sum_{s\le t}\frac{m_{t,s}}{n_s}\sum_{i=1}^{n_s}\nabla\ell_{x_{s,i}}(W_t),
 \qquad
 \overline\Sigma_t = \sum_{s\le t}\frac{w_{t,s}}{n_s}\sum_{i=1}^{n_s}
-  \vec(\nabla\ell_{x_{s,i}}(W_t))\vec(\nabla\ell_{x_{s,i}}(W_t))^\top,
+  \vec(\nabla\ell_{x_{s,i}}(W_t))\vec(\nabla\ell_{x_{s,i}}(W_t))^\top.
 \]
-the weighted average of the batch gradients and the weighted second moment
-of the per-sample gradients. The objective in~\eqref{eq:weighted-sample-lmo}
+That is, $\overline G_t$ is the weighted average of the batch
+gradients, and $\overline\Sigma_t$ is the weighted second moment of
+the per-sample gradients. The objective in~\eqref{eq:weighted-sample-lmo}
 already equals $\ip{\overline G_t,\Delta W}$ by linearity. For the
-constraints, the outer products of the rescaled current-weight gradients
+constraints, the outer products of the rescaled gradients
 sum to $\overline\Sigma_t$, so the leverage bound of \Cref{lem:gradprop}
 places each of them in the outergradient set
 $\mathcal{G}(\overline\Sigma_t)$ of~\eqref{eq:outgrad} and the
@@ -1189,6 +1190,7 @@ Over the effective window of the weights $m_{t,s}$ and $w_{t,s}$, the
 drift of the trainable factors is negligible: $A_s\approx A_t$ and
 $B_s\approx B_t$ for all steps $s$ in the window.
 \end{assumption}
+\rob{The awkward thing about this assumption is that it is not precise. What is the "effective window of the weights"? I think it would be best to just state: We replace the gradient and the covariance with momentum style estimates. This attempt at precisely justifying open more questions than it gives answers.}
 \noindent As a result, a step-$s$ quantity inside a window average may
 be exchanged for its step-$t$ value, with error first order in the
 drift $A_t-A_s$, $B_t-B_s$. We use two such exchanges: the
@@ -1281,8 +1283,9 @@ d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
 the low-rank structure avoids. We estimate both weighted moments of \Cref{sec:weighted-lmo}
 from the factor gradients alone, taking the momentum $\widehat M_t$ for
 the objective and the model factors $P^\star,Q^\star$ for the
-constraint, with each replacement of a past-step factor by its current
-value made under \Cref{as:slow-drift}.
+constraint.
+% , with each replacement of a past-step factor by its current
+% value made under \Cref{as:slow-drift}.
 
 \paragraph{Factor momenta.} Under the linearized product
 update~\eqref{eq:DeltaW-lin}, the objective of~\eqref{eq:weighted-relaxed}
@@ -1307,6 +1310,7 @@ $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of 
  &=  \E_{s \leq t}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
    &\approx  (I\otimes B_t^\top) \E_{s \leq t}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
 \end{align*}
+\rob{Again \Cref{as:slow-drift} is not precise enough. Here we need to say explicitly, our approximation replaces $B_s$ by $B_t$ for all $s \leq t.$ }
 where the last line uses the factor exchange of \Cref{as:slow-drift} to bring the current factor $B_t$ out of the sum. Using~\eqref{e-diag-kron-second-mom-model} in the above gives
 \begin{align*}
  \Sigma_{A,t} 
@@ -1320,9 +1324,9 @@ Using analogous arguments for the gradient of $B$, we arrive at the following ap
 \end{align}
 where $C^\star_{A,t}=B_t^\top P^\star_tB_t$ and $C^\star_{B,t}=A_tQ^\star_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure} evaluated at the model factors.
 
-\paragraph{Fitting the factors.} We recover the model factors $P^\star$
+\paragraph{Fitting the factors.} We approximate the model factors $P^\star$
 and $Q^\star$ by fitting the second-moment model to the observed
-moments~\eqref{eq:observable-moments}, dropping the subscript $t$ since
+moments~\eqref{eq:observable-moments}. For brevity, here we drop the subscript $t$ since
 all quantities are at the current step. Following
 KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
 divergence~\cite{logdetdiv}
@@ -1330,13 +1334,11 @@ divergence~\cite{logdetdiv}
   D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
 \]
 defined for positive definite matrices $\Sigma$ and $S$ of common
-dimension $d$. Away from the exact model, no candidate reproduces the
-observed moment, and the divergence decides how the mismatch is
-weighed. Because $C^\star_A$ contains $P^\star$ and $C^\star_B$
-contains $Q^\star$, each fit must be posed with an estimate of the
-other factor, $\widehat C_A=B^\top\widehat PB$ and
-$\widehat C_B=A\widehat QA^\top$ for diagonal
-$\widehat P,\widehat Q\succ0$, which couples the two fits:
+dimension $d$.
+% Away from the exact model, no candidate reproduces the
+% observed moment, and the divergence decides how the mismatch is
+% weighed. 
+Using~\eqref{eq:observable-moments} we fit the two factors by solving
 \begin{equation}\label{eq:factor-fit}
   \hat{q}(\widehat P)
   =\argmin_{q>0}\;
@@ -1344,24 +1346,45 @@ $\widehat P,\widehat Q\succ0$, which couples the two fits:
   \qquad
   \hat{p}(\widehat Q)
   =\argmin_{p>0}\;
-  D\big(\Sigma_B,\;\diag(p) \otimes \widehat C_B\big).
+  D\big(\Sigma_B,\;\diag(p) \otimes \widehat C_B\big),
 \end{equation}
-The minimizers are
+where we freeze the current estimate of $\widehat C_A$ when estimating $\hat{q}$, and freeze the estimate of $\widehat C_B$ when estimating $\hat{p}$. This alternating freezing is needed to get a closed form update for $\hat{q}$ and $\hat{p}$, since otherwise $\widehat C_A$ and $\widehat C_B$ introduce a joint dependency through
+$\widehat C_A=B^\top\widehat PB$ and
+$\widehat C_B=A\widehat QA^\top$, for diagonal
+$\widehat P,\widehat Q\succ0$.
+
+% Because $C^\star_A$ contains $P^\star$ and $C^\star_B$
+% contains $Q^\star$, each fit must be posed with an estimate of the
+% other factor, $\widehat C_A=B^\top\widehat PB$ and
+% $\widehat C_B=A\widehat QA^\top$ for diagonal
+% $\widehat P,\widehat Q\succ0$, which couples the two fits:
+% \begin{equation}\label{eq:factor-fit}
+%   \hat{q}(\widehat P)
+%   =\argmin_{q>0}\;
+%   D\big(\Sigma_A,\; \diag(q) \otimes \widehat C_A\big),
+%   \qquad
+%   \hat{p}(\widehat Q)
+%   =\argmin_{p>0}\;
+%   D\big(\Sigma_B,\;\diag(p) \otimes \widehat C_B\big).
+% \end{equation}
+The closed form solutions to~\eqref{eq:factor-fit} are given by
 \[
   \hat{q}(\widehat P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top \widehat C_A^{-1}G_{A,s}]\right),
   \qquad
   \hat{p}(\widehat Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} \widehat C_B^{-1}G_{B,s}^\top]\right).
 \]
-For fixed positive definite $\Sigma$ and $S$, the best scalar multiple
-of $S$ is
-$c^\star(\Sigma,S)=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$. The
+For fixed positive definite $\Sigma$ and $S$, let
+$$c^\star(\Sigma,S) :=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$$
+be the best scalar multiple
+of $S$.
+The
 next lemma shows the coupled fits are consistent even when posed with
 inexact estimates.
 
 \begin{lemma}[Consistency]\label{lem:consistency}
 Let the model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
 diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
-fits~\eqref{eq:factor-fit} posed with $\widehat C_A=B^\top\widehat PB$
+fits~\eqref{eq:factor-fit}  with $\widehat C_A=B^\top\widehat PB$
 and $\widehat C_B=A\widehat QA^\top$ return
 \[
   \hat{q}(\widehat P)=\kappa\,c^\star\big(C^\star_A,\widehat C_A\big)\,\diag(Q^\star),
@@ -1372,13 +1395,14 @@ so $\hat{q}/\norm{\hat{q}}_\infty=\diag(Q^\star)$ and
 $\hat{p}/\norm{\hat{p}}_\infty=\diag(P^\star)$.
 \end{lemma}
 \begin{proof}
+\rob{This proof also assumes~\eqref{eq:observable-moments} holds to equality.}
 Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
 diagonal with $j$th block $\kappa\,q^\star_j\,C^\star_A$, and the candidate
 $\diag(q)\otimes\widehat C_A$ of~\eqref{eq:factor-fit} at a point $q>0$
 is block diagonal with $j$th block $q_j\,\widehat C_A$. Traces and
 log-determinants add across blocks, so the objective is
 $\sum_jD(\kappa q^\star_jC^\star_A,\,q_j\widehat C_A)$, one term per
-coordinate, and the $j$th term is minimized at its best scalar
+block, and the $j$th term is minimized at its best scalar
 multiple,
 \[
 \hat{q}_j=c^\star(\kappa q^\star_jC^\star_A,\widehat C_A)
