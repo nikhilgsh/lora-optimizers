@@ -75,7 +75,8 @@
     \field{sortinit}{D}
     \field{sortinithash}{D}
     \field{pages}{2121\bibrangedash 2159}
-    \field{title}{Adaptive Subgradient Methods for Online Learning and Stochastic Optimization}
+    \field{title}{Adaptive Subgradient Methods for Online Learning and
+  Stochastic Optimization}
     \field{volume}{12}
     \field{journaltitle}{Journal of Machine Learning Research}
     \field{year}{2011}
@@ -111,7 +112,8 @@
     \field{labeltitlesource}{title}
     \field{sortinit}{G}
     \field{sortinithash}{G}
-    \field{booktitle}{Proceedings of the 35th International Conference on Machine Learning}
+    \field{booktitle}{Proceedings of the 35th International Conference on
+  Machine Learning}
     \verb{eprint}
     \verb 1802.09568
     \endverb
@@ -145,7 +147,8 @@
     \field{labeltitlesource}{title}
     \field{sortinit}{K}
     \field{sortinithash}{K}
-    \field{booktitle}{International Conference on Learning Representations (ICLR)}
+    \field{booktitle}{International Conference on Learning Representations
+  (ICLR)}
     \verb{eprint}
     \verb 1412.6980
     \endverb
@@ -225,7 +228,8 @@
     \verb{eprint}
     \verb 2606.03899
     \endverb
-    \field{title}{Denoise First, Orthogonalize Later: Understanding Momentum in {Muon} via Spectral Filtering}
+    \field{title}{Denoise First, Orthogonalize Later: Understanding Momentum in
+  {Muon} via Spectral Filtering}
     \field{eprinttype}{arXiv}
     \field{eprintclass}{cs.LG}
     \field{year}{2026}
@@ -276,11 +280,13 @@
     \field{labeltitlesource}{title}
     \field{sortinit}{L}
     \field{sortinithash}{L}
-    \field{booktitle}{International Conference on Learning Representations (ICLR)}
+    \field{booktitle}{International Conference on Learning Representations
+  (ICLR)}
     \verb{eprint}
     \verb 2509.03378
     \endverb
-    \field{title}{Understanding and Improving Shampoo and SOAP via Kullback--Leibler Minimization}
+    \field{title}{Understanding and Improving Shampoo and SOAP via
+  Kullback--Leibler Minimization}
     \field{eprinttype}{arXiv}
     \field{eprintclass}{stat.ML}
     \field{year}{2026}
