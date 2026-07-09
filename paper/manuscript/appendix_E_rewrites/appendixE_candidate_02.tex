@@ -2,9 +2,11 @@
 \section{Estimating the Curvature Factors}
 \label{app:matnormal-02}
 \Cref{alg:ours} turns the single-batch update of
-\Cref{sec:sample-loss-lmo} into an optimizer by averaging its two inputs:
+\Cref{sec:sample-loss-lmo} into an optimizer by averaging its two inputs,
 the gradient in the linear objective and the second moment in the
-outergradient constraint. The momenta $\widehat M_A,\widehat M_B$ supply
+outergradient constraint. Averaging over recent steps draws on more samples
+while keeping the estimate local to the current iterate. The factor-gradient
+momenta $\widehat M_A,\widehat M_B$ supply
 the projections used in the direction step~\eqref{eq:factor-directions},
 while an EMA accumulates the vectors $p,q$ that define the diagonal
 curvature factors $P,Q$. \Cref{sec:weighted-estimation-02} derives these
@@ -25,8 +27,9 @@ line~\ref{ln:mom},
   \qquad
   \widehat M_t=\beta_1M_{t+1}+(1-\beta_1)G_t.
 \]
-For the curvature input it uses an exponential moving average. We write the
-induced weights on past steps as
+For the curvature input it uses an exponential moving average, which keeps
+memory constant and downweights older gradients computed farther from the
+current iterate. We write the induced weights on past steps as
 \[
   \E_{s \leq t}[\phi(G_s)]=\sum_{s\le t}w_{t,s}\,\phi(G_s),
   \qquad
@@ -34,7 +37,7 @@ induced weights on past steps as
 \]
 Thus the curvature factors are fit to the average
 \[
-  S_t=\E_{s\leq t}[g_sg_s^\top],
+  \overline{\Sigma}_t=\E_{s\leq t}[g_sg_s^\top],
 \]
 rather than to the current batch alone.
 
@@ -45,8 +48,8 @@ gradient $G_s$ would require a $d_{\mathrm{out}}\times d_{\mathrm{in}}$
 matrix per layer, so the optimizer builds the averages from the factor
 gradients. The single-batch derivation approximates the per-sample second
 moment $\Sigma$ by $Q\otimes P$~\eqref{eq:pq-factor}. The optimizer applies
-the same Kronecker model to $S_t$. Three approximations make the factors of
-$S_t$ estimable from $G_{A,s}$ and $G_{B,s}$.
+the same model to $\overline{\Sigma}_t$, and three approximations make its
+factors estimable from $G_{A,s}$ and $G_{B,s}$.
 \begin{enumerate}[leftmargin=1.6em,itemsep=2pt,topsep=2pt]
   \item Let
   $g_{s,i}=\vec(\nabla\ell_{x_{s,i}}(W_s))$ be the per-sample gradients in
@@ -59,9 +62,9 @@ $S_t$ estimable from $G_{A,s}$ and $G_{B,s}$.
   \]
   the batch-gradient second-moment approximation used by
   AdaGrad~\cite{adagrad}, Adam~\cite{adam}, and Shampoo~\cite{shampoo}.
-  It is exact at batch size one. The accumulated second moment is then
-  $\E_{s \leq t}[g_sg_s^\top]$.
-  \item Model $S_t$ by diagonal Kronecker factors. We write
+  It is exact at batch size one, and the accumulated second moment is then
+  $\overline{\Sigma}_t$.
+  \item Model $\overline{\Sigma}_t$ by diagonal Kronecker factors. We write
   $P^\star,Q^\star$ for these model factors to distinguish them from the
   estimates $P,Q$ in \Cref{alg:ours}. Since
   $Q^\star\otimes P^\star$ is unchanged by the
@@ -71,7 +74,7 @@ $S_t$ estimable from $G_{A,s}$ and $G_{B,s}$.
   \begin{equation}\label{e-diag-kron-second-mom-model-02}
     \E_{s \leq t}[g_sg_s^\top]\approx\kappa_t\,(Q^\star_t\otimes P^\star_t).
   \end{equation}
-  \item When relating moments of $G_{A,s}$ and $G_{B,s}$ to $S_t$, replace
+  \item When relating moments of $G_{A,s}$ and $G_{B,s}$ to $\overline{\Sigma}_t$, replace
   the past LoRA factors by the current factors inside the weighted averages,
   \[
     A_s\;\leadsto\;A_t,\qquad B_s\;\leadsto\;B_t,\qquad s\le t,
@@ -79,9 +82,9 @@ $S_t$ estimable from $G_{A,s}$ and $G_{B,s}$.
   which is accurate when the factors change slowly over the EMA window.
 \end{enumerate}
 
-\paragraph{Factor momenta.} Under the linearized product
-update~\eqref{eq:DeltaW-lin}, with $\widehat M_t$ replacing the batch
-gradient in~\eqref{eq:polorafull}, the objective decomposes as
+\paragraph{Factor momenta.} The objective decomposes, under the linearized
+product update~\eqref{eq:DeltaW-lin} with $\widehat M_t$ replacing the batch
+gradient in~\eqref{eq:polorafull}, as
 \[
   \ip{\widehat M_t,\,\Delta B\,A+B\,\Delta A}
   =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A},
@@ -94,7 +97,7 @@ $\widehat M_A\approx B_t^\top\widehat M_t$ and
 $\widehat M_B\approx\widehat M_tA_t^\top$.
 
 \paragraph{Moments of the factor gradients.} To estimate $P^\star$ and
-$Q^\star$ from factor gradients, we link their second moments to $S_t$.
+$Q^\star$ from factor gradients, we link their second moments to $\overline{\Sigma}_t$.
 Since
 $\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$,
 \begin{align*}
@@ -170,7 +173,9 @@ be the best scalar multiple of $S$.
 
 \begin{lemma}[Consistency]\label{lem:consistency-02}
 Suppose the factor-gradient moments~\eqref{eq:observable-moments-02} hold with
-equality. For any diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
+equality, with the model factors normalized so that
+$\norm{\diag P^\star}_\infty=\norm{\diag Q^\star}_\infty=1$. For any diagonal
+$\widehat P\succ0$ and $\widehat Q\succ0$, the
 fits~\eqref{eq:factor-fit-02} with $\widehat C_A=B^\top\widehat PB$ and
 $\widehat C_B=A\widehat QA^\top$ return
 \[
@@ -200,7 +205,7 @@ The claim for $\hat{p}$ follows with the roles of the two factors exchanged.
 
 \paragraph{Online estimator.} The fit~\eqref{eq:factor-fit-02} averages past
 factor gradients with weights $w_{t,s}$. \methodname{} implements this
-average online: step $t$ computes one fitted term using
+average online. At step $t$ it computes one fitted term using
 $C_{A,t}=B_t^\top P_tB_t$ and $C_{B,t}=A_tQ_tA_t^\top$, then folds that term
 into an EMA,
 \begin{equation}\label{eq:ours-klcoupling-02}
@@ -265,8 +270,9 @@ differs in three ways.
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \emph{No distributional assumptions.} KL-Shampoo fits the second
   moment of a stationary gradient distribution. Here $\E_{s \leq t}$ is a
-  weighted sum over the realized gradients, not an expectation, and the
-  statements above hold for the realized sequence of gradients.
+  weighted sum over the realized gradients, not an expectation. The
+  consistency claim is conditional on the displayed moment equations, not
+  on a distributional limit.
   \item \emph{The fitted moments come from $G_A$ and $G_B$.} KL-Shampoo
   fits Kronecker factors to the second moment of the weight gradient $G$.
   Here $G$ is never formed. Each diagonal factor is fit from the second
@@ -277,10 +283,8 @@ differs in three ways.
   the divergence objective, correct in the limit. Here
   \Cref{lem:consistency-02} is an algebraic statement for fixed moments.
   Conditional on the displayed moment equations, using an inexact estimate
-  of the other factor only rescales the fitted vector, and the normalization
-  removes that scale. The EMA is exact over the per-step fits, and reading it
-  as the weighted fit at the current matrices uses the slow-change
-  approximation above.
+  of the other factor only rescales the fitted vector, which the normalization
+  removes, and the EMA is exact over the per-step fits.
 \end{itemize}
 
 \paragraph{Recovering the update of \Cref{alg:ours}.} Substituting the

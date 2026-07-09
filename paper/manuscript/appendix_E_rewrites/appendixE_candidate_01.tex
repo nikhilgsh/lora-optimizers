@@ -1,7 +1,7 @@
 \section{Averaging as an Approximate Weighted LMO}
 \label{app:matnormal-01}
 
-The single-batch LMO in \Cref{sec:sample-loss-lmo} has two inputs: the
+The single-batch LMO in \Cref{sec:sample-loss-lmo} has two inputs, the
 gradient in its objective and the per-sample second moment in its
 outergradient constraint. To draw on recent batches while keeping the LMO
 local to the current iterate, we evaluate every recent sample's gradient at
@@ -22,7 +22,7 @@ accumulated vectors after averaging rather than normalizing each estimate
 before it enters the average. The update is invariant to the scale of the curvature factors,
 but the average that estimates them depends on that scale.
 
-\subsection{Averaging the Gradient and Constraint Moment}
+\subsection{The Weighted LMO}
 \label{sec:weighted-lmo-01}
 
 Let $s$ index optimizer steps, and let $i$ index samples in the
@@ -34,9 +34,9 @@ nonnegative weights on past steps, one for the objective and one for
 the constraints.
 
 In the ideal weighted LMO, every sample from a step $s\le t$ contributes
-the gradient it would have at the current weights $W_t$. Using samples from past steps
-changes which samples enter the averages, not the point at which their
-gradients are taken. The two resulting moments are
+the gradient it would have at the current weights $W_t$, so drawing on past
+steps changes only which samples enter the averages, not where their
+gradients are evaluated. The two resulting moments are
 \[
 \overline G_t
   =
@@ -66,9 +66,9 @@ as~\eqref{eq:polorafull-hard}. The relaxed problem is
   \ip{\widetilde{G},\Delta W}\le\tau .
   \end{array}
 \end{equation}
-\Cref{alg:ours} never stores $\overline G_t$ or
-$\overline\Sigma_t$ directly. The gradients of old samples at $W_t$ were
-not formed, and the per-sample second moment is too large to keep.
+\Cref{alg:ours} stores neither directly, because it never recomputes old
+samples' gradients at $W_t$ and the per-sample second moment is too large
+to keep.
 
 \paragraph{The exponential weights.}
 If every past gradient could be recomputed at $W_t$, equal weights would be
@@ -100,10 +100,10 @@ current-weight gradient in $\overline G_t$ by the observed batch gradient
 $G_s$ turns the first moment into the look-ahead momentum $\widehat M_t$,
 with the objective weights $m_{t,s}$ in~\eqref{eq:EMAweights-01}. The
 optimizer never forms the $d_{\mathrm{out}}\times d_{\mathrm{in}}$ matrix
-$\widehat M_t$. The next subsection expresses both its needed projections
-and the curvature EMA in terms of factor gradients.
+$\widehat M_t$, so the next subsection expresses its needed projections and
+the curvature EMA in terms of factor gradients.
 
-\subsection{Estimating the Averaged Gradient and Constraint Moment}
+\subsection{Estimating the Moments from Factor Gradients}
 \label{sec:weighted-estimation-01}
 
 The optimizer maintains momenta for $G_{A,s},G_{B,s}$ and diagonal
@@ -117,10 +117,6 @@ The replacement from the ideal moments to the quantities in
   \item A gradient of an old sample at $W_t$ is replaced by the gradient
   observed when that sample was processed,
   $\nabla\ell_{x_{s,i}}(W_t)\leadsto\nabla\ell_{x_{s,i}}(W_s)$.
-  \item Moments of $G_{A,s}$ and $G_{B,s}$ use the current LoRA factors inside the
-  recency-weighted sums,
-  $A_s\leadsto A_t$ and $B_s\leadsto B_t$ for $s\le t$. The exponential
-  weights make this a local approximation by downweighting older steps.
   \item The second moment within the batch is approximated by the outer
   product of the batch gradient,
   \[
@@ -133,23 +129,25 @@ The replacement from the ideal moments to the quantities in
   second moment of the minibatch gradient, as in AdaGrad~\cite{adagrad},
   Adam~\cite{adam}, and Shampoo~\cite{shampoo}.
   \item The resulting dense second moment is modeled by diagonal
-  Kronecker factors,
+  Kronecker factors $P^\star_t,Q^\star_t$ that the running estimates $P,Q$
+  of \Cref{alg:ours} approximate,
   \begin{equation}\label{e-diag-kron-second-mom-model-01}
     \E_{s\le t}[g_sg_s^\top]\approx\kappa_t\,(Q^\star_t\otimes P^\star_t).
   \end{equation}
-  The model factors $P^\star_t,Q^\star_t$ are normalized by
-  $\norm{\diag P^\star_t}_\infty=\norm{\diag Q^\star_t}_\infty=1$, and
-  the scalar $\kappa_t>0$ carries the magnitude, which does not affect the
+  We fix $\norm{\diag P^\star_t}_\infty=\norm{\diag Q^\star_t}_\infty=1$ and
+  let the scalar $\kappa_t>0$ carry the magnitude, which does not affect the
   final normalized direction.
+  \item Moments of $G_{A,s}$ and $G_{B,s}$ use the current LoRA factors inside the
+  recency-weighted sums,
+  $A_s\leadsto A_t$ and $B_s\leadsto B_t$ for $s\le t$. The exponential
+  weights make this a local approximation by downweighting older steps.
 \end{enumerate}
-For the constraint moment, evaluating gradients at their observation steps
-and collapsing the within-batch second moment reduce
-$\overline\Sigma_t$ to
+The first three approximations reduce the constraint moment to
 \[
   \overline\Sigma_t\approx\E_{s\le t}[g_sg_s^\top],
 \]
-which \eqref{e-diag-kron-second-mom-model-01} approximates by
-$\kappa_t(Q^\star_t\otimes P^\star_t)$.
+which the diagonal Kronecker model~\eqref{e-diag-kron-second-mom-model-01}
+writes as $\kappa_t(Q^\star_t\otimes P^\star_t)$.
 
 \paragraph{Factor momenta.}
 LoRA backpropagation already computes the factor gradients
@@ -166,13 +164,13 @@ linearized product update~\eqref{eq:DeltaW-lin}, the objective of
   +
   \ip{B^\top\widehat M_t,\Delta A}.
 \]
-Thus the direction step only requires $\widehat M_tA_t^\top$ and
+The direction step then needs only $\widehat M_tA_t^\top$ and
 $B_t^\top\widehat M_t$. The factor momenta in \Cref{alg:ours} average
 $G_sA_s^\top$ and $B_s^\top G_s$. After replacing $A_s,B_s$ by
 $A_t,B_t$ inside the weighted sums, these approximate the desired
 projections $\widehat M_A\approx B_t^\top\widehat M_t$ and
-$\widehat M_B\approx \widehat M_tA_t^\top$. The remaining error comes
-from changes in the factors across the EMA window.
+$\widehat M_B\approx \widehat M_tA_t^\top$, up to the drift of the factors
+across the EMA window.
 
 \paragraph{Moments of the factor gradients.}
 With $\E_{s\le t}[g_sg_s^\top]$ as the dense second moment, replacing
@@ -440,7 +438,7 @@ $\norm{D_B}_2$ in the magnitude step cancels. The factor $P$ enters in
 the same way. The update therefore sees the direction of the curvature
 factors, but not the magnitude $\kappa_t$ of the model
 \eqref{e-diag-kron-second-mom-model-01}. Normalizing the accumulated
-vectors therefore leaves the update unchanged.
+vectors leaves the update unchanged.
 
 \paragraph{Rescaling changes the average.}
 The coupled fit makes each estimate at step $t$ scale inversely with the
