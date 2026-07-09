@@ -80,3 +80,7 @@ bench_polar_out/
 
 # Claude preview renders (shared with user in-repo; not tracked)
 previews/
+
+# Appendix E rewrite standalone build outputs (the .tex stay tracked)
+paper/manuscript/appendix_E_rewrites/*_standalone.pdf
+paper/manuscript/appendix_E_rewrites/figs/
