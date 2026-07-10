@@ -1,0 +1,1339 @@
+\documentclass[11pt]{article}
+
+\usepackage{amssymb,amsmath,amsthm,amsbsy,amsfonts}
+\usepackage{mathtools}
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{libertinus}
+\usepackage{microtype}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage[font={small},labelfont={bf,up}]{caption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{thmtools,thm-restate}
+\makeatletter
+\newcommand{\algspacing}{\setlength{\@tempdima}{0pt}\renewcommand{\baselinestretch}{1.25}\selectfont}
+\makeatother
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algnewcommand{\Phase}[1]{\Statex\textbf{#1}}
+\usepackage{enumitem}
+\usepackage{titletoc}
+\usepackage{xcolor}
+\usepackage[colorlinks,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage[nameinlink]{cleveref}
+\usepackage[firstinits=true,backend=bibtex,style=numeric-comp,citestyle=numeric-comp,sorting=nyt,url=false,arxiv=false,isbn=false,doi=false]{biblatex}
+\addbibresource{references.bib}
+
+\graphicspath{{figs/}}
+
+\renewcommand{\vec}{\operatorname{vec}}
+\newcommand{\mat}[1]{\bm{#1}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\Tr}{tr}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newcommand{\smax}{\sigma_{\max}}
+\newcommand{\ip}[1]{\langle #1 \rangle}
+\newcommand{\DW}{\Delta W}
+\DeclareMathOperator{\msign}{msign}
+\newcommand{\alg}[1]{$\mathrm{#1}$}
+\newcommand{\LMO}{{\sf LMO}}
+\newcommand{\norm}[1]{\| #1\|}
+\newcommand{\methodname}{PoLoRA\xspace}
+\usepackage{xspace}
+\theoremstyle{plain}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+\theoremstyle{definition}
+\newtheorem{assumption}{Assumption}
+
+
+\title{\methodname: Preconditioned Orthogonalized LoRA}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Low-rank adaptation (LoRA) makes finetuning large language models cheaper, but it is usually trained with Adam, which treats the two LoRA factors as unrelated parameters. This ignores the fact that the model is changed through their product. We introduce PoLoRA, 
+a Preconditioned Orthogonalized LoRA 
+ optimizer. PoLoRA combines three ingredients: a product-aware update direction,  curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
+ From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal curvature factors.
+ We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding less than 3\% per-step overhead.
+ It also has a more stable best learning rate across LoRA ranks than Adam.
+\end{abstract}
+
+
+\section{Introduction}
+\label{sec:intro}
+
+Deployment of large-scale pretrained models increasingly depends on adapting a
+general model to many specialized tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized models. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
+\begin{equation}
+W = W_0 + \DW, \qquad \DW = \frac{\alpha}{r}\,BA, \qquad
+B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
+A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
+\label{eq:lora}
+\end{equation}
+to each layer. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
+
+
+The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure.
+
+ In language-model pretraining, matrix-aware optimizers such as spectral descent~\cite{pmlr-v38-carlson15,NIPS2015_f50a6c02}, Muon~\cite{muon}, Scion~\cite{pmlr-v267-pethick25a} and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}. Muon in particular, and its variants~\cite{Normuon}, have been used to set several records for training small language models~\cite{nanogpt,nanochat}, and have also been adopted in recent large-scale model training reports~\cite{Deepseekv4,GLM}.
+So it is natural to ask whether the same gains carry over to LoRA. 
+
+
+Muon is a steepest descent method with a spectral norm constraint on the update direction. We found that applying Muon to each factor does not improve on Adam. This is because the model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} try to address this by proposing updates that are variants of a product-aware Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}). In our experiments, we find that the Product Muon step is also unable to consistently improve over Adam. 
+
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{fig_hero_with_tuning.pdf}
+  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon~\cite{imuon}, Muon, and LoRA-RITE~\cite{lorarite} and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss at each optimizer's best learning rate and its two grid neighbours, normalized to the best rate. Every optimum is bracketed, and \methodname{} attains the lowest loss.}
+  \label{fig:hero}
+\end{figure}
+
+We introduce \methodname{}, which is a steepest descent method where the constraint is motivated by controlling the per-sample loss change across a batch. Its solution is a preconditioned update in the spectral norm. We then develop a product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the update to the product.
+
+We evaluate \methodname{} through an extensive numerical study spanning multiple base models, datasets, adapter ranks, and learning-rate settings. As previewed in \Cref{fig:hero}, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines, reaching Adam's final held-out loss in $1.2$--$1.7\times$ fewer steps across our settings, while adding under 3\% per-step overhead. We complement these comparisons with component ablations that separate the effects of the curvature-aware direction and magnitude controls we introduce, showing that both contribute to the overall speedup of \methodname{} over our baselines.
+ Finally, we find that \methodname{} is  easier to tune than Adam: its optimal learning rate is stable across rank, and performance is less sensitive to the learning rate.
+
+
+
+Our open-source implementation is available at:
+\begin{quote}\centering
+{\color{blue}\url{https://github.com/nikhilgsh/polora}}
+\end{quote}
+
+
+The rest of the paper proceeds as follows. \Cref{sec:method} both motivates and derives \methodname{}.
+\Cref{sec:exp} evaluates \methodname{}, comparing it in terms of step and wall-clock speedups over Adam and other baselines.
+\Cref{sec:exp-ablation} separates the roles of curvature and magnitude control.
+Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.
+
+\section{\texorpdfstring{\methodname{}}{PoLoRA}: Preconditioned Orthogonalized LoRA}
+
+
+
+\label{sec:method}
+To derive the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the constrained steepest descent perspective~\cite{crawshaw2026exploration}, which is often referred to as the  linear minimization oracle (LMO) perspective~\cite{pmlr-v267-pethick25a}. 
+Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon method. 
+In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
+
+\subsection{Muon}\label{sec:muon}
+Muon is based on a spectral LMO.
+For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, the spectral LMO~\cite{bernstein2025modular,carlson2015preconditioned} minimizes the local linearization of the loss subject to a ball constraint,
+\begin{equation}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \ip{G, \Delta W} \\[2pt]
+  \mbox{subject to} &
+  \displaystyle
+  \norm{\Delta W}_2
+  \le \eta,
+  \end{array}
+  \label{eq:lmo}
+\end{equation}
+where $\|\cdot\|_2$ is the spectral norm 
+\[
+\|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2.
+\]
+Bounding the spectral norm controls the largest amount by which the update can change the layer's output over all unit-norm inputs~\cite{yang2023spectral}.
+A solution to~\eqref{eq:lmo} is given by the matrix sign of the gradient~\cite{bernstein2025modular}
+\[
+    \Delta W = -\eta \msign(G),
+\]
+where $\msign(G)=UV^\top$ and $G=U\Sigma V^\top$ is the reduced SVD (see~\Cref{lem:muon-lmo}). 
+
+In practice, Muon replaces the gradient with its momentum, an exponential
+moving average (EMA) of past gradients, and uses a polynomial approximation
+to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}). Next we show how to adapt this LMO to be aware of the product structure in LoRA~\eqref{eq:lora}.
+
+\subsection{Product Muon}\label{sec:product-muon}
+Consider a LoRA step that updates the two factors $A$ and $B$ as follows
+\[
+A \leftarrow A + \Delta A,
+\qquad
+B \leftarrow B + \Delta B.
+\]
+Applying Muon naively would impose a spectral bound separately on $\Delta A$ and $\Delta B$, but what matters to the layer is the effective update of the product $BA$ which is not controlled solely by $\Delta A$ and $\Delta B$. Indeed, the update to the merged weight is to first-order,
+\begin{equation} \label{eq:DeltaW-lin}
+\Delta W = (B + \Delta B)(A + \Delta A) - BA \approx B \Delta A + \Delta B A,
+\end{equation}
+from which we see that the spectral norm bound should be applied to this linearized product update. Substituting~\eqref{eq:DeltaW-lin} into the spectral LMO~\eqref{eq:lmo} gives the spectral constraint
+\[
+\norm{B \Delta A + \Delta B A}_2
+\le \eta.
+\]
+The constraint couples the two unknowns $\Delta A$ and $\Delta B$, but we can decouple them with the upper bound using norm subadditivity:
+\[
+\norm{B \Delta A + \Delta B A}_2
+\le
+\norm{B \Delta A}_2 + \norm{\Delta B A}_2.
+\]
+As a result, we get the \emph{Product Muon} LMO
+\begin{equation}
+  \begin{aligned}
+  \Delta A &\in \argmin_{\Delta A}~ \ip{G_A, \Delta A}
+  \quad \textnormal{subject to}\quad
+  \norm{B \Delta A}_2\le\eta, \\
+  \Delta B &\in \argmin_{\Delta B}~ \ip{G_B, \Delta B}
+  \quad \textnormal{subject to}\quad
+  \norm{\Delta B A}_2\le\eta,
+  \end{aligned}
+  \label{eq:decoupled-lora-lmo}
+\end{equation}
+where the factor gradients are
+\begin{equation}\label{e-grad-wrt-factors}
+    G_A := \nabla_A \mathcal{L}(W_0+BA) = B^\top G,
+    \qquad
+    G_B := \nabla_B \mathcal{L}(W_0+BA) = G A^\top.
+\end{equation}
+By \Cref{lem:whitened-spectral-lmo}, the solution to this LMO is
+\begin{equation}\label{eq:product-muon-step}
+\begin{aligned}
+    \Delta A &= -\eta\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
+    \Delta B &= -\eta\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
+\end{aligned}
+\end{equation}
+Similar to Muon, these factor updates are computed using momentum estimates of the  gradients.
+\subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
+We now derive the base LMO that will be the starting point of \methodname{}.
+Let $\{x_1, \ldots, x_n\}$ be the input activations to the layer that $W$ encodes, and let $G_i = \nabla \ell_{x_i}(W)$ be the gradient of the loss on activation $x_i$. Abusing notation slightly, we write $\ell_{x_i}$ for the loss on a single activation rather than a full input.
+
+The justification of using the spectral norm in Muon is that it is conservative, since it bounds the change to the output of the layer with respect to all activations on the unit ball. Indeed,
+\[\| \Delta W \|_2 \leq \eta \quad \Leftrightarrow \quad \| \Delta W x\|_2 \leq \eta, \quad \forall x\;: \;\|x\|_2 \leq 1.\]
+What really matters in the end, however, is the final loss.
+Thus we adapt this conservative approach to instead ensure that no single activation results in a large change in the \emph{loss}, that is, we want
+\begin{equation}\label{eq:loss-diff}
+     |\ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)|\leq \tau, \qquad  i=1,\ldots, n.
+\end{equation} 
+Since the loss is nonlinear and nonconvex, we replace it with a local linearization,
+\[  
+\ell_{x_i}(W +\Delta W) -\ell_{x_i} (W)  \approx \ip{G_i, \Delta W}. 
+\]
+Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the spectral-norm constraint in~\eqref{eq:lmo} gives
+\begin{equation}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \ip{G, \Delta W} \\
+  \mbox{subject to} &
+  \displaystyle  
+|\ip{G_i, \Delta W}|
+  \le \tau, \qquad i=1,\ldots, n.
+  \end{array}
+  \label{eq:sample-lmo}
+\end{equation}
+This per-sample LMO is well-posed (\Cref{prop:wellposed}), but its constraints are not directly usable, since we lack efficient access to the per-input gradients $G_i$. We therefore define a centrally symmetric \emph{outergradient} set $\mathcal{G}$ such that $G_i \in \mathcal{G}$, and then use the inequality
+\begin{equation} \label{eq:outgrad1}
+    \max_{i=1,\ldots, n}  |\ip{G_i, \Delta W}|
+    \leq   \max_{\widetilde{G} \in \mathcal{G}} \; \ip{\widetilde{G}, \Delta W},
+\end{equation} 
+to impose  that the right-hand side of \eqref{eq:outgrad1} 
+is less than $\tau$. 
+To build $\mathcal{G}$ we collect some standard properties of the gradient matrices in the following lemma.
+\begin{restatable}[Properties of gradients]{lemma}{gradprop} 
+  \label{lem:gradprop}
+    Let $g_i=\vec(G_i) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for all $i=1, \ldots, n$,
+    and let $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. It follows that the gradients satisfy
+    \begin{enumerate}
+        \item {\bf Leverage bound:} $ \ip{\Sigma^\dagger g_i, g_i} \leq n$, \\[-0.5cm]
+        \item {\bf Rank one:} $G_i = b_i x_i^\top$,
+        \end{enumerate}
+    for some $x_i \in \R^{d_{\mathrm{in}}}$ and $b_i \in \R^{d_{\mathrm{out}}}$.
+\end{restatable}
+
+\noindent The above properties motivate the choice of the following outergradient set
+\begin{equation} 
+\label{eq:outgrad} 
+\mathcal{G}(\Sigma) := \left \{ \widetilde{G} = b x^\top ~\bigg |~  
+b\in\mathbb{R}^{d_{\mathrm{out}}},
+    \ x\in\mathbb{R}^{d_{\mathrm{in}}}, \
+\ip{\Sigma^\dagger \vec(\widetilde{G}), \vec(\widetilde{G})} \leq n \right \}.
+\end{equation}
+By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus we can use this $\mathcal{G}$ in our upper bound~\eqref{eq:outgrad1}.
+The last issue is that $\Sigma$ is too large to store or use directly, so we replace it with a structured approximation.
+
+\paragraph{Kronecker approximation.}
+To compute $\Sigma$ efficiently in~\Cref{lem:gradprop}, we use a Kronecker approximation~\cite{shampoo,kfac}. Let $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$ be symmetric positive definite matrices such that
+\begin{equation} \label{eq:pq-factor} 
+     \Sigma  \approx Q \otimes P.
+\end{equation}
+We treat $P$ and $Q$ as given for now, returning to their estimation at
+the end of the section and in \Cref{sec:weighted-estimation}.
+
+Using the factorization above in the outergradient set~\eqref{eq:outgrad} and relaxing the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, we arrive at the following LMO
+\begin{equation}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \ip{G, \Delta W} \\[2pt]
+\mbox{subject to} &
+  \displaystyle  
+\max_{\widetilde{G} \in \mathcal{G}(Q \otimes P)} \ip{\widetilde{G}, \Delta W} 
+  \le \tau.
+  \end{array}
+  \label{eq:polorafull-hard} 
+\end{equation}
+By~\Cref{lem:pseudogradient-spectral}, the constraint in~\eqref{eq:polorafull-hard} satisfies the identity
+\[
+\max_{\widetilde{G} \in \mathcal{G}(Q \otimes P)}\ip{\widetilde{G}, \Delta W}
+= \sqrt{n} \| P^{1/2} \Delta W Q^{1/2}\|_2,
+\]
+so that \eqref{eq:polorafull-hard} becomes
+\begin{equation}
+\begin{array}{ll}
+\underset{\Delta W}{\mathrm{minimize}} &
+\ip{G, \Delta W} \\[2pt]
+\mathrm{subject~ to} &
+\displaystyle  
+\|P^{1/2} \Delta W Q^{1/2}\|_2 \leq  \tau,
+\end{array}
+\label{eq:polorafull}
+\end{equation}
+where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. Its value does not matter, since we use the LMO only for the direction and rescale it to the desired size. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
+\begin{equation}\label{eq:polorafull-update}
+    \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
+\end{equation} 
+
+
+\paragraph{Direction.}
+So far we have described an update for the weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt it to LoRA~\eqref{eq:lora}, deriving the \emph{direction} first and then setting the \emph{magnitude} of the factor updates. Replacing $\Delta W$ in \eqref{eq:polorafull} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
+\begin{equation}
+    \begin{array}{ll}
+    \underset{\Delta A,\Delta B}{\mathrm{minimize}} &
+    \ip{G, B\Delta A+\Delta B A} \\[2pt]
+    \mbox{subject to} &
+    \norm{P^{1/2}(B\Delta A+\Delta B A)Q^{1/2}}_2
+    \le \tau.
+    \end{array}
+    \label{eq:joint-direction-lmo}
+  \end{equation}
+Just like for Product Muon in~\Cref{sec:product-muon}, subadditivity of the spectral norm splits the coupled constraint in~\eqref{eq:joint-direction-lmo} into one bound per factor. With the factor gradients~\eqref{e-grad-wrt-factors}, the product LMO then decouples into two factorwise LMOs
+\begin{equation}
+\setlength{\arraycolsep}{2pt}
+\begin{array}{@{}c@{\qquad}c@{}}
+\begin{array}{ll}
+\underset{\Delta A}{\mathrm{minimize}} &
+\ip{G_A,\Delta A} \\[2pt]
+\mbox{subject to} &
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2 \le \tau ,
+\end{array}
+&
+\begin{array}{ll}
+\underset{\Delta B}{\mathrm{minimize}} &
+\ip{G_B,\Delta B} \\[2pt]
+\mbox{subject to} &
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2 \le \tau .
+\end{array}
+\end{array}
+\label{eq:decoupled-direction-lmo}
+\end{equation}
+Define the $r\times r$ matrices
+\begin{equation}
+C_A = B^\top P B,
+\qquad
+C_B = A Q A^\top .
+\label{eq:ours-closure}
+\end{equation}
+By definition of the spectral norm, and using the definitions in~\eqref{eq:ours-closure}, the left-hand side of the two constraints in \eqref{eq:decoupled-direction-lmo} can be re-written as
+\begin{equation} \label{eq:collapse-constraint}
+\norm{P^{1/2}B\Delta A Q^{1/2}}_2=\norm{C_A^{1/2}\Delta A Q^{1/2}}_2,
+\qquad
+\norm{P^{1/2}\Delta B A Q^{1/2}}_2=\norm{P^{1/2}\Delta B C_B^{1/2}}_2 .
+\end{equation}
+Since substituting~\eqref{eq:collapse-constraint} into~\eqref{eq:decoupled-direction-lmo} makes each factorwise LMO an instance of \Cref{lem:whitened-spectral-lmo}, the two minimizers are $\Delta A = -\tau D_A$ and $\Delta B = -\tau D_B$, where
+\begin{equation}
+  \begin{aligned}
+  D_A &=
+  C_A^{-1/2}\,
+  \msign\!\left(C_A^{-1/2}\,G_A\,Q^{-1/2}\right)
+  \,Q^{-1/2},\\
+  D_B &=
+  P^{-1/2}\,
+  \msign\!\left(P^{-1/2}\,G_B\,C_B^{-1/2}\right)
+  \,C_B^{-1/2}
+  \end{aligned}
+  \label{eq:factor-directions}
+\end{equation}
+give the factor update directions.
+
+\paragraph{Magnitude.}
+Having derived the direction, we now set the magnitude directly rather than through the budget $\tau$, controlling the size of the factor updates in spectral norm. Treating $A$ and $B$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+\begin{equation}
+\norm{\Delta W}_2
+\approx
+\norm{B\Delta A+\Delta B A}_2
+\le
+\norm{B}_2\norm{\Delta A}_2
++
+\norm{A}_2\norm{\Delta B}_2,
+\label{eq:ours-prodcap}
+\end{equation}
+and so setting
+\begin{equation}
+\rho = \frac{\eta}{\norm{A}_2+\norm{B}_2}
+\label{eq:ours-rho}
+\end{equation}
+ensures $\norm{\Delta W}_2\leq \eta$. As a result, using the directions $D_A$ and $D_B$ from \eqref{eq:factor-directions} gives the updates
+\begin{equation}
+\Delta A = -\rho\,\frac{D_A}{\norm{D_A}_2},
+\qquad
+\Delta B = -\rho\,\frac{D_B}{\norm{D_B}_2}.
+\label{eq:polora-update}
+\end{equation}
+The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(A,B)\mapsto(cA,c^{-1}B)$, which changes $\norm{A}_2$ and $\norm{B}_2$ while preserving $BA$. Among such rescalings $\rho$ is largest when $\norm{A}_2=\norm{B}_2$, and in our runs we observe that $\norm{B}_2/\norm{A}_2$ settles near $1$ (\Cref{app:gauge}).
+\paragraph{Optimizer step.}
+\methodname{}, summarized in \Cref{alg:ours}, makes the update~\eqref{eq:polora-update} practical with the following ingredients:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \emph{Averaging.} Momentum with look-ahead replaces the factor gradients (line~\ref{ln:mom}), and an EMA accumulates the vectors $p,q$ that form the curvature factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}).  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to diagonal factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}).
+  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{sec:scale-placement}).
+  \item \emph{Fast numerical subroutines.} We estimate the spectral norms in lines~\ref{ln:rho} and~\ref{ln:spectralnormupdate} by power iteration (\Cref{app:smax}). We use Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} to compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral} (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
+\end{itemize}
+
+\begin{algorithm}[t]
+\caption{\methodname{} step for one LoRA pair $(A,B)$}
+\label{alg:ours}
+\begin{algorithmic}[1]
+\Statex \textbf{Hyperparameters:} learning rate $\eta$, momentum decay $\beta_1$, curvature decay $\beta_2$
+\Statex
+\Phase{Update to Momentum Gradients}
+\State $\begin{aligned}[t]
+  M_A &\gets \beta_1 M_A+(1-\beta_1)G_A, &\quad M_B &\gets \beta_1 M_B+(1-\beta_1)G_B\\[-4pt]
+  \widehat M_A &\gets \beta_1 M_A+(1-\beta_1)G_A, &\quad \widehat M_B &\gets \beta_1 M_B+(1-\beta_1)G_B
+\end{aligned}$  \label{ln:mom}\Comment{buffer + look-ahead}
+\Statex
+\Phase{Computing the Direction}
+\State $\begin{aligned}[t]
+  &P \gets \diag\!\big(p/\norm{p}_\infty\big), &&\qquad Q \gets \diag\!\big(q/\norm{q}_\infty\big)\\[-4pt]
+  &C_A \gets B^\top P\, B, &&\qquad C_B \gets A\,Q\, A^\top
+\end{aligned}$  \label{ln:pqnorm}
+\State $D_A\gets C_A^{-1/2}\,\msign\big(C_A^{-1/2}\,\widehat M_A\,Q^{-1/2}\big)\,Q^{-1/2}$ \Comment{preconditioned polar step~\eqref{eq:factor-directions}} \label{ln:Aspectral}
+\State $D_B\gets P^{-1/2}\,\msign\big(P^{-1/2}\,\widehat M_B\,C_B^{-1/2}\big)\,C_B^{-1/2}$  \label{ln:Bspectral}
+\Statex
+\Phase{Balancing Magnitude}
+\State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}} \label{ln:rho}
+\State $A\gets A-\rho\,D_A/\norm{D_A}_2, \qquad B\gets B-\rho\,D_B/\norm{D_B}_2$ \label{ln:spectralnormupdate}
+\Statex
+\Phase{Update to Curvature Factors}
+\State $q\gets\beta_2\, q+(1-\beta_2)\diag\big(G_A^\top C_A^{-1} G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}  \label{ln:qmom}
+\State $p\gets\beta_2\, p+(1-\beta_2)\diag\big(G_B\, C_B^{-1} G_B^\top\big)/r$  \label{ln:pmom}
+\end{algorithmic}
+\end{algorithm}
+\section{Experiments}
+\label{sec:exp}
+
+We now empirically evaluate \methodname{}, comparing it to several baselines in~\Cref{sec:exp-main}, investigating which design choices of \methodname{} are responsible for its efficacy in~\Cref{sec:exp-ablation}, and testing its behavior across rank and on different data in~\Cref{sec:exp-taskdep}.
+
+\subsection{Setup}
+\label{sec:exp-setup}
+
+\paragraph{Comparison.}
+For every model, dataset, and rank, we only vary the optimizer and learning rate. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out loss.
+
+The main comparisons finetune OLMo-2-1B~\cite{olmo2}, Llama-3.2-1B~\cite{llama3}, Qwen2.5-1.5B~\cite{qwen25}, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}) datasets, using rank $r=256$ unless stated otherwise. Additional experiments in \Cref{sec:exp-taskdep} vary the rank as well as change the finetuning dataset to a low-resource language. \Cref{app:exp} gives the full experimental configurations.
+
+\paragraph{Baselines.} We compare \methodname{} (\Cref{sec:method}) to the following optimizers:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Adam} \cite{adam} --- our baseline, applied independently to the two factors $A$ and $B$.
+  \item \textbf{Muon} \cite{muon} --- the Muon update~\eqref{eq:lmo} applied independently to each factor.
+  \item \textbf{iMuon} \cite{imuon} --- the Product Muon LMO~\eqref{eq:imuon-lmo-ambient} applied to momentum in the product space.
+  \item \textbf{LoRA-RITE} \cite{lorarite} --- an adaptive LoRA optimizer that preconditions the factor gradients in a rotation-invariant basis.
+\end{itemize}
+We use the authors' official implementations for iMuon and LoRA-RITE and provide additional background on these methods in \Cref{app:memoryless}. 
+
+\subsection{Measuring Efficiency Benefits}
+\label{sec:exp-main}
+We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match the final loss reached by tuned Adam. Across our experiments, \methodname{} reaches this loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
+
+
+
+\paragraph{Wall-clock.}\label{sec:exp-walltime} The optimizer FLOPs of each \methodname{} step are independent of the batch size, while the model forward
+and backward passes scale with it (\Cref{app:flops}). Thus the relative per-step time shrinks
+as the batch grows. At our batch size (\Cref{app:exp}) it adds at most $3\%$ wall-clock overhead compared to Adam on
+all four base models (\Cref{tab:breadth}), so the step speedup carries to wall-clock almost
+unchanged.  
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+ & \multicolumn{2}{c}{Code} & \multicolumn{2}{c}{Math} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+base model & step & wall-clock & step & wall-clock \\
+\midrule
+OLMo-2-1B & $1.61\times$ & $1.57\times$ & $1.74\times$ & $1.70\times$ \\
+Llama-3.2-1B & $1.55\times$ & $1.51\times$ & $1.63\times$ & $1.58\times$ \\
+Qwen2.5-1.5B & $1.30\times$ & $1.27\times$ & $1.64\times$ & $1.60\times$ \\
+Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
+\bottomrule
+\end{tabular}
+\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} Four base models at rank $r=256$, finetuned on code and math datasets. Step speedup is the steps to reach Adam's final loss. The wall-clock column discounts it by the $\le3\%$ per-step overhead (\Cref{app:flops}). \methodname{} improves on Adam in every setting, by a wider margin on math than on code.}
+\label{tab:breadth}
+\end{table}
+
+\subsection{Component Ablation}
+\label{sec:exp-ablation}
+
+The essential ingredients in \methodname{} can be decomposed into three components:
+\begin{itemize}[leftmargin=1.7em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Product-awareness}. The direction LMO~\eqref{eq:decoupled-lora-lmo} uses the structure of the merged product $BA$ as opposed to treating $A$ and $B$ as independent matrices.
+  
+  \item \textbf{Curvature}. Preconditioning the gradient by an adaptive curvature estimate makes the update account for how different directions change the loss~\eqref{eq:pq-factor}.
+  \item \textbf{Magnitude}. The sizes of the factor steps and the merged update are both controlled~\eqref{eq:ours-rho}.
+\end{itemize}
+Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and each of the two components accounts for about half the speedup gap between Product Muon and \methodname{}.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig2_ablation.pdf}
+  \caption{\textbf{Curvature and magnitude both improve \methodname{}.} Component ablation of Llama-3.2-1B finetuned on math at rank $r = 256$. The left panel shows loss curves as the curvature and then the magnitude control are removed from \methodname{} in turn, down to Product Muon. The right panel shows the speedup over Adam for each variant.}
+  \label{fig:ablation}
+\end{figure}
+
+
+\subsection{Effect of Rank and Distribution Shift}
+\label{sec:exp-taskdep}
+To probe the effect of the LoRA rank and of the finetuning dataset on the performance of \methodname{}, we vary the rank while finetuning on math and vary the dataset from code to a low-resource language underrepresented in the pretraining mix.
+
+\paragraph{Rank.} We sweep the rank $r$ on Llama-3.2-1B finetuned on math. As the rank grows, the step speedup of \methodname{} over Adam grows too (\Cref{tab:rank}; learning curves in \Cref{fig:curves}(c)). \methodname{} also exhibits learning rate transfer: its optimal learning rate is stable across rank, whereas Adam's shifts (\Cref{fig:lr_transfer}). We also observe reduced sensitivity to the learning rate compared to Adam.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{lrr}
+\toprule
+rank $r$ & step speedup & wall-clock speedup \\
+\midrule
+$32$  & $1.48\times$ & $1.44\times$ \\
+$64$  & $1.54\times$ & $1.50\times$ \\
+$128$ & $1.52\times$ & $1.49\times$ \\
+$256$ & $1.63\times$ & $1.58\times$ \\
+\bottomrule
+\end{tabular}
+\caption{\textbf{\methodname{} speedup over Adam across LoRA ranks.} Llama-3.2-1B finetuned on the math dataset at our batch of $32768$ tokens; only the rank varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by the $\le3\%$ per-step overhead (\Cref{app:flops}).}
+\label{tab:rank}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig3_lr_transfer.pdf}
+  \caption{\textbf{\methodname{} exhibits learning rate transfer.} Final loss versus learning rate of Llama-3.2-1B finetuned on the math dataset at each rank $r\in\{32,64,128,256\}$.
+  The optimal learning rate for \methodname{} stays at $10^{-2}$ across ranks, while Adam's drifts.}
+  \label{fig:lr_transfer}
+\end{figure}
+
+\paragraph{Distribution shift.} Coding data is well represented in the pretraining data for the Qwen2.5-1.5B model~\cite{qwen25}. On the other hand, data for a low-resource language like Bengali is much less present. We therefore informally refer to the code dataset as in-distribution and the Bengali dataset (Aya \cite{aya}) as out-of-distribution. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig_ood.pdf}
+  \caption{\textbf{The speedup over Adam is larger out of distribution.}
+  Evaluation loss over training steps on Qwen2.5-1.5B at rank $r = 256$,
+  finetuned on the in-distribution code dataset (left)
+  and the out-of-distribution Bengali dataset (right).}
+  \label{fig:ood}
+\end{figure}
+
+
+
+\section{Prior Work}
+\label{sec:related}
+
+Here we review prior work and contrast \methodname{} with the existing literature.
+
+
+\paragraph{Hyperparameter rescaling for LoRA.}
+LoRA~\cite{lora} enables parameter-efficient finetuning by freezing the pretrained
+weights and training only a low-rank update~\eqref{eq:lora} through factors $A$ and
+$B$, typically optimized with Adam~\cite{adam}. Several recent methods refine this
+approach by rescaling hyperparameters such as the learning rates, adapter scale, or
+initialization variance to account for the low-rank structure. Motivated by large-width
+feature-learning arguments, LoRA+~\cite{loraplus} assigns $B$ a larger learning rate
+than $A$, and follow-up work~\cite{hayou2024initialization, li2025beyond} extends this
+to other initializations. Rank-stabilized LoRA~\cite{rslora} replaces the $\alpha/r$
+adapter scale with $\alpha/\sqrt{r}$ to avoid the rank-dependent shrinkage that makes
+high-rank adapters hard to train, and $\mu$A~\cite{mua} studies how these
+hyperparameters should scale with rank to keep the optimal learning rate stable. In
+contrast, \methodname{} keeps these scalar hyperparameters fixed and instead changes the update itself, computing the factor update directions in a curvature-aware metric on the merged product $BA$ rather than rescaling a coordinatewise Adam step.
+
+\paragraph{Matrix-aware updates.}
+Recently, optimizers that operate at the matrix level, rather than treating parameters as
+a flattened vector, have attracted attention for their gains over Adam~\cite{liu2025muon,
+qiu2026hyperparameter, benchmark_practices}. Muon~\cite{muon} solves the spectral-norm LMO
+for a weight matrix, producing an update equal to the matrix sign of the momentum
+gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
+SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
+Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
+whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}.
+
+\paragraph{Product-invariant LoRA optimizers.}
+The learned update $BA$ is a product of two matrices, so it is determined only up to the
+change of basis $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$. Since Adam is not invariant
+to this transformation, a line of work has proposed LoRA optimizers that are. LoRA-RITE
+removes the basis dependence with an adaptive preconditioner~\cite{lorarite}, while Riemannion
+optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMuon, LoRA-Muon, and Compositional Muon derive invariant updates from
+spectral-norm LMOs~\cite{imuon,loramuon,tilde_csd}. As discussed in \Cref{app:memoryless}, the momentum-free LoRA-RITE, LoRA-Muon,
+iMuon, and Compositional Muon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
+
+\paragraph{Magnitude control for low-rank products.}
+Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when $A$ or $B$ have small singular values, the updates $\Delta A$ and $\Delta B$ can be very large, which can destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack}, which are not based on the LMO step~\eqref{eq:decoupled-lora-lmo},
+explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
+
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+\methodname{} takes a different route to optimizing LoRA adapters: it asks how a step should look through the merged product weight and the current batch loss, rather than treating the two LoRA factors as unrelated parameter matrices. This view leads to a practical optimizer that combines a product-aware spectral direction, lightweight curvature factors, and explicit control of factor-step magnitudes. In our experiments, this was enough to turn matrix-aware LoRA optimization into a consistent training-speed improvement over Adam, with small overhead and good learning-rate transfer across rank.
+
+The method is still built on approximations. We use diagonal Kronecker approximations to the curvature factors for efficiency. The derivation also relies on a linearized loss change and a linearized product update, which means the optimizer does not directly control higher-order effects or the dropped $\Delta B\Delta A$ term. Finally, our evaluation focuses on LoRA finetuning for language models and on held-out loss as the main measure of progress; broader downstream evaluations, longer training horizons, other adapter families, and different hardware or batch-size regimes remain open.
+
+
+These limitations also point to several future directions. One is to design better outergradient approximations that remain cheap enough for adapter training. Another is to incorporate second-order information~\cite{du2026newtonmuonoptimizer} in such a way that the final update is still tractable.  More broadly, the per-sample loss-control perspective~\eqref{eq:sample-lmo} and~\eqref{eq:polorafull-hard}  may be useful beyond LoRA, for either pre-training or other composition of maps.
+
+
+
+
+\printbibliography
+
+
+\clearpage
+\appendix
+\crefname{appendix}{Appendix}{Appendices}
+\Crefname{appendix}{Appendix}{Appendices}
+\crefalias{section}{appendix}
+\crefalias{subsection}{appendix}
+\startcontents[app]
+\section*{Appendix Contents}
+\printcontents[app]{}{1}{\setcounter{tocdepth}{2}}
+\clearpage
+\section{Experimental Details}
+\label{app:exp}
+This section gives the full configuration behind \Cref{sec:exp-setup}. Within each setting (a model, a dataset, and a rank), the optimizer and its learning rate are the only things we vary; everything in \Cref{tab:config} is held fixed. For each optimizer we sweep the learning rate and report the run with the lowest held-out loss.
+
+\paragraph{Models.} Four pretrained base models, each adapted with LoRA: OLMo-2-1B \cite{olmo2}, Llama-3.2-1B \cite{llama3}, Qwen2.5-1.5B \cite{qwen25}, and Llama-3-8B \cite{llama3}.
+
+\paragraph{Datasets.} Three instruction-tuning corpora: code (OpenCoder \cite{opencoder}), math (OpenMathInstruct-2 \cite{openmathinstruct2}), and Bengali (Aya \cite{aya}).
+
+\paragraph{Data preparation.}
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item Each corpus is tokenized once per base model, using that model's own tokenizer.
+  \item We hold out $1\%$ of each corpus for evaluation, and use this split for both learning-rate selection and all reported losses.
+  \item Training sequences are packed into fixed $2048$-token blocks, and evaluation sequences are padded to $2048$ tokens.
+  \item Loss is computed on response tokens only; prompt and padding tokens are masked.
+\end{itemize}
+
+\paragraph{Fixed training configuration.} \Cref{tab:config} lists the settings held fixed across all runs.
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+setting & value \\
+\midrule
+sequence length       & $2048$ \\
+batch size             & $16$ \\
+training steps         & $9000$ \\
+LoRA rank $r$          & $256$ (varied in \Cref{sec:exp-taskdep}) \\
+LoRA $\alpha$          & $r$ \\
+LoRA dropout           & $0$ \\
+LoRA $B$ init          & zeros \\
+LoRA-adapted layers    & all linear except the output (\texttt{lm\_head}) \\
+precision              & bf16 \\
+max gradient norm      & $1.0$ \\
+LR schedule            & constant \\
+\bottomrule
+\end{tabular}
+\caption{Training configuration, held fixed across every optimizer and setting.}
+\label{tab:config}
+\end{table}
+
+\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimum. All other optimizer hyperparameters are fixed. \Cref{tab:optim-config} lists the baseline settings; \methodname{} uses:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item momentum decay $\beta_1=0.9$ and curvature decay $\beta_2=0.99$,
+  \item $8$ Gram Newton--Schulz iterations (\Cref{app:gramns}),
+  \item $8$ power iterations per spectral-norm estimate (\Cref{app:smax}),
+  \item relative damping $\delta=10^{-4}$ (\Cref{app:damping}).
+\end{itemize}
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & Adam & Muon & iMuon & LoRA-RITE \\
+\midrule
+$\beta_1$                 & $0.9$     & $0.9$ & $0.95$ & $0.9$     \\
+$\beta_2$                 & $0.999$   & ---   & ---    & $0.999$   \\
+$\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ \\
+Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
+\bottomrule
+\end{tabular}
+\caption{Baseline hyperparameters. $\beta_1$ is the momentum decay, $\beta_2$ the second-moment decay, and $\varepsilon$ the numerical-stability constant.}
+\label{tab:optim-config}
+\end{table}
+
+\paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip is not, so we do not apply the \Cref{tab:config} clip to LoRA-RITE.
+
+\paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. Eval-loss values are hardware-independent. Reproducing all our experiments takes about $850$ GPU-hours.
+
+\section{Proofs}
+\label{app:proofs}
+
+We first collect the gradient properties used to build the outergradient set.
+\gradprop*
+\begin{proof}[Proof of \Cref{lem:gradprop}]
+For the {\bf Leverage bound}, let $g_i=\vec(G_i)$ and
+$M=[g_1,\ldots,g_n]$, so $g_i = Me_i$ for every $i =1,\ldots, n$. Then
+\[
+\ip{\Sigma^\dagger g_i, g_i} = ng_i^\top (MM^\top)^{\dagger} g_i = n e_i^\top M^\top  (MM^\top)^{\dagger} M e_i  \leq n,
+\]
+since $M^\top  (MM^\top)^{\dagger} M$ is the orthogonal projector onto the range
+of $M^\top$.
+
+The {\bf Rank one} property is the chain rule: $W$ encodes a linear layer
+$x_i \mapsto W x_i$, so
+\[
+\nabla \ell_{x_i}(Wx_i) =  \left. \frac{d }{dz} \ell_{x_i}(z)
+\right|_{z =Wx_i} x_i^\top
+=b_i x_i^\top,
+\]
+where $b_i = \left.\frac{d }{dz} \ell_{x_i}(z)  \right|_{z =Wx_i}$ is the
+output-side gradient.
+\end{proof}
+
+We verify that the per-sample LMO~\eqref{eq:sample-lmo} is well-posed.
+\begin{proposition}[Well-posedness of the per-sample LMO]
+\label{prop:wellposed}
+Let $G_1,\dots,G_n$ be the per-sample gradients in~\eqref{eq:sample-lmo} and $G=\tfrac1n\sum_{i=1}^n G_i$. Then the per-sample LMO~\eqref{eq:sample-lmo} attains a finite minimum.
+\end{proposition}
+\begin{proof}
+The feasible set is a nonempty polyhedron, since it contains $\Delta W=0$. For every feasible $\Delta W$,
+\[
+|\ip{G,\Delta W}|\le\tfrac1n\sum_{i=1}^n|\ip{G_i,\Delta W}|\le\tau,
+\]
+so the objective $\ip{G,\Delta W}$ is bounded below by $-\tau$. A linear function bounded below on a nonempty polyhedron attains its minimum~\cite{bertsimas1997introduction}, which gives the claim. The minimizer need not be unique, since the objective is constant along $\operatorname{span}\{G_1,\ldots,G_n\}^\perp$.
+\end{proof}
+
+Next we solve the spectral-norm LMO whose solution is the Muon update direction (\Cref{sec:muon}).
+\begin{lemma}[Spectral norm LMO]\label{lem:muon-lmo}
+Let $G\in\mathbb{R}^{m\times n}$ and $\eta>0$, and write
+$\norm{G}_{\mathrm{nuc}}=\sum_i\sigma_i(G)$ for the nuclear norm, the sum of the
+singular values. Then
+\[
+    \min_{\norm{X}_2\leq \eta}\ip{G,X}
+    =
+    -\eta\norm{G}_{\mathrm{nuc}},
+\]
+and $X^\star = -\eta\msign(G)$ is the unique minimizer of least Frobenius norm.
+\end{lemma}
+
+\begin{proof}[Proof of \Cref{lem:muon-lmo}]
+We lower-bound the objective by norm duality and exhibit a feasible point that
+attains it. By duality of the spectral and nuclear norms, every feasible $X$
+satisfies
+\[
+    \ip{G,X}
+    \geq
+    -\norm{G}_{\mathrm{nuc}}\norm{X}_2
+    \geq
+    -\eta\norm{G}_{\mathrm{nuc}}.
+\]
+Let $G=USV^\top$ be a reduced singular value decomposition, so
+$S=\diag(\sigma_i(G))$. The choice
+\[
+    X=-\eta UV^\top=-\eta\msign(G)
+\]
+is feasible and satisfies
+\[
+    \ip{G,X}
+    =
+    -\eta\Tr(S)
+    =
+    -\eta\norm{G}_{\mathrm{nuc}},
+\]
+so it attains the lower bound and is therefore optimal. The minimum-norm
+statement follows from Lemma C.2~\cite{parshakova2026muon}.
+\end{proof}
+
+Using those properties, we evaluate the outergradient support function under a Kronecker-factored metric, turning the per-sample loss constraint (\Cref{sec:sample-loss-lmo}) into a preconditioned spectral norm.
+\begin{lemma}[Outergradient set under a Kronecker factorization]
+\label{lem:pseudogradient-spectral}
+Let
+$P\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ and
+$Q\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ be symmetric positive definite,
+and let $\Sigma=Q\otimes P$. Recall the outergradient set~\eqref{eq:outgrad},
+\[
+\mathcal{G}(\Sigma)=\bigl\{\, bx^\top ~\big|~ b\in\R^{d_{\mathrm{out}}},\ x\in\R^{d_{\mathrm{in}}},\ \ip{\Sigma^\dagger\vec(bx^\top),\vec(bx^\top)}\leq n \,\bigr\}.
+\]
+Then for every $\Delta W\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
+\[
+  \max_{\widetilde{G} \in \mathcal{G}(\Sigma)} \ip{ \widetilde{G} , \Delta W}
+  =\sqrt{n}\norm{P^{1/2}\Delta W Q^{1/2}}_2 .
+\]
+\end{lemma}
+
+\begin{proof}[Proof of \Cref{lem:pseudogradient-spectral}]
+We evaluate the support function by a change of variables that turns the
+constraint into a product of Euclidean balls. Since $P$ and $Q$ are positive
+definite, $\Sigma^\dagger=\Sigma^{-1}=Q^{-1}\otimes P^{-1}$. For
+$bx^\top\in\mathcal{G}(\Sigma)$, column-major vectorization gives
+$\vec(bx^\top)=x\otimes b$, so
+\[
+\ip{\Sigma^\dagger\vec(bx^\top),\vec(bx^\top)}
+=(x\otimes b)^\top(Q^{-1}\otimes P^{-1})(x\otimes b)
+=(x^\top Q^{-1}x)(b^\top P^{-1}b).
+\]
+Writing $b=P^{1/2}u$ and $x=Q^{1/2}v$, the constraint becomes
+$\norm{u}_2^2\norm{v}_2^2\leq n$ and the objective becomes
+\[
+\ip{bx^\top,\Delta W}=b^\top\Delta W x=u^\top P^{1/2}\Delta W Q^{1/2}v .
+\]
+Maximizing over the balls gives the spectral norm,
+\[
+\max_{\widetilde{G}\in\mathcal{G}(\Sigma)}\ip{\widetilde{G},\Delta W}
+=\max_{\norm{u}_2\norm{v}_2\leq\sqrt{n}}u^\top P^{1/2}\Delta W Q^{1/2}v
+=\sqrt{n}\,\norm{P^{1/2}\Delta W Q^{1/2}}_2. \qedhere
+\]
+\end{proof}
+
+We then solve that preconditioned spectral-norm LMO, which sets the \methodname{} direction.
+\begin{lemma}[Preconditioned spectral-norm LMO]
+\label{lem:whitened-spectral-lmo}
+Let $L$ and $R$ be symmetric positive definite. Then
+\begin{equation}\label{e-gen-spectral-lmo-update}
+X^\star = -\tau L^{-1}
+\msign\left(L^{-1}MR^{-1}\right) R^{-1}
+\end{equation}
+is a solution of
+\[
+\begin{array}{ll}
+\underset{\|LXR\|_2\leq\tau}{\mathrm{minimize}}&
+\ip{M,X}.
+\end{array}
+\]
+Moreover, $X^\star$ is the unique minimizer of
+$\|LXR\|_F$ over the solution set.
+\end{lemma}
+\begin{proof}[Proof of \Cref{lem:whitened-spectral-lmo}]
+We change variables to reduce the preconditioned LMO to the plain spectral-norm
+LMO of \Cref{lem:muon-lmo}. Set $Y=LXR$, so $X=L^{-1}YR^{-1}$; the constraint
+becomes $\norm{Y}_2\le\tau$ and the objective becomes
+\[
+\ip{M,X}=\ip{L^{-1}MR^{-1},Y} .
+\]
+By \Cref{lem:muon-lmo} with budget $\tau$, the unique least Frobenius-norm
+minimizer is
+\[
+    Y=-\tau\,\msign(L^{-1}MR^{-1}).
+\]
+Substituting $X=L^{-1}YR^{-1}$ gives the stated solution.
+\end{proof}
+
+\begin{remark}[Second-order term in the merged update]
+\label{rem:quadratic}
+The magnitude rule bounds the \emph{linearized} merged update; here we check that
+restoring the second-order term dropped in that linearization leaves the bound
+essentially unchanged. Writing $s=\norm{A}_2+\norm{B}_2$, the
+rule~\eqref{eq:ours-rho} sets $\rho=\eta/s$ to bound the linearized update
+$B\Delta A+\Delta B A$ of~\eqref{eq:DeltaW-lin}. The actual update also contains
+the quadratic term $\Delta B\Delta A$ dropped there,
+\[
+  \Delta W = B\Delta A+\Delta B A+\Delta B\Delta A .
+\]
+With $\norm{\Delta A}_2=\norm{\Delta B}_2=\rho$, the triangle inequality and
+submultiplicativity give
+\[
+  \norm{\Delta W}_2\le\rho s+\rho^2=\eta\Bigl(1+\tfrac{\eta}{s^2}\Bigr),
+\]
+so the actual update exceeds the target $\eta$ by at most the relative amount
+$\eta/s^2$. At the standard initialization $B=0$ with $A$ having independent
+entries of variance $\Theta(1/d_{\mathrm{in}})$, we have $s=\norm{A}_2=\Theta(1)$,
+so the overshoot is $O(\eta)$ and shrinks as the factors grow.
+\end{remark}
+
+
+\section{Momentum-Free Reductions to Product Muon}
+\label{app:memoryless}
+LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon \cite{loramuon}
+reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed. We show this below.
+
+
+\paragraph{Setup.} As in \Cref{sec:method}, 
+let $G=\nabla_W \mathcal{L}(W) \big |_{W=BA}$ be the product
+gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
+and $S_B=AA^\top$ and
+$S_A=B^\top B$ be the $r\times r$ Gram matrices.
+The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} are
+\begin{equation}
+  \begin{aligned}
+  \Delta A &\in    \argmin_{\Delta A}~ \ip{G_A, \Delta A} \quad \textnormal{subject to}\quad
+\norm{B \Delta A}_2\le\tau \\
+\Delta B &\in   \argmin_{\Delta B}~ \ip{G_B,  \Delta B} \quad \textnormal{subject to}\quad  \norm{\Delta B A}_2\le\tau.
+  \end{aligned}
+  \label{eq:decoupled-lora-lmo-app} 
+\end{equation}
+They have the closed-form solution~\eqref{eq:product-muon-step}.
+We will use the fact that for any matrix $M$ with full column rank and reduced SVD $M=U\Sigma V^\top$,
+the matrix sign equals
+\begin{equation}
+  M(M^\top M)^{-1/2}=
+  UV^\top=\msign(M).
+  \label{eq:polar-id}
+\end{equation}
+
+\paragraph{LoRA-RITE.}
+Algorithm~1 of LoRA-RITE~\cite{lorarite} adds three pieces of memory to a base step. These are an EMA first moment with parameter $\beta_1$, an accumulated second moment transported across the changing factor basis, and an ``escaped-mass'' floor added to that second moment.
+Dropping all three, we get the authors' momentum-free update (their Eq.~(14)),
+which in our notation for $ \widehat G_B=G_B S_B^{-1/2}$ becomes
+\[
+  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}.
+\]
+With no accumulation by \eqref{eq:polar-id} the middle factor is the matrix sign, so
+\begin{equation*}
+  \Delta B=-\eta \msign(\widehat G_B) S_B^{-1/2}
+  =-\eta \msign \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
+\end{equation*}
+which is equal to the $B$-update given in~\eqref{eq:product-muon-step}. Analogous arguments hold for the $A$-update.
+
+
+\paragraph{iMuon, momentum-free.}
+iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which is the signal passed to the intrinsic spectral LMO. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
+\begin{equation}
+  \Delta B(H) =\msign \big(HA^\top S_B^{-1/2}\big)S_B^{-1/2},\qquad
+  \Delta A(H) =S_A^{-1/2}\msign \big(S_A^{-1/2}B^\top H\big).
+  \label{eq:imuon-lmo-ambient}
+\end{equation}
+For the base Algorithm~1 in~\cite{imuon}, the ambient matrix is the raw gradient $G$, so~\eqref{eq:imuon-lmo-ambient}
+is again equivalent to \eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update.
+
+\paragraph{iMuon, with momentum.} The official implementation of iMuon with momentum (their Appendix~K) does not
+use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
+It instead first combines the two factor
+look-aheads $\widetilde{G}_A=G_A+\beta m_A$ and $\widetilde{G}_B=G_B+\beta m_B$ (buffers $m_A,m_B$,
+with parameter $\beta$) into a single ambient matrix, then uses that matrix as input
+\begin{equation*}
+  \widehat M=\widetilde{G}_B A+B\widetilde{G}_A .
+\end{equation*}
+Turning momentum off ($\beta=0$) removes the buffers but not the recombination, i.e.,
+\begin{equation*}
+  \widehat M=G_B A+B G_A=G\,A^\top A+BB^\top G\ \neq\ G .
+\end{equation*}
+Plugging $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top=B^\top G_B$,
+\begin{equation*}
+  \widehat M A^\top=G_B S_B+(BB^\top)G_B
+  \quad\Longrightarrow\quad
+  \Delta B(\widehat M)=\msign\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
+\end{equation*}
+which is different from Product Muon. The argument for $\Delta A$ is symmetric.
+Thus switching momentum off does not recover \eqref{eq:decoupled-lora-lmo}. While
+\eqref{eq:decoupled-lora-lmo-app} is the
+momentum-free limit of the iMuon theory (Corollary~4.1), 
+it is not the momentum-free limit of the implemented optimizer.
+
+
+\paragraph{LoRA-Muon.}
+The concurrent LoRA-Muon paper~\cite{loramuon} also arrives at the two decoupled
+factorwise LMOs in~\eqref{eq:decoupled-lora-lmo}.
+Specifically, its momentum-free LMOs in Eq. (7) and (8) of~\cite{loramuon} are precisely \eqref{eq:decoupled-lora-lmo}.
+LoRA-Muon also shows that this
+Gram-matrix form is equivalent to the simplified QR-coordinate form of
+LoRA-RITE~\cite{loramuon}.
+
+
+\paragraph{Compositional Muon.}
+Compositional Muon~\cite{tilde_csd} derives product-aware spectral updates for two low-rank products in attention: the QK product $W_QW_K^\top$ and the OV product. The same two-factor structure underlies a LoRA adapter. Its half-split rule gives each factor a spectral budget of $\epsilon/2$ and whitens it by the other factor,
+\[
+  \Delta W_Q=-\tfrac{\epsilon}{2}\,\msign\!\big(G_Q C_K^{-1}\big)\,C_K^{-1},
+  \qquad C_K=(W_K^\top W_K)^{1/2},
+\]
+and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\top)^{1/2}$, recovering the Product Muon step~\eqref{eq:product-muon-step}. Momentum and a gauge correction are added separately. The OV hybrid rule and the isotropic approximation are specific to multi-head attention and do not reduce to Product Muon.
+
+
+\section{Extended Prior Work}
+\label{app:related-spectral}
+Here we compare \methodname{} in more detail to two methods of \Cref{sec:related} that each
+match one of its components: curvature preconditioning (Mousse) and factor-step magnitude
+control (Spectron).
+
+\paragraph{Mousse.}
+Mousse~\cite{mousse} preconditions a matrix-sign step by a Kronecker curvature, on the full
+weight matrix. Its curvature is the Shampoo estimate $H\approx(R\otimes L)^{1/2}$, with $L,R$
+the moving averages of $GG^\top$ and $G^\top G$. Preconditioning the gradient by
+$H^{1/2}=(R\otimes L)^{1/4}$ gives
+\[
+  \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
+\]
+\methodname{} preconditions the same step but by the per-sample gradient second moment
+$\Sigma\approx Q\otimes P$~\eqref{eq:pq-factor} at the inverse square root $P^{-1/2},Q^{-1/2}$,
+rather than the Shampoo second moment at the fourth root. It also acts on the LoRA product
+rather than the full weight, the product map contracting $P,Q$ to the $r\times r$ matrices
+$C_A=B^\top P B$ and $C_B=AQA^\top$~\eqref{eq:ours-closure}.
+
+\paragraph{Spectron.}
+Spectron~\cite{spectron} addresses native low-rank pretraining, where every weight is a
+product $W=BA$ with no frozen base and the rescaling $(A,B)\mapsto(cA,c^{-1}B)$ can drive
+$\norm{\Delta W}_2$ unboundedly while $W$ stays fixed. It controls this by rescaling both
+orthogonalized factor steps to a common spectral norm $\rho_{\mathrm S}$, without curvature
+preconditioning and without an LMO derivation. \methodname{} rescales the same way to a common
+$\rho$, the two rules differing only by the $+1$ in Spectron's denominator, which folds the
+dropped quadratic term $\Delta B\Delta A$ into the bound where \methodname{} accounts for it
+after the fact (\Cref{rem:quadratic}):
+\[
+  \rho_{\mathrm S}=\frac{\eta}{\norm{A}_2+\norm{B}_2+1}
+  \qquad\text{vs.}\qquad
+  \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2}.
+\]
+
+\section{Numerical Subroutines}
+\label{app:primitives}
+
+\subsection{Spectral-Norm Estimation}
+\label{app:smax}
+\Cref{alg:ours} requires repeated estimates of spectral norms.  
+We estimate each $\norm{M}_2$ by warm-started power iteration on the smaller of
+the two Gram matrices (\Cref{alg:smax}), caching the leading vector across
+optimizer steps so it starts near the top singular vector.  A cold or stale start
+can under-estimate $\norm{M}_2$; since the optimizer divides by this estimate,
+that would inflate the update and risk destabilizing training.  We therefore
+return the larger of the power-iteration value and the largest row norm of $M$, a
+lower bound on $\norm{M}_2$.  We use $K=8$ iterations.
+
+\begin{algorithm}[ht]
+\caption{Guarded spectral-norm estimate of $\norm{M}_2$}
+\label{alg:smax}
+\begin{algorithmic}[1]
+\Require $M\in\mathbb{R}^{m\times n}$, $m\le n$ (else $M^\top$); cached $v\in\mathbb{R}^m$; iterations $K$
+\State $l \gets \max_i\norm{M_{i,:}}_2$
+\If{$v$ is empty} \State $v\gets M\mathbf{1}$ \Comment{cold start} \EndIf
+\For{$k=1,\dots,K$} \Comment{iterate the smaller Gram $MM^\top$}
+  \State $w\gets M^\top v$;\quad $v\gets Mw/\norm{Mw}_2$
+\EndFor
+\State \Return $\max\big\{\norm{M^\top v}_2,\ l\big\}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Matrix Sign and Inverse Square Root via Gram Newton--Schulz}
+\label{app:gramns}
+
+Beyond the spectral norm, \Cref{alg:ours} needs the matrix sign $\msign(\cdot)$
+and the inverse square root of the $r \times r$ curvature matrix.  Both reduce to
+an inverse square root of a small positive semidefinite matrix: the sign is
+$\msign(X)=(XX^\top)^{-1/2}X$ (for full row rank matrix $X$), and the curvature term is $C^{-1/2}$ directly.  We
+compute that inverse square root by the Gram Newton--Schulz iteration
+\cite{gram_ns} (\Cref{alg:gramns}), which uses only $r\times r$ matrix
+multiplications and needs no eigendecomposition or SVD.
+
+\paragraph{Quintic Newton--Schulz.}
+Each iteration applies an odd degree-five polynomial
+\begin{equation}\label{e-gram-ns-poly}
+    p_t(s)
+    =
+    a_t s + b_t s^3 + c_t s^5 .
+\end{equation}
+The coefficients $(a_t,b_t,c_t)$ are the PolarExpress coefficients
+\cite{polarexpress}.  They are chosen so that repeated composition of the
+maps $p_t$ drives singular values toward $1$.  The coefficients are
+computed once at startup and reused for every optimizer step.
+
+
+\paragraph{Gram iteration.}
+Rather than iterating on the rectangular matrix, we iterate on its $r\times r$
+Gram matrix \cite{gram_ns}.  Let $R_t = Y_t Y_t^\top \in \mathbb{R}^{r\times r}$
+be the Gram matrix of the current rectangular iterate $Y_t$.  The rectangular
+update and its Gram matrix evolve together in closed form,
+\[
+\begin{aligned}
+    M_t &= a_t I + b_t R_t + c_t R_t^2, \\
+    Y_{t+1} &= M_t Y_t, \\
+    R_{t+1} &= Y_{t+1}Y_{t+1}^\top = M_t R_t M_t ,
+\end{aligned}
+\]
+so the whole iteration runs on $R_t$ alone.  Because $M_t$ is a polynomial in
+$R_t$, it shares the singular vectors of $Y_t$ and moves only its singular
+values; since the coefficients \eqref{e-gram-ns-poly} drive the normalized
+singular values to $1$, we have $Y_t \to \msign(Y_0)$.  The Gram update thus
+implements the same quintic Newton--Schulz map on the singular values, at the
+cost of only $r\times r$ matrix multiplications.
+
+\paragraph{Shared accumulator.}
+The method also maintains an accumulator $Q_t$.  Starting from
+$Q_0=I$, each step sets
+\[
+    Q_{t+1}=M_t Q_t,
+    \qquad
+    R_{t+1}=M_t R_t M_t .
+\]
+Hence by induction,
+\[
+    Y_t=Q_tY_0,
+    \qquad
+    R_t=Q_tR_0Q_t^\top .
+\]
+Since the normalized singular values converge to $1$
+and $R_K\succ 0$, so $R_K\to I$, and
+$Q_K\approx R_0^{-1/2}$.  The returned accumulator $Q=Q_K$ thus satisfies
+$Q\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,S^{-1/2}$, i.e., $S^{-1/2}\approx Q/\sqrt{\gamma}$.
+The two uses differ only in the matrix $S$ and scalar $\gamma$ we pass to
+\Cref{alg:gramns}:
+
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+    \item \textbf{Matrix sign.}
+    Call \Cref{alg:gramns} with $S=XX^\top$ and $\gamma=\norm{X}_F^2$, giving
+    \[
+        \msign(X)=(XX^\top)^{-1/2}X=QX/\sqrt{\gamma}.
+    \]
+    \item \textbf{Inverse square root.}
+    Damp $C\succ 0$ to $\widehat{C}=C+\delta\lambda_{\max}(C)I$ (\Cref{app:damping}) and
+    call \Cref{alg:gramns} with $S=\widehat{C}$ and $\gamma=\Tr(\widehat{C})$, giving
+    \[
+        C^{-1/2}\approx\widehat{C}^{-1/2}=Q/\sqrt{\gamma}.
+    \]
+\end{itemize}
+
+
+
+\paragraph{Stability and precision.}
+We run the Gram Newton--Schulz iteration in fp32, which is inexpensive because
+every matrix is only $r\times r$.  We use $K=8$ iterations.
+
+
+\begin{algorithm}[ht]
+\caption{Gram Newton--Schulz iteration}
+\label{alg:gramns}
+\begin{algorithmic}[1]
+\Require positive definite $S \in \mathbb{R}^{r \times r}$; $\gamma \ge \lambda_{\max}(S)$; coefficients $\{(a_t,b_t,c_t)\}_{t=1}^{K}$
+\Statex\vspace{-0.5\baselineskip}
+\State $R\gets S/\gamma$;\quad $Q\gets I$ \Comment{normalize so $\lambda_{\max}(R)\le 1$}
+\For{$t=1,\dots,K$}
+  \State $M\gets a_t I+b_t R+c_t R^2$
+  \State $Q\gets M Q$;\quad $R\gets M R M$
+\EndFor
+\State \Return $Q\approx (S/\gamma)^{-1/2}$
+\end{algorithmic}
+\end{algorithm}
+
+
+\subsection{Relative Damping}\label{app:damping}
+Each inverse square root in \Cref{alg:ours} is damped so that directions of
+nearly zero curvature are not amplified without bound.  For a positive
+semidefinite curvature matrix $C = U\operatorname{diag}(\lambda)U^\top \in \mathbb{R}^{r\times r}$,
+we damp by $\delta$ relative to the top eigenvalue; \Cref{alg:gramns} then
+normalizes by $\gamma=\Tr(\widehat{C})$,
+\[
+    \widehat{C} = C + \lambda_{\max}\delta I,
+    \qquad
+    \widetilde C = \widehat{C}/\gamma .
+\]
+Since $\widehat{C} \succ 0$, the trace $\gamma$, the normalized spectrum, and the resulting
+inverse square root are all bounded,
+\[
+    \lambda_{\max}(1+\delta) \ \le\ \gamma
+        = \textstyle\sum_{i=1}^r \lambda_i + r\lambda_{\max}\delta
+        \ \le\ r\lambda_{\max}(1+\delta),
+\]
+\[
+    \frac{\lambda_i + \lambda_{\max}\delta}{\gamma}
+        \in \left[\frac{\delta}{r(1+\delta)},\ 1\right],
+        \qquad
+    \lambda\!\left(\widetilde C^{-1/2}\right)
+        \in \left[1,\ \sqrt{\tfrac{r(1+\delta)}{\delta}}\right].
+\]
+The bound $\sqrt{r(1+\delta)/\delta}$ grows as $\delta\to 0$, so a smaller
+$\delta$ permits stronger amplification of low-curvature directions.
+
+\paragraph{Warmup.}
+At the beginning of training, an EMA curvature factor may still be zero.
+When $\lambda_{\max}(C)=0$, we set the inverse square root
+to identity,
+$\widetilde C^{-1/2}=I$.  The corresponding
+side is then unpreconditioned, so the update reduces to the plain
+momentum direction until the curvature estimate becomes nonzero.
+
+
+
+
+
+\section{FLOP Overhead per Optimizer Step}
+\label{app:flops}
+The wall-clock measurements in \Cref{sec:exp-walltime} depend on the hardware, so
+we also report leading matmul FLOP counts, which do not.  We count one
+multiply-add as two FLOPs.  The count below is for one
+adapted linear layer with frozen base weight $W$ and rank-$r$ LoRA factors
+$A,B$,
+\[
+  W\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}},\quad
+  B\in\mathbb{R}^{d_{\mathrm{out}}\times r},\quad
+  A\in\mathbb{R}^{r\times d_{\mathrm{in}}},
+\]
+with $r\ll d_{\mathrm{in}},d_{\mathrm{out}}$.  Throughout, $K$ denotes the number
+of Newton--Schulz iterations, and $n_{\mathrm{tok}}$ denotes the number of tokens
+processed per optimization step.
+
+
+\paragraph{Forward and backward.}
+For a linear
+layer $Y=XW^\top$, the forward pass costs
+$2d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}$
+FLOPs.
+In full finetuning, given backward gradient $G=\nabla_Y \mathcal{L}$,
+the backward pass computes both the input gradient and
+the weight gradient, 
+\[
+\nabla_X \mathcal{L} = GW,
+\qquad
+\nabla_W \mathcal{L} = G^\top X,
+\]
+so it costs twice the forward.  In LoRA finetuning the
+base weight $W$ is frozen, so we do not form
+$\nabla_W \mathcal{L}$.  The
+backward pass through $W$ therefore costs only one forward-equivalent
+matmul:
+\begin{equation}
+  C_{\mathrm{fwd}}^{\mathrm{base}}
+  =
+  C_{\mathrm{bwd}}^{\mathrm{base}}
+  =
+  2 d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}} .
+  \label{eq:flop-fb}
+\end{equation}
+Thus the frozen base weights contribute
+\[
+    4N n_{\mathrm{tok}}
+\]
+FLOPs per step, where $N$ is the total number of frozen adapted-layer
+parameters.  This should be compared with the usual
+$6N n_{\mathrm{tok}}$ count for full finetuning
+\cite{kaplan2020scaling}.
+LoRA factors  contain
+\[
+    r(d_{\mathrm{in}}+d_{\mathrm{out}})
+\]
+trainable parameters and incur FLOPs of order
+$n_{\mathrm{tok}}r(d_{\mathrm{in}}+d_{\mathrm{out}})$.  Since
+$r\ll d_{\mathrm{in}},d_{\mathrm{out}}$, we omit these terms in the
+leading-order count.
+
+
+\paragraph{Optimizer.}
+The \methodname{} optimizer (\Cref{alg:ours}) update runs once per optimizer step and does not
+depend on $n_{\mathrm{tok}}$.  
+We now count the leading operations that scale with
+$d_{\mathrm{in}}$ or $d_{\mathrm{out}}$. 
+The leading terms consist of forming
+\[
+    C_A=B^\top P B,
+    \qquad
+    C_B=A Q A^\top,
+\]
+the preconditioned sign inputs, 
+the small-side Gram matrices for the two
+matrix signs, applying the accumulated Gram maps to recover the signs,
+post-preconditioning the signs, and computing the curvature-factor updates
+\[
+    \diag(G_A^\top C_A^{-1}G_A),
+    \qquad
+    \diag(G_B C_B^{-1}G_B^\top).
+\]
+With diagonal $P, Q$, these operations contribute
+$12r^2(d_{\mathrm{in}}+d_{\mathrm{out}})$
+leading FLOPs.
+
+The Newton--Schulz iterations themselves run in the small $r\times r$ Gram
+space.  One Gram Newton--Schulz call costs $8Kr^3$ FLOPs:
+$2r^3$ to form $R^2$, $2r^3$ for $Q\leftarrow MQ$, and $4r^3$ for
+$R\leftarrow MRM$.  Each layer uses four such calls: two matrix signs and two
+curvature inverse square roots.  Hence the small-matrix iterative work is $32Kr^3$.
+Ignoring lower-order elementwise operations, diagonal scalings, spectral-norm
+power iterations, and one-time re-anchoring terms, the leading optimizer cost is
+\begin{equation}
+  C_{\mathrm{opt}}
+  =
+  12r^2(d_{\mathrm{in}}+d_{\mathrm{out}})
+  +
+  32Kr^3 .
+  \label{eq:flop-opt}
+\end{equation}
+
+
+
+\paragraph{Overhead fraction.} Dividing \eqref{eq:flop-opt} by \eqref{eq:flop-fb} gives the
+per-layer optimizer FLOP overhead 
+\begin{equation}
+  \frac{C_{\mathrm{opt}}}{C_{\mathrm{fwd}}^{\mathrm{base}}
+  +C_{\mathrm{bwd}}^{\mathrm{base}}}
+  =
+  \frac{
+    12r^2(d_{\mathrm{in}}+d_{\mathrm{out}})
+    +
+    32Kr^3
+  }{
+    4d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}
+  }
+  =
+  \frac{3r^2}{n_{\mathrm{tok}}}
+  \left(
+    \frac1{d_{\mathrm{in}}}
+    +
+    \frac1{d_{\mathrm{out}}}
+  \right)
+  +
+  \frac{
+    8Kr^3
+  }{
+    d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}
+  } .
+  \label{eq:flop-ratio}
+\end{equation}
+Thus, for fixed model dimensions, rank, and Newton--Schulz iteration count, the
+optimizer FLOP fraction decays as $1/n_{\mathrm{tok}}$.
+The first term is
+governed by the smaller of the two layer dimensions. The second is divided by their product,
+so relative to the first it weighs most on the square attention matrices, where the two
+dimensions are comparable, and less on the wide feed-forward matrices. 
+The whole-model overhead is an average of these per-layer fractions weighted by layer size, so
+it is dominated by the large feed-forward matrices, which have the smallest fraction. 
+
+\paragraph{Why the Gram form.} All of the dependence on $K$ sits in the $32Kr^3$ term, the
+Gram Newton--Schulz. It computes the matrix sign and the curvature inverse square roots by
+iterating on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
+(\Cref{app:gramns}), which is about $d/(2r)$ cheaper per iteration. Iterating on the factor
+instead would make the optimizer step roughly $2\times$ costlier, increasing its share of
+the wall (\Cref{tab:breadth}).
+
+\section{Factor Self-Balancing}
+\label{app:gauge}
+By \eqref{eq:ours-rho}, the update size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. The rescaling $(A,B)\mapsto(cA,c^{-1}B)$ preserves the product $BA$, so the layer's output is unchanged. It does change $\norm{A}_2$ and $\norm{B}_2$, shifting $\rho$. Among such rescalings, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style update sizes \cite{loramuon}.
+
+In our runs this problem does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.6\linewidth]{fig_gauge.pdf}
+  \caption{\textbf{Factor norm self-balancing in \methodname{}.} Spectral-norm ratio $\norm{B}_2/\norm{A}_2$ over training steps for Llama-3.2-1B finetuned on the math dataset at each rank. The ratio settles near $1$.}
+  \label{fig:gauge}
+\end{figure}
+
+\section{Additional Learning Curves}
+\label{app:curves}
+\Cref{tab:breadth} shows steps-to-Adam across model families on code and math.
+\Cref{fig:curves} complements this with the evaluation loss over training steps: rows~(a)
+and~(b) span the model families on code and math, and row~(c) the rank ladder. Each panel
+shows Adam and \methodname{} at their optimal learning rates.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figA_curves.pdf}
+  \caption{\textbf{\methodname{} speedup over Adam across settings.} Evaluation loss over training steps, Adam vs \methodname{} at each setting's best learning rate. \textbf{(a)}~model families finetuned on code and \textbf{(b)}~on math, at rank $r = 256$; \textbf{(c)}~the rank ladder on Llama-3.2-1B (math). The dashed span marks the steps \methodname{} saves in reaching Adam's final loss. Settings already drawn as curves in the main text (\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated.}
+  \label{fig:curves}
+\end{figure}
+
+\stopcontents[app]
+\end{document}

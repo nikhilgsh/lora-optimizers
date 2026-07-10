@@ -1,0 +1,479 @@
+\section{Online Curvature Estimation}
+\label{app:matnormal-04}
+\Cref{alg:ours} stores raw curvature vectors $p,q$ and uses their normalized
+versions
+\[
+  P=\diag(p/\norm{p}_\infty),
+  \qquad
+  Q=\diag(q/\norm{q}_\infty)
+\]
+inside the small closures $B^\top P B$ and $AQA^\top$ that score factor
+gradients. The question in this appendix is when those normalized vectors can be
+read as the diagonal curvature shapes predicted by the Kronecker moment model.
+
+The useful conclusion is conditional and a posteriori. If the replay moment at
+step $t$ has the diagonal-Kronecker block form, then any positive definite
+closure held fixed across the weighted sum recovers the model diagonal after
+infinity-norm normalization. This invariance is exactly why the fixed-fit
+calculation alone does not justify the implemented EMA. The implemented
+recurrence scores each factor gradient once, with the closure and LoRA factors
+available at that step, so its normalized state is certified by the fixed-fit
+model only when the exact residual ratios below are small.
+
+\subsection{The Online Quantity}
+\label{sec:weighted-estimation-04}
+
+\paragraph{Curvature weights.}
+Let $G_{s,i}(W)=\nabla\ell_{x_{s,i}}(W)$ be the gradient of sample $i$ from
+step $s$ evaluated at weights $W$. The observed batch gradient is
+$G_s=n_s^{-1}\sum_iG_{s,i}(W_s)$, and $g_s=\vec(G_s)$. The observed LoRA factor
+gradients are
+\[
+  G_{A,s}=B_s^\top G_s\in\mathbb{R}^{r\times d_{\mathrm{in}}},
+  \qquad
+  G_{B,s}=G_sA_s^\top\in\mathbb{R}^{d_{\mathrm{out}}\times r}.
+\]
+For comparison with the current-factor moment model, also define the
+current-factor replay gradients
+\[
+  \widetilde G_{A,t,s}=B_t^\top G_s,
+  \qquad
+  \widetilde G_{B,t,s}=G_sA_t^\top .
+\]
+The curvature recurrence uses the geometric weights
+\[
+  \EMA_{s\leq t}[\phi_s]
+  :=
+  \sum_{s\leq t}w_{t,s}\phi_s,
+  \qquad
+  w_{t,s}=(1-\beta_2)\beta_2^{t-s}.
+\]
+Only the curvature input is relevant in this subsection: it is the
+second-moment matrix in the outer-gradient constraint that determines the
+diagonal metric used by the update. If old samples could be recomputed at the
+current weights, that curvature input would be
+\[
+  \overline\Sigma^{\mathrm{ideal}}_t
+  =
+  \sum_{s\le t}\frac{w_{t,s}}{n_s}\sum_{i=1}^{n_s}
+  \vec(G_{s,i}(W_t))\vec(G_{s,i}(W_t))^\top .
+\]
+The online estimator never forms this moment. The sequence of objects used in
+the rest of the section is:
+\begin{enumerate}[leftmargin=1.6em,itemsep=2pt,topsep=2pt]
+  \item Replace the current-weight per-sample moment by the observed
+  batch-gradient moment
+  \[
+    \overline\Sigma_t
+    =
+    \EMA_{s\leq t}[g_sg_s^\top].
+  \]
+  This is the stale-gradient and minibatch second-moment approximation.
+  \item Map the dense observed moment to replay factor-gradient moments using
+  the current LoRA factors $A_t,B_t$ inside the weighted sum.
+  \item Model the resulting factor-gradient moments by diagonal Kronecker
+  blocks.
+  \item Apply a fixed-closure diagonal fit to those factor-gradient moments.
+  \item Compare that fixed-closure replay fit with the stored EMA through the
+  exact residual ratios in \Cref{lem:online-decomp-04}.
+\end{enumerate}
+The first three steps are modeling approximations. The fourth is the
+fixed-closure fitting calculation. The fifth is an exact online reduction.
+
+\paragraph{Curvature observations.}
+Given the raw vectors $p_t,q_t$, \Cref{alg:ours} forms
+\[
+  P_t=\diag\!\bigl(p_t/\norm{p_t}_\infty\bigr),
+  \qquad
+  Q_t=\diag\!\bigl(q_t/\norm{q_t}_\infty\bigr),
+\]
+then builds the rank-$r$ closures
+\[
+  C_{A,t}=B_t^\top P_tB_t,
+  \qquad
+  C_{B,t}=A_tQ_tA_t^\top .
+\]
+These closures are the small matrices used to score a factor-gradient matrix
+coordinatewise. Let $K^A_t,K^B_t$ be the symmetric scoring matrices that appear
+in that score:
+\[
+  \hat q_t
+  =
+  \frac1r\diag\!\left(G_{A,t}^\top K^A_tG_{A,t}\right),
+  \qquad
+  \hat p_t
+  =
+  \frac1r\diag\!\left(G_{B,t}K^B_tG_{B,t}^\top\right).
+\]
+In the idealized displayed algorithm, $K^A_t=C_{A,t}^{-1}$ and
+$K^B_t=C_{B,t}^{-1}$. With relative damping, $K^A_t$ and $K^B_t$ are the
+damped inverse matrices specified by that implementation. The online argument
+below compares the scoring matrices actually used at old steps with the scoring
+matrix used at step $t$.
+
+At step $t$, the optimizer forms one curvature observation from the current
+factor gradients and updates the raw curvature vectors,
+\begin{equation}\label{eq:ours-klcoupling-04}
+\begin{aligned}
+  q_{t+1}
+  &=
+  \beta_2q_t+(1-\beta_2)\hat q_t,
+  &
+  p_{t+1}
+  &=
+  \beta_2p_t+(1-\beta_2)\hat p_t,
+  \\
+  Q_{t+1}
+  &=
+  \diag\!\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
+  &
+  P_{t+1}
+  &=
+  \diag\!\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr).
+\end{aligned}
+\end{equation}
+
+The proposition below compares the stored EMA with a replay comparator that
+uses the current factors and current scoring matrix in every term:
+\[
+\begin{aligned}
+  \widetilde q^{\mathrm{cur}}_t
+  &:=
+  \frac1r\diag\!\left(
+    \sum_{s\le t}w_{t,s}
+    \widetilde G_{A,t,s}^\top K^A_t\widetilde G_{A,t,s}
+  \right),
+  \\
+  \widetilde p^{\mathrm{cur}}_t
+  &:=
+  \frac1r\diag\!\left(
+    \sum_{s\le t}w_{t,s}
+    \widetilde G_{B,t,s}K^B_t\widetilde G_{B,t,s}^\top
+  \right).
+\end{aligned}
+\]
+
+\begin{lemma}[Online certificate]\label{lem:online-decomp-04}
+For any realized trace with observed gradients, replay gradients, and
+step-local scoring matrices defined as above, suppose
+$\widetilde q^{\mathrm{cur}}_t$ and $\widetilde p^{\mathrm{cur}}_t$ are nonzero.
+The stored vectors in~\eqref{eq:ours-klcoupling-04} satisfy
+\begin{equation}\label{eq:online-current-closure-04}
+\begin{aligned}
+  q_{t+1}
+  &=
+  \beta_2^{t+1}q_0+\widetilde q^{\mathrm{cur}}_t+d^A_t+f^A_t,
+  \\
+  p_{t+1}
+  &=
+  \beta_2^{t+1}p_0+\widetilde p^{\mathrm{cur}}_t+d^B_t+f^B_t .
+\end{aligned}
+\end{equation}
+Here the scoring-matrix residuals are
+\[
+\begin{aligned}
+  d^A_t
+  &=
+  \frac1r\diag\!\left(
+    \sum_{s\le t}w_{t,s}
+    G_{A,s}^\top(K^A_s-K^A_t)G_{A,s}
+  \right),
+  \\
+  d^B_t
+  &=
+  \frac1r\diag\!\left(
+    \sum_{s\le t}w_{t,s}
+    G_{B,s}(K^B_s-K^B_t)G_{B,s}^\top
+  \right),
+\end{aligned}
+\]
+and the factor-map residuals are
+\[
+\begin{aligned}
+  f^A_t
+  &=
+  \frac1r\diag\!\left(
+    \sum_{s\le t}w_{t,s}
+    \bigl[
+      G_{A,s}^\top K^A_tG_{A,s}
+      -
+      \widetilde G_{A,t,s}^\top K^A_t\widetilde G_{A,t,s}
+    \bigr]
+  \right),
+  \\
+  f^B_t
+  &=
+  \frac1r\diag\!\left(
+    \sum_{s\le t}w_{t,s}
+    \bigl[
+      G_{B,s}K^B_tG_{B,s}^\top
+      -
+      \widetilde G_{B,t,s}K^B_t\widetilde G_{B,t,s}^\top
+    \bigr]
+  \right).
+\end{aligned}
+\]
+Let
+\[
+  e^A_t=\beta_2^{t+1}q_0+d^A_t+f^A_t,
+  \qquad
+  e^B_t=\beta_2^{t+1}p_0+d^B_t+f^B_t,
+  \qquad
+  \rho^A_t=\frac{\norm{e^A_t}_\infty}{\norm{\widetilde q^{\mathrm{cur}}_t}_\infty},
+  \qquad
+  \rho^B_t=\frac{\norm{e^B_t}_\infty}{\norm{\widetilde p^{\mathrm{cur}}_t}_\infty}.
+\]
+If $\rho^A_t,\rho^B_t\le1/2$, then
+\[
+\begin{aligned}
+  \left\|
+  \frac{q_{t+1}}{\norm{q_{t+1}}_\infty}
+  -
+  \frac{\widetilde q^{\mathrm{cur}}_t}{\norm{\widetilde q^{\mathrm{cur}}_t}_\infty}
+  \right\|_\infty
+  &\le 4\rho^A_t,
+  \\
+  \left\|
+  \frac{p_{t+1}}{\norm{p_{t+1}}_\infty}
+  -
+  \frac{\widetilde p^{\mathrm{cur}}_t}{\norm{\widetilde p^{\mathrm{cur}}_t}_\infty}
+  \right\|_\infty
+  &\le 4\rho^B_t .
+\end{aligned}
+\]
+\end{lemma}
+\begin{proof}
+Unrolling the raw recurrence in~\eqref{eq:ours-klcoupling-04}, adding and
+subtracting the current-scoring observed-gradient sums, and then adding and
+subtracting the current-scoring replay-gradient sums gives
+\eqref{eq:online-current-closure-04}. The normalized bounds use the elementary
+inequality
+\[
+  \left\|
+  \frac{x+e}{\norm{x+e}_\infty}
+  -
+  \frac{x}{\norm{x}_\infty}
+  \right\|_\infty
+  \le
+  4\frac{\norm{e}_\infty}{\norm{x}_\infty},
+  \qquad
+  \norm{e}_\infty\le\frac12\norm{x}_\infty .
+\]
+\end{proof}
+
+The lemma is the online certificate. It does not replace the EMA by the replay
+fit through an informal slow-drift statement. It gives the exact terms that
+separate them: $d^A_t,d^B_t$ measure scoring-matrix drift, while
+$f^A_t,f^B_t$ measure the change from old factor gradients to current-factor
+replay gradients. The ratios $\rho^A_t,\rho^B_t$ can be evaluated from a trace
+that stores these quantities. In a theoretical reading, small ratios are the
+explicit condition under which the fixed-closure model below transfers to the
+stored EMA.
+
+\subsection{The Fixed-Closure Fit}
+\label{sec:fixed-closure-comparator-04}
+
+\paragraph{Moment model.}
+The fixed-closure term in~\eqref{eq:online-current-closure-04} is a weighted fit to
+replay factor gradients. The modeling step assumes that the observed dense
+moment from the sequence above has normalized diagonal Kronecker form
+\begin{equation}\label{e-diag-kron-second-mom-model-04}
+  \overline\Sigma_t
+  =
+  \kappa_t(Q^\star_t\otimes P^\star_t),
+  \qquad
+  \norm{\diag P^\star_t}_\infty
+  =
+  \norm{\diag Q^\star_t}_\infty
+  =
+  1 .
+\end{equation}
+Here $\kappa_t>0$ carries the magnitude, while $P^\star_t,Q^\star_t$ carry the
+coordinate shape. The proposition treats the induced replay block form as exact
+so that the statement isolates the online error rather than adding a separate
+modeling-error term.
+
+\paragraph{Factor-gradient block form.}
+Use the current LoRA factors in the factor-gradient map before forming the
+weighted factor-gradient moments. The vectorization identity on the A side is
+\[
+  \vec(B_t^\top G_s)=(I\otimes B_t^\top)g_s ,
+\]
+with the analogous identity on the B side. Therefore the Kronecker model in
+\eqref{e-diag-kron-second-mom-model-04} implies
+\begin{align}
+  \Sigma_{A,t}
+  &:=
+  \EMA_{s\leq t}
+  \big[\vec(\widetilde G_{A,t,s})
+       \vec(\widetilde G_{A,t,s})^\top\big]
+  \approx
+  \kappa_t\,Q^\star_t\otimes C^\star_{A,t},
+  \nonumber\\
+  \Sigma_{B,t}
+  &:=
+  \EMA_{s\leq t}
+  \big[\vec(\widetilde G_{B,t,s}^\top)
+       \vec(\widetilde G_{B,t,s}^\top)^\top\big]
+  \approx
+  \kappa_t\,P^\star_t\otimes C^\star_{B,t},
+  \label{eq:observable-moments-04}
+\end{align}
+where
+\[
+  C^\star_{A,t}=B_t^\top P^\star_tB_t,
+  \qquad
+  C^\star_{B,t}=A_tQ^\star_tA_t^\top .
+\]
+Thus the A-side factor-gradient moment has diagonal shape $Q^\star_t$ and
+closure block $C^\star_{A,t}$, while the B-side moment has diagonal shape
+$P^\star_t$ and closure block $C^\star_{B,t}$. This is the fixed-closure target
+to which the online recurrence is compared.
+
+\paragraph{Fixed-closure fit.}
+Following KL-Shampoo~\cite{klshampoo}, the positive definite full-moment case
+motivates the fixed-closure fit by minimizing the log-determinant divergence
+\[
+  D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d
+\]
+over matrices of common dimension $d$. For the $A$ side, writing
+$(\Sigma_A)_{jj}$ for the $j$th $r\times r$ diagonal block, the terms depending
+on $q_j$ are
+\[
+  q_j^{-1}\Tr\!\left((\Sigma_A)_{jj}\widehat C_A^{-1}\right)
+  +
+  r\log q_j .
+\]
+The first-order condition gives
+$\hat q_j=r^{-1}\Tr((\Sigma_A)_{jj}\widehat C_A^{-1})$, and similarly for the
+$B$ side. We use this first-order expression as the fixed-closure fit for the
+empirical weighted replay-gradient moments:
+\begin{equation}\label{eq:factor-fit-04}
+\begin{aligned}
+  \hat q(\widehat C_A)
+  &=
+  \frac1r\diag\!\left(
+    \EMA_{s\leq t}[
+      \widetilde G_{A,t,s}^\top
+      \widehat C_A^{-1}
+      \widetilde G_{A,t,s}]
+  \right),
+  \\
+  \hat p(\widehat C_B)
+  &=
+  \frac1r\diag\!\left(
+    \EMA_{s\leq t}[
+      \widetilde G_{B,t,s}
+      \widehat C_B^{-1}
+      \widetilde G_{B,t,s}^\top]
+  \right).
+\end{aligned}
+\end{equation}
+This formula remains well-defined once the closures
+$\widehat C_A,\widehat C_B$ are positive definite or damped, even when the
+empirical outer-product moment is singular.
+
+\begin{lemma}[Fixed-closure scalar invariance]\label{lem:closure-invariance-04}
+Suppose the factor-gradient moments have the exact block form
+\[
+  \Sigma_A=\kappa\,Q^\star\otimes C^\star_A,
+  \qquad
+  \Sigma_B=\kappa\,P^\star\otimes C^\star_B,
+\]
+where the diagonal entries of $P^\star,Q^\star$ are positive,
+$\norm{\diag P^\star}_\infty=\norm{\diag Q^\star}_\infty=1$, and
+$C^\star_A,C^\star_B\succ0$. For any positive definite closures
+$\widehat C_A,\widehat C_B$, the fits in~\eqref{eq:factor-fit-04} satisfy
+\[
+  \hat q(\widehat C_A)
+  =
+  a\,\diag(Q^\star),
+  \qquad
+  \hat p(\widehat C_B)
+  =
+  b\,\diag(P^\star)
+\]
+for positive scalars $a,b$. Hence the normalized fitted vectors equal
+$\diag(Q^\star)$ and $\diag(P^\star)$.
+\end{lemma}
+\begin{proof}
+The $j$th block of $\Sigma_A$ is $\kappa q^\star_jC^\star_A$, while the
+$j$th block of $\diag(q)\otimes\widehat C_A$ is $q_j\widehat C_A$. The
+log-determinant objective separates across blocks, and each block is minimized
+by the best scalar multiple of $\widehat C_A$ for
+$\kappa q^\star_jC^\star_A$. Thus
+\[
+  \hat q_j
+  =
+  \kappa q^\star_j
+  \frac{\Tr(C^\star_A\widehat C_A^{-1})}{r}.
+\]
+The multiplier is independent of $j$, and the normalization removes it. The
+$B$ side is identical.
+\end{proof}
+
+\paragraph{Consequence.}
+The lemma says that, once the weighted factor-gradient moment has the block form
+in~\eqref{eq:observable-moments-04}, any positive definite closure held fixed
+across the weighted sum changes only an overall scalar on each side. The
+infinity-norm normalization removes that scalar in the fixed-closure model. It
+does not identify a unique closure for the replay fit. A fixed identity closure
+would have the same scalar-invariance property in this idealized calculation.
+The learned online recurrence is justified here only through
+\Cref{lem:online-decomp-04}: scoring-matrix drift and factor-map drift appear in
+the residual ratios $\rho^A_t,\rho^B_t$.
+
+\begin{proposition}[Online recovery certificate]\label{prop:online-recovery-04}
+For a realized trace, assume the replay-gradient moments at step $t$ have the
+exact block form
+\[
+  \Sigma_{A,t}
+  =
+  \kappa_t\,Q^\star_t\otimes C^\star_{A,t},
+  \qquad
+  \Sigma_{B,t}
+  =
+  \kappa_t\,P^\star_t\otimes C^\star_{B,t},
+\]
+with the normalizations in~\eqref{e-diag-kron-second-mom-model-04}. Also assume
+the current scoring matrices $K^A_t,K^B_t$ are positive definite, and let
+$\widehat C_A=(K^A_t)^{-1}$ and $\widehat C_B=(K^B_t)^{-1}$. If the residual
+ratios in \Cref{lem:online-decomp-04} satisfy $\rho^A_t,\rho^B_t\le1/2$, then
+the normalized online curvature state satisfies
+\[
+\begin{aligned}
+  \norm{\diag(Q_{t+1})-\diag(Q^\star_t)}_\infty
+  &\le 4\rho^A_t,
+  \\
+  \norm{\diag(P_{t+1})-\diag(P^\star_t)}_\infty
+  &\le 4\rho^B_t .
+\end{aligned}
+\]
+\end{proposition}
+\begin{proof}
+With $\widehat C_A=(K^A_t)^{-1}$ and
+$\widehat C_B=(K^B_t)^{-1}$, the fixed-closure fit in
+\eqref{eq:factor-fit-04} is exactly
+$\widetilde q^{\mathrm{cur}}_t,\widetilde p^{\mathrm{cur}}_t$.
+\Cref{lem:closure-invariance-04}
+therefore gives
+$\widetilde q^{\mathrm{cur}}_t/
+ \norm{\widetilde q^{\mathrm{cur}}_t}_\infty=\diag(Q^\star_t)$ and
+$\widetilde p^{\mathrm{cur}}_t/
+ \norm{\widetilde p^{\mathrm{cur}}_t}_\infty=\diag(P^\star_t)$.
+\Cref{lem:online-decomp-04} transfers these identities to the stored vectors
+with errors at most $4\rho^A_t$ and $4\rho^B_t$.
+\end{proof}
+
+\paragraph{Interpretation.}
+The section gives a certificate, not a stationarity theorem. The fixed-closure
+fit explains why the replay moment has the desired normalized diagonal factors
+under the block model. The online lemma then names the two ways the implemented
+EMA can fail to inherit that conclusion. The scoring-matrix terms
+$d^A_t,d^B_t$ are where the use of old closures enters. The factor-map terms
+$f^A_t,f^B_t$ are where the use of old LoRA factors enters. The initialization
+tail, these scoring-matrix terms, and these factor-map terms must be small
+relative to the replay fit. Under that condition,
+\Cref{prop:online-recovery-04} justifies using the stored normalized $p,q$ as
+the model curvature shapes. Without that condition, the fixed-fit calculation
+alone makes no online tracking claim.
