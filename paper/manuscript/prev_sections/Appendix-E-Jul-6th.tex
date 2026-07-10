@@ -1,0 +1,475 @@
+
+% ===========================================================================
+\section{Averaging as an LMO over Past Samples}
+\label{app:matnormal}
+\Cref{alg:ours} averages over past batches in two places: the factor
+momenta $\widehat M_A,\widehat M_B$ replace the factor gradients in the
+direction step~\eqref{eq:factor-directions}, and an EMA accumulates the
+vectors $p,q$ that form the curvature factors $P,Q$. Both averages are
+standard practice, and this appendix interprets them through the
+per-sample LMO~\eqref{eq:sample-lmo} extended over all past samples
+with decaying weights.
+\Cref{sec:weighted-lmo} states this weighted extension and shows that
+the history enters the problem only through two
+weighted moments, an average of the batch gradients and a second moment
+of the per-sample gradients.
+\Cref{sec:weighted-estimation} estimates
+both moments from the factor gradients alone, obtaining the $p,q$
+recursion of \Cref{alg:ours} and recovering the
+update~\eqref{eq:polora-update}. \Cref{sec:scale-placement} explains
+why \Cref{alg:ours} normalizes the accumulated vectors $p,q$ after the
+average rather than normalizing each per-step estimate before it. The
+update is invariant to the scale of the curvature factors, but the
+average that estimates them depends on that scale.
+
+
+\subsection{The Weighted LMO}
+\label{sec:weighted-lmo}
+A single minibatch gives a noisy objective and only a handful of
+constraints, so an update fit to it alone overfits that minibatch. To
+counter this, we extend the LMO~\eqref{eq:sample-lmo} over past
+minibatches. Ideally every past sample would enter with equal weight,
+since all are equally informative once scored at the current weights.
+What forces a weighting is that each past gradient is available only
+at its own step's weights, and substituting it for the current-weight
+gradient errs in proportion to the drift since that step. The decaying
+weights suppress the distant steps, where this error is large, and
+\Cref{as:slow-drift} below treats the drift within the remaining short
+window as negligible. This recency bias is exactly what the momentum
+and EMA choices below implement.
+
+\paragraph{The weighted problem.} Let $s$ index the optimizer steps and
+$i$ the samples of the size-$n_s$ minibatch at step $s$. Write
+$G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)$ for the per-sample gradient, $g_{s,i}=\vec(G_{s,i})$, and
+$G_s=\frac1{n_s}\sum_iG_{s,i}$ for the  batch gradient.
+
+Let
+$m_{t,s}$ and $w_{t,s}$ be nonnegative weights on the past steps, one
+for the objective and one for the constraints. The argument above
+fixes only that the weights should decay with age, not how fast,
+so we keep them general and defer the choice to~\eqref{eq:EMAweights}
+below. We now rewrite the loss and constraint of~\eqref{eq:sample-lmo}
+with these weights, both evaluated at the current weights $W_t$:
+\begin{equation}\label{eq:weighted-sample-lmo}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \displaystyle\sum_{s\le t} \frac{m_{t,s}}{n_s}\sum_{i=1}^{n_s}
+    \ip{\nabla\ell_{x_{s,i}}(W_t), \Delta W} \\[2pt]
+  \mbox{subject to} &
+  \sqrt{w_{t,s}/n_s}\,\bigl|\ip{\nabla\ell_{x_{s,i}}(W_t), \Delta W}\bigr|
+  \le \tau, \qquad s=1, \ldots, t,\quad i=1,\dots,n_s.
+  \end{array}
+\end{equation}
+%%\rob{There's a lot of terms/adjectives that make for poor math writing. For instance ..etc Terms that don't mean anything precise, are not defined, and only used once. This is a type of writing that works well in a more literary setting, but only adds confusion in a math/science setting. I suspect this is because some of the text is generated.}
+Problem~\eqref{eq:weighted-sample-lmo} uses the gradients
+$\nabla\ell_{x_{s,i}}(W_t)$, available only for the current batch
+$s=t$. We first apply the outergradient relaxation of
+\Cref{sec:sample-loss-lmo}, then substitute the gradients computed at
+each past step via \Cref{as:slow-drift}.
+
+\paragraph{The two weighted moments.} Applying the outergradient
+relaxation of \Cref{sec:sample-loss-lmo} to~\eqref{eq:weighted-sample-lmo}
+leaves a problem that depends on the history only through two
+weighted moments, given by
+\[
+\overline G_t=\sum_{s\le t}\frac{m_{t,s}}{n_s}\sum_{i=1}^{n_s}\nabla\ell_{x_{s,i}}(W_t),
+\qquad
+\overline\Sigma_t = \sum_{s\le t}\frac{w_{t,s}}{n_s}\sum_{i=1}^{n_s}
+  \vec(\nabla\ell_{x_{s,i}}(W_t))\vec(\nabla\ell_{x_{s,i}}(W_t))^\top.
+\]
+That is, $\overline G_t$ is the weighted average of the batch
+gradients, and $\overline\Sigma_t$ is the weighted second moment of
+the per-sample gradients. The objective in~\eqref{eq:weighted-sample-lmo}
+already equals $\ip{\overline G_t,\Delta W}$ by linearity. For the
+constraints, the outer products of the rescaled gradients
+sum to $\overline\Sigma_t$, so the leverage bound of \Cref{lem:gradprop}
+places each of them in the outergradient set
+$\mathcal{G}(\overline\Sigma_t)$ of~\eqref{eq:outgrad} and the
+constraints relax exactly as in~\eqref{eq:polorafull-hard}. The relaxed problem is
+\begin{equation}\label{eq:weighted-relaxed}
+ \begin{array}{ll}
+  \underset{\Delta W}{\mathrm{minimize}} &
+  \ip{\overline G_t, \Delta W} \\[2pt]
+  \mbox{subject to} &
+  \displaystyle\max_{\widetilde{G}\in\mathcal{G}(\overline\Sigma_t)}\ip{\widetilde{G},\Delta W}\le\tau .
+  \end{array}
+\end{equation}
+
+\paragraph{From ideal to computed gradients.} Both moments are built from
+the current-weight gradients $\nabla\ell_{x_{s,i}}(W_t)$, unavailable for
+past samples since sample $(s,i)$ was backpropagated at its own step
+$W_s$. One standing assumption closes this gap, and every later step
+invokes it.
+\begin{assumption}[Frozen window]\label{as:slow-drift}
+Over the effective window of the weights $m_{t,s}$ and $w_{t,s}$, the
+drift of the trainable factors is negligible: $A_s\approx A_t$ and
+$B_s\approx B_t$ for all steps $s$ in the window.
+\end{assumption}
+\rob{The awkward thing about this assumption is that it is not precise. What is the "effective window of the weights"? I think it would be best to just state: We replace the gradient and the covariance with momentum style estimates. This attempt at precisely justifying open more questions than it gives answers.}
+\noindent As a result, a step-$s$ quantity inside a window average may
+be exchanged for its step-$t$ value, with error first order in the
+drift $A_t-A_s$, $B_t-B_s$. We use two such exchanges: the
+\emph{gradient exchange}, where the computed gradient stands in for
+the current-weight gradient,
+$G_{s,i}=\nabla\ell_{x_{s,i}}(W_s)\approx\nabla\ell_{x_{s,i}}(W_t)$ by
+smoothness of $\ell$, and the \emph{factor exchange}, where factor
+expressions keep their current values, as in
+$B_s^\top G_s\approx B_t^\top G_s$. The gradient exchange reduces the
+moments to
+\[
+\overline G_t\approx\sum_{s\le t}m_{t,s}G_s,
+\qquad
+\overline\Sigma_t \approx \sum_{s\le t}\frac{w_{t,s}}{n_s}\sum_{i=1}^{n_s}g_{s,i}g_{s,i}^\top,
+\]
+computable from the per-sample gradients as they arrive.
+
+
+
+\paragraph{Choosing the weights.}
+A valid weighting concentrates its mass on the window where the
+exchanges of \Cref{as:slow-drift} hold, and a practical one must be
+computable without storing the past. Geometric decay meets both
+requirements, and the constant-memory recursions below induce it. For
+the objective in \eqref{eq:weighted-relaxed}, we set $\overline G_t$ to a
+look-ahead momentum $\widehat M_t$ of the batch gradients, mirroring the
+momentum scheme of \Cref{alg:ours},
+\[
+  M_{t+1}=\beta_1M_t+(1-\beta_1)G_t,
+  \qquad
+  \widehat M_t=\beta_1M_{t+1}+(1-\beta_1)G_t.
+\]
+This choice emphasizes decreasing the loss on recent batches. For the
+constraints in \eqref{eq:weighted-relaxed}, we use an EMA of the within-batch second
+moments,
+\[
+  \overline\Sigma_t
+  =\beta_2\,\overline\Sigma_{t-1}
+  +(1-\beta_2)\,\frac1{n_t}\sum_{i=1}^{n_t}g_{t,i}g_{t,i}^\top.
+\]
+This choice gives tighter constraints on recent batches. Unrolling the
+recursions gives the induced weights
+\begin{equation}\label{eq:EMAweights}
+  m_{t,s}=\beta_1^2(1-\beta_1)\beta_1^{t-1-s}
+  \quad(s<t),
+  \qquad
+  m_{t,t}=1-\beta_1^2,
+  \qquad
+  w_{t,s}=(1-\beta_2)\beta_2^{t-s}.
+\end{equation}
+
+\paragraph{Approximating the second moment.} As discussed in~\Cref{sec:sample-loss-lmo},
+$\overline\Sigma_t$ cannot be used directly, for two reasons: it is
+built from per-sample gradients that backpropagation never
+materializes, and it is too large to store. Two approximations remove
+these obstacles in turn.
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
+  \item \emph{Batch collapse.} We replace the within-batch average
+  $\frac1{n_s}\sum_ig_{s,i}g_{s,i}^\top$ by the outer product
+  $g_sg_s^\top$ of the batch gradient $g_s=\vec(G_s)$. This substitution
+  underlies the second moments of AdaGrad~\cite{adagrad} and its
+  relatives such as Adam~\cite{adam} and Shampoo~\cite{shampoo}, which
+  all accumulate outer products of batch gradients, and is exact at
+  batch size one. Under it the collapsed estimate is a
+  weighted average over batch gradients,
+  \[
+    \overline\Sigma_t\approx\E_{s \leq t}[g_sg_s^\top],
+    \qquad\text{where}\qquad
+    \E_{s \leq t}[\phi(G_s)]=\sum_{s\le t}w_{t,s}\,\phi(G_s).
+  \]
+  \item \emph{Kronecker factorization.} We assume the
+  Kronecker-factored form of~\eqref{eq:pq-factor} with diagonal
+  factors, written $P^\star,Q^\star$ to distinguish the model factors
+  from the estimates $P,Q$ that \Cref{alg:ours} stores. Since
+  $Q^\star\otimes P^\star$ is unchanged by the rescaling
+  $(P^\star,Q^\star)\mapsto(aP^\star,a^{-1}Q^\star)$, we fix
+  $\norm{\diag P^\star}_\infty=\norm{\diag Q^\star}_\infty=1$ and let an additional scalar
+  $\kappa_t>0$ carry the magnitude:
+  \begin{equation}\label{e-diag-kron-second-mom-model}
+    \E_{s \leq t}[g_sg_s^\top]\approx\kappa_t\,(Q^\star_t\otimes P^\star_t).
+  \end{equation}
+\end{itemize}
+
+\subsection{Estimating the Weighted Moments}
+\label{sec:weighted-estimation}
+In LoRA training, backpropagation gives the factor gradients $G_{A,s}=B_s^\top G_s$
+and $G_{B,s}=G_sA_s^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
+the full gradient $G_s$, by contrast, would take a $d_{\mathrm{out}}\times
+d_{\mathrm{in}}$ matmul and full-matrix storage per layer, exactly what
+the low-rank structure avoids. We estimate both weighted moments of \Cref{sec:weighted-lmo}
+from the factor gradients alone, taking the momentum $\widehat M_t$ for
+the objective and the model factors $P^\star,Q^\star$ for the
+constraint.
+% , with each replacement of a past-step factor by its current
+% value made under \Cref{as:slow-drift}.
+
+\paragraph{Factor momenta.} Under the linearized product
+update~\eqref{eq:DeltaW-lin}, the objective of~\eqref{eq:weighted-relaxed}
+decomposes as
+\[
+  \ip{\widehat M_t,\,\Delta B\,A+B\,\Delta A}
+  =\ip{\widehat M_tA^\top,\Delta B}+\ip{B^\top\widehat M_t,\Delta A},
+\]
+so the update depends on $\widehat M_t$ only through
+$\widehat M_tA^\top$ and $B^\top\widehat M_t$. The factor momenta
+$\widehat M_A,\widehat M_B$ of \Cref{alg:ours} (line~\ref{ln:mom})
+estimate precisely these, with $\widehat M_A$ averaging $B_s^\top G_s$
+and $\widehat M_B$ averaging $G_sA_s^\top$ under the same weights
+$m_{t,s}$. By the factor exchange of \Cref{as:slow-drift},
+$\widehat M_A\approx B_t^\top\widehat M_t$ and
+$\widehat M_B\approx\widehat M_tA_t^\top$.
+
+\paragraph{Moments of the factor gradients.} To estimate $P^\star$ and $Q^\star$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient. To this end, note that
+$\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of the gradient of $A$ is given by
+\begin{align*}
+ \Sigma_{A,t} &:=  \E_{s \leq t}\big[ \vec(G_{A,s})  \vec(G_{A,s})^\top\big]  \\
+ &=  \E_{s \leq t}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
+   &\approx  (I\otimes B_t^\top) \E_{s \leq t}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
+\end{align*}
+\rob{Again \Cref{as:slow-drift} is not precise enough. Here we need to say explicitly, our approximation replaces $B_s$ by $B_t$ for all $s \leq t.$ }
+where the last line uses the factor exchange of \Cref{as:slow-drift} to bring the current factor $B_t$ out of the sum. Using~\eqref{e-diag-kron-second-mom-model} in the above gives
+\begin{align*}
+ \Sigma_{A,t} 
+   &\approx  \kappa_t\,  (I\otimes B_t^\top)  (Q^\star_t\otimes P^\star_t)  (I\otimes B_t) \; = \kappa_t\,   Q^\star_t\otimes  (B_t^\top P^\star_t B_t),
+\end{align*} 
+where the equality uses the mixed-product rule of Kronecker products.
+Using analogous arguments for the gradient of $B$, we arrive at the following approximations
+\begin{align}
+  \Sigma_{A,t} & =\E_{s \leq t}\big[\vec(G_{A,s})\vec(G_{A,s})^\top\big] \approx\kappa_t\,Q^\star_t\otimes C^\star_{A,t} \nonumber \\
+  \Sigma_{B,t}&=\E_{s \leq t}\big[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\big] \approx \kappa_t\,P^\star_t\otimes C^\star_{B,t}, \label{eq:observable-moments}
+\end{align}
+where $C^\star_{A,t}=B_t^\top P^\star_tB_t$ and $C^\star_{B,t}=A_tQ^\star_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure} evaluated at the model factors.
+
+\paragraph{Fitting the factors.} We approximate the model factors $P^\star$
+and $Q^\star$ by fitting the second-moment model to the observed
+moments~\eqref{eq:observable-moments}. For brevity, here we drop the subscript $t$ since
+all quantities are at the current step. Following
+KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
+divergence~\cite{logdetdiv}
+\[
+  D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
+\]
+defined for positive definite matrices $\Sigma$ and $S$ of common
+dimension $d$.
+% Away from the exact model, no candidate reproduces the
+% observed moment, and the divergence decides how the mismatch is
+% weighed. 
+Using~\eqref{eq:observable-moments} we fit the two factors by solving
+\begin{equation}\label{eq:factor-fit}
+  \hat{q}(\widehat P)
+  =\argmin_{q>0}\;
+  D\big(\Sigma_A,\; \diag(q) \otimes \widehat C_A\big),
+  \qquad
+  \hat{p}(\widehat Q)
+  =\argmin_{p>0}\;
+  D\big(\Sigma_B,\;\diag(p) \otimes \widehat C_B\big),
+\end{equation}
+where we freeze the current estimate of $\widehat C_A$ when estimating $\hat{q}$, and freeze the estimate of $\widehat C_B$ when estimating $\hat{p}$. This alternating freezing is needed to get a closed form update for $\hat{q}$ and $\hat{p}$, since otherwise $\widehat C_A$ and $\widehat C_B$ introduce a joint dependency through
+$\widehat C_A=B^\top\widehat PB$ and
+$\widehat C_B=A\widehat QA^\top$, for diagonal
+$\widehat P,\widehat Q\succ0$.
+
+% Because $C^\star_A$ contains $P^\star$ and $C^\star_B$
+% contains $Q^\star$, each fit must be posed with an estimate of the
+% other factor, $\widehat C_A=B^\top\widehat PB$ and
+% $\widehat C_B=A\widehat QA^\top$ for diagonal
+% $\widehat P,\widehat Q\succ0$, which couples the two fits:
+% \begin{equation}\label{eq:factor-fit}
+%   \hat{q}(\widehat P)
+%   =\argmin_{q>0}\;
+%   D\big(\Sigma_A,\; \diag(q) \otimes \widehat C_A\big),
+%   \qquad
+%   \hat{p}(\widehat Q)
+%   =\argmin_{p>0}\;
+%   D\big(\Sigma_B,\;\diag(p) \otimes \widehat C_B\big).
+% \end{equation}
+The closed form solutions to~\eqref{eq:factor-fit} are given by
+\[
+  \hat{q}(\widehat P)=\frac1r\diag\!\left(\E_{s \leq t}[G_{A,s}^\top \widehat C_A^{-1}G_{A,s}]\right),
+  \qquad
+  \hat{p}(\widehat Q)=\frac1r\diag\!\left(\E_{s \leq t}[G_{B,s} \widehat C_B^{-1}G_{B,s}^\top]\right).
+\]
+For fixed positive definite $\Sigma$ and $S$, let
+$$c^\star(\Sigma,S) :=\argmin_{c>0}D(\Sigma,cS)=\Tr(\Sigma S^{-1})/d$$
+be the best scalar multiple
+of $S$.
+The
+next lemma shows the coupled fits are consistent even when posed with
+inexact estimates.
+
+\begin{lemma}[Consistency]\label{lem:consistency}
+Let the model~\eqref{e-diag-kron-second-mom-model} hold with equality. For any
+diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
+fits~\eqref{eq:factor-fit}  with $\widehat C_A=B^\top\widehat PB$
+and $\widehat C_B=A\widehat QA^\top$ return
+\[
+  \hat{q}(\widehat P)=\kappa\,c^\star\big(C^\star_A,\widehat C_A\big)\,\diag(Q^\star),
+  \qquad
+  \hat{p}(\widehat Q)=\kappa\,c^\star\big(C^\star_B,\widehat C_B\big)\,\diag(P^\star),
+\]
+so $\hat{q}/\norm{\hat{q}}_\infty=\diag(Q^\star)$ and
+$\hat{p}/\norm{\hat{p}}_\infty=\diag(P^\star)$.
+\end{lemma}
+\begin{proof}
+\rob{This proof also assumes~\eqref{eq:observable-moments} holds to equality.}
+Under the model, \eqref{eq:observable-moments} makes $\Sigma_A$ block
+diagonal with $j$th block $\kappa\,q^\star_j\,C^\star_A$, and the candidate
+$\diag(q)\otimes\widehat C_A$ of~\eqref{eq:factor-fit} at a point $q>0$
+is block diagonal with $j$th block $q_j\,\widehat C_A$. Traces and
+log-determinants add across blocks, so the objective is
+$\sum_jD(\kappa q^\star_jC^\star_A,\,q_j\widehat C_A)$, one term per
+block, and the $j$th term is minimized at its best scalar
+multiple,
+\[
+\hat{q}_j=c^\star(\kappa q^\star_jC^\star_A,\widehat C_A)
+=\kappa\,q^\star_j\,c^\star(C^\star_A,\widehat C_A).
+\]
+The factor
+$\kappa\,c^\star(C^\star_A,\widehat C_A)$ is the same for every $j$, and
+$\norm{\diag Q^\star}_\infty=1$, so the normalization removes it. The claim
+for $\hat{p}$ follows with the roles of the two factors exchanged.
+\end{proof}
+
+\paragraph{Online estimator.}
+The fit~\eqref{eq:factor-fit} is a weighted average over the past factor
+gradients with the geometric weights $w_{t,s}$ of
+\Cref{sec:weighted-lmo}, so \methodname{} forms it online by the same
+EMA. At each step it evaluates the single-batch fit
+of~\eqref{eq:factor-fit} on the current batch (write
+$\hat{q}_t,\hat{p}_t$), posed with the stored factors
+$C_{A,t}=B_t^\top P_tB_t$ and $C_{B,t}=A_tQ_tA_t^\top$, and folds the
+result into a running average,
+\begin{equation}\label{eq:ours-klcoupling}
+\begin{aligned}
+  \hat{q}_t(P_t) &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
+  &
+  \hat{p}_t(Q_t) &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
+  \\
+  q_{t+1} &= \beta_2q_t+(1-\beta_2)\hat{q}_t(P_t),
+  &
+  p_{t+1} &= \beta_2p_t+(1-\beta_2)\hat{p}_t(Q_t),
+  \\
+  Q_{t+1} &= \diag\!\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
+  &
+  P_{t+1} &= \diag\!\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr).
+\end{aligned}
+\end{equation}
+The last line applies the normalization that \Cref{lem:consistency}
+justifies. Unrolled, the recursion weights the per-step estimates by
+exactly the $w_{t,s}$ of \Cref{sec:weighted-lmo}. Within the window,
+$B_s\approx B_t$ by \Cref{as:slow-drift}, and
+the stored $P_s$ changes only at rate $1-\beta_2$, so
+$C_{A,s}\approx C_{A,t}$ and each per-step estimate already uses the
+current matrices. The running $q_t$ then matches the full fit
+$\hat{q}(P_t)$, the consistent fit of \Cref{lem:consistency}.
+
+\paragraph{Comparison with KL-Shampoo.} KL-Shampoo~\cite{klshampoo}
+also fits Kronecker factors by minimizing the log-determinant
+divergence, and its moving average has the same shape
+as~\eqref{eq:ours-klcoupling}. Our approach differs in the following ways:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
+  \item \emph{No distributional assumptions.} KL-Shampoo fits the second moment
+  of a stationary gradient distribution. Here $\E_{s \leq t}$ is a weighted sum
+  over the realized gradients, not an expectation, and the statements
+  above hold for an arbitrary gradient stream.
+  \item \emph{The observables are the factor gradients.} KL-Shampoo fits
+  dense factors to the second moment of the weight gradient $G$. Here
+  each diagonal factor is fit to the second moment of its own factor
+  gradient, $G$ is never formed, and the two fits are coupled through
+  $C_A$ and $C_B$.
+  \item \emph{Valid at every step.} KL-Shampoo justifies its
+  moving average as a stochastic proximal-gradient step on the
+  divergence objective, so its estimates are correct in the limit. Here
+  the recursion computes the weighted moments exactly at every step,
+  and \Cref{lem:consistency} shows that posing a fit with an inexact
+  estimate of the other factor only rescales its output, a scale the
+  normalization removes. The one remaining approximation is the frozen
+  window of \Cref{as:slow-drift}.
+\end{itemize}
+
+\paragraph{Recovering the update of \Cref{alg:ours}.} Substituting the
+fitted model $\kappa_t(Q_t\otimes P_t)$ for $\overline\Sigma_t$ and the
+look-ahead momentum $\widehat M_t$ for $\overline G_t$ turns the
+weighted problem~\eqref{eq:weighted-relaxed} into the preconditioned
+spectral LMO~\eqref{eq:polorafull}
+(\Cref{lem:pseudogradient-spectral}). Solving it with the direction and
+magnitude steps of \Cref{sec:sample-loss-lmo}, with the factor momenta
+standing in for the factor gradients, returns the
+update~\eqref{eq:polora-update}. The only departure of \Cref{alg:ours}
+from this derivation is that the curvature factors update after the
+direction step, so step $t$ runs on the estimate from step $t-1$, which
+avoids a second formation and inversion of $C_A$ and $C_B$ per step.
+
+\subsection{Normalization Placement}
+\label{sec:scale-placement}
+\methodname{} normalizes the accumulated vectors $q_{t+1},p_{t+1}$ to unit
+largest entry when it forms the next-step factors
+$Q_{t+1},P_{t+1}$~\eqref{eq:ours-klcoupling}, rather than normalizing each
+per-step estimate $\hat{q}_t,\hat{p}_t$ before it enters the average.
+Normalizing the accumulated vectors does not change the update, which
+depends only on the direction of the stored factors. Normalizing each
+estimate first would change the average, which is sensitive to the scale
+of those estimates.
+
+\paragraph{The update is scale-free.} The update depends on the stored
+factors only through their direction. Under a rescaling $Q\mapsto cQ$
+($c>0$), both $Q^{-1/2}$ and $C_B^{-1/2}=(AQA^\top)^{-1/2}$ pick up a
+factor $c^{-1/2}$. Inside the matrix sign this scalar has no effect, since
+the sign is scale-invariant. Outside it, the scalar multiplies $D_A$ and
+$D_B$ by $c^{-1/2}$, which the division by $\norm{D_A}_2$ and
+$\norm{D_B}_2$ in the magnitude step cancels. The factor $P$ enters the
+same way. The update therefore sees only the direction of the stored
+factors, never the magnitude $\kappa_t$ of the
+model~\eqref{e-diag-kron-second-mom-model}, so normalizing the accumulated
+vectors leaves it unchanged.
+
+\paragraph{The average is scale-sensitive.} The coupled fit makes each
+per-step estimate scale inversely with the stored factor it is computed
+from,
+\[
+  \hat{q}_t(aP_t)=a^{-1}\,\hat{q}_t(P_t),
+  \qquad
+  \hat{p}_t(aQ_t)=a^{-1}\,\hat{p}_t(Q_t)
+  \qquad(a>0),
+\]
+since $C_A=B^\top PB$~\eqref{eq:ours-closure} is linear in $P$, and
+likewise $C_B$ in $Q$. Normalizing after
+averaging gives every stored factor the same scale
+($\norm{\diag P_t}_\infty=1$ at every step), so the estimates enter the
+average on a common footing. Were the stored factor at step $s$ left carrying a step-varying scale
+$a_s$ instead, the identity above would scale
+$\hat{q}_s$ by $1/a_s$, so it would enter with effective weight
+$w_{t,s}/a_s$ rather than the $w_{t,s}$ chosen in \Cref{sec:weighted-lmo}.
+Normalizing the per-step estimates themselves before averaging would fail
+for a second reason. Normalization is nonlinear and does not commute with
+the mean, so per-step noise that cancels in the raw average would survive.
+This average-then-normalize order is the one by which momentum precedes
+normalization in normalized SGD~\cite{cutkosky_nigt} and orthogonalization
+in Muon~\cite{denoise_ortho}.
+
+\section{Numerical Subroutines}
+\label{app:primitives}
+
+\subsection{Spectral-Norm Estimation}
+\label{app:smax}
+\Cref{alg:ours} requires repeated estimates of spectral norms.  
+We estimate each $\norm{M}_2$ by warm-started power iteration on the smaller of
+the two Gram matrices (\Cref{alg:smax}), caching the leading vector across
+optimizer steps so it starts near the top singular vector.  A cold or stale start
+can under-estimate $\norm{M}_2$; since the optimizer divides by this estimate,
+that would inflate the update and risk destabilizing training.  We therefore
+return the larger of the power-iteration value and the largest row norm of $M$, a
+lower bound on $\norm{M}_2$.  We use $K=8$ iterations.
+
+\begin{algorithm}[ht]
+\caption{Guarded spectral-norm estimate of $\norm{M}_2$}
+\label{alg:smax}
+\begin{algorithmic}[1]
+\Require $M\in\mathbb{R}^{m\times n}$, $m\le n$ (else $M^\top$); cached $v\in\mathbb{R}^m$; iterations $K$
+\State $l \gets \max_i\norm{M_{i,:}}_2$
+\If{$v$ is empty} \State $v\gets M\mathbf{1}$ \Comment{cold start} \EndIf
+\For{$k=1,\dots,K$} \Comment{iterate the smaller Gram $MM^\top$}
+  \State $w\gets M^\top v$;\quad $v\gets Mw/\norm{Mw}_2$
+\EndFor
+\State \Return $\max\big\{\norm{M^\top v}_2,\ l\big\}$
+\end{algorithmic}
+\end{algorithm}
