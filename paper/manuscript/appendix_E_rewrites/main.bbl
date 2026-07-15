@@ -212,38 +212,6 @@
     \field{year}{2015}
   \endentry
 
-  \entry{adagrad}{article}{}
-    \name{author}{3}{}{%
-      {{hash=DJ}{%
-         family={Duchi},
-         familyi={D\bibinitperiod},
-         given={John},
-         giveni={J\bibinitperiod},
-      }}%
-      {{hash=HE}{%
-         family={Hazan},
-         familyi={H\bibinitperiod},
-         given={Elad},
-         giveni={E\bibinitperiod},
-      }}%
-      {{hash=SY}{%
-         family={Singer},
-         familyi={S\bibinitperiod},
-         given={Yoram},
-         giveni={Y\bibinitperiod},
-      }}%
-    }
-    \field{labeltitlesource}{title}
-    \field{sortinit}{A}
-    \field{sortinithash}{A}
-    \field{pages}{2121\bibrangedash 2159}
-    \field{title}{Adaptive Subgradient Methods for Online Learning and
-  Stochastic Optimization}
-    \field{volume}{12}
-    \field{journaltitle}{Journal of Machine Learning Research}
-    \field{year}{2011}
-  \endentry
-
   \entry{crawshaw2026exploration}{inproceedings}{}
     \name{author}{4}{}{%
       {{hash=CM}{%
@@ -521,46 +489,6 @@
     \endverb
     \field{eprinttype}{arXiv}
     \field{eprintclass}{cs.CL}
-    \field{year}{2026}
-  \endentry
-
-  \entry{denoise_ortho}{misc}{}
-    \name{author}{4}{}{%
-      {{hash=LX}{%
-         family={Li},
-         familyi={L\bibinitperiod},
-         given={Xianliang},
-         giveni={X\bibinitperiod},
-      }}%
-      {{hash=ZZ}{%
-         family={Zhang},
-         familyi={Z\bibinitperiod},
-         given={Zihan},
-         giveni={Z\bibinitperiod},
-      }}%
-      {{hash=LW}{%
-         family={Liu},
-         familyi={L\bibinitperiod},
-         given={Weiyang},
-         giveni={W\bibinitperiod},
-      }}%
-      {{hash=BH}{%
-         family={Bao},
-         familyi={B\bibinitperiod},
-         given={Han},
-         giveni={H\bibinitperiod},
-      }}%
-    }
-    \field{labeltitlesource}{title}
-    \field{sortinit}{D}
-    \field{sortinithash}{D}
-    \verb{eprint}
-    \verb 2606.03899
-    \endverb
-    \field{title}{Denoise First, Orthogonalize Later: Understanding Momentum in
-  {Muon} via Spectral Filtering}
-    \field{eprinttype}{arXiv}
-    \field{eprintclass}{cs.LG}
     \field{year}{2026}
   \endentry
 
@@ -1212,37 +1140,6 @@
     \field{year}{2025}
   \endentry
 
-  \entry{logdetdiv}{article}{}
-    \name{author}{3}{}{%
-      {{hash=KB}{%
-         family={Kulis},
-         familyi={K\bibinitperiod},
-         given={Brian},
-         giveni={B\bibinitperiod},
-      }}%
-      {{hash=SMA}{%
-         family={Sustik},
-         familyi={S\bibinitperiod},
-         given={M{\'a}ty{\'a}s\bibnamedelima A.},
-         giveni={M\bibinitperiod\bibinitdelim A\bibinitperiod},
-      }}%
-      {{hash=DIS}{%
-         family={Dhillon},
-         familyi={D\bibinitperiod},
-         given={Inderjit\bibnamedelima S.},
-         giveni={I\bibinitperiod\bibinitdelim S\bibinitperiod},
-      }}%
-    }
-    \field{labeltitlesource}{title}
-    \field{sortinit}{L}
-    \field{sortinithash}{L}
-    \field{pages}{341\bibrangedash 376}
-    \field{title}{Low-Rank Kernel Learning with {B}regman Matrix Divergences}
-    \field{volume}{10}
-    \field{journaltitle}{Journal of Machine Learning Research}
-    \field{year}{2009}
-  \endentry
-
   \entry{nanogpt}{misc}{}
     \name{author}{9}{}{%
       {{hash=JK}{%
@@ -1337,33 +1234,6 @@
     \endverb
     \field{volume}{267}
     \field{year}{2025}
-  \endentry
-
-  \entry{cutkosky_nigt}{misc}{}
-    \name{author}{2}{}{%
-      {{hash=CA}{%
-         family={Cutkosky},
-         familyi={C\bibinitperiod},
-         given={Ashok},
-         giveni={A\bibinitperiod},
-      }}%
-      {{hash=MH}{%
-         family={Mehta},
-         familyi={M\bibinitperiod},
-         given={Harsh},
-         giveni={H\bibinitperiod},
-      }}%
-    }
-    \field{labeltitlesource}{title}
-    \field{sortinit}{M}
-    \field{sortinithash}{M}
-    \verb{eprint}
-    \verb 2002.03305
-    \endverb
-    \field{title}{Momentum Improves Normalized {SGD}}
-    \field{eprinttype}{arXiv}
-    \field{eprintclass}{cs.LG}
-    \field{year}{2020}
   \endentry
 
   \entry{mousse}{misc}{}

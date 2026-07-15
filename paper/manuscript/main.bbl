@@ -796,41 +796,6 @@
     \field{year}{2026}
   \endentry
 
-  \entry{adagrad}{article}{}
-    \name{author}{3}{}{%
-      {{hash=DJ}{%
-         family={Duchi},
-         familyi={D\bibinitperiod},
-         given={John},
-         giveni={J\bibinitperiod},
-      }}%
-      {{hash=HE}{%
-         family={Hazan},
-         familyi={H\bibinitperiod},
-         given={Elad},
-         giveni={E\bibinitperiod},
-      }}%
-      {{hash=SY}{%
-         family={Singer},
-         familyi={S\bibinitperiod},
-         given={Yoram},
-         giveni={Y\bibinitperiod},
-      }}%
-    }
-    \strng{namehash}{DJHESY1}
-    \strng{fullhash}{DJHESY1}
-    \field{labelnamesource}{author}
-    \field{labeltitlesource}{title}
-    \field{sortinit}{D}
-    \field{sortinithash}{D}
-    \field{pages}{2121\bibrangedash 2159}
-    \field{title}{Adaptive Subgradient Methods for Online Learning and
-  Stochastic Optimization}
-    \field{volume}{12}
-    \field{journaltitle}{Journal of Machine Learning Research}
-    \field{year}{2011}
-  \endentry
-
   \entry{GLM}{misc}{}
     \name{author}{1}{}{%
       {{hash=G}{%
