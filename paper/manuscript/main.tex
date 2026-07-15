@@ -71,8 +71,17 @@
 
 
 \title{\methodname: Preconditioned Orthogonalized LoRA}  % working title -- revisit before submission
-\author{}
+\author{
+Nikhil Ghosh\footnote{Corresponding author: nghosh@flatironinstitute.org} \hspace{1cm}
+Tetiana Parshakova \hspace{1cm}
+Robert M. Gower\\[0.5em]
+Flatiron Institute, Center for Computational Mathematics (CCM)\\
+Simons Foundation, New York, New
+York 10010
+}
 \date{}
+
+
 
 \begin{document}
 \maketitle
@@ -82,9 +91,9 @@
 Low-rank adaptation (LoRA) makes finetuning large language models cheaper, but it is usually trained with Adam, which treats the two LoRA factors as unrelated parameters. This ignores the fact that the model is changed through their product. We introduce PoLoRA, 
 a Preconditioned Orthogonalized LoRA 
  optimizer. PoLoRA combines three ingredients: a product-aware update direction,  curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
- From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal curvature factors.
- We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding less than 3\% per-step overhead.
- It also has a more stable best learning rate across LoRA ranks than Adam.
+ From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal preconditioners.
+ We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding less than 3\% per-step overhead. Furthermore, the best learning of PoLoRA transfers across different choices of LoRA rank.
+ % It also has a more stable best learning rate across LoRA ranks than Adam.
 \end{abstract}
 
 
@@ -117,17 +126,17 @@ The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two fa
 So it is natural to ask whether the same gains carry over to LoRA. 
 
 
-Muon is a steepest descent method with a spectral norm constraint on the update direction. We found that applying Muon to each factor does not improve on Adam. This is because the model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} try to address this by proposing updates that are variants of a product-aware Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}). In our experiments, we find that the Product Muon step is also unable to consistently improve over Adam. 
-
+Muon is a steepest descent method with a spectral norm constraint on the update direction. We found that applying Muon to each factor does not improve on Adam. This is because the model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} try to address this by proposing updates that are variants of a product-aware Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}). For instance, the iMuon method~\cite{imuon} uses this Product Muon update.
+In our experiments, we find that the Product Muon (iMuon) is also unable to consistently improve over Adam, see~\Cref{fig:hero}.
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{fig_hero_with_tuning.pdf}
-  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon~\cite{imuon}, Muon, and LoRA-RITE~\cite{lorarite} and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss at each optimizer's best learning rate and its two grid neighbours, normalized to the best rate. Every optimum is bracketed, and \methodname{} attains the lowest loss.}
+  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon (Product Muon)~\cite{imuon}, Muon, and LoRA-RITE~\cite{lorarite} and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss at each optimizer's best learning rate and its two grid neighbours, normalized to the best rate. Every optimum is bracketed, and \methodname{} attains the lowest loss.}
   \label{fig:hero}
 \end{figure}
 
-We introduce \methodname{}, which is a steepest descent method where the constraint is motivated by controlling the per-sample loss change across a batch. Its solution is a preconditioned update in the spectral norm. We then develop a product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the update to the product.
+We introduce \methodname{}, which is a steepest descent method where the constraint is motivated by controlling the change in the per-sample loss. Its solution is a preconditioned update in the spectral norm. We then develop a product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the update to the product.
 
 We evaluate \methodname{} through an extensive numerical study spanning multiple base models, datasets, adapter ranks, and learning-rate settings. As previewed in \Cref{fig:hero}, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines, reaching Adam's final held-out loss in $1.2$--$1.7\times$ fewer steps across our settings, while adding under 3\% per-step overhead. We complement these comparisons with component ablations that separate the effects of the curvature-aware direction and magnitude controls we introduce, showing that both contribute to the overall speedup of \methodname{} over our baselines.
  Finally, we find that \methodname{} is  easier to tune than Adam: its optimal learning rate is stable across rank, and performance is less sensitive to the learning rate.
@@ -210,7 +219,7 @@ where $\|\cdot\|_2$ is the spectral norm
 \[
 \|W\|_2 := \max_{\|x\|_2 =1} \|W x \|_2.
 \]
-Bounding the spectral norm controls the largest amount by which the update can change the layer's output over all unit-norm inputs~\cite{yang2023spectral}.
+Bounding the spectral norm is appealing because it controls the largest amount by which the update can change the layer's output over all unit-norm inputs~\cite{yang2023spectral}.
 A solution to~\eqref{eq:lmo} is given by the matrix sign of the gradient~\cite{bernstein2025modular}
 \[
     \Delta W = -\eta \msign(G),
@@ -1114,9 +1123,9 @@ as~\eqref{eq:ours-klcoupling}. The main novelty in our approach is how to adapt 
 That is, KL-Shampoo aims to approximate the second moment of the full weight gradient $G$ through a Kronecker Product $P \otimes Q$. Here we use only the factor gradients $G_A$ and $G_B$, and their second momentums, to jointly estimate the $P \otimes Q$, without ever  forming $G$ or its second momentum, see~\Cref{sec:kronecker-factor-estimates} in the upcoming section for details.
 
 % ===========================================================================
-\section{Estimating using Exponential Moving Averages}
+\section{\methodname{}: Justifying the Practical Implementation}
 \label{app:matnormal}
-Here we detail how, starting from~\Cref{sec:sample-loss-lmo}, we arrive at the practical  implementation on \methodname{} in \Cref{alg:ours}.  
+Here we detail how, starting from~\Cref{sec:sample-loss-lmo}, we arrive at the practical  implementation of \methodname{} in \Cref{alg:ours}.  
 
 
 \subsection{Estimating the Gradients}
@@ -1240,7 +1249,7 @@ of $S$.
 The
 next lemma shows the coupled fits are consistent even when posed with
 inexact estimates.
-
+\nikhil{I think this lemma is not useful. In fact it suggests you do not need a stateful estimator of $p$, $q$, you could use $\hat{q}(1)$ and $\hat{p}(1)$ for example.}
 \begin{lemma}[Consistency]\label{lem:consistency}
 Assume that~\eqref{e-diag-kron-second-mom-model}  holds with equality. Furthermore, assume that there exists $p^\star, q^\star, C_A$ and $C_B$ such that
 \begin{align}
@@ -1279,6 +1288,9 @@ for $\hat{p}$ follows with the roles of the two factors exchanged.
 \Cref{lem:consistency} shows that, if the second moments are block diagonal~\eqref{eq:observable-moments-lem}, which given the approximation in~\eqref{eq:SigmaAapprox} is reasonable, then by fitting our estimates of $P$ and $Q$ using~\eqref{eq:factor-fit-sol}, we will exactly recover the true $P^\star$ and $Q^\star$ up to a multiplicative constant. Since we know our estimates can be off by a multiplicative constant, we simply re-normalize them so that $\|q\|_{\infty} = \|p\|_{\infty} =1.$ This avoids the factors drifting across iterations. Putting all of the argument above together, we arrive at our online estimates for $P$ and $Q$ as follows.
 
 \nikhil{the "online estimator" still needs explanation / justification?}
+\rob{What part still needs justifying? The EMA is well justified, since it is the solution in~\eqref{eq:factor-fit-sol}}
+\nikhil{not true. the EMA uses $C_{B,s}$ from $s < t$, whereas as \eqref{eq:factor-fit-sol} uses $C_{B,t}$.}
+
 \paragraph{Online estimator.}
 
 % \rob{** OLd ***}
