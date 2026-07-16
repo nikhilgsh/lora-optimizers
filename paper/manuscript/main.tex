@@ -38,6 +38,7 @@
 \newcommand{\E}{\mathbb{E}}
 \DeclareMathOperator{\diag}{diag}
 \DeclareMathOperator{\Tr}{Tr}
+\DeclareMathOperator{\EMA}{EMA}
 \DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator*{\argmax}{arg\,max}
 \newcommand{\smax}{\sigma_{\max}}
@@ -92,7 +93,7 @@ Low-rank adaptation (LoRA) makes finetuning large language models cheaper, but i
 a Preconditioned Orthogonalized LoRA 
  optimizer. PoLoRA combines three ingredients: a product-aware update direction,  curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
  From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal preconditioners.
- We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding less than 3\% per-step overhead. Furthermore, the best learning of PoLoRA transfers across different choices of LoRA rank.
+ We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding less than 3\% per-step overhead. Furthermore, the optimal learning rate of PoLoRA transfers across different choices of LoRA rank.
  % It also has a more stable best learning rate across LoRA ranks than Adam.
 \end{abstract}
 
@@ -336,11 +337,11 @@ By~\Cref{lem:gradprop} we have that $G_i \in \mathcal{G}$, thus we can use this 
 The last issue is that $\Sigma$ is too large to store or use directly, so we replace it with a structured approximation.
 
 \paragraph{Kronecker approximation.}
-Following~\cite{shampoo,kfac}, we approximate $\Sigma$ by a Kronecker product of symmetric positive definite factors $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
+Following~\cite{shampoo,kfac}, we approximate $\Sigma$ by a Kronecker product of symmetric positive definite matrices $P\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $Q \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
 \begin{equation} \label{eq:pq-factor}
      \Sigma  \approx Q \otimes P,
 \end{equation}
-choosing the factors to make $Q\otimes P$ the best approximation of $\Sigma$ we can obtain. We treat $P$ and $Q$ as given for now, returning to this choice at the end of the section and in \Cref{sec:weighted-estimation}.
+choosing $P$ and $Q$ to make $Q\otimes P$ the best approximation of $\Sigma$ we can obtain. We treat $P$ and $Q$ as given for now, returning to this choice at the end of the section and in \Cref{app:matnormal}.
 
 Using the factorization above in the outergradient set~\eqref{eq:outgrad} and relaxing the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, we arrive at the following LMO
 \begin{equation}
@@ -373,7 +374,8 @@ so that \eqref{eq:polorafull-hard} becomes
 where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. Its value does not matter, since we use the LMO only for the direction and rescale it to the desired size. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
 \begin{equation}\label{eq:polorafull-update}
     \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
-\end{equation} 
+\end{equation}
+In~\eqref{eq:polorafull-update} the matrices $P$ and $Q$ precondition the gradient, and we refer to them as the \emph{preconditioners} from here on.
 
 
 \paragraph{Direction.}
@@ -467,8 +469,8 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \paragraph{Optimizer step.}
 \methodname{}, summarized in \Cref{alg:ours}, makes the update~\eqref{eq:polora-update} practical with the following ingredients:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item \emph{Averaging.} Momentum with look-ahead replaces the factor gradients (line~\ref{ln:mom}), and an EMA accumulates the vectors $p,q$ that form the curvature factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}). \Cref{app:matnormal} interprets this averaging in terms of the per-sample LMO~\eqref{eq:sample-lmo} extended to also include past samples.  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to diagonal factors (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{sec:weighted-estimation}).
-  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{sec:scale-placement}).
+  \item \emph{Averaging.} Momentum with look-ahead replaces each factor gradient with an EMA estimate of its full-batch counterpart (line~\ref{ln:mom}), and a second EMA accumulates the vectors $p,q$ that form the preconditioners (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{app:matnormal}).  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to the diagonal case (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{app:matnormal}).
+  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{app:matnormal}).
   \item \emph{Fast numerical subroutines.} We estimate the spectral norms in lines~\ref{ln:rho} and~\ref{ln:spectralnormupdate} by power iteration (\Cref{app:smax}). We use Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} to compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral} (\Cref{app:gramns}), with relative damping for stability in the inverses (\Cref{app:damping}).
 \end{itemize}
 
@@ -496,7 +498,7 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}} \label{ln:rho}
 \State $A\gets A-\rho\,D_A/\norm{D_A}_2, \qquad B\gets B-\rho\,D_B/\norm{D_B}_2$ \label{ln:spectralnormupdate}
 \Statex
-\Phase{Update to Curvature Factors}
+\Phase{Update to Preconditioners}
 \State $q\gets\beta_2\, q+(1-\beta_2)\diag\big(G_A^\top C_A^{-1} G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}  \label{ln:qmom}
 \State $p\gets\beta_2\, p+(1-\beta_2)\diag\big(G_B\, C_B^{-1} G_B^\top\big)/r$  \label{ln:pmom}
 \end{algorithmic}
@@ -655,7 +657,7 @@ for a weight matrix, producing an update equal to the matrix sign of the momentu
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
-whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}.
+whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}. The metric itself is fit by adapting KL-Shampoo to LoRA, from the factor gradients alone and without forming the weight gradient (\Cref{app:matnormal}).
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
@@ -675,9 +677,9 @@ explicitly control the factor steps by scaling them with the factor norms. Spect
 \section{Conclusion}
 \label{sec:conclusion}
 
-\methodname{} takes a different route to optimizing LoRA adapters: it asks how a step should look through the merged product weight and the current batch loss, rather than treating the two LoRA factors as unrelated parameter matrices. This view leads to a practical optimizer that combines a product-aware spectral direction, lightweight curvature factors, and explicit control of factor-step magnitudes. In our experiments, this was enough to turn matrix-aware LoRA optimization into a consistent training-speed improvement over Adam, with small overhead and good learning-rate transfer across rank.
+\methodname{} takes a different route to optimizing LoRA adapters: it asks how a step should look through the merged product weight and the current batch loss, rather than treating the two LoRA factors as unrelated parameter matrices. This view leads to a practical optimizer that combines a product-aware spectral direction, lightweight curvature preconditioning, and explicit control of factor-step magnitudes. In our experiments, this was enough to turn matrix-aware LoRA optimization into a consistent training-speed improvement over Adam, with small overhead and good learning-rate transfer across rank.
 
-The method is still built on approximations. We use diagonal Kronecker approximations to the curvature factors for efficiency. The derivation also relies on a linearized loss change and a linearized product update, which means the optimizer does not directly control higher-order effects or the dropped $\Delta B\Delta A$ term. Finally, our evaluation focuses on LoRA finetuning for language models and on held-out loss as the main measure of progress; broader downstream evaluations, longer training horizons, other adapter families, and different hardware or batch-size regimes remain open.
+The method is still built on approximations. For efficiency the preconditioners are diagonal, a Kronecker-factored approximation of the per-sample second moment. The derivation also relies on a linearized loss change and a linearized product update, which means the optimizer does not directly control higher-order effects or the dropped $\Delta B\Delta A$ term. Finally, our evaluation focuses on LoRA finetuning for language models and on held-out loss as the main measure of progress; broader downstream evaluations, longer training horizons, other adapter families, and different hardware or batch-size regimes remain open.
 
 
 These limitations also point to several future directions. One is to design better outergradient approximations that remain cheap enough for adapter training. Another is to incorporate second-order information~\cite{du2026newtonmuonoptimizer} in such a way that the final update is still tractable.  More broadly, the per-sample loss-control perspective~\eqref{eq:sample-lmo} and~\eqref{eq:polorafull-hard}  may be useful beyond LoRA, for either pre-training or other composition of maps.
@@ -1060,25 +1062,6 @@ and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\to
 
 
 
-\begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  % \item \emph{No distributional assumptions.} KL-Shampoo fits the second moment
-  % of a stationary gradient distribution. Here $\E_{s \leq t}$ is a weighted sum
-  % over the realized gradients, not an expectation, and the statements
-  % above hold for an arbitrary gradient stream.
-  \item \emph{The observables are the factor gradients.} KL-Shampoo fits
-  dense factors to the second moment of the weight gradient $G$. Here
-  each diagonal factor is fit to the second moment of its own factor
-  gradient, $G$ is never formed, and the two fits are coupled through
-  $C_A$ and $C_B$.
-  % \item \emph{Valid at every step.} KL-Shampoo justifies its
-  % moving average as a stochastic proximal-gradient step on the
-  % divergence objective, so its estimates are correct in the limit. Here
-  % the recursion computes the weighted moments exactly at every step,
-  % and \Cref{lem:consistency} shows that posing a fit with an inexact
-  % estimate of the other factor only rescales its output, a scale the
-  % normalization removes. The one remaining approximation is the frozen
-  % window of \Cref{as:slow-drift}.
-\end{itemize}
 
 \section{Extended Prior Work}
 \label{app:related-spectral}
@@ -1116,269 +1099,124 @@ after the fact (\Cref{rem:quadratic}):
 \]
 
 
-\paragraph{Comparison with KL-Shampoo.} KL-Shampoo~\cite{klshampoo}
-also fits Kronecker factors by minimizing the log-determinant
-divergence, and its moving average has the same shape
-as~\eqref{eq:ours-klcoupling}. The main novelty in our approach is how to adapt this type of curvature estimates to the LoRA setting. 
-That is, KL-Shampoo aims to approximate the second moment of the full weight gradient $G$ through a Kronecker Product $P \otimes Q$. Here we use only the factor gradients $G_A$ and $G_B$, and their second momentums, to jointly estimate the $P \otimes Q$, without ever  forming $G$ or its second momentum, see~\Cref{sec:kronecker-factor-estimates} in the upcoming section for details.
 
 % ===========================================================================
-\section{\methodname{}: Justifying the Practical Implementation}
+\section{Estimating the Preconditioners}
 \label{app:matnormal}
-Here we detail how, starting from~\Cref{sec:sample-loss-lmo}, we arrive at the practical  implementation of \methodname{} in \Cref{alg:ours}.  
+In \Cref{sec:sample-loss-lmo} we treated the preconditioners $P$ and $Q$ as given when writing the update~\eqref{eq:polorafull-update}. Here we describe how we compute them using online updates from the factor gradients and a normalization that makes these updates invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, arriving at the $p,q$ updates~\eqref{eq:ours-klcoupling} of \Cref{alg:ours}.
 
+\paragraph{Notation.} Consider a given linear layer. Let $t$ denote the current optimizer step. Whenever it is clear from context, we suppress the subscript $t$. For each step $s\le t$,
+let $A_s,B_s$ be the LoRA factors and
+$G_s\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ the gradient of the batch loss with respect to the weight matrix $W_s=W_0+B_sA_s$. Write
+\[
+  G_{A,s}=B_s^\top G_s\in\R^{r\times d_{\mathrm{in}}},\qquad
+  G_{B,s}=G_sA_s^\top\in\R^{d_{\mathrm{out}}\times r}
+\]
+for the factor
+gradients~\eqref{e-grad-wrt-factors}. 
 
-\subsection{Estimating the Gradients}
-\label{sec:weighted-estimation}
-Let $G_s \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ be a batch gradient estimate at iteration $s$. This is the gradient with respect to the full parameter matrix $W_s \in  \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.$ 
-Let $G_{A,s}$ and $G_{B_s}$ be the mini-batch factor gradients at iteration $s$. 
-Though in~\eqref{e-grad-wrt-factors}  we denoted the factor gradients as the full batch estimates, in reality we only have access to stochastic mini-batch estimates. To estimate the full batch factor gradients we use an EMA (Exponential Moving Average) defined as 
-\begin{align}
-    M_A &= \mathrm{EMA}_{s\leq t}^{\beta_1}[G_{A,s}] \\
-    M_B &= \mathrm{EMA}_{s\leq t}^{\beta_1}[G_{B,s}] \label{eq:mom-grad-factors}
-\end{align}
-where for any sequence $d_s$ we define the exponential moving average as:
-\[\mathrm{EMA}_{s\leq t}^{\beta}[d_s] : = \sum_{s \leq t }(1-\beta_2)\beta_2^{t-s} d_s. \]
-This definition is such it is equivalent to computing $ M_A $ and $ M_B$ as done in~\Cref{alg:ours}.
-% We estimate both weighted moments of \Cref{sec:weighted-lmo}
-% from the factor gradients alone, taking the momentum $\widehat M_t$ for
-% the objective and the model factors $P^\star,Q^\star$ for the
-% constraint.
-% , with each replacement of a past-step factor by its current
-% value made under \Cref{as:slow-drift}.
+\paragraph{EMA averaging.} For any sequence $x_s$, write the EMA of the sequence up to step $t$ as
+\[
+  \EMA^{\beta}_{s\le t}[x_s]:=(1-\beta)\sum_{s\le t}\beta^{t-s} x_s,
+\]
+with decay factor $\beta$. Just as we replace the factor gradients $G_A$ and $G_B$ in the objective of \Cref{sec:sample-loss-lmo} with averaged versions $\widehat M_A$ and $\widehat M_B$ (line~\ref{ln:mom} of \Cref{alg:ours}), we replace the sample-gradient second-moment matrix $\Sigma$ (\Cref{lem:gradprop}) with the EMA of the outer products of the vectorized full gradients,
+\[
+  \overline \Sigma_t:=\EMA^{\beta_2}_{s\le t}[\vec(G_s) \vec(G_s)^\top],
+\]
+with $\beta_2$ the curvature decay of \Cref{alg:ours}.
 
-
-\subsection{Estimating the Kronecker Factors}
-\label{sec:kronecker-factor-estimates}
-There are two huddles to estimating the $P$ and $Q$ factors in \methodname{} as needed in the update~\eqref{eq:polorafull-update} and detailed in~\Cref{sec:sample-loss-lmo}. First, we do not have direct access to $\Sigma$ as 
-defined in~\Cref{lem:gradprop}. Second, we need to approximate $\Sigma$ as a product $Q  \otimes P$~\eqref{eq:pq-factor} using only access to the factor gradients $G_A$ and $G_B.$ Here we detail how we circumvent these issues, and how exactly we arrive at the $p,q$
-recursion of \Cref{alg:ours} and recovering the
-update~\eqref{eq:polora-update}. We will also detail in~\Cref{sec:scale-placement} 
-why \Cref{alg:ours} normalizes the accumulated vectors $p,q$ after the
-average.
-% The
-% update is invariant to the scale of the curvature factors, but the
-% average that estimates them depends on that scale.
-
-
-First, the factors $P$ and $Q$ are a Kronecker product approximation of $\Sigma$~\eqref{eq:pq-factor}, but we do not have access to $\Sigma$. This is because $\Sigma$ is an average over the outerproduct of gradients each evaluated over one input (see~\Cref{lem:gradprop}). These single input gradients are expensive to store, and backpropagtion gives only the average these gradients over a batch. To circumvent this issue, instead of computing an average over individual gradients, we approximate $\Sigma$ as an exponential moving average over  batch gradients. That is, let $g_s = \vec(G_s)$ be the batch gradient at iteration $s$, and let
-\begin{equation} \label{eq:SigmaEMA}
-    \Sigma_t = \mathrm{EMA}_{s\leq t}^{\beta_2}[ g_s g_s^\top ]
+\paragraph{Factor-gradient moments.}
+As in \Cref{sec:sample-loss-lmo}, to make the update tractable we approximate $\overline \Sigma_t \approx Q_t \otimes P_t$~\eqref{eq:pq-factor} with diagonal matrices $P_t = \diag(p_t)$ and $Q_t = \diag(q_t)$. Note, however, that backpropagation gives us efficient access only to the factor gradients, not the full gradients $G_s$. Therefore the natural objects to consider are the corresponding averaged factor-gradient second moments,
+\[
+  \overline \Sigma_A:=\EMA^{\beta_2}_{s\le t}\bigl[\vec(G_{A,s})\vec(G_{A,s})^\top\bigr],
+  \qquad
+  \overline \Sigma_B:=\EMA^{\beta_2}_{s\le t}\bigl[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\bigr].
+\]
+If the Kronecker approximation is exact and we replace $A_s$ and $B_s$ with their current values $A$ and $B$, which is reasonable if $A_s \approx A$ and $B_s \approx B$ over recent steps, then
+\begin{equation}\label{eq:observable-moments}
+  \overline \Sigma_A
+  = Q\otimes C_A(P),\quad
+  \overline \Sigma_B
+  = P\otimes C_B(Q),
 \end{equation}
-We never actually compute this $\Sigma_t$ (it would be impossible to store), but rather, we will use~\eqref{eq:SigmaEMA} from now on as the new definition of $\Sigma_t$, from which we will compute the Kronecker factors $Q_t$ and $P_t.$
+where $C_A(P)=B^\top P B$ and $C_B(Q)=A Q A^\top$.
 
-
-To estimate the Kronecker factorization~\eqref{eq:pq-factor}, we first assume both $P = \diag(p)$ and $Q=diag(q)$.  Thus our objective now is to find $p_t$, and $q_t$  such that
-  \begin{equation}\label{e-diag-kron-second-mom-model}
-    \mathrm{EMA}_{s\leq t}^{\beta_2}[g_sg_s^\top]\approx (\diag(q_t) \otimes \diag(p_t)).
-  \end{equation}
-
-Our main issue now, is that in LoRA training, we do not have access to $g_s = \vec(G_s)$. Instead, backpropagation gives the factor gradients $G_{A,s}=B_s^\top G_s$
-and $G_{B,s}=G_sA_s^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
-the full gradient $G_s$, by contrast, would take a $d_{\mathrm{out}}\times
-d_{\mathrm{in}}$ matrix multiplies and full-matrix storage per layer, exactly what
-the low-rank structure avoids. Consequently we need to estimate the Kronecker factors $Q$ and $P$ using only the factor gradients.
-
-
-
-To estimate $P$ and $Q$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient given in~\eqref{eq:SigmaEMA}. 
-To this end, note that
-$\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of the gradient of $A$ is given by
-\begin{align*}
- \Sigma_{A,t} &:=  \mathrm{EMA}_{s \leq t}^{\beta_2}\big[ \vec(G_{A,s})  \vec(G_{A,s})^\top\big]  \\
- &=  \mathrm{EMA}_{s \leq t}^{\beta_2}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
-   &\approx  (I\otimes B_t^\top) \mathrm{EMA}_{s \leq t}^{\beta_2}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
-\end{align*}
-where the approximation replaces $B_s$ by the current $B_t$, so that it can move outside of the EMA.
- Using~\eqref{e-diag-kron-second-mom-model} in the above gives
-\begin{align} \label{eq:SigmaAapprox}
- \Sigma_{A,t} 
-   &\approx    (I\otimes B_t^\top)  (Q_t\otimes P_t)  (I\otimes B_t) \; =     Q_t\otimes  (B_t^\top P_t B_t),
-\end{align} 
-where the equality uses the mixed-product rule of Kronecker products.
-Using analogous arguments for the gradient of $B$, we arrive at the following approximations
-\begin{align}
-  \Sigma_{A,t} & = \mathrm{EMA}_{s \leq t}^{\beta_2}\big[\vec(G_{A,s})\vec(G_{A,s})^\top\big] \approx Q_t\otimes C_{A,t} \nonumber \\
-  \Sigma_{B,t}&=\mathrm{EMA}_{s \leq t}^{\beta_2}\big[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\big] \approx  P_t\otimes C_{B,t}, \label{eq:observable-moments}
-\end{align}
-where $C_{A,t}:=B_t^\top P_tB_t$ and $C_{B,t}:=A_tQ_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure} evaluated at the model factors.
-
-\paragraph{Fitting the factors.} We will now use~\eqref{eq:observable-moments} as our evidence for fitting $P$ and $Q$.
-% For brevity, here we drop the subscript $t$ since
-% all quantities are at the current step.
-Following
-KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
-divergence~\cite{logdetdiv}
+\paragraph{Fitting the preconditioners.} Fitting the observed moments
+to the predictions of the Kronecker model
+in~\eqref{eq:observable-moments} requires a
+measure of discrepancy between positive definite matrices. Following KL-Shampoo~\cite{klshampoo}, we use the
+log-determinant divergence~\cite{logdetdiv}
 \[
   D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
 \]
-defined for positive definite matrices $\Sigma$ and $S$ of common
-dimension $d$. Let $\widehat{P}$ and $\widehat {Q}$ be our current estimates of $P$ and $Q$.
-% Away from the exact model, no candidate reproduces the
-% observed moment, and the divergence decides how the mismatch is
-% weighed. 
-Using~\eqref{eq:observable-moments} we fit the two factors by solving
+defined for positive definite $d\times d$ matrices, and fit each vector
+with the other held fixed:
 \begin{equation}\label{eq:factor-fit}
-  \hat{q}(\widehat P)
-  =\argmin_{q>0}\;
-  D\big(\Sigma_{A,t},\; \diag(q) \otimes \widehat C_A\big),
+  \hat q(P):=\argmin_{q>0}
+    D\bigl(\overline \Sigma_A,\diag(q)\otimes C_A(P)\bigr),
   \qquad
-  \hat{p}(\widehat Q)
-  =\argmin_{p>0}\;
-  D\big(\Sigma_{B,t},\;\diag(p) \otimes \widehat C_B\big),
+  \hat p(Q):=\argmin_{p>0}
+    D\bigl(\overline \Sigma_B,\diag(p)\otimes C_B(Q)\bigr).
 \end{equation}
-where we freeze the current estimate of $\widehat C_A$ when estimating $\hat{q}$, and freeze the estimate of $\widehat C_B$ when estimating $\hat{p}$. This alternating freezing is needed to get a closed form update for $\hat{q}$ and $\hat{p}$, since otherwise $\widehat C_A$ and $\widehat C_B$ introduce a joint dependency through
-$\widehat C_A=B^\top\widehat PB$ and
-$\widehat C_B=A\widehat QA^\top$, for diagonal
-$\widehat P,\widehat Q\succ0$.
-
-
-The closed form solutions to~\eqref{eq:factor-fit} are given by
-\begin{equation}
-    \label{eq:factor-fit-sol}
-      \hat{q}(\widehat P)=\frac1r\diag\!\left(\mathrm{EMA}_{s\leq t}^{\beta_2}[G_{A,s}^\top \widehat C_A^{-1}G_{A,s}]\right),
-  \qquad
-  \hat{p}(\widehat Q)=\frac1r\diag\!\left(\mathrm{EMA}_{s\leq t}^{\beta_2}[G_{B,s} \widehat C_B^{-1}G_{B,s}^\top]\right).
-\end{equation}
-
-For fixed positive definite $\Sigma$ and $S$, let
-\begin{equation} \label{eq:opt-scalar-div}
-c^\star(\Sigma,S) := \tfrac{1}{d}\Tr(\Sigma S^{-1}) =\argmin_{c>0}D(\Sigma,cS)\end{equation}
-be the best scalar multiple
-of $S$.
-The
-next lemma shows the coupled fits are consistent even when posed with
-inexact estimates.
-\nikhil{I think this lemma is not useful. In fact it suggests you do not need a stateful estimator of $p$, $q$, you could use $\hat{q}(1)$ and $\hat{p}(1)$ for example.}
-\begin{lemma}[Consistency]\label{lem:consistency}
-Assume that~\eqref{e-diag-kron-second-mom-model}  holds with equality. Furthermore, assume that there exists $p^\star, q^\star, C_A$ and $C_B$ such that
-\begin{align}
-  \Sigma_{A,t} & =   \diag(q^\star) \otimes C_{A} \nonumber \\
-  \Sigma_{B,t}&=  \diag(p^\star) \otimes C_{B}, \label{eq:observable-moments-lem}
-\end{align}
-For any
-diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
-fits~\eqref{eq:factor-fit}  with $\widehat C_A=B^\top\widehat PB$
-and $\widehat C_B=A\widehat QA^\top$ recover the true $p^\star$ and $q^\star$ upto a multiplicative constant:
-\begin{equation} \label{eq:awdawda}
-  \hat{q}(\widehat P)= c^\star\big(C_A,\widehat C_A\big)\,\diag(q^\star),
-  \qquad
-  \hat{p}(\widehat Q)= c^\star\big(C_B,\widehat C_B\big)\,\diag(p^\star).
-\end{equation}
-\end{lemma}
-\begin{proof}
-Since we assume~\eqref{eq:observable-moments} holds to equality, we have that $\Sigma_{A,t}$ is block
-diagonal with $j$th block $ q_j^\star\,C_A$, and the candidate
-$\diag(q)\otimes\widehat C_A$ of~\eqref{eq:factor-fit} at a point $q>0$
-is block diagonal with $j$th block $q_j\,\widehat C_A$. Traces and
-log-determinants add across blocks, so the objective is
-$\sum_jD(  q^\star_jC_A,\,q_j\widehat C_A)$, and thus is separable 
-over the unknowns $q_j$. Using~\eqref{eq:opt-scalar-div} solving for the scalar $q_j$ gives the best scalar
-multiple:
-\[
-\hat{q}_j=c^\star( q^\star_jC_A,\widehat C_A)
-=\,q^\star_j\,c^\star(C_A,\widehat C_A).
-\]
-The factor
-$\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and consequently~\eqref{eq:awdawda} holds. The claim
-for $\hat{p}$ follows with the roles of the two factors exchanged.
-\end{proof}
-
-
-\Cref{lem:consistency} shows that, if the second moments are block diagonal~\eqref{eq:observable-moments-lem}, which given the approximation in~\eqref{eq:SigmaAapprox} is reasonable, then by fitting our estimates of $P$ and $Q$ using~\eqref{eq:factor-fit-sol}, we will exactly recover the true $P^\star$ and $Q^\star$ up to a multiplicative constant. Since we know our estimates can be off by a multiplicative constant, we simply re-normalize them so that $\|q\|_{\infty} = \|p\|_{\infty} =1.$ This avoids the factors drifting across iterations. Putting all of the argument above together, we arrive at our online estimates for $P$ and $Q$ as follows.
-
-\nikhil{the "online estimator" still needs explanation / justification?}
-\rob{What part still needs justifying? The EMA is well justified, since it is the solution in~\eqref{eq:factor-fit-sol}}
-\nikhil{not true. the EMA uses $C_{B,s}$ from $s < t$, whereas as \eqref{eq:factor-fit-sol} uses $C_{B,t}$.}
-
-\paragraph{Online estimator.}
-
-% \rob{** OLd ***}
-%  Since the product 
-%   $Q \otimes P $ is unchanged by the rescaling
-%   $(P,Q)\mapsto(aP,a^{-1}Q)$, we fix
-%   $\norm{\diag P}_\infty=\norm{\diag Q }_\infty=1$ 
-Unrolling the EMAs in~\eqref{eq:factor-fit-sol}, with the post normalization given by \Cref{lem:consistency} gives
-\begin{equation}\label{eq:ours-klcoupling}
+A self-consistent pair $(p^*,q^*)$ satisfies $q^*=\hat q(\diag(p^*))$ and $p^*=\hat p(\diag(q^*))$. With $P$ fixed, the first objective in~\eqref{eq:factor-fit} separates over the coordinates of $q$. Minimizing each coordinate yields an analytical solution for $\hat q(P)$, and likewise for $\hat p(Q)$:
+\begin{equation}\label{eq:conditional-minimizers}
 \begin{aligned}
-  \hat{q}_t(P_t) &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
-  &
-  \hat{p}_t(Q_t) &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
-  \\
-  q_{t+1} &= \beta_2q_t+(1-\beta_2)\hat{q}_t(P_t),
-  &
-  p_{t+1} &= \beta_2p_t+(1-\beta_2)\hat{p}_t(Q_t),
-  \\
-  Q_{t+1} &= \diag\!\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
-  &
-  P_{t+1} &= \diag\!\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr).
+  \hat q(P)&=\frac1r\diag\left(\EMA^{\beta_2}_{s\le t}\bigl[G_{A,s}^\top C_A(P)^{-1}G_{A,s}\bigr]\right),\\
+  \hat p(Q)&=\frac1r\diag\left(\EMA^{\beta_2}_{s\le t}\bigl[G_{B,s} C_B(Q)^{-1}G_{B,s}^\top\bigr]\right).
 \end{aligned}
 \end{equation}
+Each minimizer depends on the other preconditioner through
+$C_A(P)$ or $C_B(Q)$.
 
-%  Unrolled, the recursion weights the per-step estimates by
-% exactly the $w_{t,s}$ of \Cref{sec:weighted-lmo}. Within the window,
-% $B_s\approx B_t$ by \Cref{as:slow-drift}, and
-% the stored $P_s$ changes only at rate $1-\beta_2$, so
-% $C_{A,s}\approx C_{A,t}$ and each per-step estimate already uses the
-% current matrices. The running $q_t$ then matches the full fit
-% $\hat{q}(P_t)$, the consistent fit of \Cref{lem:consistency}.
+\paragraph{Online update.} Re-evaluating the minimizers
+in~\eqref{eq:conditional-minimizers} at each step would require
+storing every past factor gradient, since $C_A(P)$ and $C_B(Q)$ change
+as $P$ and $Q$ are updated. \methodname{} instead evaluates each factor
+gradient once, at its own step, and accumulates the results:
+\begin{equation}\label{eq:ours-klcoupling}
+\begin{alignedat}{2}
+  \hat{q}_t(P_t)
+    &= \frac1r\diag\bigl(G_{A,t}^\top C_A(P_t)^{-1}G_{A,t}\bigr),
+  &\qquad
+  \hat{p}_t(Q_t)
+    &= \frac1r\diag\bigl(G_{B,t} C_B(Q_t)^{-1}G_{B,t}^\top\bigr),
+  \\
+  q_{t+1}
+    &= \beta_2q_t+(1-\beta_2)\hat{q}_t(P_t),
+  &\qquad
+  p_{t+1}
+    &= \beta_2p_t+(1-\beta_2)\hat{p}_t(Q_t),
+  \\
+  Q_{t+1}
+    &= \diag\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
+  &\qquad
+  P_{t+1}
+    &= \diag\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr).
+\end{alignedat}
+\end{equation}
+Up to the exponentially decayed initialization $\beta_2^{t+1}q_0$, unrolling the
+$q_{t+1}$ update in~\eqref{eq:ours-klcoupling} gives the
+minimizer $\hat q(P)$ of~\eqref{eq:conditional-minimizers} with the
+step-$s$ matrix $C_A(P_s)$ in place of a fixed $C_A(P)$, and likewise for $p_{t+1}$. In \Cref{alg:ours}, the preconditioner updates (lines~\ref{ln:qmom}
+and~\ref{ln:pmom}) reuse the matrices $C_A$ and $C_B$ already computed for the direction step (line~\ref{ln:pqnorm}), so each step inverts $C_A$ and $C_B$ once rather than twice.
 
-
-
-\paragraph{Recovering the update of \Cref{alg:ours}.} 
-Putting everything together, replacing the full batch factor gradients in
-the update~\eqref{eq:factor-directions} with their momentum estimates~\eqref{eq:mom-grad-factors} with one additional "look ahead" step look-ahead step gives line~\ref{ln:Bspectral} in \Cref{alg:ours}. Using~\eqref{eq:ours-klcoupling} to compute our approximation for $P$ and $Q$ gives lines~2,~\ref{ln:qmom} and~\ref{ln:pmom}  
- The only departure of \Cref{alg:ours}
-from this derivation is that the curvature factors update after the
-direction step, so step $t$ runs on the estimate from step $t-1$, which
-avoids a second formation and inversion of $C_A$ and $C_B$ per step.
-
-\subsection{Normalization Placement}
-\label{sec:scale-placement}
-\methodname{} normalizes the accumulated vectors $q_{t+1},p_{t+1}$ to unit
-largest entry when it forms the next-step factors
-$Q_{t+1},P_{t+1}$~\eqref{eq:ours-klcoupling}, rather than normalizing each
-per-step estimate $\hat{q}_t,\hat{p}_t$ before it enters the average.
-Normalizing the accumulated vectors does not change the update, which
-depends only on the direction of the stored factors. Normalizing each
-estimate first would change the average, which is sensitive to the scale
-of those estimates.
-
-\rob{This repeats statement}
-\paragraph{The update is scale-free.} The update depends on the stored
-factors only through their direction. Under a rescaling $Q\mapsto cQ$
-($c>0$), both $Q^{-1/2}$ and $C_B^{-1/2}=(AQA^\top)^{-1/2}$ pick up a
-factor $c^{-1/2}$. Inside the matrix sign this scalar has no effect, since
-the sign is scale-invariant. Outside it, the scalar multiplies $D_A$ and
-$D_B$ by $c^{-1/2}$, which the division by $\norm{D_A}_2$ and
-$\norm{D_B}_2$ in the magnitude step cancels. The factor $P$ enters the
-same way. The update therefore sees only the direction of the stored
-factors, never the magnitude, so normalizing the accumulated
-vectors leaves it unchanged.
-
-\paragraph{The average is scale-sensitive.} The coupled fit makes each
-per-step estimate scale inversely with the stored factor it is computed
-from,
+\paragraph{Normalization.} We now explain why we normalize $q_{t+1},p_{t+1}$
+in~\eqref{eq:ours-klcoupling}. The pair $(P, Q)$ enters the
+approximation of $\overline \Sigma_t$ only through the product
+$Q \otimes P$, and
 \[
-  \hat{q}_t(aP_t)=a^{-1}\,\hat{q}_t(P_t),
-  \qquad
-  \hat{p}_t(aQ_t)=a^{-1}\,\hat{p}_t(Q_t)
-  \qquad(a>0),
+  (a^{-1}Q)\otimes(aP)=Q\otimes P
+  \qquad\text{for every } a>0,
 \]
-since $C_A=B^\top PB$~\eqref{eq:ours-closure} is linear in $P$, and
-likewise $C_B$ in $Q$. Normalizing after
-averaging gives every stored factor the same scale
-($\norm{\diag P_t}_\infty=1$ at every step), so the estimates enter the
-average on a common footing. Were the stored factor at step $s$ left carrying a step-varying scale
-$a_s$ instead, the identity above would scale
-$\hat{q}_s$ by $1/a_s$, so it would enter with effective weight
-$w_{t,s}/a_s$ rather than the $w_{t,s}$ chosen in \Cref{sec:weighted-lmo}.
-Normalizing the per-step estimates themselves before averaging would fail
-for a second reason. Normalization is nonlinear and does not commute with
-the mean, so per-step noise that cancels in the raw average would survive.
-This average-then-normalize order is the one by which momentum precedes
-normalization in normalized SGD~\cite{cutkosky_nigt} and orthogonalization
-in Muon~\cite{denoise_ortho}.
+so we want the optimizer to behave identically at $(P,Q)$ and
+$(aP,a^{-1}Q)$. The update direction is the same at both, but
+\[
+  \hat q_t(aP_t)=a^{-1}\hat q_t(P_t),
+  \qquad
+  \hat p_t(a^{-1}Q_t)=a\,\hat p_t(Q_t),
+\]
+so we normalize $q_{t+1},p_{t+1}$ in~\eqref{eq:ours-klcoupling} to
+make the $p,q$ updates invariant as well.
 
 \section{Numerical Subroutines}
 \label{app:primitives}
@@ -1538,7 +1376,7 @@ The bound $\sqrt{r(1+\delta)/\delta}$ grows as $\delta\to 0$, so a smaller
 $\delta$ permits stronger amplification of low-curvature directions.
 
 \paragraph{Warmup.}
-At the beginning of training, an EMA curvature factor may still be zero.
+At the beginning of training, the EMA vectors $p,q$ may still be zero.
 When $\lambda_{\max}(C)=0$, we set the inverse square root
 to identity,
 $\widetilde C^{-1/2}=I$.  The corresponding
@@ -1624,7 +1462,7 @@ The leading terms consist of forming
 the preconditioned sign inputs, 
 the small-side Gram matrices for the two
 matrix signs, applying the accumulated Gram maps to recover the signs,
-post-preconditioning the signs, and computing the curvature-factor updates
+post-preconditioning the signs, and computing the preconditioner updates
 \[
     \diag(G_A^\top C_A^{-1}G_A),
     \qquad

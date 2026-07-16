@@ -704,36 +704,6 @@
     \field{year}{2026}
   \endentry
 
-  \entry{cutkosky_nigt}{misc}{}
-    \name{author}{2}{}{%
-      {{hash=CA}{%
-         family={Cutkosky},
-         familyi={C\bibinitperiod},
-         given={Ashok},
-         giveni={A\bibinitperiod},
-      }}%
-      {{hash=MH}{%
-         family={Mehta},
-         familyi={M\bibinitperiod},
-         given={Harsh},
-         giveni={H\bibinitperiod},
-      }}%
-    }
-    \strng{namehash}{CAMH1}
-    \strng{fullhash}{CAMH1}
-    \field{labelnamesource}{author}
-    \field{labeltitlesource}{title}
-    \field{sortinit}{C}
-    \field{sortinithash}{C}
-    \verb{eprint}
-    \verb 2002.03305
-    \endverb
-    \field{title}{Momentum Improves Normalized {SGD}}
-    \field{eprinttype}{arXiv}
-    \field{eprintclass}{cs.LG}
-    \field{year}{2020}
-  \endentry
-
   \entry{Deepseekv4}{misc}{}
     \name{author}{1}{}{%
       {{hash=D}{%
@@ -1592,49 +1562,6 @@
   non-zero initialization on lora fine-tuning dynamics}
     \field{journaltitle}{arXiv preprint arXiv:2505.23194}
     \field{year}{2025}
-  \endentry
-
-  \entry{denoise_ortho}{misc}{}
-    \name{author}{4}{}{%
-      {{hash=LX}{%
-         family={Li},
-         familyi={L\bibinitperiod},
-         given={Xianliang},
-         giveni={X\bibinitperiod},
-      }}%
-      {{hash=ZZ}{%
-         family={Zhang},
-         familyi={Z\bibinitperiod},
-         given={Zihan},
-         giveni={Z\bibinitperiod},
-      }}%
-      {{hash=LW}{%
-         family={Liu},
-         familyi={L\bibinitperiod},
-         given={Weiyang},
-         giveni={W\bibinitperiod},
-      }}%
-      {{hash=BH}{%
-         family={Bao},
-         familyi={B\bibinitperiod},
-         given={Han},
-         giveni={H\bibinitperiod},
-      }}%
-    }
-    \strng{namehash}{LX+1}
-    \strng{fullhash}{LXZZLWBH1}
-    \field{labelnamesource}{author}
-    \field{labeltitlesource}{title}
-    \field{sortinit}{L}
-    \field{sortinithash}{L}
-    \verb{eprint}
-    \verb 2606.03899
-    \endverb
-    \field{title}{Denoise First, Orthogonalize Later: Understanding Momentum in
-  {Muon} via Spectral Filtering}
-    \field{eprinttype}{arXiv}
-    \field{eprintclass}{cs.LG}
-    \field{year}{2026}
   \endentry
 
   \entry{imuon}{misc}{}

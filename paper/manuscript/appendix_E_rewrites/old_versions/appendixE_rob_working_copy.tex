@@ -1,0 +1,257 @@
+\section{\methodname{}: Justifying the Practical Implementation}
+\label{app:matnormal}
+Here we detail how, starting from~\Cref{sec:sample-loss-lmo}, we arrive at the practical  implementation of \methodname{} in \Cref{alg:ours}.  
+
+
+\subsection{Estimating the Gradients}
+\label{sec:weighted-estimation}
+Let $G_s \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ be a batch gradient estimate at iteration $s$. This is the gradient with respect to the full parameter matrix $W_s \in  \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}.$ 
+Let $G_{A,s}$ and $G_{B_s}$ be the mini-batch factor gradients at iteration $s$. 
+Though in~\eqref{e-grad-wrt-factors}  we denoted the factor gradients as the full batch estimates, in reality we only have access to stochastic mini-batch estimates. To estimate the full batch factor gradients we use an EMA (Exponential Moving Average) defined as 
+\begin{align}
+    M_A &= \mathrm{EMA}_{s\leq t}^{\beta_1}[G_{A,s}] \\
+    M_B &= \mathrm{EMA}_{s\leq t}^{\beta_1}[G_{B,s}] \label{eq:mom-grad-factors}
+\end{align}
+where for any sequence $d_s$ we define the exponential moving average as:
+\[\mathrm{EMA}_{s\leq t}^{\beta}[d_s] : = \sum_{s \leq t }(1-\beta_2)\beta_2^{t-s} d_s. \]
+This definition is such it is equivalent to computing $ M_A $ and $ M_B$ as done in~\Cref{alg:ours}.
+% We estimate both weighted moments of \Cref{sec:weighted-lmo}
+% from the factor gradients alone, taking the momentum $\widehat M_t$ for
+% the objective and the model factors $P^\star,Q^\star$ for the
+% constraint.
+% , with each replacement of a past-step factor by its current
+% value made under \Cref{as:slow-drift}.
+
+
+\subsection{Estimating the Preconditioners}
+\label{sec:kronecker-factor-estimates}
+There are two huddles to estimating the $P$ and $Q$ factors in \methodname{} as needed in the update~\eqref{eq:polorafull-update} and detailed in~\Cref{sec:sample-loss-lmo}. First, we do not have direct access to $\Sigma$ as 
+defined in~\Cref{lem:gradprop}. Second, we need to approximate $\Sigma$ as a product $Q  \otimes P$~\eqref{eq:pq-factor} using only access to the factor gradients $G_A$ and $G_B.$ Here we detail how we circumvent these issues, and how exactly we arrive at the $p,q$
+recursion of \Cref{alg:ours} and recovering the
+update~\eqref{eq:polora-update}. We will also detail in~\Cref{sec:scale-placement} 
+why \Cref{alg:ours} normalizes the accumulated vectors $p,q$ after the
+average.
+% The
+% update is invariant to the scale of the curvature factors, but the
+% average that estimates them depends on that scale.
+
+
+First, the factors $P$ and $Q$ are a Kronecker product approximation of $\Sigma$~\eqref{eq:pq-factor}, but we do not have access to $\Sigma$. This is because $\Sigma$ is an average over the outerproduct of gradients each evaluated over one input (see~\Cref{lem:gradprop}). These single input gradients are expensive to store, and backpropagtion gives only the average these gradients over a batch. To circumvent this issue, instead of computing an average over individual gradients, we approximate $\Sigma$ as an exponential moving average over  batch gradients. That is, let $g_s = \vec(G_s)$ be the batch gradient at iteration $s$, and let
+\begin{equation} \label{eq:SigmaEMA}
+    \Sigma_t = \mathrm{EMA}_{s\leq t}^{\beta_2}[ g_s g_s^\top ]
+\end{equation}
+We never actually compute this $\Sigma_t$ (it would be impossible to store), but rather, we will use~\eqref{eq:SigmaEMA} from now on as the new definition of $\Sigma_t$, from which we will compute the preconditioners $Q_t$ and $P_t.$
+
+
+To estimate the Kronecker factorization~\eqref{eq:pq-factor}, we first assume both $P = \diag(p)$ and $Q=diag(q)$.  Thus our objective now is to find $p_t$, and $q_t$  such that
+  \begin{equation}\label{e-diag-kron-second-mom-model}
+    \mathrm{EMA}_{s\leq t}^{\beta_2}[g_sg_s^\top]\approx (\diag(q_t) \otimes \diag(p_t)).
+  \end{equation}
+
+Our main issue now, is that in LoRA training, we do not have access to $g_s = \vec(G_s)$. Instead, backpropagation gives the factor gradients $G_{A,s}=B_s^\top G_s$
+and $G_{B,s}=G_sA_s^\top$~\eqref{e-grad-wrt-factors} at no extra cost. Forming
+the full gradient $G_s$, by contrast, would take a $d_{\mathrm{out}}\times
+d_{\mathrm{in}}$ matrix multiplies and full-matrix storage per layer, exactly what
+the low-rank structure avoids. Consequently we need to estimate the preconditioners $Q$ and $P$ using only the factor gradients.
+
+
+
+To estimate $P$ and $Q$ from the factor gradients alone, we link their second moments to the second moment of the batch gradient given in~\eqref{eq:SigmaEMA}. 
+To this end, note that
+$\vec(G_{A,s})=(I\otimes B_s^\top)\vec(G_s)$. Consequently the second moment of the gradient of $A$ is given by
+\begin{align*}
+ \Sigma_{A,t} &:=  \mathrm{EMA}_{s \leq t}^{\beta_2}\big[ \vec(G_{A,s})  \vec(G_{A,s})^\top\big]  \\
+ &=  \mathrm{EMA}_{s \leq t}^{\beta_2}\big[ (I\otimes B_s^\top)\vec(G_s)\vec(G_s)^\top   (I\otimes B_s)\big]  \\
+   &\approx  (I\otimes B_t^\top) \mathrm{EMA}_{s \leq t}^{\beta_2}\big[ g_s g_s^\top   \big]  (I\otimes B_t),
+\end{align*}
+where the approximation replaces $B_s$ by the current $B_t$, so that it can move outside of the EMA.
+ Using~\eqref{e-diag-kron-second-mom-model} in the above gives
+\begin{align} \label{eq:SigmaAapprox}
+ \Sigma_{A,t} 
+   &\approx    (I\otimes B_t^\top)  (Q_t\otimes P_t)  (I\otimes B_t) \; =     Q_t\otimes  (B_t^\top P_t B_t),
+\end{align} 
+where the equality uses the mixed-product rule of Kronecker products.
+Using analogous arguments for the gradient of $B$, we arrive at the following approximations
+\begin{align}
+  \Sigma_{A,t} & = \mathrm{EMA}_{s \leq t}^{\beta_2}\big[\vec(G_{A,s})\vec(G_{A,s})^\top\big] \approx Q_t\otimes C_{A,t} \nonumber \\
+  \Sigma_{B,t}&=\mathrm{EMA}_{s \leq t}^{\beta_2}\big[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\big] \approx  P_t\otimes C_{B,t}, \label{eq:observable-moments}
+\end{align}
+where $C_{A,t}:=B_t^\top P_tB_t$ and $C_{B,t}:=A_tQ_tA_t^\top$ are the $r\times r$ matrices of~\eqref{eq:ours-closure} evaluated at the model factors.
+
+\paragraph{Fitting the factors.} We will now use~\eqref{eq:observable-moments} as our evidence for fitting $P$ and $Q$.
+% For brevity, here we drop the subscript $t$ since
+% all quantities are at the current step.
+Following
+KL-Shampoo~\cite{klshampoo}, we fit with the log-determinant
+divergence~\cite{logdetdiv}
+\[
+  D(\Sigma,S)=\Tr(\Sigma S^{-1})-\log\det(\Sigma S^{-1})-d,
+\]
+defined for positive definite matrices $\Sigma$ and $S$ of common
+dimension $d$. Let $\widehat{P}$ and $\widehat {Q}$ be our current estimates of $P$ and $Q$.
+% Away from the exact model, no candidate reproduces the
+% observed moment, and the divergence decides how the mismatch is
+% weighed. 
+Using~\eqref{eq:observable-moments} we fit the two factors by solving
+\begin{equation}\label{eq:factor-fit}
+  \hat{q}(\widehat P)
+  =\argmin_{q>0}\;
+  D\big(\Sigma_{A,t},\; \diag(q) \otimes \widehat C_A\big),
+  \qquad
+  \hat{p}(\widehat Q)
+  =\argmin_{p>0}\;
+  D\big(\Sigma_{B,t},\;\diag(p) \otimes \widehat C_B\big),
+\end{equation}
+where we freeze the current estimate of $\widehat C_A$ when estimating $\hat{q}$, and freeze the estimate of $\widehat C_B$ when estimating $\hat{p}$. This alternating freezing is needed to get a closed form update for $\hat{q}$ and $\hat{p}$, since otherwise $\widehat C_A$ and $\widehat C_B$ introduce a joint dependency through
+$\widehat C_A=B^\top\widehat PB$ and
+$\widehat C_B=A\widehat QA^\top$, for diagonal
+$\widehat P,\widehat Q\succ0$.
+
+
+The closed form solutions to~\eqref{eq:factor-fit} are given by
+\begin{equation}
+    \label{eq:factor-fit-sol}
+      \hat{q}(\widehat P)=\frac1r\diag\!\left(\mathrm{EMA}_{s\leq t}^{\beta_2}[G_{A,s}^\top \widehat C_A^{-1}G_{A,s}]\right),
+  \qquad
+  \hat{p}(\widehat Q)=\frac1r\diag\!\left(\mathrm{EMA}_{s\leq t}^{\beta_2}[G_{B,s} \widehat C_B^{-1}G_{B,s}^\top]\right).
+\end{equation}
+
+For fixed positive definite $\Sigma$ and $S$, let
+\begin{equation} \label{eq:opt-scalar-div}
+c^\star(\Sigma,S) := \tfrac{1}{d}\Tr(\Sigma S^{-1}) =\argmin_{c>0}D(\Sigma,cS)\end{equation}
+be the best scalar multiple
+of $S$.
+The
+next lemma shows the coupled fits are consistent even when posed with
+inexact estimates.
+\nikhil{I think this lemma is not useful. In fact it suggests you do not need a stateful estimator of $p$, $q$, you could use $\hat{q}(1)$ and $\hat{p}(1)$ for example.}
+\begin{lemma}[Consistency]\label{lem:consistency}
+Assume that~\eqref{e-diag-kron-second-mom-model}  holds with equality. Furthermore, assume that there exists $p^\star, q^\star, C_A$ and $C_B$ such that
+\begin{align}
+  \Sigma_{A,t} & =   \diag(q^\star) \otimes C_{A} \nonumber \\
+  \Sigma_{B,t}&=  \diag(p^\star) \otimes C_{B}, \label{eq:observable-moments-lem}
+\end{align}
+For any
+diagonal $\widehat P\succ0$ and $\widehat Q\succ0$, the
+fits~\eqref{eq:factor-fit}  with $\widehat C_A=B^\top\widehat PB$
+and $\widehat C_B=A\widehat QA^\top$ recover the true $p^\star$ and $q^\star$ upto a multiplicative constant:
+\begin{equation} \label{eq:awdawda}
+  \hat{q}(\widehat P)= c^\star\big(C_A,\widehat C_A\big)\,\diag(q^\star),
+  \qquad
+  \hat{p}(\widehat Q)= c^\star\big(C_B,\widehat C_B\big)\,\diag(p^\star).
+\end{equation}
+\end{lemma}
+\begin{proof}
+Since we assume~\eqref{eq:observable-moments} holds to equality, we have that $\Sigma_{A,t}$ is block
+diagonal with $j$th block $ q_j^\star\,C_A$, and the candidate
+$\diag(q)\otimes\widehat C_A$ of~\eqref{eq:factor-fit} at a point $q>0$
+is block diagonal with $j$th block $q_j\,\widehat C_A$. Traces and
+log-determinants add across blocks, so the objective is
+$\sum_jD(  q^\star_jC_A,\,q_j\widehat C_A)$, and thus is separable 
+over the unknowns $q_j$. Using~\eqref{eq:opt-scalar-div} solving for the scalar $q_j$ gives the best scalar
+multiple:
+\[
+\hat{q}_j=c^\star( q^\star_jC_A,\widehat C_A)
+=\,q^\star_j\,c^\star(C_A,\widehat C_A).
+\]
+The factor
+$\,c^\star(C_A,\widehat C_A)$ is the same for every $j$, and consequently~\eqref{eq:awdawda} holds. The claim
+for $\hat{p}$ follows with the roles of the two factors exchanged.
+\end{proof}
+
+
+\Cref{lem:consistency} shows that, if the second moments are block diagonal~\eqref{eq:observable-moments-lem}, which given the approximation in~\eqref{eq:SigmaAapprox} is reasonable, then by fitting our estimates of $P$ and $Q$ using~\eqref{eq:factor-fit-sol}, we will exactly recover the true $P^\star$ and $Q^\star$ up to a multiplicative constant. Since we know our estimates can be off by a multiplicative constant, we simply re-normalize them so that $\|q\|_{\infty} = \|p\|_{\infty} =1.$ This avoids the factors drifting across iterations. Putting all of the argument above together, we arrive at our online estimates for $P$ and $Q$ as follows.
+
+\nikhil{the "online estimator" still needs explanation / justification?}
+\rob{What part still needs justifying? The EMA is well justified, since it is the solution in~\eqref{eq:factor-fit-sol}}
+\nikhil{not true. the EMA uses $C_{B,s}$ from $s < t$, whereas as \eqref{eq:factor-fit-sol} uses $C_{B,t}$.}
+
+\paragraph{Online estimator.}
+
+% \rob{** OLd ***}
+%  Since the product 
+%   $Q \otimes P $ is unchanged by the rescaling
+%   $(P,Q)\mapsto(aP,a^{-1}Q)$, we fix
+%   $\norm{\diag P}_\infty=\norm{\diag Q }_\infty=1$ 
+Unrolling the EMAs in~\eqref{eq:factor-fit-sol}, with the post normalization given by \Cref{lem:consistency} gives
+\begin{equation}\label{eq:ours-klcoupling}
+\begin{aligned}
+  \hat{q}_t(P_t) &= \frac1r\diag\!\left(G_{A,t}^\top C_{A,t}^{-1}G_{A,t}\right),
+  &
+  \hat{p}_t(Q_t) &= \frac1r\diag\!\left(G_{B,t} C_{B,t}^{-1}G_{B,t}^\top\right),
+  \\
+  q_{t+1} &= \beta_2q_t+(1-\beta_2)\hat{q}_t(P_t),
+  &
+  p_{t+1} &= \beta_2p_t+(1-\beta_2)\hat{p}_t(Q_t),
+  \\
+  Q_{t+1} &= \diag\!\bigl(q_{t+1}/\norm{q_{t+1}}_\infty\bigr),
+  &
+  P_{t+1} &= \diag\!\bigl(p_{t+1}/\norm{p_{t+1}}_\infty\bigr).
+\end{aligned}
+\end{equation}
+
+%  Unrolled, the recursion weights the per-step estimates by
+% exactly the $w_{t,s}$ of \Cref{sec:weighted-lmo}. Within the window,
+% $B_s\approx B_t$ by \Cref{as:slow-drift}, and
+% the stored $P_s$ changes only at rate $1-\beta_2$, so
+% $C_{A,s}\approx C_{A,t}$ and each per-step estimate already uses the
+% current matrices. The running $q_t$ then matches the full fit
+% $\hat{q}(P_t)$, the consistent fit of \Cref{lem:consistency}.
+
+
+
+\paragraph{Recovering the update of \Cref{alg:ours}.} 
+Putting everything together, replacing the full batch factor gradients in
+the update~\eqref{eq:factor-directions} with their momentum estimates~\eqref{eq:mom-grad-factors} with one additional "look ahead" step look-ahead step gives line~\ref{ln:Bspectral} in \Cref{alg:ours}. Using~\eqref{eq:ours-klcoupling} to compute our approximation for $P$ and $Q$ gives lines~2,~\ref{ln:qmom} and~\ref{ln:pmom}  
+ The only departure of \Cref{alg:ours}
+from this derivation is that the preconditioners update after the
+direction step, so step $t$ runs on the estimate from step $t-1$, which
+avoids a second formation and inversion of $C_A$ and $C_B$ per step.
+
+\subsection{Normalization Placement}
+\label{sec:scale-placement}
+\methodname{} normalizes the accumulated vectors $q_{t+1},p_{t+1}$ to unit
+largest entry when it forms the next-step factors
+$Q_{t+1},P_{t+1}$~\eqref{eq:ours-klcoupling}, rather than normalizing each
+per-step estimate $\hat{q}_t,\hat{p}_t$ before it enters the average.
+Normalizing the accumulated vectors does not change the update, which
+depends only on the direction of the stored factors. Normalizing each
+estimate first would change the average, which is sensitive to the scale
+of those estimates.
+
+\rob{This repeats statement}
+\paragraph{The update is scale-free.} The update depends on the stored
+factors only through their direction. Under a rescaling $Q\mapsto cQ$
+($c>0$), both $Q^{-1/2}$ and $C_B^{-1/2}=(AQA^\top)^{-1/2}$ pick up a
+factor $c^{-1/2}$. Inside the matrix sign this scalar has no effect, since
+the sign is scale-invariant. Outside it, the scalar multiplies $D_A$ and
+$D_B$ by $c^{-1/2}$, which the division by $\norm{D_A}_2$ and
+$\norm{D_B}_2$ in the magnitude step cancels. The factor $P$ enters the
+same way. The update therefore sees only the direction of the stored
+factors, never the magnitude, so normalizing the accumulated
+vectors leaves it unchanged.
+
+\paragraph{The average is scale-sensitive.} The coupled fit makes each
+per-step estimate scale inversely with the stored factor it is computed
+from,
+\[
+  \hat{q}_t(aP_t)=a^{-1}\,\hat{q}_t(P_t),
+  \qquad
+  \hat{p}_t(aQ_t)=a^{-1}\,\hat{p}_t(Q_t)
+  \qquad(a>0),
+\]
+since $C_A=B^\top PB$~\eqref{eq:ours-closure} is linear in $P$, and
+likewise $C_B$ in $Q$. Normalizing after
+averaging gives every stored factor the same scale
+($\norm{\diag P_t}_\infty=1$ at every step), so the estimates enter the
+average on a common footing. Were the stored factor at step $s$ left carrying a step-varying scale
+$a_s$ instead, the identity above would scale
+$\hat{q}_s$ by $1/a_s$, so it would enter with effective weight
+$w_{t,s}/a_s$ rather than the $w_{t,s}$ chosen in \Cref{sec:weighted-lmo}.
+Normalizing the per-step estimates themselves before averaging would fail
+for a second reason. Normalization is nonlinear and does not commute with
+the mean, so per-step noise that cancels in the raw average would survive.
+This average-then-normalize order is the one by which momentum precedes
+normalization in normalized SGD~\cite{cutkosky_nigt} and orthogonalization
+in Muon~\cite{denoise_ortho}.
+
