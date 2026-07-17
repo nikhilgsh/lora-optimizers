@@ -616,11 +616,7 @@ Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\nor
 
 The method is still built on approximations. For efficiency the preconditioners are diagonal, a Kronecker-factored approximation of the per-sample second moment. The derivation also relies on a linearized loss change and a linearized product update, which means the optimizer does not directly control higher-order effects or the dropped $\Delta B\Delta A$ term. Finally, our evaluation focuses on LoRA finetuning for language models and on held-out loss as the main measure of progress; broader downstream evaluations, longer training horizons, other adapter families, and different hardware or batch-size regimes remain open.
 
-
 These limitations also point to several future directions. One is to design better outergradient approximations that remain cheap enough for adapter training. Another is to incorporate second-order information~\cite{du2026newtonmuonoptimizer} in such a way that the final update is still tractable.  More broadly, the per-sample loss-control perspective~\eqref{eq:sample-lmo} and~\eqref{eq:polorafull-hard}  may be useful beyond LoRA, for either pre-training or other composition of maps.
-
-
-
 
 \printbibliography
 
@@ -678,7 +674,9 @@ LR schedule            & constant \\
 \label{tab:config}
 \end{table}
 
-\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimum. All other optimizer hyperparameters are fixed. \Cref{tab:optim-config} lists the baseline settings; \methodname{} uses:
+\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimal learning rate. All other optimizer hyperparameters are fixed. \Cref{tab:optim-config} lists the optimizer settings for the baseline methods. 
+
+\methodname{} uses:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item momentum decay $\beta_1=0.9$ and curvature decay $\beta_2=0.99$,
   \item $8$ Gram Newton--Schulz iterations (\Cref{app:gramns}),
