@@ -1662,7 +1662,7 @@ class CurvatureWhitenLoRA(Optimizer):
             # c_A, c_B fold the per-factor shape scaling into ρ; merged cap
             # ρ(c_A·σmax(B) + c_B·σmax(A)) = η preserved (=current when c=1).
             cA, cB = self._factor_scales(Af.shape[0], Af.shape[1], Bf.shape[0])
-            rho = lr if self.cw_no_radius else lr / (cA * sB + cB * sA + self.eps)
+            rho = lr if self.cw_no_radius else lr / (cA * sB + cB * sA)
             # No §2.5 pre-rescale: σ_max momentum-normalization diluted the cross by
             # √(stable_rank) of the whitened momentum, making k≥2 a no-op. Cross is
             # added to the raw momentum (mirror of _cw_apply_grouped).
@@ -1698,8 +1698,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
-                dA = -(cA * rho / (sWA + self.eps)) * WA
-                dB = -self.lora_plus_multiplier * (cB * rho / (sWB + self.eps)) * WB
+                dA = -(cA * rho / sWA.clamp_min(self.eps)) * WA
+                dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.eps)) * WB
             emit_diag = self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0
             if emit_diag:
                 A_pre = A.detach().float()
@@ -1889,7 +1889,7 @@ class CurvatureWhitenLoRA(Optimizer):
             # python float) so the per-group ρ[j] in the diagnostic record below and
             # the broadcast cA·ρ/σ rescale both stay shape-correct.
             rho = (torch.full_like(sB, float(lr)) if (self.cw_no_radius or self.cw_unpinned)
-                   else lr / (cA * sB + cB * sA + self.eps))
+                   else lr / (cA * sB + cB * sA))
             # No §2.5 pre-rescale: the σ_max momentum-normalization diluted the cross
             # by √(stable_rank) of the whitened momentum (σ_max=1 base has Frobenius
             # √sr ≫ 1), so k≥2 collapsed onto k=1. The cross is added to the raw
@@ -1951,8 +1951,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     dA = -(cA * rho).view(-1, 1, 1) * WA
                     dB = -self.lora_plus_multiplier * (cB * rho).view(-1, 1, 1) * WB
                 else:
-                    dA = -(cA * rho / (sWA + self.eps)).view(-1, 1, 1) * WA
-                    dB = -self.lora_plus_multiplier * (cB * rho / (sWB + self.eps)).view(-1, 1, 1) * WB
+                    dA = -(cA * rho / sWA.clamp_min(self.eps)).view(-1, 1, 1) * WA
+                    dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if timer: timer.start("cw_curv_grams")
             if self.kl_coupled:
@@ -3773,9 +3773,37 @@ def _polar_express_compose_coeffs(l_init=1e-3, num_iters=10, safety_factor_eps=1
     return coeffs
 
 
-# Pre-computed PolarExpress coefficient series. Computed at import for the
-# default worst-case σ_min/σ_max ratio of 1e-3.
-_POLAR_EXPRESS_COEFFS = _polar_express_compose_coeffs(l_init=1e-3, num_iters=10)
+# Raw (pre-safety) PolarExpress fits from the reference optimal_composition
+# (worst-case σ_min/σ_max ratio 1e-3, cushion 0.02). The horizon-aware helper
+# below applies the 1.01 safety margin to every iteration except the last,
+# reproducing the reference generator at num_iters=nsteps bit-for-bit.
+_POLAR_EXPRESS_RAW = (
+    (8.31968561540051, -23.85945031896673, 17.53144504181025),
+    (4.123266419055485, -2.980709974760902, 0.5520797360741728),
+    (3.9656114721772022, -2.941248486368672, 0.5589295013119786),
+    (3.3312009004415994, -2.4980080275937966, 0.5111272954169234),
+    (2.320007312889811, -1.6862169729967622, 0.42068027340235137),
+    (1.8951443404954809, -1.2722050191923813, 0.377227344813122),
+    (1.875006772051659, -1.250007524486259, 0.37500075245392533),
+    (1.8750008025096776, -1.2500016050034328, 0.375000802493755),
+    (1.8749954784656357, -1.249990956953079, 0.374995478487443),
+    (1.8749954775662068, -1.2499909551542292, 0.3749954775880226),
+)
+_POLAR_EXPRESS_SAFETY = 1.01
+
+
+def _polar_express_horizon_coeffs(nsteps):
+    """First `nsteps` of the composed schedule with the safety margin applied
+    to every iteration except the last (matches the reference generator run at
+    num_iters=nsteps); iterations beyond the table pad with the asymptotic
+    quintic."""
+    take = list(_POLAR_EXPRESS_RAW[:nsteps])
+    if len(take) < nsteps:
+        take += [_POLAR_EXPRESS_RAW[-1]] * (nsteps - len(take))
+    s = _POLAR_EXPRESS_SAFETY
+    s3, s5 = s ** 3, s ** 5
+    return [(a, b, c) if i == nsteps - 1 else (a / s, b / s3, c / s5)
+            for i, (a, b, c) in enumerate(take)]
 
 
 def _polar_express(X, nsteps=5, eps=1e-7):
@@ -3791,10 +3819,7 @@ def _polar_express(X, nsteps=5, eps=1e-7):
         X = X.T
     norm = X.norm() * 1.01 + eps
     X = X / norm
-    coeffs = _POLAR_EXPRESS_COEFFS[:nsteps]
-    if len(coeffs) < nsteps:
-        # Repeat the last (most refined) coefficient for any extra steps.
-        coeffs = coeffs + [_POLAR_EXPRESS_COEFFS[-1]] * (nsteps - len(coeffs))
+    coeffs = _polar_express_horizon_coeffs(nsteps)
     for a, b, c in coeffs:
         XX = X @ X.T
         X = a * X + (b * XX + c * XX @ XX) @ X
@@ -3814,7 +3839,7 @@ def _polar_express_gram_batched(
     Amsel quintic Remez coefficients arXiv:2505.16932 in place of cubic Muon).
     Mirrors `_newton_schulz_gram_batched` but uses the degree-5 polynomial
     M_t = a_t I + b_t R + c_t R² with per-iter (a, b, c) from
-    `_POLAR_EXPRESS_COEFFS`.
+    `_polar_express_horizon_coeffs`.
 
     Per Dao 2026 §"When to Restart: Polar Express Coefficients for Muon":
     Polar Express coefficients have larger per-iter growth (≈3.5) than
@@ -3862,9 +3887,7 @@ def _polar_express_gram_batched(
 
     iter_dtype = dtype
     X0_iter = X_normed.to(iter_dtype)
-    coeffs = _POLAR_EXPRESS_COEFFS[:nsteps]
-    if len(coeffs) < nsteps:
-        coeffs = coeffs + [_POLAR_EXPRESS_COEFFS[-1]] * (nsteps - len(coeffs))
+    coeffs = _polar_express_horizon_coeffs(nsteps)
 
     use_tf32_guard = (iter_dtype == torch.float32) and X.is_cuda
     prev_tf32_matmul = None
@@ -3917,7 +3940,7 @@ def _polar_express_gram(X, nsteps=5, eps=1e-7):
 def gram_ns_inv_sqrt(S, nsteps=8, eps=1e-4, eps_relative=False, restart_at=2,
                      safety_factor=1.05):
     """Batched (S + δ_eff·I)^{-1/2} for SPD S: (..., r, r) via Gram Newton–Schulz
-    with the polar map's OWN Polar-Express coefficients (`_POLAR_EXPRESS_COEFFS`).
+    with the polar map's OWN Polar-Express schedule (`_polar_express_horizon_coeffs`).
 
     Gram NS (Zhang/Amsel/Chen/Dao 2026, Alg 2): with R_0 = S_normed, Q_0 = I, and the
     degree-5 polynomial M_t = a_t I + b_t R + c_t R²,  Q <- M_t Q,  R <- M_t R M_t,
@@ -3962,9 +3985,7 @@ def gram_ns_inv_sqrt(S, nsteps=8, eps=1e-4, eps_relative=False, restart_at=2,
     scale = tr * (safety_factor ** 2)          # S_d = scale·R0  =>  S_d^{-1/2} = Q/√scale
     R0 = S_d / scale                           # λ_max(R0) ≤ 1/safety² (headroom)
 
-    coeffs = _POLAR_EXPRESS_COEFFS[:nsteps]
-    if len(coeffs) < nsteps:
-        coeffs = coeffs + [_POLAR_EXPRESS_COEFFS[-1]] * (nsteps - len(coeffs))
+    coeffs = _polar_express_horizon_coeffs(nsteps)
 
     R = R0.clone()
     Q = eye.clone()
