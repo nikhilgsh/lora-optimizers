@@ -413,7 +413,7 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
 \label{alg:ours}
 \begin{algorithmic}[1]
-\Statex \textbf{Hyperparameters:} learning rate $\eta$, momentum decay $\beta_1$, curvature decay $\beta_2$, floor $\varepsilon$
+\Statex \textbf{Hyperparameters:} learning rate $\eta$, momentum decay $\beta_1$, curvature decay $\beta_2$, numerical-stability constant $\varepsilon$
 \Statex \textbf{Initialize:} $M_A, M_B \gets 0$; \quad $p, q \gets \varepsilon\mathbf{1}$
 \Statex
 \Phase{Update to Momentum Gradients}
@@ -510,7 +510,7 @@ The essential ingredients in \methodname{} can be decomposed into three componen
   \item \textbf{Curvature}. Preconditioning the gradient by an adaptive curvature estimate makes the update account for how different directions change the loss~\eqref{eq:pq-factor}.
   \item \textbf{Magnitude}. The sizes of the factor steps and the merged update are both controlled~\eqref{eq:ours-rho}.
 \end{itemize}
-Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta/2$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and each of the two components accounts for about half the speedup gap between Product Muon and \methodname{}.
+Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta/2$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and the curvature and magnitude components each account for about half the speedup gap between Product Muon and \methodname{}.
 
 \begin{figure}[t]
   \centering
@@ -538,7 +538,7 @@ $128$ & $1.52\times$ & $1.49\times$ \\
 $256$ & $1.63\times$ & $1.58\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across LoRA ranks.} Llama-3.2-1B finetuned on the math dataset at our batch of $32768$ tokens; only the rank varies across rows. Wall-clock speedup discounts the step speedup (\Cref{sec:exp-main}) by the per-step overhead (\Cref{app:exp}).}
+\caption{\textbf{\methodname{} speedup over Adam across LoRA ranks.} Llama-3.2-1B finetuned on the math dataset, with only the rank varied across rows. The wall-clock column discounts the step speedup (\Cref{sec:exp-main}) by the per-step overhead (\Cref{app:exp}).}
 \label{tab:rank}
 \end{table}
 
@@ -685,7 +685,7 @@ LR schedule            & constant \\
   \item $8$ Gram Newton--Schulz iterations (\Cref{app:gramns}),
   \item $8$ power iterations per spectral-norm estimate (\Cref{app:smax}),
   \item relative damping $\delta=10^{-4}$ (\Cref{app:damping}),
-  \item numerical floor $\varepsilon=10^{-12}$ (\Cref{app:init}).
+  \item numerical-stability constant $\varepsilon=10^{-12}$ (\Cref{app:init}).
 \end{itemize}
 \begin{table}[ht]
 \centering\small
