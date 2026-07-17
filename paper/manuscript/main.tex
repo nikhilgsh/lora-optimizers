@@ -253,15 +253,15 @@ The constraint couples the two unknowns $\Delta A$ and $\Delta B$, but we can de
 \le
 \norm{B \Delta A}_2 + \norm{\Delta B A}_2.
 \]
-As a result, we get the \emph{Product Muon} LMO
+Splitting the budget evenly between the two terms preserves the merged bound and gives the \emph{Product Muon} LMO
 \begin{equation}
   \begin{aligned}
   \Delta A &\in \argmin_{\Delta A}~ \ip{G_A, \Delta A}
   \quad \textnormal{subject to}\quad
-  \norm{B \Delta A}_2\le\eta, \\
+  \norm{B \Delta A}_2\le\eta/2, \\
   \Delta B &\in \argmin_{\Delta B}~ \ip{G_B, \Delta B}
   \quad \textnormal{subject to}\quad
-  \norm{\Delta B A}_2\le\eta,
+  \norm{\Delta B A}_2\le\eta/2,
   \end{aligned}
   \label{eq:decoupled-lora-lmo}
 \end{equation}
@@ -274,8 +274,8 @@ where the factor gradients are
 By \Cref{lem:whitened-spectral-lmo}, the solution to this LMO is
 \begin{equation}\label{eq:product-muon-step}
 \begin{aligned}
-    \Delta A &= -\eta\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
-    \Delta B &= -\eta\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
+    \Delta A &= -\tfrac{\eta}{2}\,(B^\top B)^{-1/2}\,\msign\!\big((B^\top B)^{-1/2} G_A\big), \\
+    \Delta B &= -\tfrac{\eta}{2}\,\msign\!\big(G_B (A A^\top)^{-1/2}\big)\,(A A^\top)^{-1/2}.
 \end{aligned}
 \end{equation}
 Similar to Muon, these factor updates are computed using momentum estimates of the  gradients.
@@ -478,7 +478,8 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \caption{\methodname{} step for one LoRA pair $(A,B)$}
 \label{alg:ours}
 \begin{algorithmic}[1]
-\Statex \textbf{Hyperparameters:} learning rate $\eta$, momentum decay $\beta_1$, curvature decay $\beta_2$
+\Statex \textbf{Hyperparameters:} learning rate $\eta$, momentum decay $\beta_1$, curvature decay $\beta_2$, floor $\varepsilon$
+\Statex \textbf{Initialize:} $M_A, M_B \gets 0$; \quad $p, q \gets \varepsilon_0\mathbf{1}$
 \Statex
 \Phase{Update to Momentum Gradients}
 \State $\begin{aligned}[t]
@@ -496,7 +497,7 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \Statex
 \Phase{Balancing Magnitude}
 \State $\rho\gets\eta/(\norm{A}_2+\norm{B}_2)$ \Comment{spectral-norm control~\eqref{eq:ours-rho}} \label{ln:rho}
-\State $A\gets A-\rho\,D_A/\norm{D_A}_2, \qquad B\gets B-\rho\,D_B/\norm{D_B}_2$ \label{ln:spectralnormupdate}
+\State $A\gets A-\rho\,D_A/\max(\norm{D_A}_2,\varepsilon), \qquad B\gets B-\rho\,D_B/\max(\norm{D_B}_2,\varepsilon)$ \label{ln:spectralnormupdate}
 \Statex
 \Phase{Update to Preconditioners}
 \State $q\gets\beta_2\, q+(1-\beta_2)\diag\big(G_A^\top C_A^{-1} G_A\big)/r$ \Comment{coupled estimator~\eqref{eq:ours-klcoupling}}  \label{ln:qmom}
@@ -574,7 +575,7 @@ The essential ingredients in \methodname{} can be decomposed into three componen
   \item \textbf{Curvature}. Preconditioning the gradient by an adaptive curvature estimate makes the update account for how different directions change the loss~\eqref{eq:pq-factor}.
   \item \textbf{Magnitude}. The sizes of the factor steps and the merged update are both controlled~\eqref{eq:ours-rho}.
 \end{itemize}
-Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and each of the two components accounts for about half the speedup gap between Product Muon and \methodname{}.
+Removing the curvature preconditioning ($P$ and $Q$ set to identity) and the magnitude control ($\tau = \eta/2$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and each of the two components accounts for about half the speedup gap between Product Muon and \methodname{}.
 
 \begin{figure}[t]
   \centering
@@ -764,7 +765,8 @@ LR schedule            & constant \\
   \item momentum decay $\beta_1=0.9$ and curvature decay $\beta_2=0.99$,
   \item $8$ Gram Newton--Schulz iterations (\Cref{app:gramns}),
   \item $8$ power iterations per spectral-norm estimate (\Cref{app:smax}),
-  \item relative damping $\delta=10^{-4}$ (\Cref{app:damping}).
+  \item relative damping $\delta=10^{-4}$ (\Cref{app:damping}),
+  \item numerical floor $\varepsilon=10^{-8}$ and metric initialization $\varepsilon_0=10^{-12}$ (\Cref{app:init}).
 \end{itemize}
 \begin{table}[ht]
 \centering\small
@@ -965,8 +967,7 @@ so the overshoot is $O(\eta)$ and shrinks as the factors grow.
 
 \section{Momentum-Free Reductions to Product Muon}
 \label{app:memoryless}
-LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon \cite{loramuon}
-reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed. We show this below.
+The LMO updates of LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon \cite{loramuon} all reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed; in particular, the iMuon paper states the Product Muon update explicitly as its intrinsic spectral LMO (Corollary~4.1 of~\cite{imuon}), even though the officially implemented optimizer differs (see~\eqref{eq:imuon-implemented}). We show this below.
 
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
@@ -983,7 +984,7 @@ The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} are
   \end{aligned}
   \label{eq:decoupled-lora-lmo-app} 
 \end{equation}
-They have the closed-form solution~\eqref{eq:product-muon-step}.
+With $\eta/2$ replaced by the budget $\tau$, they have the closed-form solution~\eqref{eq:product-muon-step}.
 We will use the fact that for any matrix $M$ with full column rank and reduced SVD $M=U\Sigma V^\top$,
 the matrix sign equals
 \begin{equation}
@@ -1005,7 +1006,7 @@ With no accumulation by \eqref{eq:polar-id} the middle factor is the matrix sign
   \Delta B=-\eta \msign(\widehat G_B) S_B^{-1/2}
   =-\eta \msign \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
 \end{equation*}
-which is equal to the $B$-update given in~\eqref{eq:product-muon-step}. Analogous arguments hold for the $A$-update.
+which is the $B$-update solving the Product Muon LMO~\eqref{eq:decoupled-lora-lmo-app} with budget $\tau=\eta$. Analogous arguments hold for the $A$-update.
 
 
 \paragraph{iMuon, momentum-free.}
@@ -1016,7 +1017,7 @@ iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\time
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 For the base Algorithm~1 in~\cite{imuon}, the ambient matrix is the raw gradient $G$, so~\eqref{eq:imuon-lmo-ambient}
-is again equivalent to \eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update.
+again gives the Product Muon update directions of~\eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update.
 
 \paragraph{iMuon, with momentum.} The official implementation of iMuon with momentum (their Appendix~K) does not
 use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
@@ -1031,11 +1032,11 @@ Turning momentum off ($\beta=0$) removes the buffers but not the recombination, 
   \widehat M=G_B A+B G_A=G\,A^\top A+BB^\top G\ \neq\ G .
 \end{equation*}
 Plugging $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top=B^\top G_B$,
-\begin{equation*}
+\begin{equation}\label{eq:imuon-implemented}
   \widehat M A^\top=G_B S_B+(BB^\top)G_B
   \quad\Longrightarrow\quad
   \Delta B(\widehat M)=\msign\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
-\end{equation*}
+\end{equation}
 which is different from Product Muon. The argument for $\Delta A$ is symmetric.
 Thus switching momentum off does not recover \eqref{eq:decoupled-lora-lmo}. While
 \eqref{eq:decoupled-lora-lmo-app} is the
@@ -1113,7 +1114,7 @@ $G_s\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ the gradient of the batch lo
   G_{B,s}=G_sA_s^\top\in\R^{d_{\mathrm{out}}\times r}
 \]
 for the factor
-gradients~\eqref{e-grad-wrt-factors}. 
+gradients~\eqref{e-grad-wrt-factors}. We use two standard properties of the Kronecker product \cite{magnus2019matrix}: the mixed-product rule $(U \otimes V)(W \otimes Z) = UW \otimes VZ$, and $\vec(X^\top)=\mathcal{K}\vec(X)$, where the commutation matrix $\mathcal{K}$ is a permutation matrix satisfying $\mathcal{K}(U \otimes V)\mathcal{K}^\top = V \otimes U$ for square $U$ and $V$.
 
 \paragraph{EMA averaging.} For any sequence $x_s$, write the EMA of the sequence up to step $t$ as
 \[
@@ -1132,12 +1133,18 @@ As in \Cref{sec:sample-loss-lmo}, to make the update tractable we approximate $\
   \qquad
   \overline \Sigma_B:=\EMA^{\beta_2}_{s\le t}\bigl[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\bigr].
 \]
-If the Kronecker approximation is exact and we replace $A_s$ and $B_s$ with their current values $A$ and $B$, which is reasonable if $A_s \approx A$ and $B_s \approx B$ over recent steps, then
+Suppose the Kronecker approximation is exact, $\overline \Sigma_t = Q \otimes P$, and replace $A_s$ and $B_s$ with their current values $A$ and $B$, which is reasonable if $A_s \approx A$ and $B_s \approx B$ over recent steps. Since $G_{A,s}=B^\top G_s$ and $G_{B,s}^\top = A G_s^\top$,
+\[
+  \vec(G_{A,s}) = (I \otimes B^\top)\vec(G_s),
+  \qquad
+  \vec(G_{B,s}^\top) = (I \otimes A)\,\mathcal{K}\vec(G_s),
+\]
+and therefore
 \begin{equation}\label{eq:observable-moments}
-  \overline \Sigma_A
-  = Q\otimes C_A(P),\quad
-  \overline \Sigma_B
-  = P\otimes C_B(Q),
+\begin{aligned}
+  \overline \Sigma_A &= (I \otimes B^\top)(Q \otimes P)(I \otimes B) = Q\otimes C_A(P),\\
+  \overline \Sigma_B &= (I \otimes A)\,\mathcal{K}(Q \otimes P)\mathcal{K}^\top(I \otimes A^\top) = (I \otimes A)(P \otimes Q)(I \otimes A^\top) = P\otimes C_B(Q),
+\end{aligned}
 \end{equation}
 where $C_A(P)=B^\top P B$ and $C_B(Q)=A Q A^\top$.
 
@@ -1218,8 +1225,32 @@ $(aP,a^{-1}Q)$. The update direction is the same at both, but
 so we normalize $q_{t+1},p_{t+1}$ in~\eqref{eq:ours-klcoupling} to
 make the $p,q$ updates invariant as well.
 
-\section{Numerical Subroutines}
+\section{Implementation Details}
 \label{app:primitives}
+This appendix records how \Cref{alg:ours} initializes its state and implements
+its numerical subroutines.
+
+\paragraph{Initialization.}\label{app:init}
+The EMA vectors start at $p = q = \varepsilon_0\mathbf{1}$, which the
+normalization in line~\ref{ln:pqnorm} maps to the identity metric at the first
+step. Since $B=0$ at initialization, $G_A$, $\widehat M_A$, and $C_A$ all
+vanish, so $D_A=0$ and $A$ stays fixed (line~\ref{ln:spectralnormupdate}) until
+$B$ first becomes nonzero. The $B$ factor updates from the first step, with
+$C_B \propto AA^\top$, so its first update coincides in direction with the
+Product Muon step~\eqref{eq:product-muon-step}.
+
+\paragraph{Relative Damping.}\label{app:damping}
+Each inverse square root in \Cref{alg:ours} is damped so that directions of
+nearly zero curvature are not amplified without bound. For a positive
+semidefinite curvature matrix $C$ we damp relative to the top eigenvalue,
+\[
+    \widehat{C} = C + \delta\lambda_{\max}(C)\, I,
+\]
+which caps the condition number of $\widehat{C}$ at $(1+\delta)/\delta \approx 1/\delta$.
+We apply the same relative damping to the diagonal preconditioners $P$ and $Q$.
+Since the normalization in line~\ref{ln:pqnorm} sets their largest entry to
+one, the damped matrices are simply $P+\delta I$ and $Q+\delta I$, and these
+are used to form $C_A$ and $C_B$.
 
 \subsection{Spectral-Norm Estimation}
 \label{app:smax}
@@ -1347,41 +1378,6 @@ every matrix is only $r\times r$.  We use $K=8$ iterations.
 \end{algorithm}
 
 
-\subsection{Relative Damping}\label{app:damping}
-Each inverse square root in \Cref{alg:ours} is damped so that directions of
-nearly zero curvature are not amplified without bound.  For a positive
-semidefinite curvature matrix $C = U\operatorname{diag}(\lambda)U^\top \in \mathbb{R}^{r\times r}$,
-we damp by $\delta$ relative to the top eigenvalue; \Cref{alg:gramns} then
-normalizes by $\gamma=\Tr(\widehat{C})$,
-\[
-    \widehat{C} = C + \lambda_{\max}\delta I,
-    \qquad
-    \widetilde C = \widehat{C}/\gamma .
-\]
-Since $\widehat{C} \succ 0$, the trace $\gamma$, the normalized spectrum, and the resulting
-inverse square root are all bounded,
-\[
-    \lambda_{\max}(1+\delta) \ \le\ \gamma
-        = \textstyle\sum_{i=1}^r \lambda_i + r\lambda_{\max}\delta
-        \ \le\ r\lambda_{\max}(1+\delta),
-\]
-\[
-    \frac{\lambda_i + \lambda_{\max}\delta}{\gamma}
-        \in \left[\frac{\delta}{r(1+\delta)},\ 1\right],
-        \qquad
-    \lambda\!\left(\widetilde C^{-1/2}\right)
-        \in \left[1,\ \sqrt{\tfrac{r(1+\delta)}{\delta}}\right].
-\]
-The bound $\sqrt{r(1+\delta)/\delta}$ grows as $\delta\to 0$, so a smaller
-$\delta$ permits stronger amplification of low-curvature directions.
-
-\paragraph{Warmup.}
-At the beginning of training, the EMA vectors $p,q$ may still be zero.
-When $\lambda_{\max}(C)=0$, we set the inverse square root
-to identity,
-$\widetilde C^{-1/2}=I$.  The corresponding
-side is then unpreconditioned, so the update reduces to the plain
-momentum direction until the curvature estimate becomes nonzero.
 
 
 

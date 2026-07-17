@@ -1872,6 +1872,36 @@
     \field{year}{2025}
   \endentry
 
+  \entry{magnus2019matrix}{book}{}
+    \name{author}{2}{}{%
+      {{hash=MJR}{%
+         family={Magnus},
+         familyi={M\bibinitperiod},
+         given={Jan\bibnamedelima R.},
+         giveni={J\bibinitperiod\bibinitdelim R\bibinitperiod},
+      }}%
+      {{hash=NH}{%
+         family={Neudecker},
+         familyi={N\bibinitperiod},
+         given={Heinz},
+         giveni={H\bibinitperiod},
+      }}%
+    }
+    \list{publisher}{1}{%
+      {John Wiley \& Sons}%
+    }
+    \strng{namehash}{MJRNH1}
+    \strng{fullhash}{MJRNH1}
+    \field{labelnamesource}{author}
+    \field{labeltitlesource}{title}
+    \field{sortinit}{M}
+    \field{sortinithash}{M}
+    \field{edition}{third}
+    \field{title}{Matrix Differential Calculus with Applications in Statistics
+  and Econometrics}
+    \field{year}{2019}
+  \endentry
+
   \entry{kfac}{misc}{}
     \name{author}{2}{}{%
       {{hash=MJ}{%
