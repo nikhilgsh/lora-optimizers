@@ -258,12 +258,11 @@ To build $\mathcal{G}$ we collect some standard properties of the gradient matri
 \begin{restatable}[Properties of gradients]{lemma}{gradprop} 
   \label{lem:gradprop}
     Let $g_i=\vec(G_i) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for all $i=1, \ldots, n$,
-    and let $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. It follows that the gradients satisfy
+    and let $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. It follows that the gradients satisfy the following properties:
     \begin{enumerate}
         \item {\bf Leverage bound:} $ \ip{\Sigma^\dagger g_i, g_i} \leq n$, \\[-0.5cm]
-        \item {\bf Rank one:} $G_i = b_i x_i^\top$,
+        \item {\bf Rank one:} $G_i = b_i x_i^\top$  for some $x_i \in \R^{d_{\mathrm{in}}}$ and $b_i \in \R^{d_{\mathrm{out}}}$.
         \end{enumerate}
-    for some $x_i \in \R^{d_{\mathrm{in}}}$ and $b_i \in \R^{d_{\mathrm{out}}}$.
 \end{restatable}
 
 \noindent The above properties motivate the choice of the following outergradient set
