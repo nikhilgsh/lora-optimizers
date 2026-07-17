@@ -1242,9 +1242,9 @@ every matrix is only $r\times r$.  We use $K=8$ iterations.
 
 \section{FLOP Overhead per Optimizer Step}
 \label{app:flops}
-The wall-clock measurements in \Cref{sec:exp-walltime} depend on the hardware, so
-we also report leading matmul FLOP counts, which do not.  We count one
-multiply-add as two FLOPs.  The count below is for one
+To measure the theoretical overhead of each optimizer step, we count
+leading-order matrix-multiplication FLOPs, with one multiply-add counted as two
+FLOPs.  The count below is for one
 adapted linear layer with frozen base weight $W$ and rank-$r$ LoRA factors
 $A,B$,
 \[
