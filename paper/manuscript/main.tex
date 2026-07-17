@@ -308,7 +308,7 @@ so that \eqref{eq:polorafull-hard} becomes
 \end{array}
 \label{eq:polorafull}
 \end{equation}
-where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. Its value does not matter, since we use the LMO only for the direction and rescale it to the desired size. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
+where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. Note that the value of $\tau$ does not matter, since we use the LMO only for the direction and rescale the update later. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
 \begin{equation}\label{eq:polorafull-update}
     \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation}
