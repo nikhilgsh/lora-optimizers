@@ -9,9 +9,9 @@ Design (locked with the user, conventions from Mousse/SPlus/LoRA+ in docs/papers
   tab_rank.tex             rank ladder (tab_rank), and the Qwen code-vs-Bengali pair
   tab_ood.tex              (tab_ood). The merged code+math tab:breadth in the manuscript
                            pairs these step numbers with bench-measured wall-clock.
-  figA_breadth.pdf       — appendix: per-setting loss curves behind the table cells --
-  figA_breadth_math.pdf    model breadth on code (figA_breadth) and math (figA_breadth_math),
-  figA_rank.pdf            and the Llama Math rank ladder (figA_rank), each excluding the
+  figA_curves.pdf        — appendix: ONE combined figure of per-setting loss curves behind
+                           the table cells, three labelled rows -- (a) model breadth on code,
+                           (b) on math, (c) the Llama math rank ladder -- each excluding the
                            cells already drawn as curves in the body.
   fig2_ablation.pdf      — E2 basins at Llama openmath r256: PoLoRA vs
                            "w/o curvature control" vs "w/o magnitude control"; ringed minima.
@@ -50,8 +50,13 @@ plt.rcParams.update({
     "font.family": "serif",
     "font.serif": ["STIXGeneral", "Times New Roman", "DejaVu Serif"],
     "mathtext.fontset": "stix",
-    "font.size": 11, "axes.labelsize": 11, "axes.titlesize": 11,
-    "legend.fontsize": 9.5, "xtick.labelsize": 10, "ytick.labelsize": 10,
+    # Font sizes are the ON-PAGE point sizes: every figure is authored at its printed
+    # width (\linewidth = 6.5in, or 0.6\linewidth = 3.9in for fig_gauge) so includegraphics
+    # does NOT rescale it -- what you set here is what prints, sitting just below the 11pt
+    # body. (fig2 pioneered this; the rest now follow. Do NOT author a figure wider than its
+    # printed width or these sizes shrink by the downscale factor.)
+    "font.size": 9.5, "axes.labelsize": 9.5, "axes.titlesize": 10,
+    "legend.fontsize": 8.5, "xtick.labelsize": 8.5, "ytick.labelsize": 8.5,
     "axes.linewidth": 0.8, "lines.linewidth": 1.6,
     "axes.spines.top": False, "axes.spines.right": False,
     "pdf.fonttype": 42,
@@ -189,41 +194,62 @@ def _paper_cells():
 
 
 def _annotate_speedup(ax, cross, horizon, target, speed, color, drop_from=None,
-                      proto_xy=None, show_speedup=True):
+                      proto_xy=None, show_speedup=True, box=True, fontsize=8.5, box_pad=0.3):
     """Mark the steps saved at the reference (Adam-final) loss, SPlus/SSO style: a dot
     where the protagonist first reaches that loss and a HORIZONTAL dashed line in the
     protagonist's colour from the crossing out to the horizon -- its length IS the steps
     saved. There is no full-width reference line; only this blue span is emphasized, so
     the eye reads the saved steps rather than the loss gap. With show_speedup, add a
-    small boxed 'N x fewer steps' callout beside the span (SSO Fig 8 convention).
+    'N x fewer steps' callout beside the span (SSO Fig 8 convention). `box=True` draws it
+    in the boxed style (tall body figures); `box=False` draws light coloured text with no
+    box -- the same wording, sized for cramped multi-panel grids where a box reads oversized.
 
     drop_from / proto_xy are unused (kept for caller compatibility)."""
     ax.relim(); ax.autoscale_view()
-    off = ax.get_ylim()[1] - ax.get_ylim()[0]
     ax.plot([cross, horizon], [target, target], color=color, ls=(0, (2, 2)),
             lw=1.7, zorder=5)
     if show_speedup:
-        # SSO Fig 8 boxed callout, kept OFF every curve by construction: anchor its right
-        # edge at the crossing and its top just below the span. Left of the crossing the
-        # protagonist sits at or above the reference loss, so a box hanging below that
-        # level there clears the protagonist; the baselines run far higher. No curve is
-        # masked regardless of the rendered box width (which varies per panel).
-        x_anchor = cross - 0.13 * horizon
-        t = ax.text(x_anchor, target - 0.02 * off,
+        # Anchor the callout in the clear region left of the crossing, but cap it at
+        # 0.45*horizon so a LATE crossing does not drop it where the curve sits near the
+        # reference loss (there the box would crowd the curve). Guarantee a pocket below the
+        # reference so the box sits below the (higher) curve rather than being shoved up into
+        # it. The final off-spine margin is applied post-layout by _place_speedup_boxes --
+        # window extents are only correct once the layout (constrained_layout/subfigures) is
+        # final, so the nudge cannot be done reliably here during panel construction.
+        x_anchor = min(cross - 0.13 * horizon, 0.45 * horizon)
+        ylo, yhi = ax.get_ylim()
+        need = 0.20 * (yhi - ylo)
+        if target - ylo < need:
+            ax.set_ylim(bottom=target - need)
+            ylo, yhi = ax.get_ylim()
+        t = ax.text(x_anchor, target - 0.02 * (yhi - ylo),
                     rf"${speed:.2f}\times$ fewer steps",
-                    ha="right", va="top", fontsize=8.5, zorder=7,
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=color, lw=0.8))
-        # Keep the callout inside the axes: if the box would spill past the left spine,
-        # nudge it right just enough to fit (its right edge stays left of the crossing, so
-        # it remains clear of the curve).
-        try:
-            ax.figure.canvas.draw()
-            xmin, xmax = ax.get_xlim()
-            x_left = ax.transData.inverted().transform((t.get_window_extent().x0, 0))[0]
-            if x_left < xmin:
-                t.set_x(x_anchor + (xmin - x_left) + 0.015 * (xmax - xmin))
-        except Exception:
-            pass
+                    ha="right", va="top", fontsize=fontsize, zorder=7,
+                    color="black" if box else color,
+                    bbox=(dict(boxstyle=f"round,pad={box_pad}", fc="white", ec=color, lw=0.8)
+                          if box else None))
+        t.set_gid("speedup_box")
+
+
+def _place_speedup_boxes(fig, xfrac=0.035, yfrac=0.05):
+    """Post-layout pass: push each speedup callout off the left/bottom spines by a margin so
+    it never touches the frame. Run right before savefig -- axis positions (and hence the box
+    window extents) are only final after the layout engine runs at draw time; nudging in data
+    coordinates then keeps the margin stable across the savefig redraw."""
+    fig.canvas.draw()
+    for ax in fig.get_axes():
+        for t in list(ax.texts):
+            if t.get_gid() != "speedup_box":
+                continue
+            xmin, xmax = ax.get_xlim(); ymin, ymax = ax.get_ylim()
+            bb = t.get_window_extent()
+            x0, y0 = ax.transData.inverted().transform((bb.x0, bb.y0))
+            xm, ym = xfrac * (xmax - xmin), yfrac * (ymax - ymin)
+            px, py = t.get_position()
+            if x0 < xmin + xm:
+                t.set_x(px + (xmin + xm - x0))
+            if y0 < ymin + ym:
+                t.set_y(py + (ymin + ym - y0))
 
 
 # ───────────────────────────── Figure 1: showcase ─────────────────────────────
@@ -274,6 +300,7 @@ def fig1(show_speedup=True):
     fig, ax = plt.subplots(figsize=(5.4, 3.4))
     info = _draw_hero(ax, show_speedup=show_speedup)
     fig.tight_layout()
+    _place_speedup_boxes(fig)
     fig.savefig(FIGS / "fig1_hero.pdf")
     fig.savefig(FIGS / "fig1_hero.png", dpi=150)
     print(f"── fig1: {_cell_label(info['wl'])}  target {info['target']:.4f}"
@@ -369,15 +396,15 @@ def table1():
 
 
 # ─────────────────── Task-pair showcase: loss-vs-steps (OOD) ───────────────────
-def fig_ood(figsize=(7.4, 3.3)):
+def fig_ood(figsize=(6.5, 2.9)):
     """Task-pair showcase (visual companion to tab_ood): loss-vs-steps for
-    Qwen2.5-1.5B r256, AdamW vs PoLoRA, on in-distribution code and
-    out-of-distribution Bengali. Same annotation as the hero (fig1): AdamW's
-    final loss dashed, the interpolated crossing dotted, the step-speedup arrow
-    printed. The OOD panel's gap is wider -> the speedup grows with room to move.
-    Panels are NOT y-shared (the two corpora sit at different loss scales)."""
-    specs = [("Qwen/Qwen2.5-1.5B", "opc", 256, "Code (in-distribution)"),
-             ("Qwen/Qwen2.5-1.5B", "bengali", 256, "Bengali (out-of-distribution)")]
+    Qwen2.5-1.5B r256, AdamW vs PoLoRA, on code and Bengali. Same annotation
+    as the hero (fig1): AdamW's final loss dashed, the interpolated crossing
+    dotted, the step-speedup arrow printed. The Bengali panel's gap is wider
+    -> the speedup grows with room to move.
+    Panels are NOT y-shared (the two datasets sit at different loss scales)."""
+    specs = [("Qwen/Qwen2.5-1.5B", "opc", 256, "Code"),
+             ("Qwen/Qwen2.5-1.5B", "bengali", 256, "Bengali")]
     fig, axes = plt.subplots(1, 2, figsize=figsize)
     print("── fig_ood (Qwen2.5-1.5B r256 task pair) ──")
     for ax, (model, data, rank, title) in zip(axes, specs):
@@ -411,85 +438,87 @@ def fig_ood(figsize=(7.4, 3.3)):
     axes[0].set_ylabel("Eval Loss")
     axes[0].legend(frameon=False, loc="upper right")
     fig.tight_layout()
+    _place_speedup_boxes(fig)
     fig.savefig(FIGS / "fig_ood.pdf")
     fig.savefig(FIGS / "fig_ood.png", dpi=150)
     return fig
 
 
 # ──────── Appendix: per-setting learning curves (the curves behind the tables) ────────
-def _appendix_curves(specs, outname, figsize):
-    """Loss-vs-step panels for settings the body reports only as a table speedup number.
-    Same annotation as fig1/fig_ood (AdamW final dashed, interpolated crossing dotted,
-    step-speedup arrow). Each figure is one logical axis (model breadth, or rank ladder)
-    and EXCLUDES the settings already drawn as curves in the body -- the hero/ablation
-    Llama-openmath-r256 (fig1/fig2) and the two Qwen cells (fig_ood) -- so the appendix
-    adds the missing curves rather than redrawing ones the reader has already seen."""
-    fig, axes = plt.subplots(1, len(specs), figsize=figsize)
-    print(f"── {outname} ──")
-    for ax, (model, data, rank, title) in zip(axes, specs):
-        wl = find_workload(model, data, rank)
-        labeled = labeled_completed_runs(
-            workload_runs(wl), paper_variant_key, horizon=wl.horizon)
-        rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
-        rows = {r["variant"]: r for r in rows}
-        finals = {}
-        proto_xy = None
-        for v in ("Adam", "PoLoRA"):
-            if v not in rows:
-                continue
-            lr = rows[v]["best_lr"]
-            xs, ys = _hist_xy(labeled[v][lr][1])
-            ax.plot(xs, ys, color=STYLE[v]["color"], ls=STYLE[v]["ls"],
-                    lw=STYLE[v].get("lw", 1.6), label=v)
-            finals[v] = ys[-1]
-            if v == "PoLoRA":
-                proto_xy = (xs, ys)
-        frac = rows["PoLoRA"]["frac_best_lr"]
-        cross = frac * wl.horizon
-        speed = speedup_from_frac(frac)
-        _annotate_speedup(ax, cross, wl.horizon, target, speed,
-                          STYLE["PoLoRA"]["color"], finals["PoLoRA"], proto_xy=proto_xy)
-        ax.set_title(title, fontsize=10)
+def _draw_loss_panel(ax, model, data, rank, title, xlabel=True, ylabel=False):
+    """Adam vs PoLoRA loss-vs-step for one setting onto `ax`: both at their best lr, the
+    dashed steps-saved span, and a small boxed 'N x fewer steps' callout. Returns
+    (handles, labels) so the caller can build one shared legend."""
+    wl = find_workload(model, data, rank)
+    labeled = labeled_completed_runs(
+        workload_runs(wl), paper_variant_key, horizon=wl.horizon)
+    rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
+    rows = {r["variant"]: r for r in rows}
+    finals = {}
+    for v in ("Adam", "PoLoRA"):
+        if v not in rows:
+            continue
+        lr = rows[v]["best_lr"]
+        xs, ys = _hist_xy(labeled[v][lr][1])
+        ax.plot(xs, ys, color=STYLE[v]["color"], ls=STYLE[v]["ls"],
+                lw=STYLE[v].get("lw", 1.6), label=v)
+        finals[v] = ys[-1]
+    frac = rows["PoLoRA"]["frac_best_lr"]
+    cross = frac * wl.horizon
+    speed = speedup_from_frac(frac)
+    # Boxed "N x fewer steps" callout as in the body figures, scaled down so it stays
+    # proportional in these narrow grid panels; sits in the clear pocket below-left of
+    # the crossing.
+    _annotate_speedup(ax, cross, wl.horizon, target, speed,
+                      STYLE["PoLoRA"]["color"], finals["PoLoRA"], fontsize=7, box_pad=0.2)
+    ax.set_title(title)
+    if xlabel:
         ax.set_xlabel("Training Step")
-        ax.set_xlim(0, wl.horizon * 1.03)
-        print(f"  {title:16s} target {target:.4f}  crossing {cross:.0f}  x{speed:.2f}")
-    axes[0].set_ylabel("Eval Loss")
-    axes[0].legend(frameon=False, loc="upper right")
-    fig.tight_layout()
-    fig.savefig(FIGS / f"{outname}.pdf")
-    fig.savefig(FIGS / f"{outname}.png", dpi=150)
+    if ylabel:
+        ax.set_ylabel("Eval Loss")
+    ax.set_xlim(0, wl.horizon * 1.03)
+    ax.spines[["top", "right"]].set_visible(False)
+    print(f"  {title:16s} target {target:.4f}  crossing {cross:.0f}  x{speed:.2f}")
+    return ax.get_legend_handles_labels()
+
+
+def figA_curves(figsize=(6.5, 7.0)):
+    """Combined appendix learning curves in ONE figure so the section stays cohesive and
+    tiles a page instead of three tall floats scattering across pages. Three labelled rows,
+    each Adam vs PoLoRA at every setting's best lr, excluding settings already drawn in the
+    body (fig1/fig2/fig_ood): (a) model families on code, (b) on math, (c) the rank ladder."""
+    rows = [
+        ("(a) Model families — code ($r=256$)",
+         [("allenai/OLMo-2-0425-1B", "opc", 256, "OLMo-2-1B"),
+          ("meta-llama/Llama-3.2-1B", "opc", 256, "Llama-3.2-1B"),
+          ("meta-llama/Meta-Llama-3-8B", "opc", 256, "Llama-3-8B")]),
+        ("(b) Model families — math ($r=256$)",
+         [("allenai/OLMo-2-0425-1B", "openmath", 256, "OLMo-2-1B"),
+          ("Qwen/Qwen2.5-1.5B", "openmath", 256, "Qwen2.5-1.5B"),
+          ("meta-llama/Meta-Llama-3-8B", "openmath", 256, "Llama-3-8B")]),
+        ("(c) Rank ladder — Llama-3.2-1B, math",
+         [("meta-llama/Llama-3.2-1B", "openmath", 32, "$r=32$"),
+          ("meta-llama/Llama-3.2-1B", "openmath", 64, "$r=64$"),
+          ("meta-llama/Llama-3.2-1B", "openmath", 128, "$r=128$")]),
+    ]
+    fig = plt.figure(figsize=figsize, constrained_layout=True)
+    subfigs = fig.subfigures(len(rows), 1)
+    print("── figA_curves (combined appendix learning curves) ──")
+    handles = labels = None
+    for i, (sf, (rowtitle, specs)) in enumerate(zip(subfigs, rows)):
+        axes = sf.subplots(1, 3)
+        last = (i == len(rows) - 1)
+        for j, (ax, (model, data, rank, title)) in enumerate(zip(axes, specs)):
+            h, l = _draw_loss_panel(ax, model, data, rank, title,
+                                    xlabel=last, ylabel=(j == 0))
+            if handles is None:
+                handles, labels = h, l
+        sf.suptitle(rowtitle, fontsize=9.5, fontweight="bold")
+    fig.legend(handles, labels, loc="outside upper center", ncol=2, frameon=False)
+    _place_speedup_boxes(fig)
+    fig.savefig(FIGS / "figA_curves.pdf")
+    fig.savefig(FIGS / "figA_curves.png", dpi=150)
     return fig
-
-
-def figA_breadth(figsize=(9.8, 3.0)):
-    """Model-breadth curves (code, r=256) behind tab_breadth -- the three model families
-    NOT already shown as curves in the body (Qwen/code is in fig_ood)."""
-    return _appendix_curves(
-        [("allenai/OLMo-2-0425-1B", "opc", 256, "OLMo-2-1B"),
-         ("meta-llama/Llama-3.2-1B", "opc", 256, "Llama-3.2-1B"),
-         ("meta-llama/Meta-Llama-3-8B", "opc", 256, "Llama-3-8B")],
-        "figA_breadth", figsize)
-
-
-def figA_rank(figsize=(9.8, 3.0)):
-    """Rank-ladder curves (Llama-3.2-1B, Math) behind tab_rank -- the three lower ranks
-    NOT already shown as curves in the body (r=256 is the hero, fig1)."""
-    return _appendix_curves(
-        [("meta-llama/Llama-3.2-1B", "openmath", 32, "$r=32$"),
-         ("meta-llama/Llama-3.2-1B", "openmath", 64, "$r=64$"),
-         ("meta-llama/Llama-3.2-1B", "openmath", 128, "$r=128$")],
-        "figA_rank", figsize)
-
-
-def figA_breadth_math(figsize=(9.8, 3.0)):
-    """Model-breadth curves (math, r=256) behind the Math columns of tab_breadth -- the
-    three model families NOT already shown as curves in the body (Llama-3.2-1B/math is
-    the hero, fig1)."""
-    return _appendix_curves(
-        [("allenai/OLMo-2-0425-1B", "openmath", 256, "OLMo-2-1B"),
-         ("Qwen/Qwen2.5-1.5B", "openmath", 256, "Qwen2.5-1.5B"),
-         ("meta-llama/Meta-Llama-3-8B", "openmath", 256, "Llama-3-8B")],
-        "figA_breadth_math", figsize)
 
 
 # ─────────────────────────── Figs 2–3: lr basins ───────────────────────────
@@ -588,7 +617,7 @@ def fig2():
     return fig
 
 
-def fig3(star_ms=11, figsize=(7.2, 3.0)):
+def fig3(star_ms=11, figsize=(6.5, 2.6)):
     """lr basins on the openmath r>=32 ladder, two panels (PoLoRA | AdamW),
     one curve per rank (color = rank, reversed viridis), shared y windowed to the
     converged band. A star marks each curve's minimum, making the per-optimizer
@@ -617,7 +646,7 @@ def fig3(star_ms=11, figsize=(7.2, 3.0)):
     med = float(np.median(allv)); conv = [v for v in allv if v < 3 * med]
     lo, hi = min(allv), max(conv); rng = hi - lo
     ylo, yhi = lo - 0.10 * rng, hi + 0.06 * rng
-    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True, constrained_layout=True)
     for ax, a in zip(axes, arms):
         for rank in ranks:
             d = data[a][rank]
@@ -635,9 +664,8 @@ def fig3(star_ms=11, figsize=(7.2, 3.0)):
     # so place it in genuinely clear space rather than over any curve (no box).
     axes[1].legend(handles=handles, title="Rank", loc="center left",
                    bbox_to_anchor=(1.02, 0.5), frameon=False)
-    fig.tight_layout()
-    fig.savefig(FIGS / "fig3_lr_transfer.pdf", bbox_inches="tight")
-    fig.savefig(FIGS / "fig3_lr_transfer.png", dpi=150, bbox_inches="tight")
+    fig.savefig(FIGS / "fig3_lr_transfer.pdf")
+    fig.savefig(FIGS / "fig3_lr_transfer.png", dpi=150)
     return fig
 
 
@@ -700,18 +728,18 @@ def _draw_lr_tuning(ax, legend=True):
     ax.spines[["top", "right"]].set_visible(False)
 
 
-def fig_hero_with_tuning(figsize=(11.0, 3.4)):
-    """Preview of the 2-panel hero: loss-vs-step trajectory (left) + LR-tuning basin
-    (right), one shared legend on the left panel (both panels share the 5 colours).
-    Lets you eyeball whether the tuning figure belongs alongside the hero or in the
-    appendix."""
+def fig_hero_with_tuning(figsize=(6.5, 2.7)):
+    """The 2-panel Figure 1: loss-vs-step trajectory (left) + LR-tuning basin (right),
+    one shared legend on the left panel (both panels share the 5 colours). Authored at
+    the printed \\linewidth (6.5in) so its fonts render at true point size."""
     fig, (axL, axR) = plt.subplots(1, 2, figsize=figsize)
     info = _draw_hero(axL, legend=True)
     _draw_lr_tuning(axR, legend=False)
     print(f"── fig_hero_with_tuning: speedup x{info['speed']:.2f}")
     fig.tight_layout()
-    fig.savefig(FIGS / "fig_hero_with_tuning.pdf", bbox_inches="tight")
-    fig.savefig(FIGS / "fig_hero_with_tuning.png", dpi=150, bbox_inches="tight")
+    _place_speedup_boxes(fig)
+    fig.savefig(FIGS / "fig_hero_with_tuning.pdf")
+    fig.savefig(FIGS / "fig_hero_with_tuning.png", dpi=150)
     return fig
 
 
@@ -723,7 +751,7 @@ _GAUGE_GROUPS = {   # rank -> log group carrying the per-step op-norm gauge fiel
 }
 
 
-def fig_gauge(figsize=(5.2, 3.4), lr_want=0.01):
+def fig_gauge(figsize=(3.9, 2.7), lr_want=0.01):
     """Operator-norm ratio sigma_max(B)/sigma_max(A) over training for the
     protagonist (PoLoRA) at each rank on the Llama openmath ladder (best lr,
     0.01). The factors self-balance (ratio -> 1) and the balance tightens with rank.
@@ -762,7 +790,7 @@ def fig_gauge(figsize=(5.2, 3.4), lr_want=0.01):
         print(f"  r{r}: final ratio {d[1][-1]:.3f}")
     ax.set_xlabel("Training Step")
     ax.set_ylabel(r"$\|B\|_2\,/\,\|A\|_2$")
-    ax.legend(title="Rank", frameon=False, fontsize=9)
+    ax.legend(title="Rank", frameon=False)
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     fig.savefig(FIGS / "fig_gauge.pdf")
@@ -774,8 +802,7 @@ if __name__ == "__main__":
     fig1()
     table1()
     fig_ood()
-    figA_breadth()
-    figA_rank()
+    figA_curves()
     fig2()
     fig3()
     fig_gauge()
