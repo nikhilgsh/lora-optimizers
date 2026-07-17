@@ -666,17 +666,15 @@ LoRA dropout           & $0$ \\
 LoRA $B$ init          & zeros \\
 LoRA-adapted layers    & all linear except the output (\texttt{lm\_head}) \\
 precision              & bf16 \\
-max gradient norm      & $1.0$ \\
+max gradient norm      & $1.0$ (disabled for LoRA-RITE) \\
 LR schedule            & constant \\
 \bottomrule
 \end{tabular}
-\caption{Training configuration, held fixed across every optimizer and setting.}
+\caption{Training configuration, held fixed across optimizers and settings except where noted.}
 \label{tab:config}
 \end{table}
 
-\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimal learning rate. All other optimizer hyperparameters are fixed. \Cref{tab:optim-config} lists the optimizer settings for the baseline methods. 
-
-\methodname{} uses:
+\paragraph{Optimizer settings.} The learning-rate grid is spaced by factors of three, wide enough to bracket each optimizer's optimal learning rate. All other optimizer hyperparameters are fixed. \Cref{tab:optim-config} lists them for the baseline methods, and \methodname{} uses:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item momentum decay $\beta_1=0.9$ and curvature decay $\beta_2=0.99$,
   \item $8$ Gram Newton--Schulz iterations (\Cref{app:gramns}),
@@ -700,7 +698,7 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 \label{tab:optim-config}
 \end{table}
 
-\paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip is not, so we do not apply the \Cref{tab:config} clip to LoRA-RITE.
+\paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip would break this invariance, so we run LoRA-RITE without it.
 
 \paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. The measured per-step wall-clock overhead of \methodname{} over Adam is at most $3\%$ across all experimental settings. Eval-loss values are hardware-independent. Reproducing all our experiments takes about $850$ GPU-hours.
 
