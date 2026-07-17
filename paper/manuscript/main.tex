@@ -41,18 +41,14 @@
 \DeclareMathOperator{\EMA}{EMA}
 \DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator*{\argmax}{arg\,max}
-\newcommand{\smax}{\sigma_{\max}}
 \newcommand{\ip}[1]{\langle #1 \rangle}
 \newcommand{\DW}{\Delta W}
 \DeclareMathOperator{\msign}{msign}          % matrix sign (orthogonal polar factor): U\Sigma V^T -> U V^T
 % Working method name -- rename in one place once finalized.
-\newcommand{\alg}[1]{$\mathrm{#1}$}
 \newcommand{\LMO}{{\sf LMO}}
 \newcommand{\norm}[1]{\| #1\|}
 \newcommand{\methodname}{PoLoRA\xspace}
 \usepackage{xspace}
-% Visible marker for numbers pending the full-polar confirm/negate sweep.
-\newcommand{\PLACEHOLDER}[1]{\textcolor{red}{[#1]}}
 % theorem environments
 \theoremstyle{plain}
 \newtheorem{lemma}{Lemma}
@@ -93,7 +89,7 @@ Low-rank adaptation (LoRA) makes finetuning large language models cheaper, but i
 a Preconditioned Orthogonalized LoRA 
  optimizer. PoLoRA combines three ingredients: a product-aware update direction,  curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
  From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal preconditioners.
- We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding less than 3\% per-step overhead. Furthermore, the optimal learning rate of PoLoRA transfers across different choices of LoRA rank.
+ We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding at most 3\% per-step overhead. Furthermore, the optimal learning rate of PoLoRA transfers across different choices of LoRA rank.
  % It also has a more stable best learning rate across LoRA ranks than Adam.
 \end{abstract}
 
@@ -103,12 +99,6 @@ a Preconditioned Orthogonalized LoRA
 \label{sec:intro}
 % Hard limits: <= 1.5 pages; methods by page 2-3; 2-4 contribution bullets <=2 lines.
 %
-% Citation keys (verify entries in references.bib against arXiv before submission):
-%   kang_specgf=2602.06385, imuon=2605.09238, spectron=2602.12429,
-%   soap=2409.11321, adaprelora=2605.08734, mua=2602.06204,
-%   polarexpress=2505.16932, muon=<verify>,
-%   lorarite=2410.20625 (ICLR'25, published -- NOT concurrent),
-%   loramuon=2606.12921 (concurrent, 2026-06-11), loraalpha=2606.12883 (concurrent).
 
 Deployment of large-scale pretrained models increasingly depends on adapting a
 general model to many specialized tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized models. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
@@ -118,7 +108,7 @@ B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-to each layer. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
+to each layer. Throughout, we set the scaling $\alpha=r$~\cite{loralearnsless, raschka}. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
 
 The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure.
@@ -514,14 +504,14 @@ We now empirically evaluate \methodname{}, comparing it to several baselines in~
 \label{sec:exp-setup}
 
 \paragraph{Comparison.}
-For every model, dataset, and rank, we only vary the optimizer and learning rate. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. We set the LoRA scaling $\alpha=r$, following best practice \cite{loralearnsless, raschka}, so the $\alpha/r$ factor in \eqref{eq:lora} is one. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out loss.
+For every model, dataset, and rank, we only vary the optimizer and learning rate. All methods use LoRA on every linear layer except the output layer, with the standard initialization $B=0$ and random $A$ \cite{lora}. For each optimizer, we sweep the learning rate under a constant schedule with no weight decay and select the run with the lowest held-out loss.
 
 The main comparisons finetune OLMo-2-1B~\cite{olmo2}, Llama-3.2-1B~\cite{llama3}, Qwen2.5-1.5B~\cite{qwen25}, and Llama-3-8B on code (OpenCoder \cite{opencoder}) and math (OpenMathInstruct-2 \cite{openmathinstruct2}) datasets, using rank $r=256$ unless stated otherwise. Additional experiments in \Cref{sec:exp-taskdep} vary the rank as well as change the finetuning dataset to a low-resource language. \Cref{app:exp} gives the full experimental configurations.
 
 \paragraph{Baselines.} We compare \methodname{} (\Cref{sec:method}) to the following optimizers:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Adam} \cite{adam} --- our baseline, applied independently to the two factors $A$ and $B$.
-  \item \textbf{Muon} \cite{muon} --- the Muon update~\eqref{eq:lmo} applied independently to each factor.
+  \item \textbf{Muon} \cite{muon} --- the solution of the spectral LMO~\eqref{eq:lmo}, applied independently to each factor.
   \item \textbf{iMuon} \cite{imuon} --- the Product Muon LMO~\eqref{eq:imuon-lmo-ambient} applied to momentum in the product space.
   \item \textbf{LoRA-RITE} \cite{lorarite} --- an adaptive LoRA optimizer that preconditions the factor gradients in a rotation-invariant basis.
 \end{itemize}
@@ -561,7 +551,7 @@ Qwen2.5-1.5B & $1.30\times$ & $1.27\times$ & $1.64\times$ & $1.60\times$ \\
 Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} Four base models at rank $r=256$, finetuned on code and math datasets. Step speedup is the steps to reach Adam's final loss. The wall-clock column discounts it by the $\le3\%$ per-step overhead (\Cref{app:flops}). \methodname{} improves on Adam in every setting, by a wider margin on math than on code.}
+\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} Four base models at rank $r=256$, finetuned on code and math datasets. Step speedup is the steps to reach Adam's final loss. The wall-clock column discounts it by the $\le3\%$ per-step overhead (\Cref{app:exp}). \methodname{} improves on Adam in every setting, by a wider margin on math than on code.}
 \label{tab:breadth}
 \end{table}
 
@@ -603,7 +593,7 @@ $128$ & $1.52\times$ & $1.49\times$ \\
 $256$ & $1.63\times$ & $1.58\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across LoRA ranks.} Llama-3.2-1B finetuned on the math dataset at our batch of $32768$ tokens; only the rank varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by the $\le3\%$ per-step overhead (\Cref{app:flops}).}
+\caption{\textbf{\methodname{} speedup over Adam across LoRA ranks.} Llama-3.2-1B finetuned on the math dataset at our batch of $32768$ tokens; only the rank varies across rows. Step speedup is the steps to reach Adam's final loss. Wall-clock speedup discounts that by the $\le3\%$ per-step overhead (\Cref{app:exp}).}
 \label{tab:rank}
 \end{table}
 
@@ -786,7 +776,7 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 
 \paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip is not, so we do not apply the \Cref{tab:config} clip to LoRA-RITE.
 
-\paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. Eval-loss values are hardware-independent. Reproducing all our experiments takes about $850$ GPU-hours.
+\paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. The measured per-step wall-clock overhead of \methodname{} over Adam is at most $3\%$ across all experimental settings. Eval-loss values are hardware-independent. Reproducing all our experiments takes about $850$ GPU-hours.
 
 % ===========================================================================
 \section{Proofs}
@@ -971,7 +961,7 @@ The LMO updates of LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon 
 
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
-let $G=\nabla_W \mathcal{L}(W) \big |_{W=BA}$ be the product
+let $G=\nabla_W \mathcal{L}(W) \big |_{W=W_0+BA}$ be the product
 gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
 and $S_B=AA^\top$ and
 $S_A=B^\top B$ be the $r\times r$ Gram matrices.
@@ -988,7 +978,6 @@ With $\eta/2$ replaced by the budget $\tau$, they have the closed-form solution~
 We will use the fact that for any matrix $M$ with full column rank and reduced SVD $M=U\Sigma V^\top$,
 the matrix sign equals
 \begin{equation}
-  % Not true unless we assume full rank
   M(M^\top M)^{-1/2}=
   UV^\top=\msign(M).
   \label{eq:polar-id}
@@ -1282,7 +1271,7 @@ lower bound on $\norm{M}_2$.  We use $K=8$ iterations.
 Beyond the spectral norm, \Cref{alg:ours} needs the matrix sign $\msign(\cdot)$
 and the inverse square root of the $r \times r$ curvature matrix.  Both reduce to
 an inverse square root of a small positive semidefinite matrix: the sign is
-$\msign(X)=(XX^\top)^{-1/2}X$ (for full row rank matrix $X$), and the curvature term is $C^{-1/2}$ directly.  We
+$\msign(X)=(XX^\top)^{-1/2}X$ (for a full row rank matrix $X$; for a tall $X$, apply to $X^\top$ and transpose the result), and the curvature term is $C^{-1/2}$ directly.  We
 compute that inverse square root by the Gram Newton--Schulz iteration
 \cite{gram_ns} (\Cref{alg:gramns}), which uses only $r\times r$ matrix
 multiplications and needs no eigendecomposition or SVD.
@@ -1320,23 +1309,23 @@ implements the same quintic Newton--Schulz map on the singular values, at the
 cost of only $r\times r$ matrix multiplications.
 
 \paragraph{Shared accumulator.}
-The method also maintains an accumulator $Q_t$.  Starting from
-$Q_0=I$, each step sets
+The method also maintains an accumulator $Z_t$.  Starting from
+$Z_0=I$, each step sets
 \[
-    Q_{t+1}=M_t Q_t,
+    Z_{t+1}=M_t Z_t,
     \qquad
     R_{t+1}=M_t R_t M_t .
 \]
 Hence by induction,
 \[
-    Y_t=Q_tY_0,
+    Y_t=Z_tY_0,
     \qquad
-    R_t=Q_tR_0Q_t^\top .
+    R_t=Z_tR_0Z_t^\top .
 \]
 Since the normalized singular values converge to $1$
 and $R_K\succ 0$, so $R_K\to I$, and
-$Q_K\approx R_0^{-1/2}$.  The returned accumulator $Q=Q_K$ thus satisfies
-$Q\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,S^{-1/2}$, i.e., $S^{-1/2}\approx Q/\sqrt{\gamma}$.
+$Z_K\approx R_0^{-1/2}$.  The returned accumulator $Z=Z_K$ thus satisfies
+$Z\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,S^{-1/2}$, i.e., $S^{-1/2}\approx Z/\sqrt{\gamma}$.
 The two uses differ only in the matrix $S$ and scalar $\gamma$ we pass to
 \Cref{alg:gramns}:
 
@@ -1344,13 +1333,13 @@ The two uses differ only in the matrix $S$ and scalar $\gamma$ we pass to
     \item \textbf{Matrix sign.}
     Call \Cref{alg:gramns} with $S=XX^\top$ and $\gamma=\norm{X}_F^2$, giving
     \[
-        \msign(X)=(XX^\top)^{-1/2}X=QX/\sqrt{\gamma}.
+        \msign(X)=(XX^\top)^{-1/2}X=ZX/\sqrt{\gamma}.
     \]
     \item \textbf{Inverse square root.}
     Damp $C\succ 0$ to $\widehat{C}=C+\delta\lambda_{\max}(C)I$ (\Cref{app:damping}) and
     call \Cref{alg:gramns} with $S=\widehat{C}$ and $\gamma=\Tr(\widehat{C})$, giving
     \[
-        C^{-1/2}\approx\widehat{C}^{-1/2}=Q/\sqrt{\gamma}.
+        C^{-1/2}\approx\widehat{C}^{-1/2}=Z/\sqrt{\gamma}.
     \]
 \end{itemize}
 
@@ -1367,12 +1356,12 @@ every matrix is only $r\times r$.  We use $K=8$ iterations.
 \begin{algorithmic}[1]
 \Require positive definite $S \in \mathbb{R}^{r \times r}$; $\gamma \ge \lambda_{\max}(S)$; coefficients $\{(a_t,b_t,c_t)\}_{t=1}^{K}$
 \Statex\vspace{-0.5\baselineskip}
-\State $R\gets S/\gamma$;\quad $Q\gets I$ \Comment{normalize so $\lambda_{\max}(R)\le 1$}
+\State $R\gets S/\gamma$;\quad $Z\gets I$ \Comment{normalize so $\lambda_{\max}(R)\le 1$}
 \For{$t=1,\dots,K$}
   \State $M\gets a_t I+b_t R+c_t R^2$
-  \State $Q\gets M Q$;\quad $R\gets M R M$
+  \State $Z\gets M Z$;\quad $R\gets M R M$
 \EndFor
-\State \Return $Q\approx (S/\gamma)^{-1/2}$
+\State \Return $Z\approx (S/\gamma)^{-1/2}$
 \end{algorithmic}
 \end{algorithm}
 
@@ -1469,11 +1458,11 @@ leading FLOPs.
 
 The Newton--Schulz iterations themselves run in the small $r\times r$ Gram
 space.  One Gram Newton--Schulz call costs $8Kr^3$ FLOPs:
-$2r^3$ to form $R^2$, $2r^3$ for $Q\leftarrow MQ$, and $4r^3$ for
+$2r^3$ to form $R^2$, $2r^3$ for $Z\leftarrow MZ$, and $4r^3$ for
 $R\leftarrow MRM$.  Each layer uses four such calls: two matrix signs and two
 curvature inverse square roots.  Hence the small-matrix iterative work is $32Kr^3$.
 Ignoring lower-order elementwise operations, diagonal scalings, spectral-norm
-power iterations, and one-time re-anchoring terms, the leading optimizer cost is
+power iterations, the leading optimizer cost is
 \begin{equation}
   C_{\mathrm{opt}}
   =
