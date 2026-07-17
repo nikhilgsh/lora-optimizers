@@ -1105,7 +1105,7 @@ Product Muon step~\eqref{eq:product-muon-step}.
 \paragraph{Relative Damping.}\label{app:damping}
 Each inverse square root in \Cref{alg:ours} is damped so that directions of
 nearly zero curvature do not blow up. For a positive
-semidefinite matrix $C$ (ref $C_A$ and $C_B$ explictly?) we damp relative to the top eigenvalue,
+semidefinite matrix $C$ ($C_A$ or $C_B$ in \eqref{eq:ours-closure}) we damp relative to the top eigenvalue,
 \[
     \widehat{C} = C + \max\bigl(\delta\lambda_{\max}(C),\, \varepsilon\bigr) I,
 \]
@@ -1161,54 +1161,53 @@ them once and reuse them for every optimizer step.
 \paragraph{Gram iteration.}
 Rather than iterating on the rectangular matrix, we iterate on its $r\times r$
 Gram matrix \cite{gram_ns}.  Let $R_t = Y_t Y_t^\top \in \mathbb{R}^{r\times r}$
-be the Gram matrix of the current rectangular iterate $Y_t$.  The rectangular
-update and its Gram matrix evolve together in closed form,
+be the Gram matrix of the rectangular iterate $Y_t$.  For $t=1,\dots,K$ the
+rectangular update and its Gram matrix evolve together in closed form,
 \[
 \begin{aligned}
-    M_t &= a_t I + b_t R_t + c_t R_t^2, \\
-    Y_{t+1} &= M_t Y_t, \\
-    R_{t+1} &= Y_{t+1}Y_{t+1}^\top = M_t R_t M_t ,
+    M_t &= a_t I + b_t R_{t-1} + c_t R_{t-1}^2, \\
+    Y_t &= M_t Y_{t-1}, \\
+    R_t &= Y_tY_t^\top = M_t R_{t-1} M_t ,
 \end{aligned}
 \]
 so the whole iteration runs on $R_t$ alone.  Because $M_t$ is a polynomial in
-$R_t$, it shares the singular vectors of $Y_t$ and moves only its singular
-values; since the coefficients \eqref{e-gram-ns-poly} drive the normalized
-singular values to $1$, we have $Y_t \to \msign(Y_0)$.  The Gram update thus
+$R_{t-1}$, it shares the singular vectors of $Y_{t-1}$ and moves only its
+singular values; since the coefficients \eqref{e-gram-ns-poly} drive the
+normalized singular values to $1$, we have $Y_K \approx \msign(Y_0)$.  The Gram update thus
 implements the same quintic Newton--Schulz map on the singular values, at the
 cost of only $r\times r$ matrix multiplications.
 
 \paragraph{Shared accumulator.}
-The method also maintains an accumulator $Z_t$.  Starting from
-$Z_0=I$, each step sets
-\[
-    Z_t=M_t Z_{t-1},
-    \qquad
-    R_t=M_t R_{t-1} M_t .
-\]
-Hence by induction,
+The method also maintains an accumulator $Z_t$ collecting the product of the
+maps $M_t$: starting from $Z_0=I$, each step sets $Z_t=M_t Z_{t-1}$, so by
+induction
 \[
     Y_t=Z_tY_0,
     \qquad
     R_t=Z_tR_0Z_t^\top .
 \]
-Since the normalized singular values converge to $1$
-and $R_K\succ 0$, so $R_K\to I$, and
-$Z_K\approx R_0^{-1/2}$.  The returned accumulator $Z=Z_K$ thus satisfies
-$Z\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,S^{-1/2}$, i.e., $S^{-1/2}\approx Z/\sqrt{\gamma}$.
-The two uses differ only in the matrix $S$ and scalar $\gamma$ we pass to
-\Cref{alg:gramns}:
+Since $R_0\succ0$, $\msign(Y_0)$ has orthonormal rows, so
+$R_K=Y_KY_K^\top\approx I$.  Each $M_t$ is a polynomial in $R_{t-1}$ and
+hence in $R_0$, so $Z_K$ is symmetric and commutes with $R_0$; then
+$R_K=Z_K^2R_0\approx I$ gives $Z_K\approx R_0^{-1/2}$.
+\Cref{alg:gramns} initializes $R_0=S/\gamma$, so the returned accumulator
+$Z=Z_K$ satisfies
+\[
+    Z\approx(S/\gamma)^{-1/2}=\sqrt{\gamma}\,S^{-1/2}.
+\]
+This gives both quantities \Cref{alg:ours} needs:
 
 \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
     \item \textbf{Matrix sign.}
     Call \Cref{alg:gramns} with $S=XX^\top$ and $\gamma=\norm{X}_F^2$, giving
     \[
-        \msign(X)=(XX^\top)^{-1/2}X=ZX/\sqrt{\gamma}.
+        \msign(X)=(XX^\top)^{-1/2}X\approx ZX/\sqrt{\gamma}.
     \]
     \item \textbf{Inverse square root.}
-    Damp $C\succ 0$ to $\widehat{C}=C+\delta\lambda_{\max}(C)I$ (\Cref{app:damping}) and
-    call \Cref{alg:gramns} with $S=\widehat{C}$ and $\gamma=\Tr(\widehat{C})$, giving
+    Call \Cref{alg:gramns} with the damped curvature $S=\widehat{C}$
+    (\Cref{app:damping}) and $\gamma=\Tr(\widehat{C})$, giving
     \[
-        C^{-1/2}\approx\widehat{C}^{-1/2}=Z/\sqrt{\gamma}.
+        \widehat{C}^{-1/2}\approx Z/\sqrt{\gamma}.
     \]
 \end{itemize}
 
@@ -1372,7 +1371,11 @@ the wall (\Cref{tab:breadth}).
 
 \section{Factor Self-Balancing}
 \label{app:gauge}
-The update size $\rho$~\eqref{eq:ours-rho} depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. The rescaling $(A,B)\mapsto(cA,c^{-1}B)$ preserves the product $BA$, so the layer's output is unchanged. It does change $\norm{A}_2$ and $\norm{B}_2$, shifting $\rho$. Among such rescalings, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style update sizes \cite{loramuon}. In our runs this problem does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
+The update size $\rho=\eta/(\norm{A}_2+\norm{B}_2)$~\eqref{eq:ours-rho} depends on the factorization of the merged product $BA$. A rescaling $(A,B)\mapsto(cA,c^{-1}B)$ with $c>0$ preserves $BA$, and hence the layer's output, while changing the denominator to
+\[
+c\norm{A}_2+c^{-1}\norm{B}_2 \;\ge\; 2\sqrt{\norm{A}_2\norm{B}_2}.
+\]
+Equality holds when the two rescaled norms are equal, so an imbalanced factorization of the same product takes smaller steps. LoRA-Muon raises this concern for Spectron-style update sizes \cite{loramuon}, but in our runs the factors stay near balance. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ across ranks (\Cref{fig:gauge}).
 
 \begin{figure}[H]
   \centering
