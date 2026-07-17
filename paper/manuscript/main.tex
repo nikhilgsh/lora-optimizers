@@ -114,7 +114,7 @@ In our experiments, Product Muon, evaluated using the official iMuon implementat
   \label{fig:hero}
 \end{figure}
 
-We introduce \methodname{}, which is a steepest descent method where the constraint is motivated by controlling the change in the per-sample loss. Its solution is a preconditioned update in the spectral norm. We then develop a product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the update to the product.
+We introduce \methodname{}, a steepest descent method whose constraint is motivated by controlling the change in the per-sample loss, and whose solution is an orthogonalized update preconditioned by a curvature estimate. We then develop a product-aware version of this update for LoRA, imposing the constraint on the merged update rather than on each factor separately. A separate magnitude rule sets the sizes of the factor updates, which the Product Muon step leaves free, while retaining its bound on the spectral norm of the merged update.
 
 Across base models, datasets, and adapter ranks, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines (\Cref{fig:hero}). It reaches the final held-out loss of tuned Adam in $1.2$--$1.7\times$ fewer steps, while adding at most 3\% per-step overhead. Removing the curvature preconditioning and the magnitude rule in turn reduces \methodname{} to Product Muon, and each component accounts for about half of the speedup gap. Finally, we observe that \methodname{} is easier to tune than Adam: its optimal learning rate is stable across rank, and performance is less sensitive to the learning rate.
 
@@ -140,9 +140,7 @@ Finally, \Cref{sec:related} places \methodname{} in the context of prior work on
 
 
 \label{sec:method}
-To derive the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the constrained steepest descent perspective~\cite{crawshaw2026exploration}, which is often referred to as the  linear minimization oracle (LMO) perspective~\cite{pmlr-v267-pethick25a}. 
-Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon method. 
-In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
+To derive the \methodname{} update, we first recall in \Cref{sec:muon} how Muon arises from constrained steepest descent~\cite{crawshaw2026exploration}. Its update is computed by a linear minimization oracle (LMO)~\cite{pmlr-v267-pethick25a}, which minimizes the linearized loss subject to a spectral-norm bound. In \Cref{sec:product-muon} we make this LMO product-aware, which yields Product Muon. In \Cref{sec:sample-loss-lmo} we obtain the \methodname{} update direction by replacing the spectral-norm constraint with a bound on the change in the per-sample loss and making the resulting LMO product-aware for LoRA. The LMO provides the direction but not the size of the update, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
 
 \subsection{Muon}\label{sec:muon}
 Muon is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned}.
@@ -257,8 +255,7 @@ is less than $\tau$.
 To build $\mathcal{G}$ we collect some standard properties of the gradient matrices in the following lemma.
 \begin{restatable}[Properties of gradients]{lemma}{gradprop} 
   \label{lem:gradprop}
-    Let $g_i=\vec(G_i) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for all $i=1, \ldots, n$,
-    and let $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$. It follows that the gradients satisfy the following properties:
+    Let $g_i=\vec(G_i) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for $i=1, \ldots, n$. Let $\Sigma := \frac{1}{n} \sum_{i=1}^n g_i g_i^\top$ and let $\Sigma^\dagger$ denote its Moore-Penrose pseudoinverse. The gradients satisfy the following properties:
     \begin{enumerate}
         \item {\bf Leverage bound:} $ \ip{\Sigma^\dagger g_i, g_i} \leq n$, \\[-0.5cm]
         \item {\bf Rank one:} $G_i = b_i x_i^\top$  for some $x_i \in \R^{d_{\mathrm{in}}}$ and $b_i \in \R^{d_{\mathrm{out}}}$.
