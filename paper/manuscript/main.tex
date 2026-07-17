@@ -464,7 +464,7 @@ We use the authors' official implementations for iMuon and LoRA-RITE and provide
 
 \subsection{Computational Efficiency}
 \label{sec:exp-main}
-We score each optimizer by its \emph{steps-to-Adam}: the number of steps a tuned run needs to match the final loss reached by tuned Adam. The step speedup is Adam's total step count divided by this. Across our experiments, \methodname{} reaches this loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
+We score each optimizer by its \emph{steps-to-Adam}, the number of steps its tuned run needs to match the final loss of tuned Adam. The \emph{step speedup} is then the ratio of Adam's total step count to the steps-to-Adam. Across our experiments, \methodname{} reaches this loss in $1.2$--$1.7\times$ fewer steps (\Cref{tab:breadth}). On Llama-3.2-1B finetuned on math, \methodname{} also outperforms Muon, iMuon, and LoRA-RITE, none of which improves over Adam (\Cref{fig:hero}). Additional learning curves omitted in the main text can be found in \Cref{app:curves}.
 
 
 
