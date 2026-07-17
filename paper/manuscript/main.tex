@@ -496,7 +496,7 @@ Qwen2.5-1.5B & $1.30\times$ & $1.27\times$ & $1.64\times$ & $1.60\times$ \\
 Llama-3-8B & $1.20\times$ & $1.18\times$ & $1.59\times$ & $1.56\times$ \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{\methodname{} speedup over Adam across model families and corpora.} Four base models at rank $r=256$, finetuned on code and math datasets. The wall-clock column discounts the step speedup (\Cref{sec:exp-main}) by the per-step overhead (\Cref{app:exp}). \methodname{} improves on Adam in every setting, by a wider margin on math than on code.}
+\caption{\textbf{\methodname{} speedup over Adam across models and datasets.} Four base models at rank $r=256$, finetuned on code and math datasets. The wall-clock column discounts the step speedup (\Cref{sec:exp-main}) by the per-step overhead (\Cref{app:exp}). \methodname{} improves on Adam in every setting, by a wider margin on math than on code.}
 \label{tab:breadth}
 \end{table}
 
@@ -645,12 +645,12 @@ This section gives the full configuration behind \Cref{sec:exp-setup}. Within ea
 
 \paragraph{Models.} Four pretrained base models, each adapted with LoRA: OLMo-2-1B \cite{olmo2}, Llama-3.2-1B \cite{llama3}, Qwen2.5-1.5B \cite{qwen25}, and Llama-3-8B \cite{llama3}.
 
-\paragraph{Datasets.} Three instruction-tuning corpora: code (OpenCoder \cite{opencoder}), math (OpenMathInstruct-2 \cite{openmathinstruct2}), and Bengali (Aya \cite{aya}).
+\paragraph{Datasets.} Three instruction-tuning datasets: code (OpenCoder \cite{opencoder}), math (OpenMathInstruct-2 \cite{openmathinstruct2}), and Bengali (Aya \cite{aya}).
 
 \paragraph{Data preparation.}
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
-  \item Each corpus is tokenized once per base model, using that model's own tokenizer.
-  \item We hold out $1\%$ of each corpus for evaluation, and use this split for both learning-rate selection and all reported losses.
+  \item Each dataset is tokenized once per base model, using that model's own tokenizer.
+  \item We hold out $1\%$ of each dataset for evaluation, and use this split for both learning-rate selection and all reported losses.
   \item Training sequences are packed into fixed $2048$-token blocks, and evaluation sequences are padded to $2048$ tokens.
   \item Loss is computed on response tokens only; prompt and padding tokens are masked.
 \end{itemize}
