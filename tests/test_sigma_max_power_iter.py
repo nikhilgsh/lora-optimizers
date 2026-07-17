@@ -144,7 +144,7 @@ def test_batched_warm_start_recovers_when_vector_enters_nullspace():
 
 
 def test_batched_estimate_has_row_norm_floor_for_bad_warm_start():
-    """Even before iteration, σmax(M) is at least every row norm.
+    """Even before iteration, σmax(M) is at least every row (and column) norm.
 
     This pins the safety floor used by optimizer rescaling. A bad warm start
     can make ||Mᵀv|| much smaller than this bound; returning that underestimate
@@ -154,6 +154,27 @@ def test_batched_estimate_has_row_norm_floor_for_bad_warm_start():
     v_init = torch.tensor([[0.0, 1.0]])
     sigma, _ = _sigma_max_power_iter_batched(M, v_init=v_init, n_iters=0)
     assert float(sigma[0]) == 5.0
+
+
+def test_batched_floor_is_two_sided_col_norm_can_dominate():
+    """Known-positive for the two-sided floor: a column L2 norm is also a
+    lower bound on σmax. Here the largest column norm (√2) exceeds both the
+    iterated estimate (1.0, warm start aligned with a single row at n_iters=0)
+    and the largest row norm (1.0). A smaller-side-only floor would return
+    1.0; the two-sided floor must return √2 — the true σmax of this rank-1 M.
+    """
+    M = torch.tensor([[[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]])  # row norms 1, col-0 norm √2
+    v_init = torch.tensor([[1.0, 0.0]])                      # ‖Mᵀv‖ = 1 at n_iters=0
+    sigma, v, info = _sigma_max_power_iter_batched(
+        M, v_init=v_init, n_iters=0, return_info=True,
+    )
+    true_sigma = float(torch.linalg.svdvals(M[0])[0])        # √2
+    assert abs(float(sigma[0]) - true_sigma) < 1e-6
+    assert float(info["sigma_raw"][0]) == pytest.approx(1.0)
+    assert float(info["sigma_floor"][0]) == pytest.approx(true_sigma)
+    assert bool(info["floor"][0])
+    assert bool(info["guard_hit"][0])
+    assert torch.isfinite(v).all()
 
 
 def test_batched_return_info_reports_guard_hits():

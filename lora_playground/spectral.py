@@ -119,6 +119,12 @@ def sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30,
     GPU→CPU sync). Caller supplies `v_init` as the warm-start across
     optimizer steps; for fresh runs pass None and a deterministic init
     (M @ ones-like) is used.
+
+    Guard (skipped under LORA_DISABLE_SIGMA_MAX_GUARD): deterministic
+    fallback starts, plus a floor at the largest row/column L2 norm over
+    BOTH sides of M — every row/col norm is a lower bound on σ_max, so a
+    bad start can never yield a catastrophic under-estimate. The floor
+    lives here so every call site inherits it; callers must not re-floor.
     """
     if M.numel() == 0:
         sigma = torch.zeros(M.shape[:-2], device=M.device, dtype=torch.float32)
@@ -245,10 +251,14 @@ def sigma_max_power_iter_batched(M, v_init=None, n_iters=8, eps=1e-30,
             v, used = _normalize_or_fallback(v)
             iter_fallback_used = iter_fallback_used | used
         sigma = (Mf @ v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)
-    # Any row/column norm is a lower bound on ‖M‖₂. Enforce the largest such
-    # bound so a poor warm start cannot produce a catastrophic near-zero
-    # underestimate and blow up downstream rescaling.
-    sigma_floor = scores.max(dim=-1).values.clamp_min(0.0).sqrt()
+    # Any row or column L2 norm is a lower bound on ‖M‖₂ (row i's norm is
+    # ‖Mᵀe_i‖). Enforce the largest such bound over BOTH sides so a poor warm
+    # start cannot produce a catastrophic near-zero underestimate and blow up
+    # downstream rescaling. (`scores` holds the smaller side; compute the other.)
+    other_scores = Mf.square().sum(dim=-2 if smaller_m else -1)
+    sigma_floor = torch.maximum(
+        scores.max(dim=-1).values, other_scores.max(dim=-1).values,
+    ).clamp_min(0.0).sqrt()
     sigma_raw = sigma
     use_floor = sigma < sigma_floor
     sigma = torch.maximum(sigma, sigma_floor)

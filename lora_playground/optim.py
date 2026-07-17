@@ -1472,8 +1472,9 @@ class CurvatureWhitenLoRA(Optimizer):
         update direction is correlated step-to-step), so warm n_iters=3 ≈ cold
         n_iters=8 (tests/test_sigma_max_power_iter.py::
         test_warm_start_beats_cold_start_at_same_n_iters). First call per key
-        cold-starts (8 iters). The library's row-norm floor guards against any
-        warm-start under-estimation overscaling the chord rescale."""
+        cold-starts (8 iters). The estimator floors its result at the largest
+        row/col L2 norm of M (a deterministic lower bound on σ_max), so any
+        warm-start under-estimation cannot overscale the chord rescale."""
         from .spectral import sigma_max_power_iter_batched as _smax_b
         cached = [st.get(key) for st in states]
         vi = torch.stack(cached) if all(c is not None for c in cached) else None
@@ -1486,15 +1487,6 @@ class CurvatureWhitenLoRA(Optimizer):
         s, v = _smax_b(M, v_init=vi, n_iters=int(os.environ.get("LORA_SMAX_NITERS", "8")))
         for j, st in enumerate(states):
             st[key] = v[j].detach()
-        # Lower-bound floor: σ_max ≥ max(row L2, col L2) for ANY matrix, so this
-        # never exceeds the true σ_max — it only lifts a stale/cold estimate that
-        # missed the top direction. Deterministic in M, so batched and per-pair
-        # agree (the NS scale-invariance + this shared floor preserve the oracle).
-        with torch.no_grad():
-            Mf = M.detach().float()
-            rn = Mf.pow(2).sum(dim=-1).amax(dim=-1).sqrt()
-            cn = Mf.pow(2).sum(dim=-2).amax(dim=-1).sqrt()
-            s = torch.maximum(s, torch.maximum(rn, cn).reshape(s.shape).to(s.dtype))
         if os.environ.get("LORA_SMAX_DEBUG") == "1":
             # Diagnostic only: compare the warm estimate against the true σ_max
             # (full SVD) and flag gross under-estimates per call site, to locate
@@ -1551,12 +1543,13 @@ class CurvatureWhitenLoRA(Optimizer):
         and diverges to NaN (the KL-coupled curvature shifts the spectrum enough
         to trigger this; CPU repro in tests/test_kl_shampoo_lora.py). Two layers:
 
-          1. Floor the warm σ_max at the largest row / column L2 norm — both are
-             valid LOWER bounds on σ_max, so a stale estimate can't be grossly
-             small. In the healthy case the warm estimate already dominates the
-             floor, so the denominator equals the old ``_smax_warm`` value exactly
-             (preserving the batched↔per-pair equivalence the NS scale-invariance
-             gives); the floor only binds when the warm estimate is pathological.
+          1. The shared estimator (``sigma_max_power_iter_batched``, reached via
+             ``_smax_warm``) floors the warm σ_max at the largest row/column L2
+             norm — a valid LOWER bound on σ_max, so a stale estimate can't be
+             grossly small. In the healthy case the iterated estimate already
+             dominates the floor (preserving the batched↔per-pair equivalence
+             the NS scale-invariance gives); the floor only binds when the warm
+             estimate is pathological.
           2. Frobenius finiteness fallback: any non-finite NS output is recomputed
              from the Frobenius-normalized input. σ_max ≤ ‖·‖_F, so that input is
              guaranteed in-basin. φ is scale-invariant, so the fallback changes
@@ -1570,12 +1563,13 @@ class CurvatureWhitenLoRA(Optimizer):
         but VIOLATING the upper bound (σ>1) detonates the iteration. Offline on
         real snapshot momenta this is a CLIFF: σ_out=1 exactly when input σ_max
         ≤ u, fully non-finite at a ≥3% σ_max UNDER-estimate (no finite-but-
-        overscaled window). The warm σ_max floor under-estimates by ~3.3× median
-        at r=256, so an estimate-based denominator would detonate most pairs every
-        step. The paper's own prescription is the fix: "a trivial upper bound is
-        given by ‖M‖_F ... we therefore rescale M by ‖M‖_F and set u=1." So
-        normalize the PolarExpress path by the Frobenius norm (a GUARANTEED upper
-        bound, σ_max ≤ ‖·‖_F), removing the σ_max-accuracy dependence entirely;
+        overscaled window). Even the floored warm σ_max under-estimates by ~3.3×
+        median at r=256, so an estimate-based denominator would detonate most
+        pairs every step. The paper's own prescription is the fix: "a trivial
+        upper bound is given by ‖M‖_F ... we therefore rescale M by ‖M‖_F and
+        set u=1." So normalize the PolarExpress path by the Frobenius norm (a
+        GUARANTEED upper bound, σ_max ≤ ‖·‖_F), removing the σ_max-accuracy
+        dependence entirely;
         the loose lower bound only costs a couple iters (PE6 already gives σ_out=1,
         verified). The strict-below-u margin (§3.4's x→p_t(x/1.01) round-off trick)
         is supplied downstream by ``_polar_express_gram_batched``'s default
@@ -1586,10 +1580,7 @@ class CurvatureWhitenLoRA(Optimizer):
         still called to keep the warm-start cache fresh for the other σ_max sites.
         """
         eps = self.eps
-        s = self._smax_warm(Z, states, key)                          # (N,) warm σ_max
-        rn = Z.pow(2).sum(dim=-1).amax(dim=-1).clamp_min(0).sqrt()    # max row L2  ≤ σ_max
-        cn = Z.pow(2).sum(dim=-2).amax(dim=-1).clamp_min(0).sqrt()    # max col L2  ≤ σ_max
-        s = torch.maximum(s, torch.maximum(rn, cn))
+        s = self._smax_warm(Z, states, key)          # (N,) warm σ_max, floored in the estimator
         if self.polar_method == "polar_express":
             s = Z.flatten(1).norm(dim=1)                              # ‖·‖_F ≥ σ_max (no detonation)
         Xn = Z / (s.view(-1, 1, 1) + eps)
