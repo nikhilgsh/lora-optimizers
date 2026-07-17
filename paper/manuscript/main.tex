@@ -155,7 +155,6 @@ Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling 
 
 \label{sec:method}
 To derive the \methodname{} update, in \Cref{sec:muon} we first recall the derivation of Muon from the constrained steepest descent perspective~\cite{crawshaw2026exploration}, which is often referred to as the  linear minimization oracle (LMO) perspective~\cite{pmlr-v267-pethick25a}. 
-% This perspective views the Muon update as minimizing the linearized loss subject to controlling the spectral norm of the update. 
 Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon method. 
 In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
 
