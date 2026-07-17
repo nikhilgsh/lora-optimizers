@@ -278,7 +278,7 @@ Following~\cite{shampoo,kfac}, we approximate $\Sigma$ by a Kronecker product of
 \begin{equation} \label{eq:pq-factor}
      \Sigma  \approx Q \otimes P.
 \end{equation}
-We treat $P$ and $Q$ as given for now, deferring their update rule to \Cref{app:matnormal}.
+We treat the \emph{preconditioners} $P$ and $Q$ as given for now, deferring their update rule to \Cref{app:matnormal}.
 
 Using the factorization above in the outergradient set~\eqref{eq:outgrad} and relaxing the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, we arrive at the following LMO
 \begin{equation}
@@ -308,12 +308,10 @@ so that \eqref{eq:polorafull-hard} becomes
 \end{array}
 \label{eq:polorafull}
 \end{equation}
-where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. Note that the value of $\tau$ does not matter, since we use the LMO only for the direction and rescale the update later. The LMO in~\eqref{eq:polorafull} is an instance of the preconditioned spectral-norm LMO solved in \Cref{lem:whitened-spectral-lmo} with solution given by
+where we have absorbed the factor $1 / \sqrt{n}$ into $\tau$. Note that the value of $\tau$ does not matter, since we use the LMO only for the direction and rescale the update later. By \Cref{lem:whitened-spectral-lmo}, the solution to the LMO in~\eqref{eq:polorafull} is
 \begin{equation}\label{eq:polorafull-update}
     \Delta W =  - \tau P^{-1/2} \msign(P^{-1/2} G Q^{-1/2}) Q^{-1/2}.
 \end{equation}
-In~\eqref{eq:polorafull-update} the matrices $P$ and $Q$ precondition the gradient, and we refer to them as the \emph{preconditioners} from here on.
-
 
 \paragraph{Direction.}
 So far we have described an update for the weight matrix $W \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt it to LoRA~\eqref{eq:lora}, deriving the \emph{direction} first and then setting the \emph{magnitude} of the factor updates. Replacing $\Delta W$ in \eqref{eq:polorafull} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
