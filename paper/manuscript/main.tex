@@ -90,15 +90,12 @@ a Preconditioned Orthogonalized LoRA
  optimizer. PoLoRA combines three ingredients: a product-aware update direction,  curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
  From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal preconditioners.
  We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding at most 3\% per-step overhead. Furthermore, the optimal learning rate of PoLoRA transfers across different choices of LoRA rank.
- % It also has a more stable best learning rate across LoRA ranks than Adam.
 \end{abstract}
 
 
 % ===========================================================================
 \section{Introduction}
 \label{sec:intro}
-% Hard limits: <= 1.5 pages; methods by page 2-3; 2-4 contribution bullets <=2 lines.
-%
 
 Deployment of large-scale pretrained models increasingly depends on adapting a
 general model to many specialized tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized models. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
@@ -141,36 +138,15 @@ Our open-source implementation is available at:
 
 
 The rest of the paper proceeds as follows. \Cref{sec:method} both motivates and derives \methodname{}.
-% , where in we first review Muon as a spectral-norm linear minimization oracle in \Cref{sec:muon}, then adapt this view to LoRA products in \Cref{sec:product-muon} to arrive at Product Muon. \Cref{sec:sample-loss-lmo} derives our curvature-aware update from a per-sample loss-change constraint and turns it into a practical factor update with magnitude control. 
 \Cref{sec:exp} evaluates \methodname{}, comparing it in terms of step and wall-clock speedups over Adam and other baselines.
-% , with the headline behavior shown in \Cref{fig:hero} and the full breadth summarized in \Cref{tab:breadth}. 
 \Cref{sec:exp-ablation} separates the roles of curvature and magnitude control.
-% while \Cref{sec:exp-taskdep} studies rank transfer and distribution shift. 
 Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.
-% \nikhil{roadmap repeats \Cref{sec:method} opening and the \Cref{sec:exp} opening (per-experiment breakdown). Worth trimming anywhere?}
-
-% This motivates \methodname{}, which is derived from a novel formulation motivated by controlling the per-sample loss change across a batch. This leads to a curvature-preconditioned update with a corresponding product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the merged weight update.
-% Our contributions are:
-% \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-%     \item \textbf{Component ablation.} We isolate the effect of the curvature-aware direction and magnitude control and show each provides a meaningful speedup.
-
-%     \item \textbf{Learning-rate transfer.} We show that the optimal learning rate of \methodname{} is stable across rank, unlike for Adam, and the performance is less sensitive to the learning rate.
-
-%     \item \textbf{Empirical performance.} Across a range of base models and datasets, \methodname{} reaches Adam's held-out loss in $1.2$–$1.7\times$ fewer steps, while adding at most 3\% per-step overhead.
-% \end{itemize}
 
 
 
-% \nikhil{I think we want the contributions to be more concise and punchy.}
-% \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-% \item We give a new viewpoint for motivating spectral methods (like Muon) that  also incorporates curvature preconditioning. Instead of using a spectral constraint on the update, we introduce a sensitivity constraint. Our sensitivity constraint imposes that the change in the per-sample loss is bounded. Preconditioner spectral descent naturally arises from using this constraint, after also introducing approximations to make it tractable
-% %   \item We derive a new curvature metric from a per-sample loss-change constraint,
-% %   yielding a preconditioned spectral-norm linear minimization oracle and a
-% %   product-aware LoRA approximation.
-% \item We introduce a form of magnitude control that enforces that each factor take the same update length in spectral norm, while also enforcing that the change in they product be bounded. 
-%   \item We isolate the two main components of \methodname{}—curvature preconditioning and spectral-norm magnitude balancing—and ablate them separately, showing that each independently contributes to the observed speedup over Adam while their combination gives the strongest performance. 
-%   \item We validated \methodname{} across four pretrained base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—and three instruction-tuning corpora: code, math, and Bengali. In total, our experiments cover nine model--dataset settings, together with additional rank sweeps, component ablations, and learning-rate sweeps, with each training run using a single GPU for 9000 steps. Across this broad evaluation, \methodname{} consistently reaches Adam's final held-out loss in $1.2$--$1.7\times$ fewer steps while adding only a small per-step overhead. Furthermore  \methodname{} adds at most $3\%$ per-step overhead over Adam.
-% \end{itemize}
+
+
+
 % ===========================================================================
 
 \section{\texorpdfstring{\methodname{}}{PoLoRA}: Preconditioned Orthogonalized LoRA}
@@ -182,15 +158,6 @@ To derive the \methodname{} update, in \Cref{sec:muon} we first recall the deriv
 % This perspective views the Muon update as minimizing the linearized loss subject to controlling the spectral norm of the update. 
 Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware, yielding the Product Muon method. 
 In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
-% A LoRA adapter changes the model through the product $BA$ of its two
-% factors~\eqref{eq:lora}, while the optimizer acts on $A$ and $B$. This section
-% derives an update that treats the adapter as a matrix update while still
-% operating on the factors. We first recall Muon, where the matrix-sign update
-% direction solves a spectral-norm LMO. We then apply the same LMO to a LoRA
-% product, which shows why independent per-factor orthogonalization is not the
-% right object. \nikhil{Rewrite (``not the right object'' is vague). Intended: carried to LoRA, the bound falls on the change in the product $BA$, not on each factor's update --- the Product Muon step.}The final update incorporates a diagonal curvature metric into
-% this product-aware direction and uses a separate scaling rule to keep the two
-% factor steps balanced.
 
 \subsection{Muon}\label{sec:muon}
 Muon is based on a spectral LMO.
@@ -676,23 +643,7 @@ The method is still built on approximations. For efficiency the preconditioners 
 These limitations also point to several future directions. One is to design better outergradient approximations that remain cheap enough for adapter training. Another is to incorporate second-order information~\cite{du2026newtonmuonoptimizer} in such a way that the final update is still tractable.  More broadly, the per-sample loss-control perspective~\eqref{eq:sample-lmo} and~\eqref{eq:polorafull-hard}  may be useful beyond LoRA, for either pre-training or other composition of maps.
 
 
-% \section{Conclusion}
-% \label{sec:conclusion}
-% \methodname{} carries the fast part of spectral, curvature-aware optimization to
-% LoRA at low cost.
-% \begin{itemize}[leftmargin=1.5em,itemsep=2pt,topsep=2pt]
-%   \item A matrix-sign step in a coupled two-sided \emph{diagonal} curvature metric, with each factor step set to spectral norm $\rho$.
-%   \item $1.2$--$1.7\times$ fewer steps than Adam across nine settings, with training from $B{=}0$ and one learning rate across rank.
-%   \item The expensive Kronecker curvature and inner refinement it is usually bundled with add nothing.
-%   \item $\le 5\%$ per-step wall and ${\approx}\tfrac12$ Adam's state, so the step speedup survives in wall-clock.
-% \end{itemize}
 
-% The per-sample loss-control view suggests several possible follow-up directions.
-% \begin{itemize}
-%     \item Using other outergradient approximations could lead to other efficient methods
-%     \item Using other approximations other than linear for the total change, such as a quadratic approximation
-%     \item ,....
-% \end{itemize}
 
 \printbibliography
 
