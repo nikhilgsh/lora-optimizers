@@ -1372,9 +1372,7 @@ the wall (\Cref{tab:breadth}).
 
 \section{Factor Self-Balancing}
 \label{app:gauge}
-By \eqref{eq:ours-rho}, the update size $\rho$ depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. The rescaling $(A,B)\mapsto(cA,c^{-1}B)$ preserves the product $BA$, so the layer's output is unchanged. It does change $\norm{A}_2$ and $\norm{B}_2$, shifting $\rho$. Among such rescalings, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style update sizes \cite{loramuon}.
-
-In our runs this problem does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
+The update size $\rho$~\eqref{eq:ours-rho} depends on the two factor norms $\norm{A}_2$ and $\norm{B}_2$. The rescaling $(A,B)\mapsto(cA,c^{-1}B)$ preserves the product $BA$, so the layer's output is unchanged. It does change $\norm{A}_2$ and $\norm{B}_2$, shifting $\rho$. Among such rescalings, $\rho$ is largest when the two factor norms are equal. An imbalanced factorization therefore takes a smaller step and follows a different trajectory. LoRA-Muon raises this concern for Spectron-style update sizes \cite{loramuon}. In our runs this problem does not arise, because the factors balance dynamically. Starting from $B=0$, the ratio $\norm{B}_2/\norm{A}_2$ climbs and settles near $1$ (\Cref{fig:gauge}), so the factorization stays near the balanced point where $\rho$ is largest.
 
 \begin{figure}[H]
   \centering
