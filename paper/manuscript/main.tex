@@ -881,14 +881,14 @@ so the overshoot is $O(\eta)$ and shrinks as the factors grow.
 
 \section{Momentum-Free Reductions to Product Muon}
 \label{app:memoryless}
-The LMO updates of LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon \cite{loramuon} all reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed; in particular, the iMuon paper states the Product Muon update explicitly as its intrinsic spectral LMO (Corollary~4.1 of~\cite{imuon}), even though the officially implemented optimizer differs (see~\eqref{eq:imuon-implemented}). We show this below.
+In this appendix we show that the LMO updates of LoRA-RITE~\cite{lorarite}, iMuon~\cite{imuon}, and LoRA-Muon~\cite{loramuon} all reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed. For iMuon, Corollary~4.1 of~\cite{imuon} states the Product Muon update as its \emph{intrinsic spectral LMO}. The officially implemented iMuon optimizer, however, differs (see~\eqref{eq:imuon-implemented}).
 
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
 let $G=\nabla_W \mathcal{L}(W) \big |_{W=W_0+BA}$ be the gradient of the full weight matrix, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
 and $S_B=AA^\top$ and
 $S_A=B^\top B$ be the $r\times r$ factor Gram matrices.
-The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} are
+The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} with budget $\tau$ are
 \begin{equation}
   \begin{aligned}
   \Delta A &\in    \argmin_{\Delta A}~ \ip{G_A, \Delta A} \quad \textnormal{subject to}\quad
@@ -897,7 +897,6 @@ The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} are
   \end{aligned}
   \label{eq:decoupled-lora-lmo-app} 
 \end{equation}
-With $\eta/2$ replaced by the budget $\tau$, they have the closed-form solution~\eqref{eq:product-muon-step}.
 We will use the fact that for any matrix $M$ with full column rank and reduced SVD $M=U\Sigma V^\top$,
 the matrix sign equals
 \begin{equation}
@@ -922,7 +921,7 @@ which is the $B$-update solving the Product Muon LMO~\eqref{eq:decoupled-lora-lm
 
 
 \paragraph{iMuon, momentum-free.}
-iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, which is the signal passed to the intrinsic spectral LMO. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
+iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
 \begin{equation}
   \Delta B(H) =\msign \big(HA^\top S_B^{-1/2}\big)S_B^{-1/2},\qquad
   \Delta A(H) =S_A^{-1/2}\msign \big(S_A^{-1/2}B^\top H\big).
@@ -949,12 +948,7 @@ which differs from the Product Muon update~\eqref{eq:product-muon-step}. The arg
 
 
 \paragraph{LoRA-Muon.}
-The concurrent LoRA-Muon paper~\cite{loramuon} also arrives at the two decoupled
-factorwise LMOs in~\eqref{eq:decoupled-lora-lmo}.
-Specifically, its momentum-free LMOs in Eq. (7) and (8) of~\cite{loramuon} are precisely \eqref{eq:decoupled-lora-lmo}.
-LoRA-Muon also shows that this
-Gram-matrix form is equivalent to the simplified QR-coordinate form of
-LoRA-RITE~\cite{loramuon}.
+The momentum-free LMOs of the concurrent LoRA-Muon paper~\cite{loramuon} (its Eqs.~(7) and~(8)) are precisely the decoupled factorwise LMOs~\eqref{eq:decoupled-lora-lmo}. LoRA-Muon further shows that the resulting update is equivalent to the simplified QR-coordinate form of LoRA-RITE.
 
 
 \paragraph{Compositional Muon.}
@@ -1123,9 +1117,8 @@ one, the damped matrices are simply $P+\delta I$ and $Q+\delta I$.
 \subsection{Spectral-Norm Estimation}
 \label{app:smax}
 \Cref{alg:ours} requires repeated estimates of spectral norms.  
-We estimate each $\norm{M}_2$ by warm-started power iteration on the smaller of the two Gram matrices (\Cref{alg:smax}) (which two Gram matrices), caching the leading vector across optimizer steps so it starts near the top singular vector. A cold or stale start
-can under-estimate $\norm{M}_2$; since the optimizer divides by this estimate, that would risk destabilizing training.  We therefore return the larger of the power-iteration value and the largest row norm of $M$, a
-lower bound on $\norm{M}_2$. We use $K = 8$ iterations.
+We estimate each $\norm{M}_2$ by warm-started power iteration on the smaller of the two Gram matrices $MM^\top$ and $M^\top M$ (\Cref{alg:smax}), caching the leading vector across optimizer steps so it starts near the top singular vector. A cold or stale start
+can under-estimate $\norm{M}_2$; since the optimizer divides by this estimate, that would risk destabilizing training.  We therefore return the larger of the power-iteration value and the maximum row norm of $M$, which does not depend on the cached start vector. We use $K = 8$ iterations.
 
 \begin{algorithm}[ht]
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
