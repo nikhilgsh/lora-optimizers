@@ -227,8 +227,7 @@ Let $\{x_1, \ldots, x_n\}$ be the input activations to the layer that $W$ encode
 
 The justification of using the spectral norm in Muon is that it is conservative, since it bounds the change to the output of the layer with respect to all activations on the unit ball. Indeed,
 \[\| \Delta W \|_2 \leq \eta \quad \Leftrightarrow \quad \| \Delta W x\|_2 \leq \eta, \quad \forall x\;: \;\|x\|_2 \leq 1.\]
-What really matters in the end, however, is the final loss.
-Thus we adapt this conservative approach to instead ensure that no single activation results in a large change in the \emph{loss}, that is, we want
+What really matters in the end, however, is the final loss. Thus we adapt this conservative approach to instead ensure that no single activation results in a large change in the \emph{loss}, that is, we want
 \begin{equation}\label{eq:loss-diff}
      |\ell_{x_i}(W +\Delta W) - \ell_{x_i} (W)|\leq \tau, \qquad  i=1,\ldots, n.
 \end{equation} 
