@@ -885,10 +885,9 @@ The LMO updates of LoRA-RITE \cite{lorarite}, iMuon \cite{imuon}, and LoRA-Muon 
 
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
-let $G=\nabla_W \mathcal{L}(W) \big |_{W=W_0+BA}$ be the product
-gradient, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
+let $G=\nabla_W \mathcal{L}(W) \big |_{W=W_0+BA}$ be the gradient of the full weight matrix, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
 and $S_B=AA^\top$ and
-$S_A=B^\top B$ be the $r\times r$ Gram matrices.
+$S_A=B^\top B$ be the $r\times r$ factor Gram matrices.
 The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} are
 \begin{equation}
   \begin{aligned}
@@ -910,7 +909,7 @@ the matrix sign equals
 \paragraph{LoRA-RITE.}
 Algorithm~1 of LoRA-RITE~\cite{lorarite} adds three pieces of memory to a base step. These are an EMA first moment with parameter $\beta_1$, an accumulated second moment transported across the changing factor basis, and an ``escaped-mass'' floor added to that second moment.
 Dropping all three, we get the authors' momentum-free update (their Eq.~(14)),
-which in our notation for $ \widehat G_B=G_B S_B^{-1/2}$ becomes
+which in our notation for $\widehat G_B=G_B S_B^{-1/2}$ becomes
 \[
   \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}.
 \]
@@ -967,7 +966,7 @@ LoRA-RITE~\cite{loramuon}.
 
 
 \paragraph{Compositional Muon.}
-Compositional Muon~\cite{tilde_csd} derives product-aware spectral updates for two low-rank products in attention: the QK product $W_QW_K^\top$ and the OV product. The same two-factor structure underlies a LoRA adapter. Its half-split rule gives each factor a spectral budget of $\epsilon/2$ and whitens it by the other factor,
+Compositional Muon~\cite{tilde_csd} derives product-aware spectral updates for two low-rank products in attention: the QK product $W_QW_K^\top$ and the OV product. Its half-split rule gives each factor a spectral budget of $\epsilon/2$ and whitens it by the other factor,
 \[
   \Delta W_Q=-\tfrac{\epsilon}{2}\,\msign\!\big(G_Q C_K^{-1}\big)\,C_K^{-1},
   \qquad C_K=(W_K^\top W_K)^{1/2},
@@ -1105,7 +1104,7 @@ make the $p,q$ updates invariant as well.
 
 \section{Implementation Details}
 \label{app:primitives}
-This appendix records how \Cref{alg:ours} initializes its state and implements
+This section details how \Cref{alg:ours} initializes its state and implements
 its numerical subroutines.
 
 \paragraph{Initialization.}\label{app:init}
@@ -1119,27 +1118,22 @@ Product Muon step~\eqref{eq:product-muon-step}.
 
 \paragraph{Relative Damping.}\label{app:damping}
 Each inverse square root in \Cref{alg:ours} is damped so that directions of
-nearly zero curvature are not amplified without bound. For a positive
-semidefinite curvature matrix $C$ we damp relative to the top eigenvalue,
+nearly zero curvature do not blow up. For a positive
+semidefinite matrix $C$ (ref $C_A$ and $C_B$ explictly?) we damp relative to the top eigenvalue,
 \[
     \widehat{C} = C + \max\bigl(\delta\lambda_{\max}(C),\, \varepsilon\bigr) I,
 \]
 which caps the condition number of $\widehat{C}$ at $(1+\delta)/\delta \approx 1/\delta$.
 We apply the same relative damping to the diagonal preconditioners $P$ and $Q$.
 Since the normalization in line~\ref{ln:pqnorm} sets their largest entry to
-one, the damped matrices are simply $P+\delta I$ and $Q+\delta I$, and these
-are used to form $C_A$ and $C_B$.
+one, the damped matrices are simply $P+\delta I$ and $Q+\delta I$.
 
 \subsection{Spectral-Norm Estimation}
 \label{app:smax}
 \Cref{alg:ours} requires repeated estimates of spectral norms.  
-We estimate each $\norm{M}_2$ by warm-started power iteration on the smaller of
-the two Gram matrices (\Cref{alg:smax}), caching the leading vector across
-optimizer steps so it starts near the top singular vector.  A cold or stale start
-can under-estimate $\norm{M}_2$; since the optimizer divides by this estimate,
-that would inflate the update and risk destabilizing training.  We therefore
-return the larger of the power-iteration value and the largest row norm of $M$, a
-lower bound on $\norm{M}_2$.  We use $K=8$ iterations.
+We estimate each $\norm{M}_2$ by warm-started power iteration on the smaller of the two Gram matrices (\Cref{alg:smax}) (which two Gram matrices), caching the leading vector across optimizer steps so it starts near the top singular vector. A cold or stale start
+can under-estimate $\norm{M}_2$; since the optimizer divides by this estimate, that would risk destabilizing training.  We therefore return the larger of the power-iteration value and the largest row norm of $M$, a
+lower bound on $\norm{M}_2$. We use $K = 8$ iterations.
 
 \begin{algorithm}[ht]
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
