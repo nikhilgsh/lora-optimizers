@@ -593,7 +593,7 @@ for a weight matrix, producing an update equal to the matrix sign of the momentu
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
-whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}. We adapt the KL-Shampoo estimator to LoRA, fitting the preconditioners from the factor gradients rather than the weight gradient (\Cref{app:matnormal}).
+whiten the gradient before a matrix-sign step. \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}. We adapt the KL-Shampoo estimator to LoRA, fitting the preconditioners from the factor gradients rather than the weight gradient (\Cref{app:matnormal}).
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
@@ -605,7 +605,7 @@ spectral-norm LMOs~\cite{imuon,loramuon,tilde_csd}. As discussed in \Cref{app:me
 and Compositional Muon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}, as does iMuon's intrinsic LMO. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
 
 \paragraph{Magnitude control for low-rank products.}
-Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when $A$ or $B$ have small singular values, the updates $\Delta A$ and $\Delta B$ can be very large, which can destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack} explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
+Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when $A$ or $B$ have small singular values, the updates $\Delta A$ and $\Delta B$ can be very large, which can destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack} explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$. With the $+1$ in its denominator, Spectron's bound also covers the quadratic term $\Delta B \Delta A$, which \methodname{} drops (\Cref{rem:quadratic} verifies that restoring it leaves the bound essentially unchanged).
 
 % ===========================================================================
 
@@ -706,7 +706,7 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 \section{Proofs}
 \label{app:proofs}
 
-We first collect the gradient properties used to motivate the outergradient set (ref).
+We first collect the gradient properties used to motivate the outergradient set~\eqref{eq:outgrad}.
 \gradprop*
 \begin{proof}[Proof of \Cref{lem:gradprop}]
 For the {\bf Leverage bound}, let $g_i=\vec(G_i)$ and
@@ -977,40 +977,6 @@ and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\to
 
 
 
-\section{Extended Prior Work}
-\label{app:related-spectral}
-Here we compare \methodname{} in more detail to two methods of \Cref{sec:related} that each
-match one of its components: curvature preconditioning (Mousse) and factor-step magnitude
-control (Spectron).
-
-\paragraph{Mousse.}
-Mousse~\cite{mousse} preconditions a matrix-sign step by a Kronecker curvature, on the full
-weight matrix. Its curvature is the Shampoo estimate $H\approx(R\otimes L)^{1/2}$, with $L,R$
-the moving averages of $GG^\top$ and $G^\top G$. Preconditioning the gradient by
-$H^{1/2}=(R\otimes L)^{1/4}$ gives
-\[
-  \Delta W=-L^{-1/4}\,\msign\!\big(L^{-1/4} G R^{-1/4}\big)\,R^{-1/4}.
-\]
-\methodname{} preconditions the same step but by the per-sample gradient second moment
-$\Sigma\approx Q\otimes P$~\eqref{eq:pq-factor} at the inverse square root $P^{-1/2},Q^{-1/2}$,
-rather than the Shampoo second moment at the fourth root. It also acts on the LoRA product
-rather than the full weight, the product map contracting $P,Q$ to the $r\times r$ matrices
-$C_A=B^\top P B$ and $C_B=AQA^\top$~\eqref{eq:ours-closure}.
-
-\paragraph{Spectron.}
-Spectron~\cite{spectron} addresses native low-rank pretraining, where every weight is a
-product $W=BA$ with no frozen base and the rescaling $(A,B)\mapsto(cA,c^{-1}B)$ can drive
-$\norm{\Delta W}_2$ unboundedly while $W$ stays fixed. It controls this by rescaling both
-orthogonalized factor steps to a common spectral norm $\rho_{\mathrm S}$, without curvature
-preconditioning and without an LMO derivation. \methodname{} rescales the same way to a common
-$\rho$, the two rules differing only by the $+1$ in Spectron's denominator, which folds the
-dropped quadratic term $\Delta B\Delta A$ into the bound where \methodname{} accounts for it
-after the fact (\Cref{rem:quadratic}):
-\[
-  \rho_{\mathrm S}=\frac{\eta}{\norm{A}_2+\norm{B}_2+1}
-  \qquad\text{vs.}\qquad
-  \rho=\frac{\eta}{\norm{A}_2+\norm{B}_2}.
-\]
 
 
 
