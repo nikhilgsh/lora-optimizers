@@ -700,13 +700,13 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 
 \paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip would break this invariance, so we run LoRA-RITE without it.
 
-\paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. The measured per-step wall-clock overhead of \methodname{} over Adam is at most $3\%$ across all experimental settings. Eval-loss values are hardware-independent. Reproducing all our experiments takes about $850$ GPU-hours.
+\paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. Reproducing all our experiments takes about $850$ GPU-hours.
 
 % ===========================================================================
 \section{Proofs}
 \label{app:proofs}
 
-We first collect the gradient properties used to build the outergradient set.
+We first collect the gradient properties used to motivate the outergradient set (ref).
 \gradprop*
 \begin{proof}[Proof of \Cref{lem:gradprop}]
 For the {\bf Leverage bound}, let $g_i=\vec(G_i)$ and
