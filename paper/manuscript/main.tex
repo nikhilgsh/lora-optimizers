@@ -1260,18 +1260,14 @@ layer $Y=XW^\top$, the forward pass costs
 $2d_{\mathrm{in}}d_{\mathrm{out}}n_{\mathrm{tok}}$
 FLOPs.
 In full finetuning, given the backward gradient $G_Y=\nabla_Y \mathcal{L}$,
-the backward pass computes both the input gradient and
-the weight gradient,
+the backward pass computes both the input and the weight gradient,
 \[
 \nabla_X \mathcal{L} = G_Y W,
 \qquad
 \nabla_W \mathcal{L} = G_Y^\top X,
 \]
-so it costs twice the forward.  In LoRA finetuning the
-base weight $W$ is frozen, so we do not form
-$\nabla_W \mathcal{L}$.  The
-backward pass through $W$ therefore costs only one forward-equivalent
-matmul:
+and costs twice the forward. LoRA freezes the base weight $W$ and does not form
+$\nabla_W \mathcal{L}$, so its backward through $W$ is a single forward-equivalent matmul:
 \begin{equation}
   C_{\mathrm{fwd}}^{\mathrm{base}}
   =
@@ -1280,29 +1276,13 @@ matmul:
   2 d_{\mathrm{in}}d_{\mathrm{out}} n_{\mathrm{tok}} .
   \label{eq:flop-fb}
 \end{equation}
-Thus the frozen base weights contribute
-\[
-    4N n_{\mathrm{tok}}
-\]
-FLOPs per step, where $N$ is the total number of frozen adapted-layer
-parameters.  This should be compared with the usual
-$6N n_{\mathrm{tok}}$ count for full finetuning
-\cite{kaplan2020scaling}.
-LoRA factors  contain
-\[
-    r(d_{\mathrm{in}}+d_{\mathrm{out}})
-\]
-trainable parameters and incur FLOPs of order
-$n_{\mathrm{tok}}r(d_{\mathrm{in}}+d_{\mathrm{out}})$.  Since
-$r\ll d_{\mathrm{in}},d_{\mathrm{out}}$, we omit these terms in the
-leading-order count.
+The frozen base weights thus contribute $4Nn_{\mathrm{tok}}$ FLOPs per step, where $N$ is the total number of frozen adapted-layer parameters, versus the usual $6Nn_{\mathrm{tok}}$ for full finetuning~\cite{kaplan2020scaling}. The LoRA factors add $r(d_{\mathrm{in}}+d_{\mathrm{out}})$ trainable parameters per layer and FLOPs of order $n_{\mathrm{tok}}r(d_{\mathrm{in}}+d_{\mathrm{out}})$, which we omit from the count, making the overhead fraction below an overestimate.
 
 \paragraph{Optimizer.}
-The \methodname{} optimizer (\Cref{alg:ours}) update runs once per optimizer step and does not
-depend on $n_{\mathrm{tok}}$.  
-We now count the leading operations that scale with
-$d_{\mathrm{in}}$ or $d_{\mathrm{out}}$. 
-The leading terms consist of forming
+The \methodname{} update (\Cref{alg:ours}) runs once per step and does not
+depend on $n_{\mathrm{tok}}$.
+We count the operations that scale with
+$d_{\mathrm{in}}$ or $d_{\mathrm{out}}$: forming
 \[
     C_A=B^\top P B,
     \qquad
@@ -1322,11 +1302,11 @@ $12r^2(d_{\mathrm{in}}+d_{\mathrm{out}})$
 leading FLOPs.
 
 The Newton--Schulz iterations themselves run in the small $r\times r$ Gram
-space.  One Gram Newton--Schulz call costs $8Kr^3$ FLOPs:
-$2r^3$ to form $R^2$, $2r^3$ for $Z\leftarrow MZ$, and $4r^3$ for
-$R\leftarrow MRM$.  Each layer uses four such calls: two matrix signs and two
-curvature inverse square roots.  Hence the small-matrix iterative work is $32Kr^3$.
-Ignoring lower-order elementwise operations, diagonal scalings, spectral-norm
+space.  One Gram Newton--Schulz iteration costs $8r^3$ FLOPs in the notation of
+\Cref{app:gramns}: $2r^3$ to form $R^2$, $2r^3$ for $Z\leftarrow MZ$, and $4r^3$ for
+$R\leftarrow MRM$.  Each layer uses four calls of $K$ iterations each (two matrix
+signs, two curvature inverse square roots), so the total small-matrix work is $32Kr^3$.
+Ignoring lower-order elementwise operations, diagonal scalings, and spectral-norm
 power iterations, the leading optimizer cost is
 \begin{equation}
   C_{\mathrm{opt}}
@@ -1368,16 +1348,16 @@ per-layer optimizer FLOP overhead
 Thus, for fixed model dimensions, rank, and Newton--Schulz iteration count, the
 optimizer FLOP fraction decays as $1/n_{\mathrm{tok}}$.
 The first term is
-governed by the smaller of the two layer dimensions. The second is divided by their product,
-so relative to the first it weighs most on the square attention matrices, where the two
-dimensions are comparable, and less on the wide feed-forward matrices. 
-The whole-model overhead is an average of these per-layer fractions weighted by layer size, so
-it is dominated by the large feed-forward matrices, which have the smallest fraction. 
+governed by the smaller of the two layer dimensions. The ratio of the second term to the
+first is $8Kr/(3(d_{\mathrm{in}}+d_{\mathrm{out}}))$, so the Newton--Schulz term matters
+most on the square attention matrices and least on the wide feed-forward matrices.
+The whole-model overhead averages these fractions with weights proportional to layer size,
+so it is set mainly by the large feed-forward matrices, which have the smallest fraction.
 
-\paragraph{Why the Gram form.} All of the dependence on $K$ sits in the $32Kr^3$ term, the
-Gram Newton--Schulz. It computes the matrix sign and the curvature inverse square roots by
-iterating on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
-(\Cref{app:gramns}), which is about $d/(2r)$ cheaper per iteration. Iterating on the factor
+\paragraph{Why the Gram form.} The $32Kr^3$ cost of the Gram Newton--Schulz iteration is the only term that depends
+on $K$. The iteration is used to compute the matrix sign and the curvature inverse square
+roots on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
+(\Cref{app:gramns}), saving a factor of about $d/(2r)$ per iteration. Iterating on the factor
 instead would make the optimizer step roughly $2\times$ costlier, increasing its share of
 the wall (\Cref{tab:breadth}).
 % Factor-NS counterfactual at the same K=8: per sign, K(4r^2 d + 2r^3) rectangular vs
