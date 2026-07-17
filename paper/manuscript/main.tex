@@ -84,11 +84,7 @@ York 10010
 
 % ===========================================================================
 \begin{abstract}
-Low-rank adaptation (LoRA) makes finetuning large language models cheaper, but it is usually trained with Adam, which treats the two LoRA factors as unrelated parameters. This ignores the fact that the model is changed through their product. We introduce PoLoRA, 
-a Preconditioned Orthogonalized LoRA 
- optimizer. PoLoRA combines three ingredients: a product-aware update direction,  curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that balances the two factor updates.
- From a practical viewpoint, PoLoRA is a spectral descent method that also makes use of two diagonal preconditioners.
- We evaluate PoLoRA on four base models—OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B, and Llama-3-8B—using instruction-tuning datasets for code, math, and Bengali. PoLoRA reaches Adam's final held-out loss in 1.2--1.7 times fewer steps, while adding at most 3\% per-step overhead. Furthermore, the optimal learning rate of PoLoRA transfers across different choices of LoRA rank.
+Low-rank adaptation (LoRA) makes finetuning large language models cheaper by adding to each weight matrix a trainable low-rank update parameterized as the product of two matrices. These matrices are usually trained with Adam, which treats them as a single flat vector of parameters and ignores both the matrix and product structure of LoRA. Applying a matrix-aware optimizer such as Muon to each factor does not consistently improve over Adam, and neither do the product-aware Muon variants proposed in concurrent works. To realize consistent gains, we introduce PoLoRA, a Preconditioned Orthogonalized LoRA optimizer built from three ingredients: a product-aware spectral update direction, curvature preconditioning derived from controlling the per-sample loss change, and a magnitude rule that controls the sizes of both the factor and merged updates. We evaluate PoLoRA on instruction-tuning datasets for code and math across models from 1B to 8B parameters, and find that it reaches the final held-out loss achieved by tuned Adam in 1.2--1.7 times fewer steps, while adding at most 3\% per-step overhead. Compared to Adam, PoLoRA is also less sensitive to the learning rate, and its optimal learning rate is stable across rank.
 \end{abstract}
 
 
@@ -104,22 +100,21 @@ B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-to each layer. Throughout, we set the scaling $\alpha=r$~\cite{loralearnsless, raschka}. With only the adapter trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
+to each layer. With only the adapter $(B, A)$ trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
 
 The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure.
 
- In language-model pretraining, matrix-aware optimizers such as spectral descent~\cite{pmlr-v38-carlson15,NIPS2015_f50a6c02}, Muon~\cite{muon}, Scion~\cite{pmlr-v267-pethick25a} and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}. Muon in particular, and its variants~\cite{Normuon}, have been used to set several records for training small language models~\cite{nanogpt,nanochat}, and have also been adopted in recent large-scale model training reports~\cite{Deepseekv4,GLM}.
-So it is natural to ask whether the same gains carry over to LoRA. 
+ In language-model pretraining, matrix-aware optimizers such as Muon~\cite{muon}, Scion~\cite{pmlr-v267-pethick25a} and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}. Muon in particular, and variants such as NorMuon~\cite{Normuon}, have set records for training small language models~\cite{nanogpt,nanochat} and have been adopted in recent large-scale training runs~\cite{Deepseekv4,GLM}.
 
 
-Muon is a steepest descent method with a spectral norm constraint on the update direction. We found that applying Muon to each factor does not improve on Adam. This is because the model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} try to address this by proposing updates that are variants of a product-aware Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}). For instance, the iMuon method~\cite{imuon} uses this Product Muon update.
-In our experiments, we find that the Product Muon (iMuon) is also unable to consistently improve over Adam, see~\Cref{fig:hero}.
+It is natural to ask whether similar gains can carry over to LoRA. We found, however, that applying Muon to each factor does not improve on Adam. Part of the problem is structural: the model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} correct this with variants of a product-aware Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}).
+In our experiments, Product Muon, evaluated using the official iMuon implementation~\cite{imuon}, is also unable to consistently improve over Adam (\Cref{fig:hero}).
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{fig_hero_with_tuning.pdf}
-  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon (Product Muon)~\cite{imuon}, Muon, and LoRA-RITE~\cite{lorarite} and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss at each optimizer's best learning rate and its two grid neighbours, normalized to the best rate. Every optimum is bracketed, and \methodname{} attains the lowest loss.}
+  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon~\cite{imuon}, Muon, and LoRA-RITE~\cite{lorarite} and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss at each optimizer's best learning rate and its two grid neighbours, normalized to the best rate. Every optimum is bracketed, and \methodname{} attains the lowest loss.}
   \label{fig:hero}
 \end{figure}
 
@@ -132,14 +127,14 @@ We evaluate \methodname{} through an extensive numerical study spanning multiple
 
 Our open-source implementation is available at:
 \begin{quote}\centering
-{\color{blue}\url{https://github.com/nikhilgsh/polora}}
+\url{https://github.com/nikhilgsh/polora}
 \end{quote}
 
 
 The rest of the paper proceeds as follows. \Cref{sec:method} both motivates and derives \methodname{}.
 \Cref{sec:exp} evaluates \methodname{}, comparing it in terms of step and wall-clock speedups over Adam and other baselines.
 \Cref{sec:exp-ablation} separates the roles of curvature and magnitude control.
-Finally, \Cref{sec:related} places \methodname{} in the context of LoRA scaling rules, matrix-aware optimization, product-invariant LoRA optimizers, and magnitude control.
+Finally, \Cref{sec:related} places \methodname{} in the context of prior work on hyperparameter rescaling for LoRA, matrix-aware updates, product-invariant LoRA optimizers, and magnitude control for low-rank products.
 
 
 
@@ -159,7 +154,7 @@ In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that 
 
 \subsection{Muon}\label{sec:muon}
 Muon is based on a spectral LMO.
-For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, the spectral LMO~\cite{bernstein2025modular,carlson2015preconditioned} minimizes the local linearization of the loss subject to a ball constraint,
+For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, the spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned} minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -187,7 +182,7 @@ moving average (EMA) of past gradients, and uses a polynomial approximation
 to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}). Next we show how to adapt this LMO to be aware of the product structure in LoRA~\eqref{eq:lora}.
 
 \subsection{Product Muon}\label{sec:product-muon}
-Consider a LoRA step that updates the two factors $A$ and $B$ as follows
+Throughout, we set the LoRA scaling $\alpha=r$~\cite{loralearnsless, raschka}, so the merged weight is $W = W_0 + BA$. Consider a LoRA step that updates the two factors $A$ and $B$ as follows
 \[
 A \leftarrow A + \Delta A,
 \qquad
@@ -477,7 +472,7 @@ The main comparisons finetune OLMo-2-1B~\cite{olmo2}, Llama-3.2-1B~\cite{llama3}
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \textbf{Adam} \cite{adam} --- our baseline, applied independently to the two factors $A$ and $B$.
   \item \textbf{Muon} \cite{muon} --- the solution of the spectral LMO~\eqref{eq:lmo}, applied independently to each factor.
-  \item \textbf{iMuon} \cite{imuon} --- the Product Muon LMO~\eqref{eq:imuon-lmo-ambient} applied to momentum in the product space.
+  \item \textbf{iMuon} \cite{imuon} --- a product-aware spectral LMO~\eqref{eq:imuon-lmo-ambient} applied to momentum in the product space.
   \item \textbf{LoRA-RITE} \cite{lorarite} --- an adaptive LoRA optimizer that preconditions the factor gradients in a rotation-invariant basis.
 \end{itemize}
 We use the authors' official implementations for iMuon and LoRA-RITE and provide additional background on these methods in \Cref{app:memoryless}. 
