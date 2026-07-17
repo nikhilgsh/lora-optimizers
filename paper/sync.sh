@@ -77,6 +77,17 @@ do_push() {
 }
 
 do_pull() {
+  # The 3-way merge below builds `ours` from HEAD:$PREFIX (the committed tree) and
+  # then overwrites the working tree with `git archive | tar -x`. Uncommitted edits
+  # under $PREFIX are therefore ignored by the merge AND clobbered by the extract,
+  # a silent data loss. Refuse rather than destroy them (mirrors do_publish's guard).
+  if [ -n "$(git status --porcelain -- "$PREFIX")" ]; then
+    echo "refusing to pull: $PREFIX has uncommitted changes that pull would overwrite and lose."
+    echo "Commit them first:  git add $PREFIX && git commit   (then re-run '$0 pull')"
+    echo "Uncommitted:"
+    git status --porcelain -- "$PREFIX" | sed 's/^/  /'
+    exit 1
+  fi
   git fetch -q "$REMOTE" "$BRANCH"
   local theirs base
   theirs=$(remote_tip)
