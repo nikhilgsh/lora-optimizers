@@ -1207,8 +1207,7 @@ minimizer $\hat q(P)$ of~\eqref{eq:conditional-minimizers} with the
 step-$s$ matrix $C_A(P_s)$ in place of a fixed $C_A(P)$, and likewise for $p_{t+1}$. In \Cref{alg:ours}, the preconditioner updates (lines~\ref{ln:qmom}
 and~\ref{ln:pmom}) reuse the matrices $C_A$ and $C_B$ already computed for the direction step (line~\ref{ln:pqnorm}), so each step inverts $C_A$ and $C_B$ once rather than twice.
 
-\paragraph{Normalization.} We now explain why we normalize $q_{t+1},p_{t+1}$
-in~\eqref{eq:ours-klcoupling}. The pair $(P, Q)$ enters the
+\paragraph{Normalization.} The pair $(P, Q)$ enters the
 approximation of $\overline \Sigma_t$ only through the product
 $Q \otimes P$, and
 \[
