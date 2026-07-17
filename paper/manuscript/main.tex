@@ -602,11 +602,10 @@ to this transformation, a line of work has proposed LoRA optimizers that are. Lo
 removes the basis dependence with an adaptive preconditioner~\cite{lorarite}, while Riemannion
 optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMuon, LoRA-Muon, and Compositional Muon derive invariant updates from
 spectral-norm LMOs~\cite{imuon,loramuon,tilde_csd}. As discussed in \Cref{app:memoryless}, the momentum-free LoRA-RITE, LoRA-Muon,
-iMuon, and Compositional Muon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
+and Compositional Muon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}, as does iMuon's intrinsic LMO. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
 
 \paragraph{Magnitude control for low-rank products.}
-Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when $A$ or $B$ have small singular values, the updates $\Delta A$ and $\Delta B$ can be very large, which can destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack}, which are not based on the LMO step~\eqref{eq:decoupled-lora-lmo},
-explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
+Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when $A$ or $B$ have small singular values, the updates $\Delta A$ and $\Delta B$ can be very large, which can destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack} explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$ (\Cref{rem:quadratic}).
 
 % ===========================================================================
 
