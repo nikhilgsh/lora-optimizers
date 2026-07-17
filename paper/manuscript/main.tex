@@ -93,7 +93,7 @@ Low-rank adaptation (LoRA) makes finetuning large language models cheaper by add
 \label{sec:intro}
 
 Deployment of large-scale pretrained models increasingly depends on adapting a
-general model to many specialized tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized models. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update,
+general model to many specialized tasks~\cite{foundation_models}. Finetuning a separate full copy for each task is expensive, because training must hold gradients and optimizer state for the whole model, and deploying each task means storing and serving multiple full-sized models. Low-rank adaptation (LoRA~\cite{lora}) avoids both issues by freezing the base weight $W_0 \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ and adding a small low-rank update $\Delta W$,
 \begin{equation}
 W = W_0 + \DW, \qquad \DW = \frac{\alpha}{r}\,BA, \qquad
 B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
@@ -102,11 +102,7 @@ A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \end{equation}
 to each layer. With only the adapter $(B, A)$ trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
-
-The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure.
-
- In language-model pretraining, matrix-aware optimizers such as Muon~\cite{muon}, Scion~\cite{pmlr-v267-pethick25a} and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}. Muon in particular, and variants such as NorMuon~\cite{Normuon}, have set records for training small language models~\cite{nanogpt,nanochat} and have been adopted in recent large-scale training runs~\cite{Deepseekv4,GLM}.
-
+The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon~\cite{muon}, Scion~\cite{pmlr-v267-pethick25a} and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}. Muon in particular, and variants such as NorMuon~\cite{Normuon}, have set records for training small language models~\cite{nanogpt,nanochat} and have been adopted in recent large-scale training runs~\cite{Deepseekv4,GLM}.
 
 It is natural to ask whether similar gains can carry over to LoRA. We found, however, that applying Muon to each factor does not improve on Adam. Part of the problem is structural: the model sees the \emph{product} $BA$, while the optimizer acts on the \emph{factors} $A$ and $B$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} correct this with variants of a product-aware Muon step we refer to as \emph{Product Muon} (\Cref{sec:product-muon}).
 In our experiments, Product Muon, evaluated using the official iMuon implementation~\cite{imuon}, is also unable to consistently improve over Adam (\Cref{fig:hero}).
@@ -120,16 +116,12 @@ In our experiments, Product Muon, evaluated using the official iMuon implementat
 
 We introduce \methodname{}, which is a steepest descent method where the constraint is motivated by controlling the change in the per-sample loss. Its solution is a preconditioned update in the spectral norm. We then develop a product-aware version that can be applied to LoRA. Additionally, unlike the Product Muon step, we control the factor update sizes as well as the size of the update to the product.
 
-We evaluate \methodname{} through an extensive numerical study spanning multiple base models, datasets, adapter ranks, and learning-rate settings. As previewed in \Cref{fig:hero}, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines, reaching Adam's final held-out loss in $1.2$--$1.7\times$ fewer steps across our settings, while adding at most 3\% per-step overhead. We complement these comparisons with component ablations that separate the effects of the curvature-aware direction and magnitude controls we introduce, showing that both contribute to the overall speedup of \methodname{} over our baselines.
- Finally, we find that \methodname{} is  easier to tune than Adam: its optimal learning rate is stable across rank, and performance is less sensitive to the learning rate.
-
-
+Across base models, datasets, and adapter ranks, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines (\Cref{fig:hero}). It reaches the final held-out loss of tuned Adam in $1.2$--$1.7\times$ fewer steps, while adding at most 3\% per-step overhead. Removing the curvature preconditioning and the magnitude rule in turn reduces \methodname{} to Product Muon, and each component accounts for about half of the speedup gap. Finally, we observe that \methodname{} is easier to tune than Adam: its optimal learning rate is stable across rank, and performance is less sensitive to the learning rate.
 
 Our open-source implementation is available at:
 \begin{quote}\centering
 \url{https://github.com/nikhilgsh/polora}
 \end{quote}
-
 
 The rest of the paper proceeds as follows. \Cref{sec:method} both motivates and derives \methodname{}.
 \Cref{sec:exp} evaluates \methodname{}, comparing it in terms of step and wall-clock speedups over Adam and other baselines.
@@ -153,8 +145,8 @@ Next, in \Cref{sec:product-muon} we show how this LMO can be made product-aware,
 In \Cref{sec:sample-loss-lmo} we derive \methodname{}  as a new LMO method that bounds the change in the per-sample loss rather than the spectral norm of the update. We then derive its product-aware version for LoRA. The LMO provides the update directions but not their size, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
 
 \subsection{Muon}\label{sec:muon}
-Muon is based on a spectral LMO.
-For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, the spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned} minimizes the local linearization of the loss subject to a ball constraint,
+Muon is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned}.
+For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, this LMO minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
