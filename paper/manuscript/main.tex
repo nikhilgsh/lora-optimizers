@@ -550,15 +550,15 @@ $256$ & $1.63\times$ & $1.58\times$ \\
   \label{fig:lr_transfer}
 \end{figure}
 
-\paragraph{Distribution shift.} Coding data is well represented in the pretraining data for the Qwen2.5-1.5B model~\cite{qwen25}. On the other hand, data for a low-resource language like Bengali is much less present. We therefore informally refer to the code dataset as in-distribution and the Bengali dataset (Aya \cite{aya}) as out-of-distribution. From \Cref{fig:ood} we observe that the speedup over Adam is larger on Bengali than on code.
+\paragraph{Distribution shift.} Coding data is well represented in the pretraining data of the Qwen2.5-1.5B model~\cite{qwen25}, while data for a low-resource language like Bengali is much less present. From \Cref{fig:ood} we observe that the speedup over Adam is larger on the Bengali dataset (Aya \cite{aya}) than on code. This is consistent with the advantage of \methodname{} growing as finetuning must move the model further from its pretraining data.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig_ood.pdf}
-  \caption{\textbf{The speedup over Adam is larger out of distribution.}
+  \caption{\textbf{The speedup over Adam is larger on the low-resource language.}
   Evaluation loss over training steps on Qwen2.5-1.5B at rank $r = 256$,
-  finetuned on the in-distribution code dataset (left)
-  and the out-of-distribution Bengali dataset (right).}
+  finetuned on the code dataset (left)
+  and the Bengali dataset (right).}
   \label{fig:ood}
 \end{figure}
 
@@ -593,7 +593,7 @@ for a weight matrix, producing an update equal to the matrix sign of the momentu
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
 Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
-whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}. The metric itself is fit by adapting KL-Shampoo to LoRA, from the factor gradients alone and without forming the weight gradient (\Cref{app:matnormal}).
+whiten the gradient before a matrix-sign step (\Cref{app:related-spectral}). \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a metric derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}. We adapt the KL-Shampoo estimator to LoRA, fitting the preconditioners from the factor gradients rather than the weight gradient (\Cref{app:matnormal}).
 
 \paragraph{Product-invariant LoRA optimizers.}
 The learned update $BA$ is a product of two matrices, so it is determined only up to the
