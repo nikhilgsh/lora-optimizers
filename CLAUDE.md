@@ -143,31 +143,30 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
 - Tests: shapes, dtype/device behavior, numerical residuals, determinism on tiny tensors; CPU-only for unit tests; GPU required for functional smokes
 - **Spectral-norm rescaling is load-bearing.** Any optimizer that divides by an
   estimated `sigma_max` must defend against underestimated denominators.
-  Single-vector power iteration can miss the top singular direction when the
-  start vector is cold, stale, zero, or nearly in the current Gram nullspace;
-  that silently overscales updates and can explode parameters while all tensor
-  shapes look correct. Prefer a guarded batched/block estimator with
-  deterministic starts and lower-bound floors. When changing a `sigma_max`
-  estimator or call site, add a known-positive regression for a bad start vector
-  and run a high-rank GPU smoke that checks eval loss, `param_l2`, and nonfinite
-  gradient counts. The no-`sigma_max`-divide arm of the same optimizer passing is
-  not evidence the divide arm is safe. **Fix the under-estimate at the
-  SHARED estimator, never per-call-site.** The bias is a property of the estimator,
-  so it bites EVERY site that divides by `sigma_max` — the polar/NS pre-norm AND
-  the final `ρ/σ_max(ΔW)` rescale AND the `ρ = lr/(σ_max(A)+σ_max(B))` denominator.
-  Patching only the site you first suspect leaves the others to NaN a few hundred
-  steps later (this exact two-fix sequence burned a sweep here: guarding the NS
-  site alone still NaN'd via the rescale site). Put the guard inside the estimator
-  (`_smax_warm`): floor at `max(row L2 norm, col L2 norm)` — a valid, deterministic,
-  batched↔per-pair-safe lower bound on `sigma_max` — AND run enough iterations (a
-  warm 3-iteration start chronically under-estimated ~10–25% at every site; bump to
-  ~8). A lower-bound floor alone does not fix the chronic-bias drift; you need both.
-  The floor plus a single deterministic `M·1` cold start is a sufficient guard. An
-  extra one-hot basis-vector fallback is not needed, because it would change the
+  Power iteration returns `‖Mᵀv_K‖ ≤ σ_max` for its final iterate, so the
+  estimate is a LOWER bound; with a cold, stale, zero, or nearly-orthogonal
+  start vector the error is unbounded (`σ̂ ≈ σ₂ ≪ σ₁`), and an under-estimated
+  denominator silently overscales updates while all tensor shapes look correct.
+  Prefer a guarded batched/block estimator with deterministic starts and
+  lower-bound floors. When changing a `sigma_max` estimator or call site, add a
+  known-positive regression for a bad start vector and run a high-rank GPU smoke
+  that checks eval loss, `param_l2`, and nonfinite gradient counts. The
+  no-`sigma_max`-divide arm of the same optimizer passing is not evidence the
+  divide arm is safe. **Fix the under-estimate at the SHARED estimator, never
+  per-call-site.** The bias is a property of the estimator (start vector,
+  iteration count), so it bites EVERY site that divides by `sigma_max` — the
+  polar/NS pre-norm AND the final `ρ/σ_max(ΔW)` rescale AND the
+  `ρ = lr/(σ_max(A)+σ_max(B))` denominator; patching one site leaves the
+  identical bias in the others. Put the guard inside the estimator
+  (`_smax_warm`): floor at `max(row L2 norm, col L2 norm)` — a deterministic
+  lower bound on `sigma_max` (each row norm is `‖Mᵀe_i‖`) that caps the
+  worst-case overscale at `√m`, since `σ_max² ≤ Σ_i ‖row_i‖² ≤ m·max_i‖row_i‖²`
+  — AND run enough iterations (~8; short warm starts under-estimate). A
+  lower-bound floor alone does not fix the bias drift; you need both. The floor
+  plus a single deterministic `M·1` cold start is a sufficient guard; an extra
+  one-hot basis-vector fallback is not needed, because it would change the
   estimate only on the measure-zero set (`M≠0` with `M·1=0` exactly), and `M=0`
-  returns `0` regardless (differential-verified bit-for-bit on random, real-snapshot,
-  and zero-column-sum inputs; `~/polora` dropped it, `lora_playground/spectral.py`
-  still carries it harmlessly).
+  returns `0` regardless.
 - **Never use a full SVD / `eigh` to get a scalar `sigma_max` (or `lambda_max`).**
   `torch.linalg.matrix_norm(X, ord=2)` is a *full SVD* — it was ~80% of the
   curvature-whiten-polar step (224 SVDs/step, ~30 ms each; killing it gave 4.4×).
