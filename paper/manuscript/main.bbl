@@ -397,90 +397,6 @@
     \warn{\item Invalid format of field 'month'}
   \endentry
 
-  \entry{NIPS2015_f50a6c02}{inproceedings}{}
-    \name{author}{5}{}{%
-      {{hash=CDE}{%
-         family={Carlson},
-         familyi={C\bibinitperiod},
-         given={David\bibnamedelima E},
-         giveni={D\bibinitperiod\bibinitdelim E\bibinitperiod},
-      }}%
-      {{hash=CE}{%
-         family={Collins},
-         familyi={C\bibinitperiod},
-         given={Edo},
-         giveni={E\bibinitperiod},
-      }}%
-      {{hash=HYP}{%
-         family={Hsieh},
-         familyi={H\bibinitperiod},
-         given={Ya-Ping},
-         giveni={Y\bibinithyphendelim P\bibinitperiod},
-      }}%
-      {{hash=CL}{%
-         family={Carin},
-         familyi={C\bibinitperiod},
-         given={Lawrence},
-         giveni={L\bibinitperiod},
-      }}%
-      {{hash=CV}{%
-         family={Cevher},
-         familyi={C\bibinitperiod},
-         given={Volkan},
-         giveni={V\bibinitperiod},
-      }}%
-    }
-    \name{editor}{5}{}{%
-      {{hash=CC}{%
-         family={Cortes},
-         familyi={C\bibinitperiod},
-         given={C.},
-         giveni={C\bibinitperiod},
-      }}%
-      {{hash=LN}{%
-         family={Lawrence},
-         familyi={L\bibinitperiod},
-         given={N.},
-         giveni={N\bibinitperiod},
-      }}%
-      {{hash=LD}{%
-         family={Lee},
-         familyi={L\bibinitperiod},
-         given={D.},
-         giveni={D\bibinitperiod},
-      }}%
-      {{hash=SM}{%
-         family={Sugiyama},
-         familyi={S\bibinitperiod},
-         given={M.},
-         giveni={M\bibinitperiod},
-      }}%
-      {{hash=GR}{%
-         family={Garnett},
-         familyi={G\bibinitperiod},
-         given={R.},
-         giveni={R\bibinitperiod},
-      }}%
-    }
-    \list{publisher}{1}{%
-      {Curran Associates, Inc.}%
-    }
-    \strng{namehash}{CDE+1}
-    \strng{fullhash}{CDECEHYPCLCV1}
-    \field{labelnamesource}{author}
-    \field{labeltitlesource}{title}
-    \field{sortinit}{C}
-    \field{sortinithash}{C}
-    \field{booktitle}{Advances in Neural Information Processing Systems}
-    \field{title}{Preconditioned Spectral Descent for Deep Learning}
-    \verb{url}
-    \verb https://proceedings.neurips.cc/paper_files/paper/2015/file/f50a6c02a3
-    \verb fc5a3a5d4d9391f05f3efc-Paper.pdf
-    \endverb
-    \field{volume}{28}
-    \field{year}{2015}
-  \endentry
-
   \entry{carlson2015preconditioned}{inproceedings}{}
     \name{author}{5}{}{%
       {{hash=CDE}{%
@@ -514,8 +430,8 @@
          giveni={V\bibinitperiod},
       }}%
     }
-    \strng{namehash}{CDE+2}
-    \strng{fullhash}{CDECEHYPCLCV2}
+    \strng{namehash}{CDE+1}
+    \strng{fullhash}{CDECEHYPCLCV1}
     \field{labelnamesource}{author}
     \field{labeltitlesource}{title}
     \field{sortinit}{C}
