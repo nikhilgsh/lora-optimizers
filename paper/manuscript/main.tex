@@ -908,8 +908,8 @@ the matrix sign equals
 
 \paragraph{LoRA-RITE.}
 Algorithm~1 of LoRA-RITE~\cite{lorarite} adds three pieces of memory to a base step. These are an EMA first moment with parameter $\beta_1$, an accumulated second moment transported across the changing factor basis, and an ``escaped-mass'' floor added to that second moment.
-Dropping all three, we get the authors' momentum-free update (their Eq.~(14)),
-which in our notation for $\widehat G_B=G_B S_B^{-1/2}$ becomes
+Dropping all three, we get the authors' momentum-free update (their Eq.~(14)).
+In our notation, with $\widehat G_B := G_B S_B^{-1/2}$, it becomes
 \[
   \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}.
 \]
@@ -929,31 +929,23 @@ iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\time
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 For the base Algorithm~1 in~\cite{imuon}, the ambient matrix is the raw gradient $G$, so~\eqref{eq:imuon-lmo-ambient}
-again gives the Product Muon update directions of~\eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update.
+again gives the Product Muon update directions of~\eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update, as we show next.
 
-\paragraph{iMuon, with momentum.} The official implementation of iMuon with momentum (their Appendix~K) does not
-use the gradient as input to \eqref{eq:imuon-lmo-ambient}. 
-It instead first combines the two factor
-look-aheads $\widetilde{G}_A=G_A+\beta m_A$ and $\widetilde{G}_B=G_B+\beta m_B$ (buffers $m_A,m_B$,
-with parameter $\beta$) into a single ambient matrix, then uses that matrix as input
+\paragraph{iMuon, with momentum.} The official implementation (their Appendix~K) does not pass the raw gradient to the intrinsic LMO~\eqref{eq:imuon-lmo-ambient}. It maintains momentum buffers $m_A$ and $m_B$ with parameter $\beta$, forms the look-aheads $\widetilde{G}_A=G_A+\beta m_A$ and $\widetilde{G}_B=G_B+\beta m_B$, and uses as input the combined ambient matrix
 \begin{equation*}
   \widehat M=\widetilde{G}_B A+B\widetilde{G}_A .
 \end{equation*}
-Turning momentum off ($\beta=0$) removes the buffers but not the recombination, i.e.,
+Turning momentum off ($\beta=0$) removes the buffers but not the recombination:
 \begin{equation*}
   \widehat M=G_B A+B G_A=G\,A^\top A+BB^\top G\ \neq\ G .
 \end{equation*}
-Plugging $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top=B^\top G_B$,
+Plugging this $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top=B^\top G_B$ gives
 \begin{equation}\label{eq:imuon-implemented}
   \widehat M A^\top=G_B S_B+(BB^\top)G_B
   \quad\Longrightarrow\quad
   \Delta B(\widehat M)=\msign\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
 \end{equation}
-which is different from Product Muon. The argument for $\Delta A$ is symmetric.
-Thus switching momentum off does not recover \eqref{eq:decoupled-lora-lmo}. While
-\eqref{eq:decoupled-lora-lmo-app} is the
-momentum-free limit of the iMuon theory (Corollary~4.1), 
-it is not the momentum-free limit of the implemented optimizer.
+which differs from the Product Muon update~\eqref{eq:product-muon-step}. The argument for $\Delta A$ is symmetric. Thus Product Muon is the momentum-free limit of the iMuon theory (Corollary~4.1), but not of the implemented optimizer.
 
 
 \paragraph{LoRA-Muon.}
@@ -971,7 +963,7 @@ Compositional Muon~\cite{tilde_csd} derives product-aware spectral updates for t
   \Delta W_Q=-\tfrac{\epsilon}{2}\,\msign\!\big(G_Q C_K^{-1}\big)\,C_K^{-1},
   \qquad C_K=(W_K^\top W_K)^{1/2},
 \]
-and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\top)^{1/2}$, recovering the Product Muon step~\eqref{eq:product-muon-step}. Momentum and a gauge correction are added separately. The OV hybrid rule and the isotropic approximation are specific to multi-head attention and do not reduce to Product Muon.
+and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\top)^{1/2}$, recovering the Product Muon step~\eqref{eq:product-muon-step}. Momentum and a gauge correction are added separately, and the OV hybrid rule and the isotropic approximation are specific to multi-head attention and do not reduce to Product Muon.
 
 
 
