@@ -1212,8 +1212,6 @@ The two uses differ only in the matrix $S$ and scalar $\gamma$ we pass to
     \]
 \end{itemize}
 
-
-
 \paragraph{Stability and precision.}
 We run the Gram Newton--Schulz iteration in fp32, which is inexpensive because
 every matrix is only $r\times r$.  We use $K=8$ iterations.
@@ -1255,7 +1253,6 @@ $A,B$,
 with $r\ll d_{\mathrm{in}},d_{\mathrm{out}}$.  Throughout, $K$ denotes the number
 of Newton--Schulz iterations, and $n_{\mathrm{tok}}$ denotes the number of tokens
 processed per optimization step.
-
 
 \paragraph{Forward and backward.}
 For a linear
@@ -1300,7 +1297,6 @@ $n_{\mathrm{tok}}r(d_{\mathrm{in}}+d_{\mathrm{out}})$.  Since
 $r\ll d_{\mathrm{in}},d_{\mathrm{out}}$, we omit these terms in the
 leading-order count.
 
-
 \paragraph{Optimizer.}
 The \methodname{} optimizer (\Cref{alg:ours}) update runs once per optimizer step and does not
 depend on $n_{\mathrm{tok}}$.  
@@ -1340,8 +1336,6 @@ power iterations, the leading optimizer cost is
   32Kr^3 .
   \label{eq:flop-opt}
 \end{equation}
-
-
 
 \paragraph{Overhead fraction.} Dividing \eqref{eq:flop-opt} by \eqref{eq:flop-fb} gives the
 per-layer optimizer FLOP overhead 
