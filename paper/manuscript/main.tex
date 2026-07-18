@@ -1353,7 +1353,7 @@ most on the square attention matrices and least on the wide feed-forward matrice
 The whole-model overhead averages these fractions with weights proportional to layer size,
 so it is set mainly by the large feed-forward matrices, which have the smallest fraction.
 
-\paragraph{Why the Gram form.} The $32Kr^3$ cost of the Gram Newton--Schulz iteration is the only term that depends
+\paragraph{Benefits of Gram Newton--Schulz.} The $32Kr^3$ cost of the Gram Newton--Schulz iteration is the only term that depends
 on $K$. The iteration is used to compute the matrix sign and the curvature inverse square
 roots on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
 (\Cref{app:gramns}), saving a factor of about $d/(2r)$ per iteration. Iterating on the factor
@@ -1379,7 +1379,7 @@ Equality holds when the two rescaled norms are equal, so an imbalanced factoriza
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.6\linewidth]{fig_gauge.pdf}
+  \includegraphics[width=0.52\linewidth]{fig_gauge.pdf}
   \caption{\textbf{Factor norm self-balancing in \methodname{}.} Spectral-norm ratio $\norm{B}_2/\norm{A}_2$ over training steps for Llama-3.2-1B finetuned on the math dataset at each rank. The ratio settles near $1$.}
   \label{fig:gauge}
 \end{figure}
@@ -1391,9 +1391,9 @@ Equality holds when the two rescaled norms are equal, so an imbalanced factoriza
 and~(b) span the model families on code and math, and row~(c) the rank sweep. Each panel
 shows Adam and \methodname{} at their optimal learning rates.
 
-\begin{figure}[t]
+\begin{figure}[H]
   \centering
-  \includegraphics[width=\linewidth]{figA_curves.pdf}
+  \includegraphics[width=0.95\linewidth]{figA_curves.pdf}
   \caption{\textbf{\methodname{} speedup over Adam across settings.} Evaluation loss over training steps, Adam vs \methodname{} at each setting's best learning rate. \textbf{(a)}~model families finetuned on code and \textbf{(b)}~on math, at rank $r = 256$; \textbf{(c)}~the rank sweep on Llama-3.2-1B (math). The dashed span marks the steps \methodname{} saves in reaching Adam's final loss. Settings already drawn as curves in the main text (\Cref{fig:hero,fig:ablation,fig:ood}) are not repeated.}
   \label{fig:curves}
 \end{figure}
