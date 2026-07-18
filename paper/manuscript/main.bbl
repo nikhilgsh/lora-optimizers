@@ -913,6 +913,43 @@
     \field{year}{2024}
   \endentry
 
+  \entry{plop}{misc}{}
+    \name{author}{3}{}{%
+      {{hash=HS}{%
+         family={Hayou},
+         familyi={H\bibinitperiod},
+         given={Soufiane},
+         giveni={S\bibinitperiod},
+      }}%
+      {{hash=GN}{%
+         family={Ghosh},
+         familyi={G\bibinitperiod},
+         given={Nikhil},
+         giveni={N\bibinitperiod},
+      }}%
+      {{hash=YB}{%
+         family={Yu},
+         familyi={Y\bibinitperiod},
+         given={Bin},
+         giveni={B\bibinitperiod},
+      }}%
+    }
+    \strng{namehash}{HSGNYB1}
+    \strng{fullhash}{HSGNYB1}
+    \field{labelnamesource}{author}
+    \field{labeltitlesource}{title}
+    \field{sortinit}{H}
+    \field{sortinithash}{H}
+    \verb{eprint}
+    \verb 2506.20629
+    \endverb
+    \field{title}{{PLoP}: Precise {LoRA} Placement for Efficient Finetuning of
+  Large Models}
+    \field{eprinttype}{arXiv}
+    \field{eprintclass}{cs.LG}
+    \field{year}{2025}
+  \endentry
+
   \entry{lora}{inproceedings}{}
     \name{author}{8}{}{%
       {{hash=HEJ}{%
@@ -2131,6 +2168,31 @@
     \field{note}{\url{https://thinkingmachines.ai/blog/lora/}}
     \field{title}{LoRA Without Regret}
     \field{journaltitle}{Thinking Machines Lab: Connectionism}
+    \field{year}{2025}
+  \endentry
+
+  \entry{lorawithoutregret}{misc}{}
+    \true{moreauthor}
+    \true{morelabelname}
+    \name{author}{1}{}{%
+      {{hash=SJ}{%
+         family={Schulman},
+         familyi={S\bibinitperiod},
+         given={John},
+         giveni={J\bibinitperiod},
+      }}%
+    }
+    \strng{namehash}{SJ+1}
+    \strng{fullhash}{SJ+1}
+    \field{labelnamesource}{author}
+    \field{labeltitlesource}{title}
+    \field{sortinit}{S}
+    \field{sortinithash}{S}
+    \field{howpublished}{Thinking Machines Lab, Connectionism blog}
+    \field{title}{{LoRA} Without Regret}
+    \verb{url}
+    \verb https://thinkingmachines.ai/blog/lora/
+    \endverb
     \field{year}{2025}
   \endentry
 

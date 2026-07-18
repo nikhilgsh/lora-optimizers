@@ -649,7 +649,7 @@ This section gives the full configuration behind \Cref{sec:exp-setup}. Within ea
   \item Loss is computed on response tokens only; prompt and padding tokens are masked.
 \end{itemize}
 
-\paragraph{Fixed training configuration.} \Cref{tab:config} lists the settings held fixed across all runs.
+\paragraph{Fixed training configuration.} \Cref{tab:config} lists the settings held fixed across all runs. We adapt all linear layers except \texttt{lm\_head} to isolate the efficacy of the optimizer. Prior work, however, suggests that adapting only a subset of modules recovers most of the performance~\cite{lorawithoutregret, plop}.
 \begin{table}[ht]
 \centering\small
 \begin{tabular}{@{}ll@{}}
