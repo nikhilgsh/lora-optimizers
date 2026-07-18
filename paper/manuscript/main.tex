@@ -991,18 +991,19 @@ with $\beta_2$ the curvature decay of \Cref{alg:ours}.
 
 \paragraph{Factor-gradient moments.}
 As in \Cref{sec:sample-loss-lmo}, to make the update tractable we approximate $\overline \Sigma_t \approx Q_t \otimes P_t$~\eqref{eq:pq-factor} with diagonal matrices $P_t = \diag(p_t)$ and $Q_t = \diag(q_t)$. Note, however, that backpropagation gives us efficient access only to the factor gradients, not the full gradients $G_s$. Therefore the natural objects to consider are the corresponding averaged factor-gradient second moments,
-\[
+\begin{equation} \label{eq:zsdzdzsd}
   \overline \Sigma_A:=\EMA^{\beta_2}_{s\le t}\bigl[\vec(G_{A,s})\vec(G_{A,s})^\top\bigr],
   \qquad
   \overline \Sigma_B:=\EMA^{\beta_2}_{s\le t}\bigl[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\bigr].
-\]
-Suppose the Kronecker approximation is exact, $\overline \Sigma_t = Q \otimes P$, and replace $A_s$ and $B_s$ with their current values $A$ and $B$, which is reasonable if $A_s \approx A$ and $B_s \approx B$ over recent steps. Since $G_{A,s}=B^\top G_s$ and $G_{B,s}^\top = A G_s^\top$,
+\end{equation}
+Suppose the Kronecker approximation is exact, $\overline \Sigma_t = Q \otimes P$, and replace $A_s$ and $B_s$ with their current values $A$ and $B$, which is reasonable if $A_s \approx A$ and $B_s \approx B$ over recent steps. Since $G_{A,s}=B^\top G_s$ and $G_{B,s}^\top = A G_s^\top$, it follows by vectorizing that
+\rob{**here**}
 \[
   \vec(G_{A,s}) = (I \otimes B^\top)\vec(G_s),
   \qquad
-  \vec(G_{B,s}^\top) = (I \otimes A)\,\mathcal{K}\vec(G_s),
+  \vec(G_{B,s}^\top) = (I \otimes A)\,\vec(G_s).
 \]
-and therefore
+Using the above in~\eqref{eq:zsdzdzsd} gives
 \begin{equation}\label{eq:observable-moments}
 \begin{aligned}
   \overline \Sigma_A &= (I \otimes B^\top)(Q \otimes P)(I \otimes B) = Q\otimes C_A(P),\\
