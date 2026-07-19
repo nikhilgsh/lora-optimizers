@@ -109,7 +109,7 @@ In our experiments, the official iMuon implementation~\cite{imuon}, one of these
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{fig_hero_with_tuning.pdf}
-  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon~\cite{imuon}, Muon, and LoRA-RITE~\cite{lorarite} and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss at each optimizer's best learning rate and its two grid neighbors, normalized to the best rate. Every optimum is bracketed, and \methodname{} attains the lowest loss.}
+  \caption{\textbf{\methodname{} outperforms baselines during training.} Llama-3.2-1B finetuned on the math dataset at rank $r = 256$. \textbf{Left:} evaluation loss across training steps; \methodname{} outperforms Adam, iMuon~\cite{imuon}, Muon, and LoRA-RITE~\cite{lorarite} and reaches Adam's final loss in $1.63\times$ fewer steps. \textbf{Right:} final evaluation loss versus learning rate, in multiples of each optimizer's best learning rate. Every optimum is bracketed, and \methodname{} attains the lowest loss.}
   \label{fig:hero}
 \end{figure}
 
