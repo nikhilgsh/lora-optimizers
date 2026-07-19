@@ -113,9 +113,9 @@ In our experiments, the official iMuon implementation~\cite{imuon}, one of these
   \label{fig:hero}
 \end{figure}
 
-To obtain a consistent speedup over Adam, we introduce \methodname{}, a steepest descent method whose constraint is motivated by controlling the change in the per-sample loss, and whose solution is an orthogonalized update preconditioned by a curvature estimate. We then develop a product-aware version of this update for LoRA, imposing the constraint on the merged update rather than on each factor separately. A separate magnitude rule sets the sizes of the factor updates, which the Product Muon step leaves free, while retaining its bound on the spectral norm of the merged update.
+To obtain a consistent speedup over Adam, we introduce \methodname{}, a steepest descent method whose constraint is motivated by controlling the change in the per-sample loss, and whose solution is an orthogonalized update preconditioned by a curvature estimate. We then develop a product-aware version of this update for LoRA, imposing the constraint on the merged update rather than on each factor separately. A separate magnitude rule sets the sizes of the factor updates, which the Product Muon step leaves uncontrolled, while retaining its bound on the spectral norm of the merged update.
 
-Across base models, datasets, and adapter ranks, \methodname{} consistently improves training efficiency over Adam and matrix-aware LoRA baselines (\Cref{fig:hero}). It reaches the final held-out loss of tuned Adam in $1.2$--$1.7\times$ fewer steps, while adding at most 3\% per-step overhead. Removing the curvature preconditioning and the magnitude rule in turn reduces \methodname{} to Product Muon, and each component accounts for about half of the speedup gap. Finally, we observe that \methodname{} is easier to tune than Adam: its optimal learning rate is stable across ranks, and performance is less sensitive to the learning rate.
+Across base models, datasets, and adapter ranks, \methodname{} consistently improves training efficiency over Adam (\Cref{tab:breadth,tab:rank}), and it outperforms matrix-aware LoRA baselines on Llama-3.2-1B finetuned on math (\Cref{fig:hero}). It reaches the final held-out loss of tuned Adam in $1.2$--$1.7\times$ fewer steps, while adding at most 3\% per-step overhead. Removing the curvature preconditioning and the magnitude rule in turn reduces \methodname{} to Product Muon, and each component accounts for about half of the speedup gap. Finally, we observe that \methodname{} is easier to tune than Adam: its optimal learning rate is stable across ranks, and performance is less sensitive to the learning rate.
 
 Our open-source implementation is available at:
 \begin{quote}\centering
@@ -281,7 +281,7 @@ Following~\cite{shampoo,kfac}, we approximate $\Sigma$ by a Kronecker product of
 \end{equation}
 We treat the \emph{preconditioners} $P$ and $Q$ as given for now, deferring their update rule to \Cref{app:matnormal}.
 
-Using the factorization above in the outergradient set~\eqref{eq:outgrad} and relaxing the constraint in~\eqref{eq:sample-lmo} through~\eqref{eq:outgrad1}, we arrive at the following LMO
+Using the factorization above in the outergradient set~\eqref{eq:outgrad} and replacing the per-sample constraints in~\eqref{eq:sample-lmo} with the sufficient condition~\eqref{eq:outgrad1}, we arrive at the following LMO
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta W}{\mathrm{minimize}} &
@@ -406,7 +406,7 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \methodname{}, summarized in \Cref{alg:ours}, makes the update~\eqref{eq:polora-update} practical with the following ingredients:
 \begin{itemize}[leftmargin=1.5em,itemsep=1pt,topsep=2pt]
   \item \emph{Averaging.} Momentum with look-ahead replaces each factor gradient with an EMA estimate of its full-batch counterpart (line~\ref{ln:mom}), and a second EMA accumulates the vectors $p,q$ that form the preconditioners (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{app:matnormal}).  \item \emph{Diagonal curvature.} To reduce overhead, we take $P$ and $Q$ diagonal, as in Adafactor~\cite{adafactor} (line~\ref{ln:pqnorm}), and fit them to second moments of the factor gradients by adapting the KL-Shampoo update~\cite{klshampoo} to the diagonal case (lines~\ref{ln:qmom} and~\ref{ln:pmom}; \Cref{app:matnormal}).
-  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{app:matnormal}).
+  \item \emph{Normalization.} The Kronecker product in~\eqref{eq:pq-factor} is invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$. To make the EMA updates for $P$ and $Q$ invariant to this rescaling as well, we normalize each factor so that its largest entry is one (line~\ref{ln:pqnorm}; \Cref{app:matnormal}).
   \item \emph{Fast numerical subroutines.} We estimate the spectral norms in lines~\ref{ln:rho} and~\ref{ln:spectralnormupdate} by power iteration (\Cref{app:smax}). We use Gram Newton--Schulz iterations with PolarExpress coefficients~\cite{polarexpress} to compute the matrix sign and inverse square roots in lines~\ref{ln:Aspectral} and~\ref{ln:Bspectral} (\Cref{app:gramns}).
 \end{itemize}
 
@@ -602,8 +602,8 @@ change of basis $(A,B)\mapsto(NA,BN^{-1})$ for invertible $N$. Since Adam is not
 to this transformation, a line of work has proposed LoRA optimizers that are. LoRA-RITE
 removes the basis dependence with an adaptive preconditioner~\cite{lorarite}, while Riemannion
 optimizes $BA$ directly on the fixed-rank matrix manifold~\cite{riemannion}. iMuon, LoRA-Muon, and Compositional Muon derive invariant updates from
-spectral-norm LMOs~\cite{imuon,loramuon,tilde_csd}. As discussed in \Cref{app:memoryless}, the momentum-free LoRA-RITE, LoRA-Muon,
-and Compositional Muon LMO updates all coincide with \eqref{eq:decoupled-lora-lmo}, as does iMuon's intrinsic LMO. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
+spectral-norm LMOs~\cite{imuon,loramuon,tilde_csd}. As discussed in \Cref{app:memoryless}, the momentum-free LMO updates of LoRA-RITE, LoRA-Muon,
+and Compositional Muon's half-split rule all coincide with \eqref{eq:decoupled-lora-lmo}, as does iMuon's intrinsic LMO. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
 
 \paragraph{Magnitude control for low-rank products.}
 Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{B\Delta A}_2$ and $\norm{\Delta B A}_2$ but not the factor steps $\norm{\Delta A}_2$ and $\norm{\Delta B}_2$. As a result, when $A$ or $B$ has small singular values, the updates $\Delta A$ and $\Delta B$ can be large enough to destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack} explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{A}_2+\norm{B}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{A}_2+\norm{B}_2)$. With the $+1$ in its denominator, Spectron's bound also covers the quadratic term $\Delta B \Delta A$, which \methodname{} drops (\Cref{rem:quadratic} verifies that restoring it leaves the bound essentially unchanged).
@@ -882,7 +882,7 @@ so the overshoot is $O(\eta)$ and shrinks as the factors grow.
 
 \section{Momentum-Free Reductions to Product Muon}
 \label{app:memoryless}
-In this appendix we show that the LMO updates of LoRA-RITE~\cite{lorarite}, LoRA-Muon~\cite{loramuon}, and Compositional Muon~\cite{tilde_csd} all reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed, as does the \emph{intrinsic spectral LMO} that Corollary~4.1 of~\cite{imuon} states for iMuon. The officially implemented iMuon optimizer, however, differs (see~\eqref{eq:imuon-implemented}).
+In this appendix we show that the LMO updates of LoRA-RITE~\cite{lorarite}, LoRA-Muon~\cite{loramuon}, and Compositional Muon's half-split rule~\cite{tilde_csd} all reduce to Product Muon~\eqref{eq:decoupled-lora-lmo} once their moment accumulation is removed, as does the \emph{intrinsic spectral LMO} that Corollary~4.1 of~\cite{imuon} states for iMuon. The officially implemented iMuon optimizer, however, differs (see~\eqref{eq:imuon-implemented}).
 
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
@@ -969,7 +969,7 @@ and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\to
 % ===========================================================================
 \section{Estimating the Preconditioners}
 \label{app:matnormal}
-In \Cref{sec:sample-loss-lmo} we treated the preconditioners $P$ and $Q$ as given when writing the update~\eqref{eq:polorafull-update}. Here we describe how we compute them using online updates from the factor gradients and a normalization that makes the preconditioners invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, arriving at the $p,q$ updates~\eqref{eq:ours-klcoupling} of \Cref{alg:ours}.
+In \Cref{sec:sample-loss-lmo} we treated the preconditioners $P$ and $Q$ as given when writing the update~\eqref{eq:polorafull-update}. Here we describe how we compute them using online updates from the factor gradients and a normalization that makes these updates invariant to the rescaling $(P,Q)\mapsto(aP,a^{-1}Q)$, arriving at the $p,q$ updates~\eqref{eq:ours-klcoupling} of \Cref{alg:ours}.
 
 \paragraph{Notation.} Consider a given linear layer. Let $t$ denote the current optimizer step. Whenever it is clear from context, we suppress the subscript $t$. For each step $s\le t$,
 let $A_s,B_s$ be the LoRA factors and
@@ -1022,7 +1022,7 @@ divergence~\cite{logdetdiv}, which up to terms not involving $S$ is
 \[
   D(\Sigma,S)=\Tr(\Sigma S^{-1})+\log\det S.
 \]
-We fit each diagonal factor with the other held fixed:
+We fit each preconditioner with the other held fixed:
 \begin{equation}\label{eq:factor-fit}
   \hat q(P):=\argmin_{q>0}
     D\bigl(\overline \Sigma_A,\diag(q)\otimes C_A(P)\bigr),
@@ -1044,7 +1044,8 @@ $C_A(P)$ or $C_B(Q)$.
 in~\eqref{eq:conditional-minimizers} at each step would require
 storing every past factor gradient, since $C_A(P)$ and $C_B(Q)$ change
 as $P$ and $Q$ are updated. \methodname{} instead evaluates each factor
-gradient once, at its own step, and accumulates the results:
+gradient once, at its own step, and accumulates the results in the vectors
+$p_t$ and $q_t$:
 \begin{equation}\label{eq:ours-klcoupling}
 \begin{alignedat}{2}
   \hat{q}_t(P_t)
@@ -1086,9 +1087,8 @@ $(aP,a^{-1}Q)$. The update direction is the same at both, but
   \qquad
   \hat p_t(a^{-1}Q_t)=a\,\hat p_t(Q_t),
 \]
-so $q_{t+1}$ and $p_{t+1}$ scale by $a^{-1}$ and $a$. The normalization
-in~\eqref{eq:ours-klcoupling} divides these factors out, so $P_{t+1}$ and
-$Q_{t+1}$ do not depend on $a$.
+so we normalize $q_{t+1},p_{t+1}$ in~\eqref{eq:ours-klcoupling} to
+make the $p,q$ updates invariant as well.
 
 \clearpage
 \section{Implementation Details}
@@ -1106,7 +1106,7 @@ $C_B \propto AA^\top$, so its first update coincides in direction with the
 Product Muon step~\eqref{eq:product-muon-step}.
 
 \paragraph{Relative damping.}\label{app:damping}
-Each inverse square root in \Cref{alg:ours} is damped so that directions of
+Each inverse in \Cref{alg:ours} is damped so that directions of
 nearly zero curvature do not blow up. For a positive
 semidefinite matrix $C$ ($C_A$ or $C_B$ in \eqref{eq:ours-closure}) we damp relative to the top eigenvalue,
 \[
@@ -1121,18 +1121,18 @@ one, the damped matrices are simply $P+\delta I$ and $Q+\delta I$.
 \label{app:smax}
 \Cref{alg:ours} requires repeated estimates of spectral norms.  
 We estimate each $\norm{M}_2$ by warm-started power iteration on the smaller of the two Gram matrices $MM^\top$ and $M^\top M$ (\Cref{alg:smax}), caching the leading vector across optimizer steps so it starts near the top singular vector. A cold or stale start
-can underestimate $\norm{M}_2$, and since the optimizer divides by this estimate, that would risk destabilizing training.  We therefore return the larger of the power-iteration value and the maximum row norm of $M$, which does not depend on the cached start vector. We use $K = 8$ iterations.
+can underestimate $\norm{M}_2$, and since the optimizer divides by this estimate, that would risk destabilizing training.  We therefore return the larger of the power-iteration value and the maximum row norm of $M$, which does not depend on the cached start vector. We use $K_{\mathrm{pow}} = 8$ iterations.
 
 \begin{algorithm}[ht]
 \caption{Guarded spectral-norm estimate of $\norm{M}_2$}
 \label{alg:smax}
 \begin{algorithmic}[1]
-\Require $M\in\mathbb{R}^{m\times n}$, $m\le n$ (else $M^\top$); cached $v\in\mathbb{R}^m$; iterations $K$
+\Require $M\in\mathbb{R}^{m\times n}$, $m\le n$ (else $M^\top$); cached $v\in\mathbb{R}^m$; iterations $K_{\mathrm{pow}}$
 \State $l \gets \max_i\norm{M_{i,:}}_2$
 \If{$v$ is invalid} \Comment{absent, zero, or nonfinite}
   \State $v\gets M\mathbf{1}$
 \EndIf
-\For{$k=1,\dots,K$} \Comment{iterate the smaller Gram $MM^\top$}
+\For{$k=1,\dots,K_{\mathrm{pow}}$} \Comment{iterate the smaller Gram $MM^\top$}
   \State $w\gets M^\top v$;\quad $v\gets Mw/\norm{Mw}_2$
 \EndFor
 \State \Return $\max\big\{\norm{M^\top v}_2,\ l\big\}$
