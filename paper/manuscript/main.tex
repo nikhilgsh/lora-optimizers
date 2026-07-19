@@ -1129,7 +1129,9 @@ can underestimate $\norm{M}_2$, and since the optimizer divides by this estimate
 \begin{algorithmic}[1]
 \Require $M\in\mathbb{R}^{m\times n}$, $m\le n$ (else $M^\top$); cached $v\in\mathbb{R}^m$; iterations $K$
 \State $l \gets \max_i\norm{M_{i,:}}_2$
-\If{$v$ is invalid} \State $v\gets M\mathbf{1}$ \Comment{absent, zero, or nonfinite} \EndIf
+\If{$v$ is invalid} \Comment{absent, zero, or nonfinite}
+  \State $v\gets M\mathbf{1}$
+\EndIf
 \For{$k=1,\dots,K$} \Comment{iterate the smaller Gram $MM^\top$}
   \State $w\gets M^\top v$;\quad $v\gets Mw/\norm{Mw}_2$
 \EndFor
