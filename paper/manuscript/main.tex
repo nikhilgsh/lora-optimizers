@@ -141,6 +141,8 @@ Finally, in \Cref{sec:related} we place \methodname{} in the context of prior an
 \label{sec:method}
 To derive the \methodname{} update, we first recall in \Cref{sec:muon} how Muon arises from constrained steepest descent~\cite{crawshaw2026exploration}. Its update is computed by a linear minimization oracle (LMO)~\cite{pmlr-v267-pethick25a}, which minimizes the linearized loss subject to a spectral-norm bound. In \Cref{sec:product-muon} we make this LMO product-aware, which yields Product Muon. In \Cref{sec:sample-loss-lmo} we obtain the \methodname{} update direction by replacing the spectral-norm constraint with a bound on the change in the per-sample loss and making the resulting LMO product-aware for LoRA. The LMO provides the direction but not the size of the update, which we set by a separate rescaling that controls both the per-factor and merged-weight updates. All proofs are in \Cref{app:proofs}.
 
+Throughout, whenever a vector or matrix is divided by its norm, we set $X/\norm{X}:=0$ at $X=0$.
+
 \subsection{Muon}\label{sec:muon}
 Muon is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned}.
 For a weight $W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with gradient $G = \nabla_W \mathcal{L}(W)$, this LMO minimizes the local linearization of the loss subject to a ball constraint,
@@ -1127,7 +1129,7 @@ can underestimate $\norm{M}_2$, and since the optimizer divides by this estimate
 \begin{algorithmic}[1]
 \Require $M\in\mathbb{R}^{m\times n}$, $m\le n$ (else $M^\top$); cached $v\in\mathbb{R}^m$; iterations $K$
 \State $l \gets \max_i\norm{M_{i,:}}_2$
-\If{$v$ is empty} \State $v\gets M\mathbf{1}$ \Comment{cold start} \EndIf
+\If{$v$ is invalid} \State $v\gets M\mathbf{1}$ \Comment{absent, zero, or nonfinite} \EndIf
 \For{$k=1,\dots,K$} \Comment{iterate the smaller Gram $MM^\top$}
   \State $w\gets M^\top v$;\quad $v\gets Mw/\norm{Mw}_2$
 \EndFor
