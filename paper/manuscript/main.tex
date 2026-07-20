@@ -953,12 +953,12 @@ The momentum-free LMOs of the concurrent LoRA-Muon paper~\cite{loramuon} (its Eq
 
 
 \paragraph{Compositional Muon.}
-Compositional Muon~\cite{tilde_csd} derives product-aware spectral updates for two low-rank products in attention: the QK product $W_QW_K^\top$ and the OV product $W_OW_V$. Its half-split rule bounds each side's product perturbation separately, $\norm{\Delta W_Q W_K^\top}_2\le\epsilon/2$ and $\norm{W_Q \Delta W_K^\top}_2\le\epsilon/2$, and solving the two resulting LMOs gives
+Compositional Muon~\cite{tilde_csd} derives product-aware spectral updates for two low-rank products in attention: the QK product $W_QW_K^\top$ and the OV product $W_OW_V$. Its half-split rule requires $\norm{\Delta W_Q W_K^\top}_2\le\epsilon/2$ and $\norm{W_Q\Delta W_K^\top}_2\le\epsilon/2$ separately, and the resulting LMOs are solved by
 \[
   \Delta W_Q=-\tfrac{\epsilon}{2}\,\msign\!\big(G_Q C_K^{-1}\big)\,C_K^{-1},
   \qquad C_K=(W_K^\top W_K)^{1/2},
 \]
-with $G_Q$ the gradient with respect to $W_Q$, and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\top)^{1/2}$ and $G_Q=G_B$, recovering the Product Muon step~\eqref{eq:product-muon-step}. Momentum accumulates the raw gradients, whitened only at the current step; a separate correction removes from the momentum buffers their component along the directions $(W_QX,\,-W_KX^\top)$, which change the factors but leave the product unchanged to first order. The OV hybrid rule is specific to multi-head attention, and the isotropic approximation replaces the other factor's Gram matrix by a multiple of the identity, which turns each whitened step into an ordinary Muon step with a rescaled step size; so neither reduces to Product Muon.
+where $G_Q$ is the gradient with respect to $W_Q$, and symmetrically for $W_K$. Setting $W_Q=B$ and $W_K=A^\top$ gives $C_K=(AA^\top)^{1/2}$ and $G_Q=G_B$, so this is the Product Muon step~\eqref{eq:product-muon-step}. Momentum is added separately, together with a correction that removes from the buffers directions that change the factors but leave the product unchanged to first order. The remaining components do not reduce to Product Muon: the OV hybrid rule is specific to multi-head attention, and the isotropic approximation replaces $C_K$ and its counterpart $C_Q$ with scalar multiples of the identity, leaving an ordinary Muon step rescaled by that scalar.
 
 
 
