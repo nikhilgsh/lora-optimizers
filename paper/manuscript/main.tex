@@ -99,7 +99,7 @@ B \in \mathbb{R}^{d_{\mathrm{out}} \times r}, \quad
 A \in \mathbb{R}^{r \times d_{\mathrm{in}}},
 \label{eq:lora}
 \end{equation}
-to each layer. With only the adapter $(B, A)$ trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
+to each layer, with $\alpha$ a scaling parameter and $r$ the rank. With only the adapter $(B, A)$ trained, finetuning can run on nearly the same hardware layouts as inference, and the shared base lets one server serve many adapters at once~\cite{punica,bitdelta,schulman2025lora}.
 
 The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $A$ and $B$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon~\cite{muon}, Scion~\cite{pmlr-v267-pethick25a}, and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}. Muon in particular and variants such as NorMuon~\cite{Normuon} have set records for training small language models~\cite{nanogpt,nanochat} and have been adopted in recent large-scale training runs~\cite{Deepseekv4,GLM}.
 
@@ -827,7 +827,7 @@ Maximizing over the balls gives the spectral norm,
 We then solve that preconditioned spectral-norm LMO, which sets the \methodname{} direction.
 \begin{lemma}[Preconditioned spectral-norm LMO]
 \label{lem:whitened-spectral-lmo}
-Let $L$ and $R$ be symmetric positive definite. Then
+Let $L$ and $R$ be symmetric positive definite. For a matrix $M$ and $\tau>0$,
 \begin{equation}\label{e-gen-spectral-lmo-update}
 X^\star = -\tau L^{-1}
 \msign\left(L^{-1}MR^{-1}\right) R^{-1}
@@ -887,8 +887,8 @@ In this appendix we show that the LMO updates of LoRA-RITE~\cite{lorarite}, LoRA
 
 \paragraph{Setup.} As in \Cref{sec:method}, 
 let $G=\nabla_W \mathcal{L}(W) \big |_{W=W_0+BA}$ be the gradient with respect to the weight matrix, $G_A=B^\top G$ and $G_B=GA^\top$ be the factor gradients, 
-and $S_B=AA^\top$ and
-$S_A=B^\top B$ be the $r\times r$ factor Gram matrices.
+and $S_A=AA^\top$ and
+$S_B=B^\top B$ be the $r\times r$ factor Gram matrices.
 The two factorwise LMOs in Product Muon~\eqref{eq:decoupled-lora-lmo} with budget $\tau$ are
 \begin{equation}
   \begin{aligned}
@@ -909,14 +909,14 @@ the matrix sign equals
 \paragraph{LoRA-RITE.}
 Algorithm~1 of LoRA-RITE~\cite{lorarite} adds three pieces of memory to a base step. These are an EMA first moment with parameter $\beta_1$, an accumulated second moment transported across the changing factor basis, and an ``escaped-mass'' floor added to that second moment.
 Dropping all three, we get the authors' momentum-free update (their Eq.~(14)).
-In our notation, with $\widehat G_B := G_B S_B^{-1/2}$, it becomes
+In our notation, with $\widehat G_B := G_B S_A^{-1/2}$, it becomes
 \[
-  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_B^{-1/2}.
+  \Delta B=-\eta \widehat G_B (\widehat G_B^\top\widehat G_B)^{-1/2} S_A^{-1/2}.
 \]
 With no accumulation, by \eqref{eq:polar-id} the middle factor is the matrix sign, so
 \begin{equation*}
-  \Delta B=-\eta \msign(\widehat G_B) S_B^{-1/2}
-  =-\eta \msign \big(G_B S_B^{-1/2}\big) S_B^{-1/2},
+  \Delta B=-\eta \msign(\widehat G_B) S_A^{-1/2}
+  =-\eta \msign \big(G_B S_A^{-1/2}\big) S_A^{-1/2},
 \end{equation*}
 which is the $B$-update solving the Product Muon LMO~\eqref{eq:decoupled-lora-lmo-app} with budget $\tau=\eta$. Analogous arguments hold for the $A$-update.
 
@@ -924,8 +924,8 @@ which is the $B$-update solving the Product Muon LMO~\eqref{eq:decoupled-lora-lm
 \paragraph{iMuon, momentum-free.}
 iMuon relies on a choice of \emph{ambient matrix} $H\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$. The intrinsic spectral LMO of Corollary~4.1 maps this ambient matrix to the factor updates as follows
 \begin{equation}
-  \Delta B(H) =\msign \big(HA^\top S_B^{-1/2}\big)S_B^{-1/2},\qquad
-  \Delta A(H) =S_A^{-1/2}\msign \big(S_A^{-1/2}B^\top H\big).
+  \Delta B(H) =\msign \big(HA^\top S_A^{-1/2}\big)S_A^{-1/2},\qquad
+  \Delta A(H) =S_B^{-1/2}\msign \big(S_B^{-1/2}B^\top H\big).
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 For the base Algorithm~1 in~\cite{imuon}, the ambient matrix is the raw gradient $G$, so~\eqref{eq:imuon-lmo-ambient}
@@ -941,9 +941,9 @@ Turning momentum off ($\beta=0$) removes the buffers but not the recombination:
 \end{equation*}
 Plugging this $\widehat M$ into \eqref{eq:imuon-lmo-ambient} and using $G_A A^\top=B^\top G_B$ gives
 \begin{equation}\label{eq:imuon-implemented}
-  \widehat M A^\top=G_B S_B+(BB^\top)G_B
+  \widehat M A^\top=G_B S_A+(BB^\top)G_B
   \quad\Longrightarrow\quad
-  \Delta B(\widehat M)=\msign\!\big(G_B S_B^{1/2}+(BB^\top)G_B S_B^{-1/2}\big)S_B^{-1/2},
+  \Delta B(\widehat M)=\msign\!\big(G_B S_A^{1/2}+(BB^\top)G_B S_A^{-1/2}\big)S_A^{-1/2},
 \end{equation}
 which differs from the Product Muon update~\eqref{eq:product-muon-step}. The argument for $\Delta A$ is symmetric. Thus Product Muon is the momentum-free limit of the iMuon theory (Corollary~4.1), but not of the implemented optimizer.
 
@@ -993,7 +993,7 @@ with $\beta_2$ the curvature decay of \Cref{alg:ours}.
 
 \paragraph{Factor-gradient moments.}
 As in \Cref{sec:sample-loss-lmo}, to make the update tractable we approximate $\overline \Sigma_t \approx Q_t \otimes P_t$~\eqref{eq:pq-factor} with diagonal matrices $P_t$ and $Q_t$. Backpropagation gives efficient access only to the factor gradients, so we work with their averaged second moments,
-\begin{equation} \label{eq:zsdzdzsd}
+\begin{equation} \label{eq:factor-moments}
   \overline \Sigma_{A,t}:=\EMA^{\beta_2}_{s\le t}\bigl[\vec(G_{A,s})\vec(G_{A,s})^\top\bigr],
   \qquad
   \overline \Sigma_{B,t}:=\EMA^{\beta_2}_{s\le t}\bigl[\vec(G_{B,s}^\top)\vec(G_{B,s}^\top)^\top\bigr].
@@ -1015,7 +1015,7 @@ We now make an approximation by replacing $A_s$ and $B_s$ with their current val
     \approx (I \otimes A_t)\,\mathcal{K}\vec(G_s).
 \]
  With this approximation, and 
-using the above in~\eqref{eq:zsdzdzsd} gives
+using the above in~\eqref{eq:factor-moments} gives
 \begin{equation}\label{eq:observable-moments}
 \begin{aligned}
   \overline \Sigma_{A,t} &= (I \otimes B_t^\top)(Q \otimes P)(I \otimes B_t) = Q\otimes C_{B_t}(P),\\
@@ -1373,7 +1373,7 @@ on $K$. The iteration is used to compute the matrix sign and the curvature inver
 roots on the small $r\times r$ Gram matrix rather than on the tall $d\times r$ factor
 (\Cref{app:gramns}), saving a factor of about $d/(2r)$ per iteration. Iterating on the factor
 instead would make the optimizer step roughly $2\times$ costlier, increasing its share of
-the wall (\Cref{tab:breadth}).
+the wall-clock time.
 % Factor-NS counterfactual at the same K=8: per sign, K(4r^2 d + 2r^3) rectangular vs
 % 4r^2 d + 8Kr^3 Gram (form + recover + iterations); whole-step C_opt ratio
 % (40r^2 D + 160r^3 n_pairs)/(12r^2 D + 256r^3 n_pairs) per block:
