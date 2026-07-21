@@ -1,6 +1,9 @@
 # arXiv submission metadata — PoLoRA
 
-**Submitted 2026-07-20 as `submit/7844106`** (TeX Live 2023 selected). Announcement follows arXiv's next cycle; cross-lists clear moderation separately.
+**arXiv:2607.17620** (https://arxiv.org/abs/2607.17620), submitted 2026-07-20 as
+`submit/7844106` (TeX Live 2023 selected). Paper password `43aam` — coauthors
+claim authorship with the id + password via arXiv's "Claim Ownership with a
+password" form.
 
 Paste-ready fields, checked against arXiv's Title / Authors / Abstract conventions
 (https://info.arxiv.org/help/prep.html). Kept in `paper/` because
