@@ -1103,7 +1103,8 @@ class CurvatureWhitenLoRA(Optimizer):
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
-                 cw_unpinned=False, cw_factor_a=0.0, cw_factor_b=0.0,
+                 cw_unpinned=False, cw_solved_rho=False,
+                 cw_factor_a=0.0, cw_factor_b=0.0,
                  rdinv_variant="A", rdinv_delta=None, cw_metric_init="1e-12"):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
@@ -1264,6 +1265,23 @@ class CurvatureWhitenLoRA(Optimizer):
             raise ValueError(
                 "cw_unpinned requires precond_method='gram_ns' (the true-scale inverse-sqrt "
                 f"path); got {self.precond_method!r}.")
+        # SOLVED magnitude rule (ported from the GPT-opt pretraining study,
+        # gptopt/optim/polora_attn.py solved_rho, commit be25e6e): keep the
+        # whole direction pipeline, but size the common factor magnitude ρ so
+        # the FULL merged budget is spent instead of triangle-inequality slack.
+        # With unit-σ_max directions U_A, U_B (σ_max(dA)=c_A·ρ, σ_max(dB)=c_B·ρ),
+        #   Δ(BA) = ρ·L + ρ²·c_A c_B·U_B U_A  exactly,  L = c_A·B U_A + c_B·U_B A,
+        # and ‖U_B U_A‖₂ ≤ 1, so the positive root of ρ·t + ρ²·c_A c_B = η with
+        # t = ‖L‖₂ MEASURED (sum-of-products power iter; L never formed) keeps
+        # the certificate ‖Δ(BA)‖₂ ≤ η while eliminating the σ_max(A)+σ_max(B)
+        # slack. No clamp needed: ρ ≤ √(η/(c_A c_B)) even as t → 0. Replaces the
+        # bound ρ = η/(c_A σ_B + c_B σ_A) after the Picard loop; incompatible
+        # with the two ablations that remove the magnitude rule it re-sizes.
+        self.cw_solved_rho = bool(cw_solved_rho)
+        if self.cw_solved_rho and (self.cw_unpinned or self.cw_no_radius):
+            raise ValueError(
+                "cw_solved_rho re-sizes the operator-norm magnitude rule; it is "
+                "incompatible with cw_unpinned/cw_no_radius (which remove it).")
         # Per-factor shape scaling (sweep knob). c_A = (r/d_in)^a, c_B = (d_out/r)^b,
         # folded into the operator-norm radius so the merged product cap stays η:
         #   ρ = η / (c_A·σmax(B) + c_B·σmax(A)),  σmax(dA)=c_A·ρ,  σmax(dB)=c_B·ρ.
@@ -1691,6 +1709,24 @@ class CurvatureWhitenLoRA(Optimizer):
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
                 dA = -(cA * rho / sWA.clamp_min(self.eps)) * WA
                 dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.eps)) * WB
+            if self.cw_solved_rho:
+                # Solved magnitude — mirror of _cw_apply_grouped (see there); the
+                # SAME blessed prodsum estimator on a 1-batch keeps this path the
+                # equivalence oracle.
+                from .spectral import sigma_max_power_iter_prodsum_batched as _smax_ps
+                vi = st.get('v_L')
+                s_lin, v_L = _smax_ps(Bf.unsqueeze(0), dA.unsqueeze(0),
+                                      dB.unsqueeze(0), Af.unsqueeze(0),
+                                      v_init=None if vi is None else vi.unsqueeze(0),
+                                      n_iters=8)
+                st['v_L'] = v_L[0].detach()
+                s_lin = s_lin[0]
+                q_bar = (self.lora_plus_multiplier * cA * cB) * rho * rho
+                c_sc = (2.0 * lr) / (s_lin + (s_lin * s_lin + 4.0 * q_bar * lr).sqrt()
+                                     ).clamp_min(self.eps)
+                dA = dA * c_sc
+                dB = dB * c_sc
+                rho = rho * c_sc
             emit_diag = self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0
             if emit_diag:
                 A_pre = A.detach().float()
@@ -1945,6 +1981,30 @@ class CurvatureWhitenLoRA(Optimizer):
                     dA = -(cA * rho / sWA.clamp_min(self.eps)).view(-1, 1, 1) * WA
                     dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.eps)).view(-1, 1, 1) * WB
             if timer: timer.stop()
+            if self.cw_solved_rho:
+                # Solved magnitude (see __init__): rescale the final dA, dB by
+                # the positive root c of  c·s_lin + c²·q̄ = η  with
+                # s_lin = ‖B dA + dB A‖₂ measured at the current bound-ρ scale
+                # and q̄ = lpm·c_A c_B·ρ² ≥ ‖dB dA‖₂, i.e. ρ_new = c·ρ solves
+                # ρ_new·t + ρ_new²·(lpm·c_A c_B) = η with t = s_lin/ρ. Stable
+                # root form 2η/(s+√(s²+4q̄η)) — no cancellation at q̄η ≪ s², and
+                # q̄ → 0 degrades gracefully to the exact-linear rescale η/s.
+                # Post-loop placement is exact for production cw_picard_iters=1;
+                # at k≥2 the in-loop cross-terms still see bound-ρ steps.
+                if timer: timer.start("op_solved_rho")
+                from .spectral import sigma_max_power_iter_prodsum_batched as _smax_ps
+                cached = [st.get('v_L') for st in grp]
+                vi = torch.stack(cached) if all(c is not None for c in cached) else None
+                s_lin, v_L = _smax_ps(Bw, dA, dB, Aw, v_init=vi, n_iters=8)
+                for j, st in enumerate(grp):
+                    st['v_L'] = v_L[j].detach()
+                q_bar = (self.lora_plus_multiplier * cA * cB) * rho * rho
+                c_sc = (2.0 * lr) / (s_lin + (s_lin * s_lin + 4.0 * q_bar * lr).sqrt()
+                                     ).clamp_min(self.eps)
+                dA = dA * c_sc.view(-1, 1, 1)
+                dB = dB * c_sc.view(-1, 1, 1)
+                rho = rho * c_sc  # diagnostics record the solved ρ
+                if timer: timer.stop()
             if timer: timer.start("cw_curv_grams")
             if self.kl_coupled:
                 # Coupled KL fixed point (Prop 4): each Gram whitens g by the
@@ -11590,6 +11650,7 @@ def build_optimizer(
     cw_no_radius: bool = False,
     cw_no_diag_curv: bool = False,
     cw_unpinned: bool = False,
+    cw_solved_rho: bool = False,
     cw_factor_a: float = 0.0,
     cw_factor_b: float = 0.0,
     rdinv_variant: str = "A",

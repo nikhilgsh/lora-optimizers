@@ -8,6 +8,7 @@
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
 #   9: precond_method (OPTIONAL — empty=gram_ns (protagonist default); "eigh"/"higham" override)
 #  10: cw_metric_init (OPTIONAL — default "1e-12" = εI branch-free init; "zero"/"ones"/"delta" are ablations)
+#  11: cw_solved_rho (OPTIONAL — "1" adds --cw_solved_rho, the solved magnitude rule; default off)
 lr=${1:-3e-2}
 optimizer=${2:-kl-diag-polar-lora}      # paper protagonist (was diag-shampoo-polar-lora; pivot 2026-06-11)
 seed=${3:-0}
@@ -18,6 +19,10 @@ data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${8:-256}
 precond_method=${9:-gram_ns}            # protagonist inverse-sqrt: Polar-Express Gram NS (was eigh)
 cw_metric_init=${10:-1e-12}             # diagonal-metric (D_in/D_out) init: εI=1e-12 (default, branch-free, ≡zero); zero/ones/delta are ablations
+cw_solved_rho=${11:-0}                  # "1" = solved magnitude rule (ρ·t+ρ²=η, GPT-opt solved_rho port)
+
+solved_args=()
+[ "$cw_solved_rho" = "1" ] && solved_args=(--cw_solved_rho)
 
 # Inverse-sqrt method. Default gram_ns (protagonist). Pass an explicit "eigh"/"higham" at
 # positional 9 to override; pass the empty string to fall through to train.py default None
@@ -73,6 +78,7 @@ python train_lora.py \
     --cw_picard_iters 1 \
     --cw_nesterov \
     --cw_metric_init "$cw_metric_init" \
+    "${solved_args[@]}" \
     "${precond_args[@]}" \
     "${diag_args[@]}" \
     --optim_diagnostics_every 100 \

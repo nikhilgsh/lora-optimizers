@@ -80,3 +80,10 @@ def test_grouped_matches_per_pair_flat_outer():
     # The kl-diag-polar-flatout arm: flat_outer=True skips the un-whiten in BOTH
     # step paths (dX ∝ φ(z)). Equivalence must hold across the edited branch.
     _run(use_polar=True, diag_metric=True, soap_v=False, kl_coupled=True, flat_outer=True)
+
+
+def test_grouped_matches_per_pair_solved_rho():
+    # cw_solved_rho: the post-Picard solved-magnitude rescale (prodsum power
+    # iter + quadratic root) runs in BOTH step paths; equivalence must hold.
+    _run(use_polar=True, diag_metric=True, soap_v=False, kl_coupled=True,
+         cw_nesterov=True, cw_solved_rho=True)

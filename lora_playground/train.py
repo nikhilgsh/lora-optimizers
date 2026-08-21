@@ -721,6 +721,12 @@ def make_parser():
                              "is the bare partner-Gram decoupled sandwich (LoRA-Muon Alg 1). "
                              "UNSTABLE at B=0 — run with --lora_init_b symmetric. Requires "
                              "--precond_method gram_ns.")
+    parser.add_argument("--cw_solved_rho", action="store_true",
+                        help="SOLVED magnitude rule (GPT-opt polora_attn solved_rho port): "
+                             "size ρ by the positive root of ρ·t+ρ²=η with t=‖B·U_A+U_B·A‖₂ "
+                             "measured, instead of the bound ρ=η/(σmax(A)+σmax(B)). Keeps the "
+                             "certificate ‖Δ(BA)‖₂≤η while spending the full budget. "
+                             "Incompatible with --cw_unpinned/--cw_no_radius.")
     parser.add_argument("--cw_factor_a", type=float, default=0.0,
                         help="Per-factor shape exponent for A: c_A=(r/d_in)^a, folded "
                              "into the operator-norm radius (product cap preserved). "
@@ -1285,6 +1291,7 @@ def main():
         cw_no_radius=args.cw_no_radius,
         cw_no_diag_curv=args.cw_no_diag_curv,
         cw_unpinned=args.cw_unpinned,
+        cw_solved_rho=args.cw_solved_rho,
         cw_factor_a=args.cw_factor_a,
         cw_factor_b=args.cw_factor_b,
         rdinv_variant=args.rdinv_variant,
@@ -1432,6 +1439,7 @@ def main():
             "cw_no_radius": getattr(optimizer, "cw_no_radius", args.cw_no_radius),
             "cw_no_diag_curv": getattr(optimizer, "cw_no_diag_curv", args.cw_no_diag_curv),
             "cw_unpinned": getattr(optimizer, "cw_unpinned", args.cw_unpinned),
+            "cw_solved_rho": getattr(optimizer, "cw_solved_rho", args.cw_solved_rho),
             "cw_factor_a": getattr(optimizer, "cw_factor_a", args.cw_factor_a),
             "cw_factor_b": getattr(optimizer, "cw_factor_b", args.cw_factor_b),
             "anderson_m": args.anderson_m,

@@ -546,6 +546,84 @@ def sigma_max_warm_power_iter_unfactored(X, Y, v_init=None, n_iters=8,
     return sigma, v
 
 
+def sigma_max_power_iter_prodsum_batched(X1, Y1, X2, Y2, v_init=None,
+                                         n_iters=8, eps=1e-30):
+    """σ_max(X1·Y1 + X2·Y2) by power iter on the sum-of-products structure.
+
+    For X1, X2: (..., m, r) and Y1, Y2: (..., r, n), estimates the spectral
+    norm of L = X1·Y1 + X2·Y2 WITHOUT forming the (m, n) matrix — every
+    power-iter pass is 8 skinny matvecs through the r-width factors:
+        u  = X1·(Y1·v) + X2·(Y2·v)          # L v,   (..., m)
+        σ  = ‖u‖;  u ← u/σ
+        v' = Y1ᵀ·(X1ᵀ·u) + Y2ᵀ·(X2ᵀ·u)      # Lᵀ u,  (..., n)
+        v  = v'/‖v'‖
+    The primary consumer is the cw_solved_rho magnitude rule: L is the
+    linear term B·dA + dB·A of the merged LoRA update, whose explicit
+    (d_out, d_in) form would cost a large transient allocation per pair.
+
+    Like every power iteration the returned value is a LOWER bound on
+    σ_max(L) (‖L v‖ for the final unit iterate). The explicit-matrix
+    row/col-norm floor `_smax_warm` applies is not computable here without
+    forming L; the guard is the deterministic fallback start (one half-iter
+    from all-ones in m-space, matching `sigma_max_warm_power_iter_unfactored`)
+    plus the full n_iters=8 count on every call. Consumers must not divide
+    by this estimate — the solved-ρ quadratic keeps the boost bounded
+    (ρ ≤ √η) even at t → 0, unlike a 1/σ̂ rescale.
+
+    Args:
+        X1, X2: (..., m, r) — left factors of the two products.
+        Y1, Y2: (..., r, n) — right factors.
+        v_init: warm-start right vector of shape (..., n); None or a
+            shape/device/dtype mismatch → deterministic fallback.
+        n_iters: number of full L/Lᵀ passes (default 8).
+        eps: norm clamp for division stability.
+
+    Returns:
+        (sigma, v_new): σ_max(L) estimate and the final right iterate for
+        warm-starting the next call.
+    """
+    X1f = X1.float() if X1.dtype != torch.float32 else X1
+    Y1f = Y1.float() if Y1.dtype != torch.float32 else Y1
+    X2f = X2.float() if X2.dtype != torch.float32 else X2
+    Y2f = Y2.float() if Y2.dtype != torch.float32 else Y2
+    *batch, m, _ = X1f.shape
+    n = Y1f.shape[-1]
+
+    def _Lv(v):
+        y1 = (Y1f @ v.unsqueeze(-1)).squeeze(-1)
+        y2 = (Y2f @ v.unsqueeze(-1)).squeeze(-1)
+        return ((X1f @ y1.unsqueeze(-1)) + (X2f @ y2.unsqueeze(-1))).squeeze(-1)
+
+    def _Ltu(u):
+        z1 = (X1f.transpose(-2, -1) @ u.unsqueeze(-1)).squeeze(-1)
+        z2 = (X2f.transpose(-2, -1) @ u.unsqueeze(-1)).squeeze(-1)
+        return ((Y1f.transpose(-2, -1) @ z1.unsqueeze(-1))
+                + (Y2f.transpose(-2, -1) @ z2.unsqueeze(-1))).squeeze(-1)
+
+    ones_m = torch.ones(*batch, m, device=X1f.device, dtype=torch.float32)
+    v_fallback = _Ltu(ones_m)
+    expected_shape = (*batch, n)
+    if (v_init is None
+            or v_init.shape != expected_shape
+            or v_init.device != X1f.device
+            or v_init.dtype != torch.float32):
+        v = v_fallback
+    else:
+        v_norm = v_init.norm(dim=-1, keepdim=True)
+        v = torch.where(v_norm <= eps, v_fallback, v_init)
+    v = v / (v.norm(dim=-1, keepdim=True) + eps)
+    sigma = None
+    for _ in range(n_iters):
+        u = _Lv(v)
+        sigma = u.norm(dim=-1)
+        u = u / (sigma.unsqueeze(-1) + eps)
+        v_new = _Ltu(u)
+        v = v_new / (v_new.norm(dim=-1, keepdim=True) + eps)
+    if sigma is None:
+        sigma = _Lv(v).norm(dim=-1)
+    return sigma, v
+
+
 def sigma_max_multimoment_upper(G_outer, G_inner):
     """Strict upper bound on σ_max(XY) via Su's multi-moment formula (eq 12,
     kexue.fm/archives/11736).
