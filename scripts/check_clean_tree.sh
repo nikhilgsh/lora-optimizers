@@ -26,16 +26,32 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$REPO_DIR"
 
-# The global watcher (slurm-pending-watchd) runs submit-pending -> this script in
-# a conda-less systemd environment where bare `python` is not on PATH, so every
-# cycle died at "python: command not found" and was misread as a dirty tree.
-# Activate the project env when python is absent. No-op when called from an
-# already-active env (e.g. slurm_scripts/submit.sh). set +u around activate:
-# conda-forge activate.d scripts reference unbound vars and abort under set -u.
-if ! command -v python >/dev/null 2>&1; then
-    set +u
-    source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl
-    set -u
+# PICKING AN INTERPRETER. The global watcher (slurm-pending-watchd) runs
+# submit-pending -> this script from a systemd environment whose PATH carries
+# conda's `condabin` but has NO activated env (CONDA_SHLVL=0), so bare `python`
+# resolves to /usr/bin/python = 3.6.8. That parses neither
+# `from __future__ import annotations` (3.7+) nor the `dict | None` annotations
+# this repo uses (3.10+): it exits with a SyntaxError, submit-pending reads that
+# nonzero status as "dirty-tree check failed", and every drain cycle silently
+# refuses to submit a perfectly clean tree.
+#
+# Resolve the env's interpreter by ABSOLUTE PATH rather than `conda activate`.
+# Activation runs the env's activate.d hooks, and ffcv-pl's cuda_12.8.sh calls
+# `module load cuda/12.8.0`; Lmod's shell function does not exist under systemd,
+# so activating there dies with "module: command not found" (exit 127) — trading
+# one silent refusal for another. Nothing this script does needs CUDA or any
+# other activation side effect: it runs git/hashing and file parsing only.
+# When the caller already has a new-enough python (e.g. slurm_scripts/submit.sh
+# invoked from an active env), keep it, so this is a no-op on the interactive path.
+PY_MIN='import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
+if command -v python >/dev/null 2>&1 && python -c "$PY_MIN" 2>/dev/null; then
+    PY=python
+elif [[ -x "$HOME/miniforge3/envs/ffcv-pl/bin/python" ]]; then
+    PY="$HOME/miniforge3/envs/ffcv-pl/bin/python"
+else
+    echo "check_clean_tree: no python >= 3.10 found (tried PATH and" >&2
+    echo "  ~/miniforge3/envs/ffcv-pl/bin/python). Cannot verify tree state." >&2
+    exit 1
 fi
 
 # Sanity-check pending sbatches before the load-bearing-cleanliness check:
@@ -46,7 +62,7 @@ fi
 # whatever differential exists.
 #
 # Override: FORCE_NTASKS_MISMATCH=1 ./check_clean_tree.sh
-python scripts/check_pending_sbatches.py
+"$PY" scripts/check_pending_sbatches.py
 
 # Orchestration lint (ml_utils.sbatch_lint): the SAME static lint submit-pending
 # runs — catches sbatch-BODY failures that bash -n and component smokes miss
@@ -55,12 +71,12 @@ python scripts/check_pending_sbatches.py
 # it HERE means the build-time gate matches submit-pending's gate, so these are
 # caught when the sbatch is written, not at submit time. Skips gracefully if
 # ml_utils isn't importable; override with SKIP_SBATCH_LINT=1.
-if [[ "${SKIP_SBATCH_LINT:-0}" != "1" ]] && python -c "import ml_utils.sbatch_lint" 2>/dev/null; then
+if [[ "${SKIP_SBATCH_LINT:-0}" != "1" ]] && "$PY" -c "import ml_utils.sbatch_lint" 2>/dev/null; then
     shopt -s nullglob
     PENDING_SBATCHES=(slurm_pending/*.sbatch)
     if [[ ${#PENDING_SBATCHES[@]} -gt 0 ]]; then
-        python -m ml_utils.sbatch_lint "${PENDING_SBATCHES[@]}"
+        "$PY" -m ml_utils.sbatch_lint "${PENDING_SBATCHES[@]}"
     fi
 fi
 
-exec python -m lora_playground.execution_scope check-clean
+exec "$PY" -m lora_playground.execution_scope check-clean
