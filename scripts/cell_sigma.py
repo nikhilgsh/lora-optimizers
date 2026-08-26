@@ -27,7 +27,7 @@ LOCKED = dict(cw_nesterov=True, polar_method="polar_express", beta1=0.9,
               precond_method="gram_ns", precond_delta=1e-4,
               cw_metric_init="1e-12", cw_solved_rho=False, cw_unpinned=False,
               cw_no_radius=False, cw_no_diag_curv=False, rdinv_variant="A",
-              cw_factor_a=0.0, cw_factor_b=0.0)
+              cw_factor_a=0.0, cw_factor_b=0.0, curvature_beta=0.99)
 
 ARMS = {
     "PoLoRA (protagonist)":    dict(optimizer="kl-diag-polar-lora", lr=0.01,

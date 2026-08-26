@@ -20,8 +20,15 @@ SIGMA = 0.00050  # MEASURED at this cell: protagonist across seeds 0-3 at lr=1e-
 
 CELL = dict(model_name="meta-llama/Llama-3.2-1B", lora_r=256,
             data_dir=(lambda d: "openmath" in str(d)), max_steps=9000)
+# Every field that distinguishes the locked protagonist from a neighbouring sweep.
+# Without the last four this matched 13 runs across 7 configs at lr=1e-2 alone
+# (cw_solved_rho=True, rdinv_variant VN/B, cw_metric_init zero/delta/ones, the
+# curvature_beta grid) and silently kept whichever had the lowest loss -- which
+# moved the lr=3e-3 point by 0.0067.
 PIN = dict(cw_nesterov=True, polar_method="polar_express",
-           beta1=0.9, precond_method="gram_ns")
+           beta1=0.9, precond_method="gram_ns",
+           cw_solved_rho=False, rdinv_variant="A",
+           cw_metric_init="1e-12", curvature_beta=0.99)
 
 # label -> extra predicates on top of CELL. Order is display order.
 ARMS = {

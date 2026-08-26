@@ -10,12 +10,31 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from functools import lru_cache
 from pathlib import Path
+
+
+@lru_cache(maxsize=None)
+def _split_command_cached(command: str) -> tuple[str, ...]:
+    """Memoized ``shlex.split(command)``.
+
+    ``parse_flag`` is called many times (once per CLI kwarg) on the SAME
+    ``command`` string — ``_backfill_optimizer_config`` alone calls it up to
+    15x per run. ``shlex.split`` re-tokenizes the whole string from scratch
+    each time, which measured as the dominant cost of `load_runs` (>1.5s of a
+    ~3.5s call, profiled at 46k `shlex` token reads for one variant's worth of
+    runs). Command strings are immutable log content, so caching by string
+    value is exact — this changes no returned value, only how many times the
+    tokenization work happens. Unbounded cache: distinct command strings
+    across the whole `logs/` tree number in the low thousands, not enough to
+    matter for memory.
+    """
+    return tuple(shlex.split(command))
 
 
 def parse_flag(command: str, flag: str) -> str | None:
     """Extract --flag VALUE from a command string."""
-    parts = shlex.split(command)
+    parts = _split_command_cached(command)
     for i, p in enumerate(parts):
         if p == flag and i + 1 < len(parts):
             return parts[i + 1]
