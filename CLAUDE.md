@@ -237,6 +237,19 @@ All numbers in `docs/notes/*.md` are single-seed at the canonical 2k-step horizo
 
 **Use multi-seed AdamW as the workload's σ.** `logs/adamw_multiseed/` (params: `adamw_multiseed.json`, seeds 1-4 at η=3e-4) is the project's noise floor at the canonical 2k-step horizon: **r=16 std ≈ 0.0006 (2σ ≈ 0.0012), r=64 std ≈ 0.0007 (2σ ≈ 0.0014)**. When characterizing optimizer Δ values, compute Δ / σ_AdamW and state σ-units explicitly ("X is 2.3σ above Adam-polar"). Reserve "within noise" for |Δ| < 1σ. Do NOT claim "near-equivalent", "matches", or "saturated" without checking the σ-units. Multi-seed verification of variant optimizers themselves is still deferred — but AdamW's σ is the right anchor for characterizing single-seed variant Δ values.
 
+**`packed_v1` σ — use this, not the 2k numbers above.** AdamW multiseed anchors:
+**r=16 σ ≈ 0.00154, r=64 σ ≈ 0.00157** (OLMo-2-1B / magicoder-packed / 4000 steps,
+η=3e-4). `SIGMA = 0.0017` in `paper/paper_plots.ipynb` is the conservative rounding
+and is the number to quote. Enumerate anchors with `load_runs(where={"optimizer":
+"adamw"})` grouped by (model, data_dir, lora_r, max_steps, data_pipeline_version, lr)
+— `logs/adamw_multiseed/` is the legacy group, not the only one.
+
+**A cell mismatch is not grounds to refuse a σ-attribution.** No multiseed run exists
+at every (model, dataset, rank) and none is needed: quote the nearest `packed_v1`
+anchor, name it, report Δ/σ. Do not answer "cannot tell" or propose a fresh
+multi-seed sweep — that spends GPU-hours re-deriving what this rule already
+approximates. New seeds only when the deciding Δ is within ~2× of σ.
+
 Workflow for `docs/notes/*.md` data-derived edits: pull data via canonical loader → propose concrete diff in chat → user confirms → edit. Never write multi-paragraph data-derived sections in a single unsupervised pass.
 
 **Submitting a sweep:**
