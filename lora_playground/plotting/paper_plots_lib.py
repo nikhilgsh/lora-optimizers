@@ -51,7 +51,13 @@ import matplotlib.pyplot as plt
 from lora_playground.loader import load_runs
 from lora_playground.plotting import compare_variants_figure
 
-ROOT = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "lora_playground").is_dir())
+# File-relative, matching paper_figs.py:38 (same depth: plotting/ -> lora_playground/
+# -> repo root). This used to walk up from Path.cwd() with a bare `next()` and no
+# default, so importing from outside the repo raised StopIteration with an EMPTY
+# message -- which is how executing a copy of paper_plots.ipynb from /tmp turned into
+# 27 cascading NameErrors with nothing naming the cause. ROOT is a property of where
+# this file lives, not of where the kernel was started.
+ROOT = Path(__file__).resolve().parents[2]
 
 # AdamW noise floor at packed_v1, r=16/r=64 (see the repo CLAUDE.md anchors). Deltas in
 # the summary tables are quoted in units of this.
