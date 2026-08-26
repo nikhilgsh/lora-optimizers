@@ -108,6 +108,13 @@ class OptimizerConfig:
     cw_solved_rho: bool = False
     cw_factor_a: float = 0.0
     cw_factor_b: float = 0.0
+    # Pre-polar (H) dump — the matrices msign is applied to, saved for the
+    # offline approximate-LMO scores in lora_playground.lmo_diagnostics.
+    # OFF at 0. Diagnostic only: the update is unchanged.
+    dump_pre_polar_dir: Optional[str] = None
+    dump_pre_polar_every: int = 0
+    dump_pre_polar_pairs: Optional[str] = None
+    dump_pre_polar_max_pairs: int = 6
 
     # SOAP
     soap_beta: float = 0.95

@@ -695,6 +695,27 @@ def make_parser():
                              "also floors the small-side C_A/C_B inverse-sqrt). Set it to "
                              "sweep the diagonal floor alone (e.g. VN trace-δ) while "
                              "holding the curvature-inverse floor at --precond_delta.")
+    parser.add_argument("--dump_pre_polar_dir", default=None,
+                        help="Directory for the pre-polar (H) dump: the whitened-momentum "
+                             "matrices msign is applied to (zA/zB at the _polar_ns_guarded "
+                             "call sites). Consumed offline by "
+                             "lora_playground.lmo_diagnostics to score cheap substitutes "
+                             "for msign (REG row/column scaling, RACS two-sided scaling, "
+                             "K-step PolarExpress) against the exact spectral-LMO optimum. "
+                             "Put this on shared storage (/mnt/ceph/users/<user>/...), not "
+                             "in the repo: the tensors are model-sized. Required when "
+                             "--dump_pre_polar_every > 0.")
+    parser.add_argument("--dump_pre_polar_every", type=int, default=0,
+                        help="Step cadence for the pre-polar dump. 0 (default) = OFF. "
+                             "Diagnostic only — the update is bit-identical either way.")
+    parser.add_argument("--dump_pre_polar_pairs", default=None,
+                        help="Comma-separated substrings of LoRA module names to dump "
+                             "(e.g. 'layers.0.self_attn.q_proj,layers.15.mlp.down_proj'). "
+                             "Default: an evenly-spaced stride of --dump_pre_polar_max_pairs "
+                             "pairs, which spans early/late layers and both factor shapes.")
+    parser.add_argument("--dump_pre_polar_max_pairs", type=int, default=6,
+                        help="How many pairs the default evenly-spaced stride selects. "
+                             "Ignored when --dump_pre_polar_pairs is given.")
     parser.add_argument("--cw_metric_init", default="1e-12",
                         help="Init of the CurvatureWhitenLoRA diagonal metric EMAs D_in (=Q) "
                              "and D_out (=P). DEFAULT '1e-12': a FLOAT ε → P₀=Q₀=εI, the "
@@ -1314,6 +1335,10 @@ def main():
         rdinv_variant=args.rdinv_variant,
         rdinv_delta=args.rdinv_delta,
         cw_metric_init=args.cw_metric_init,
+        dump_pre_polar_dir=args.dump_pre_polar_dir,
+        dump_pre_polar_every=args.dump_pre_polar_every,
+        dump_pre_polar_pairs=args.dump_pre_polar_pairs,
+        dump_pre_polar_max_pairs=args.dump_pre_polar_max_pairs,
         anderson_m=args.anderson_m,
         anderson_reg=args.anderson_reg,
         soap_beta=args.soap_beta,
