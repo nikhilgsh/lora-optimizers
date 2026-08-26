@@ -132,9 +132,13 @@ def main():
     print(f"warmed {a.warm_steps} steps; loss {out.loss.item():.4f}", flush=True)
 
     tokens_per_micro = a.batch_size * a.max_seq_length
-    # half-batch sizes in micro-batches: 1, 2, 4 -> 8192, 16384, 32768 tokens per half
-    halves = [h for h in (1, 2, a.grad_accum_steps) if h >= 1]
-    halves = sorted(set(halves))
+    # Half sizes in micro-batches. The first run of this swept 8192/16384/32768 and
+    # came back FLAT (0.9556/0.9658/0.9525), i.e. over that range more tokens do not
+    # sharpen the estimate -- so the ~0.95 ceiling there is not sampling noise. The
+    # regime that matters for staleness is BELOW it, where the per-step estimate
+    # should finally become noise-limited; reach it by passing a smaller
+    # --batch_size (e.g. --batch_size 1 gives halves of 2048..8192 tokens).
+    halves = sorted({h for h in (1, 2, 4, a.grad_accum_steps) if 1 <= h <= a.grad_accum_steps})
     prev = None
     res = {}
     for h in halves:

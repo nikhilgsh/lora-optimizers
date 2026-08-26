@@ -2,15 +2,36 @@
 # SMALL-BATCH beta2 contrast. Same swept axis as sweep_protagonist_beta2.sh but at
 # 1x1 = 2048 tokens/step instead of 4x4 = 32768, and a short 2000-step horizon.
 #
-# Why: the split-half diagnostic (scripts/grad_shape_splithalf.py) found that two
-# independent halves of ONE production batch disagree as much as batches 40 steps
-# apart (cos 0.9525 vs 0.951), i.e. at 32768 tokens the per-step gradient-energy
-# shape is already at its noise floor and beta2 has nothing left to average. That
-# predicts beta2 comes ALIVE at small batch. This arm tests the prediction; if
-# beta2 is still inert here, the batch-size explanation is wrong.
+# Why: at 4x4 = 32768 tokens/step the beta2 grid was inert (all four values within
+# 0.0001 of each other at step 1750, against sigma = 0.0005 at this cell). Two
+# explanations for that: the gradient-energy shape is STRUCTURAL (same every step
+# regardless of tokens), or the per-step estimate is already precise at 32768 tokens
+# so beta2 has nothing left to average. scripts/grad_shape_splithalf.py separates
+# them by correlating the shape from two disjoint halves of the SAME step, as a
+# function of tokens per half:
+#
+#     tokens/estimate   2048    4096    8192    16384   32768
+#     split-half cos    0.9594  0.9617  0.9733  0.9658  0.9525
+#
+# FLAT over a 16x token range, so the residual disagreement is not sampling noise
+# that more tokens (or a longer EMA) would average away. And it sits at the same
+# value as the across-step autocorrelation (lag 1: 0.9629, lag 40: 0.9509,
+# scripts/grad_shape_autocorr.py), so a one-step-stale metric is as good an estimate
+# of the current shape as a fresh one computed from the same batch -- staleness has
+# nothing to cost.
+#
+# The prediction is therefore that beta2 stays inert HERE too. This arm is the loss
+# ground truth for that prediction: the diagnostic measures the metric shape, the
+# sweep measures the objective. If the curves DO separate at small batch, the
+# diagnostic is the wrong proxy and staleness mitigation is back on the table.
 #
 # CONTRAST, not a measurement: 2000 steps at 1/16 the tokens is far off the
 # canonical horizon, so read only whether the curves SEPARATE, never the losses.
+# Note the grid is swept in beta2, which is a window in STEPS, so the same beta2
+# here averages 1/16 as many tokens as in sweep_protagonist_beta2.sh. Marek et al.
+# (arXiv:2507.07101, docs/papers/small_batch_2507.07101.pdf) Eq. 2 makes the
+# batch-invariant axis the token half-life (B*T)*ln(1/2)/ln(beta2); report the grid
+# in that unit when comparing the two sweeps.
 # The P,Q metric is accumulated AFTER the step that uses it (optim.py:2020-2024 apply,
 # :2068-2069 accumulate), so the metric is stale by one step. At b2=0.99 that is 1% of
 # the ~100-step EMA window; at b2=b1^2=0.81 the window is ~5.3 steps and the staleness
