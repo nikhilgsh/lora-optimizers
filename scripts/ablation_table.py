@@ -13,7 +13,10 @@ warnings.filterwarnings("ignore")
 
 from lora_playground.loader import load_runs
 
-SIGMA = 0.0017  # AdamW multiseed, packed_v1 (CLAUDE.md); conservative vs 0.00154/0.00157
+SIGMA = 0.00050  # MEASURED at this cell: protagonist across seeds 0-3 at lr=1e-2,
+                 # step 9000 (scripts/cell_sigma.py). The borrowed packed_v1 anchor
+                 # 0.0017 (OLMo/magicoder, r=16/64) is 3.4x too large here and made
+                 # the two r x r arms look like noise when they are 5-6 sigma.
 
 CELL = dict(model_name="meta-llama/Llama-3.2-1B", lora_r=256,
             data_dir=(lambda d: "openmath" in str(d)), max_steps=9000)
