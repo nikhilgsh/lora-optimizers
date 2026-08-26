@@ -68,6 +68,9 @@ slurm_pending/
 slurm_submitted/
 slurm_cancel_pending/
 slurm_cancel_submitted/
+slurm_cancelled/
+alloc_pending/
+alloc_granted/
 
 # mu-monitor local tool state
 .mu_monitor/
@@ -75,8 +78,17 @@ slurm_cancel_submitted/
 # collaborator-shared result artifacts (not project-tracked)
 tanya_results/
 
-# polar-orthogonality bench scratch (logs/drafts; not part of the pipeline)
+# bench / smoke scratch (logs, per-run jsonl; not part of the pipeline — the
+# authoritative record is logs/<group>/run_info/).
 bench_polar_out/
+bench_abl_out/
+bench_delta_out/
+ab_numerics_out/
+
+# arXiv submission build outputs (flattened tree + tarball, regenerated from
+# paper/manuscript/; the manuscript sources are what stay tracked).
+arxiv_submission/
+polora_arxiv.tar.gz
 
 # Claude preview renders (shared with user in-repo; not tracked)
 previews/
