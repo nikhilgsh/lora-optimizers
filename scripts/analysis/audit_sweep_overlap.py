@@ -221,6 +221,13 @@ def parse_launcher_fixed_args(launcher_path: Path) -> dict:
     import re
     fixed: dict[str, str] = {}
     text = launcher_path.read_text()
+    # Drop whole-line comments before tokenizing. The launcher's real flags only ever
+    # appear on the `python train_lora.py \` continuation, never after a `#`, but the
+    # header prose is full of things that tokenize as flags: a `--` used as a dash in
+    # a sentence yields the key "", and "adds --cw_solved_rho, the solved magnitude
+    # rule" yields "cw_solved_rho," -> "the". Those junk keys are then added to every
+    # cell's match criteria, which can only make the overlap audit miss a real overlap.
+    text = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
     tokens = text.replace("\\\n", " ").split()
     for token_idx, tok in enumerate(tokens):
         if not tok.startswith("--"):
