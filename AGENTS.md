@@ -10,6 +10,20 @@ Default course: base model `allenai/OLMo-2-0425-1B`, dataset `ise-uiuc/Magicoder
 
 Read `docs/experimental_protocol.md` and `docs/model_dataset_selection.md` before changing model, data, metrics, or smoke-test settings.
 
+## PoLoRA public-release boundary
+
+`~/polora` is the public release tree, while this repository is private
+research infrastructure. The `tests/`, `_faithfulness/`, and `_investigation/`
+directories in `~/polora` are internal-only and must remain excluded from the
+public release. Do not track, publish, or recommend publishing tests from those
+directories. Cross-repository equivalence checks belong only in these excluded
+internal directories.
+
+Tracked files in `~/polora` must not contain paths, imports, names, comments,
+or documentation that reveal or depend on this repository, including
+`~/lora`, absolute paths to it, and the `lora_playground` package. Before
+calling `~/polora` release-ready, scan its tracked files for these references.
+
 ## Commands
 
 ```bash
@@ -83,6 +97,69 @@ recommendation for `c_A`/`c_B` must state which target it optimizes (factor
 update geometry, product-output balance, stability, or held-out loss) and must
 not treat one diagnostic as decisive unless it has been connected to training
 loss or a clearly stated optimizer mechanism.
+
+When reviewing PoLoRA derivations, audit estimator targets at every
+approximation boundary. If a sentence says a stored recurrence, observable
+moment, or fitted factor estimates/reproduces/tracks a named quantity, verify
+that the target has not changed across per-sample vs batch-collapsed moments,
+single-batch vs historical averages, current-weight vs stored-gradient
+quantities, dense moments vs projected factor-gradient moments, or exact
+moments vs surrogate model factors. Matching notation is not enough; cite the
+formula that defines the target actually being estimated.
+In PoLoRA estimator prose, do not use "closure" or "closures" as shorthand for
+the matrices `C_A=B^T P B`, `C_B=A Q A^T`, fitted response matrices, or
+per-step scoring matrices. Name the concrete object instead: `C_A`, `C_B`,
+"scoring matrix", "block matrix", or "current `C_A(p)`" as appropriate.
+Do not justify PoLoRA estimator choices with ungrounded counterfactuals such
+as "if the stored `P_s` were scaled by `a_s`." State the scale dependence of
+the actual recurrence or fitted objective directly, and tie it to a concrete
+stored quantity, equation, or implementation step.
+When a user challenges whether a PoLoRA estimator argument is meaningful, do
+not keep defending the framing by restating motivation. Identify the exact
+derived bound or objective that supports the claimed usefulness. If the text
+only proves an identity, minimizer formula, or residual decomposition without
+showing the residual is small in a natural regime, say that it is not an
+algorithmic justification and downgrade or remove the claim. Repeated user
+pushback on the same claim means stop arguing for it and revise the target or
+state the blocker.
+
+When writing theorem-style PoLoRA notes, do not bury the load-bearing
+smallness/stability requirements as nested "if" clauses inside the theorem
+body. Name them as assumptions before the theorem, state whether they are
+primitive, derived, or bootstrap conditions, and make the theorem conclusion a
+direct consequence with a reader-visible size interpretation.
+Do not replace an opaque derived forcing term by another unexplained tolerance
+or arbitrary radius fraction. Use only assumptions already approved by the
+user or assumptions stated directly on named observed quantities such as the
+gradients, factors, EMA moments, and weighted drift terms already in the note.
+If a condition is about a fitted map, response floor, contraction, fixed point,
+or online trajectory, label it as a nonprimitive regularity assumption and ask
+before using it.
+Do not repair a failed PoLoRA tracking proof by adding response-floor,
+coordinate-excitation, fixed-point well-definedness, contraction, small-gain,
+or online-state closeness assumptions unless the user explicitly approves that
+assumption first. In particular, do not assume lower bounds such as every
+coordinate of a fitted vector being bounded below, and do not assume
+`P_s,Q_s` or normalized EMA states are already close to the target being
+proved. If the result is not derivable from the current assumptions, stop and
+say exactly which implication is missing instead of patching in a stronger
+theorem.
+Initial online EMA values should not be framed as a substantive tracking
+assumption in PoLoRA arguments. They enter only through the exact EMA tail from
+unrolling the recurrence; if the theorem is stated after burn-in, either absorb
+that decaying tail explicitly or omit discussion of initial iterates.
+For PoLoRA tracking arguments, do not introduce wrapper residual notation like
+`U_u`; write the explicit EMA-tail and rescoring terms, such as the
+`beta_2` tail and `D_A,D_B`, or their expanded primitive bound. Minimize named
+constants in theorem statements: reuse existing constants and inline simple
+combinations unless a constant is defined once and used repeatedly in a proof.
+
+When the user narrows a PoLoRA estimator discussion to a chosen target such as
+the EMA log-det coordinate fit, keep that target fixed. Do not keep returning
+to a model-consistency or on-model-collapse caveat unless it changes the
+answer to the narrowed question. If a theorem only justifies a surrogate such
+as exact diagonal-Kronecker factors, state that it is secondary and answer the
+chosen-estimator question first.
 
 When asked why equal factor radii are chosen, do not merely restate the product
 operator-norm bound. State the extra design prior explicitly: equal radii are a
