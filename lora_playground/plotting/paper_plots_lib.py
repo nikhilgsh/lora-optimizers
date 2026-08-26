@@ -14,33 +14,15 @@ Import it as a MODULE and reach through it::
     %autoreload 2
     import lora_playground.plotting.paper_plots_lib as P
 
-    P.rr_slot_panel(256)
+    P.precond_panel(256)
 
 ``import ... as P`` and not ``from ... import *``: autoreload re-executes this module on
 edit, so ``P.PROTO`` is always current, whereas a name star-imported into the notebook
 namespace stays bound to the old object and goes stale exactly the way the cells did.
 
-ARM PREDICATES AND WHY THEY PIN SO MUCH
----------------------------------------
-An arm is a ``where`` dict handed to ``compare_variants_figure``. Every field it does NOT
-mention is a field two different sweeps may disagree on while both still match, in which
-case the figure silently keeps whichever run has the lower loss. That has bitten three
-times: ``global_batch_size`` (the 2048-token sweep matching the 32768-token protagonist),
-``cw_no_rr_precond`` (the r x r = I corner matching the arm it is supposed to contrast
-with), and ``beta2`` (the AdamW grid matching the AdamW baseline). Each time the fix was
-to pin one more field by hand.
-
-Pinning by hand fails open -- a NEW ablation flag is absent from every existing arm, so
-every existing arm silently stops discriminating the moment a sweep sets it. The
-durable fix derives the pinned set from ``OptimizerConfig``'s fields and defaults so a
-new flag is pinned everywhere automatically (then a sweep that sets it renders an EMPTY
-arm, which is loud, instead of merging two arms, which is silent). That lives in
-``lora_playground/plotting/arms.py``; when it lands, the dicts below become calls into
-it and this docstring section goes away.
-
-Until then the guard is ``assert_label_discriminates``, which
-``compare_variants_figure`` runs whenever ``prefetched_runs``/``variant_key`` are passed
--- which is why every panel here passes them.
+Arm predicates and the per-figure arm dicts both come from ``arms.py``; nothing here is
+hand-typed. See that module for why an arm pins every ``OptimizerConfig`` field rather
+than a remembered subset.
 """
 from __future__ import annotations
 
@@ -63,6 +45,20 @@ ROOT = Path(__file__).resolve().parents[2]
 # the summary tables are quoted in units of this.
 SIGMA = 0.0017
 
+# The canonical run length every paper cell is read at. Named because three places
+# ask "did this run finish": _figure's max_steps, the in-flight notice, and _max_step.
+HORIZON = 9000
+
+# ROOT must be the checkout, not wherever the package happens to be installed. Under a
+# non-editable `pip install` __file__ lands in site-packages and this would silently
+# resolve to <site-packages>/logs -- load_runs would then return nothing and EVERY
+# panel would render empty with no exception raised. Fail at import instead: this
+# module is only meaningful against a working tree.
+assert (ROOT / "logs").is_dir(), (
+    f"paper_plots_lib: ROOT={ROOT} has no logs/ -- this module needs the repo "
+    f"checkout (an editable install), not an installed copy."
+)
+
 # --------------------------------------------------------------------------------------
 # Arm predicates
 # --------------------------------------------------------------------------------------
@@ -78,6 +74,7 @@ SIGMA = 0.0017
 #
 # This is the consolidation this module's docstring asked for. Names are
 # re-exported so every caller and notebook cell keeps working unchanged.
+from . import arms as _arms  # noqa: E402
 from .arms import (  # noqa: F401,E402
     pred_matches, variant_key_fn,
     ADAMW, AVGLOSS, DOUBLE, FLATOUT, HALFPOW, IMUON, LORARITE, MUON, NAIVEMAG,
@@ -158,6 +155,18 @@ def has(where, rank):
     return any(pred_matches(cfg, pred) for cfg, _h in cell_runs(om(rank)))
 
 
+def _max_step(where, rank):
+    """Furthest step any run of this arm reached, or None if the arm has no runs.
+
+    `has()` answers "does a run match"; this answers "did one FINISH", which is
+    the question the loss-vs-lr panel and the summary table actually ask.
+    """
+    pred = {**where, **om(rank)}
+    steps = [h[-1]["step"] for cfg, h in cell_runs(om(rank))
+             if h and pred_matches(cfg, pred)]
+    return max(steps) if steps else None
+
+
 def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True):
     """Every panel in this module funnels through here.
 
@@ -165,15 +174,30 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     guard inside compare_variants_figure -- the per-variant loading path does not run it,
     and that is how two arms silently merged for weeks. Do not add a panel that skips it.
     """
+    rank = common.get("lora_r")
     if drop_empty:
-        rank = common.get("lora_r")
         missing = [k for k, v in arms.items() if not has(v, rank)]
         if missing:
             print("no data yet (omitted):", ", ".join(missing))
         arms = {k: v for k, v in arms.items() if k not in missing}
+    # An arm whose runs all stopped short of max_steps is the SILENT case, and it
+    # is not covered by `missing` above: `has()` only asks whether any run matches
+    # the predicate, so an arm with five in-flight runs looks present. But
+    # `allow_partial` files those into compare_variants_figure's
+    # `per_variant_partial`, which reaches the trajectory panel ONLY -- the
+    # final-loss-vs-lr panel and the returned summary_df are built from complete
+    # runs alone. Measured before this print existed: precond_panel declared 4 arms
+    # and returned 3 rows, msign_panel declared 5 and returned 2, with no output at
+    # all. A reader could not tell "not run here" from "still running".
+    in_flight = {k: n for k, v in arms.items()
+                 if (n := _max_step(v, rank)) is not None and n < HORIZON}
+    if in_flight:
+        print(f"in flight (trajectory panel only, absent from the loss-vs-lr panel "
+              f"and the summary table until {HORIZON} steps): "
+              + ", ".join(f"{k} @{n}" for k, n in in_flight.items()))
     fig, _t, sdf = compare_variants_figure(
         arms, common_where=common, ref_label=ref_label,
-        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=9000,
+        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=HORIZON,
         allow_partial=True, allow_custom_labels=True, target_label=target_label,
         suptitle=suptitle,
         prefetched_runs=cell_runs(common), variant_key=variant_key_fn(common, arms))
@@ -244,35 +268,21 @@ def msign_panel(rank=256):
 
 def magnitude_rule_panel(rank=256):
     """Naive rho = eta against the PoLoRA rule rho = eta/(smax(A)+smax(B))."""
-    arms = {"AdamW": ADAMW,
-            "PoLoRA: rho = eta/(smax A + smax B)": PROTO,
-            "naive: rho = eta": NAIVEMAG}
-    return _figure(arms, om(rank), "PoLoRA: rho = eta/(smax A + smax B)",
+    return _figure(_arms.MAGNITUDE_RULE_ARMS, om(rank),
+                   "PoLoRA: rho = eta/(smax A + smax B)",
                    f"Magnitude rule: naive vs PoLoRA - Llama-3.2-1B openmath r{rank}")
-
-
-def b2_arms(base, key, values, ref_value, ref_label):
-    """{label: predicate} for a beta2 grid, with the shipped value as the reference."""
-    return {(ref_label if v == ref_value else f"{key}={v}"): {**base, key: v}
-            for v in values}
-
-
-B2_GRID = [0.81, 0.9090, 0.9564, 0.9791, 0.99]
 
 
 def beta2_panel(rank=256):
     """Protagonist curvature_beta grid: the EMA horizon of the P, Q metric."""
-    arms = b2_arms(PROTO, "curvature_beta", B2_GRID, 0.99,
-                   "PoLoRA (curvature_beta=0.99)")
-    return _figure(arms, om(rank), "PoLoRA (curvature_beta=0.99)",
+    return _figure(_arms.PROTO_BETA2_ARMS, om(rank),
+                   "Polar-LoRA (shipped, b2=0.99)",
                    f"Protagonist beta2 sweep - Llama-3.2-1B openmath r{rank}",
                    target_label=None)
 
 
 def adamw_beta2_panel(rank=256):
     """AdamW beta2 control -- the negative control for the protagonist beta2 grid."""
-    arms = b2_arms({"optimizer": "adamw"}, "beta2", B2_GRID + [0.999], 0.999,
-                   "AdamW (beta2=0.999)")
-    return _figure(arms, om(rank), "AdamW (beta2=0.999)",
+    return _figure(_arms.ADAMW_BETA2_ARMS, om(rank), "AdamW (beta2=0.999)",
                    f"AdamW beta2 control - Llama-3.2-1B openmath r{rank}",
                    target_label=None)

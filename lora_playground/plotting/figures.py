@@ -581,15 +581,18 @@ def compare_variants_figure(
         if pick is None:
             continue
         _cfg, h, best_lr, disp_loss, is_partial, last_step = pick
-        if is_partial:
-            ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
-                         marker=markers[label], ms=3, lw=1.2, color=colors[label],
-                         linestyle="--",
-                         label=f"{label}  (lr={best_lr:g}, partial @{last_step}: {disp_loss:.4f})")
-        else:
-            ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
-                         marker=markers[label], ms=3, lw=1.4, color=colors[label],
-                         label=f"{label}  (lr={best_lr:g}, final={disp_loss:.4f})")
+        # Partial and complete runs are drawn IDENTICALLY; only the legend text
+        # differs. An in-flight run used to get linestyle="--" at lw=1.2, which
+        # carried no information the reader did not already have: the curve
+        # visibly stops short of the horizon, each label owns a unique colour, and
+        # the legend already says `partial @<step>`. What it did cost was the
+        # figure's one linestyle convention -- a dashed curve then meant "still
+        # running" here and "reference line" elsewhere in the same axes.
+        note = (f"partial @{last_step}: {disp_loss:.4f}" if is_partial
+                else f"final={disp_loss:.4f}")
+        ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
+                     marker=markers[label], ms=3, lw=1.4, color=colors[label],
+                     label=f"{label}  (lr={best_lr:g}, {note})")
     # Dashed black line at the speed target: where each curve crosses it is the
     # fraction-of-steps-to-target metric. The target is the AdamW baseline by
     # default (the leaderboard metric is "steps to reach the opt-AdamW loss"),
