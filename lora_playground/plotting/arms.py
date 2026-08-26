@@ -125,6 +125,49 @@ def check_pinned_defaults_agree_with_cli() -> dict:
     return {k: (v, cli[k]) for k, v in _pinned().items() if cli[k] != v}
 
 
+def pred_matches(cfg: dict, pred: dict) -> bool:
+    """In-memory predicate check mirroring ``loader._matches``: literal equality,
+    list-like membership, or callable truthiness per field. A run missing a
+    referenced field does not match.
+
+    Lives here, not in paper_plots_lib, so `paper_figs.py` can select arms with the
+    same matcher without importing the notebook-support module. Pure dict logic —
+    it adds no import to this leaf module.
+    """
+    for k, v in pred.items():
+        if k not in cfg:
+            return False
+        c = cfg[k]
+        if callable(v):
+            if not v(c):
+                return False
+        elif isinstance(v, (list, set, tuple, frozenset)):
+            if c not in v:
+                return False
+        elif c != v:
+            return False
+    return True
+
+
+def variant_key_fn(common: dict, arms: dict):
+    """``cfg -> label`` selecting the FIRST arm in `arms` whose predicate matches,
+    for cfgs that also match `common`; None when nothing matches.
+
+    This is the one place a run is mapped to a display label. Passing arms built by
+    `arm()` is what makes the mapping fail closed: a run carrying a field no arm
+    pins falls out of every arm and renders nowhere, instead of joining whichever
+    arm happened to omit that field.
+    """
+    def variant_key(cfg):
+        if not pred_matches(cfg, common):
+            return None
+        for label, extra in arms.items():
+            if pred_matches(cfg, extra):
+                return label
+        return None
+    return variant_key
+
+
 def arm(optimizer: str, **overrides) -> dict:
     """A ``where``-predicate for one arm: ``optimizer`` plus every pinned
     ``OptimizerConfig`` field at its default, with ``overrides`` applied last.

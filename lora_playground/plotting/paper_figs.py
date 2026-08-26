@@ -41,6 +41,7 @@ from lora_playground.leaderboard import (
     labeled_completed_runs, leaderboard_rows, reach_fraction, speedup_from_frac,
 )
 from lora_playground.workloads import find_workload, iter_workloads, workload_runs
+from lora_playground.plotting import arms as _arms
 
 FIGS = ROOT / "paper" / "manuscript" / "figs"
 FIGS.mkdir(parents=True, exist_ok=True)
@@ -97,86 +98,52 @@ STYLE = {
 }
 
 
-def _is_proto(cfg: dict) -> bool:
-    return (
-        cfg.get("optimizer") == "kl-diag-polar-lora"
-        and cfg.get("cw_nesterov") is True
-        and cfg.get("polar_method") == "polar_express"
-        and cfg.get("beta1") == 0.9
-        and cfg.get("precond_method") == "gram_ns"
-        and cfg.get("precond_delta") == 1e-4   # pin the locked delta arm (never collapse delta sweeps)
-        # Pin every sub-knob that an investigation sweep flips while leaving the
-        # fields above untouched -- otherwise that sweep is mislabeled PoLoRA and
-        # wins cells via newest-wins. The canonical values: curvature metric init
-        # 'zero' or the shipped '1e-12' (P0=Q0=eps*I, c2a3aab) -- verified
-        # performance-equivalent, so both are the protagonist (the e2 delta/ones
-        # runs are component experiments); rdinv variant 'A' (B/VN are investigation
-        # arms), no rdinv-delta sweep. The `labeled_completed_runs` discrimination
-        # guard fires if a NEW such knob appears, so this list is maintained by the
-        # guard, not by guesswork.
-        and cfg.get("cw_metric_init") in (None, "zero", "1e-12")
-        and cfg.get("rdinv_variant") in (None, "A")
-        and cfg.get("rdinv_delta") is None
-    )
+# ─── arm selection ───────────────────────────────────────────────────────────
+# The predicates come from `arms.py`, which derives them from OptimizerConfig:
+# `arm()` pins EVERY config field to its default and takes overrides only where an
+# arm genuinely differs. The LABELS stay here, because what a curve is called in
+# the paper is an editorial choice; only the "which runs are this arm" mechanism
+# is shared.
+#
+# What this replaces: `_is_proto` plus three hand-written key functions, each an
+# allowlist of the fields someone remembered. They checked 8 fields and never
+# mentioned cw_solved_rho, curvature_beta, beta2, cw_no_radius or precond_method,
+# so every sweep that set one of those was mislabeled. Measured on
+# Llama-3.2-1B/openmath/r256 before this change: paper_variant_key raised
+# LabelCollisionError with 4 collisions, ablation_variant_key with 6, arm_key
+# with 6 — i.e. fig1/table1/fig2/fig3/figA_curves could not render.
+#
+# Order matters only as documentation: `arm()` pins cw_no_diag_curv, cw_no_radius,
+# precond and msign on PROTO, so an ablation run cannot match the protagonist.
+_PAPER_ARMS = {
+    "Adam": _arms.ADAMW,
+    "iMuon": _arms.IMUON,
+    "PoLoRA": _arms.PROTO,
+}
 
+_ABLATION_ARMS = {
+    NAME_MSIGN_DIAG: _arms.PROTO_DIAG,
+    f"{NAME_ONESIDED} + {NAME_MSIGN_DIAG}": _arms.ONESIDED_DIAG,
+    NAME_ONESIDED: _arms.ONESIDED,
+    NAME_FACTORWISE: _arms.NOPRODUCT,
+    NAME_CURV: _arms.NOSHAMPOO,
+    NAME_MAGN: _arms.NAIVEMAG,
+    "PoLoRA": _arms.PROTO,
+}
 
-def paper_variant_key(cfg: dict) -> str | None:
-    if cfg.get("optimizer") == "adamw":
-        return "Adam"
-    if cfg.get("optimizer") == "imuon-lora":
-        return "iMuon"
-    if (_is_proto(cfg) and cfg.get("cw_no_radius") is False
-            and cfg.get("cw_no_diag_curv") is False
-            and cfg.get("precond") == "product" and cfg.get("msign") == "full"):
-        return "PoLoRA"
-    return None
+_ARM_KEY_ARMS = {
+    "Adam": _arms.ADAMW,
+    "iMuon": _arms.IMUON,
+    "LoRA-RITE": _arms.LORARITE,
+    NAME_NAIVE: _arms.MUON,
+    NAME_LM: _arms.DOUBLE,
+    NAME_CURV: _arms.NOSHAMPOO,
+    "PoLoRA": _arms.PROTO,
+}
 
-
-def ablation_variant_key(cfg: dict) -> str | None:
-    if not _is_proto(cfg):
-        return None
-    if cfg.get("msign") == "diag":
-        return (NAME_MSIGN_DIAG if cfg.get("precond") == "product"
-                else f"{NAME_ONESIDED} + {NAME_MSIGN_DIAG}")
-    if cfg.get("precond") == "one-sided":
-        return NAME_ONESIDED
-    if cfg.get("precond") == "factorwise":
-        return NAME_FACTORWISE
-    if cfg.get("cw_no_diag_curv") is True:
-        return NAME_CURV
-    if cfg.get("cw_no_radius") is True:
-        return NAME_MAGN
-    if (cfg.get("cw_no_radius") is False and cfg.get("cw_no_diag_curv") is False
-            and cfg.get("precond") == "product" and cfg.get("msign") == "full"):
-        return "PoLoRA"
-    return None
-
-
-def arm_key(cfg: dict) -> str | None:
-    """Full comparison/ablation labeling for the hero (fig1) and the all-ablations
-    basin figure (fig2): the incremental climb naive -> decoupled update with
-    identity metric and no magnitude rescale (w/o curvature + magnitude) -> +pin
-    (w/o curvature) -> PoLoRA, plus the AdamW/iMuon references."""
-    o = cfg.get("optimizer")
-    if o == "adamw":
-        return "Adam"
-    if o == "imuon-lora":
-        return "iMuon"
-    if o == "lora-rite":
-        return "LoRA-RITE"
-    if o == "muon-lora" and cfg.get("polar_method") == "polar_express":
-        return NAME_NAIVE
-    if _is_proto(cfg):
-        nc = cfg.get("cw_no_diag_curv") is True
-        up = cfg.get("cw_unpinned") is True
-        nr = cfg.get("precond") != "product" or cfg.get("msign") != "full"
-        if not nc and not up and not nr:
-            return "PoLoRA"
-        if nc and not up:
-            return NAME_CURV          # identity metric + pin, no learned curvature
-        if nc and up:
-            return NAME_LM            # identity metric, no pin, no learned curvature
-    return None
+paper_variant_key = _arms.variant_key_fn({}, _PAPER_ARMS)
+ablation_variant_key = _arms.variant_key_fn({}, _ABLATION_ARMS)
+arm_key = _arms.variant_key_fn({}, _ARM_KEY_ARMS)
 
 
 def _hist_xy(hist):

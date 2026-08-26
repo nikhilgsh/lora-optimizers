@@ -79,6 +79,7 @@ SIGMA = 0.0017
 # This is the consolidation this module's docstring asked for. Names are
 # re-exported so every caller and notebook cell keeps working unchanged.
 from .arms import (  # noqa: F401,E402
+    pred_matches, variant_key_fn,
     ADAMW, AVGLOSS, DOUBLE, FLATOUT, HALFPOW, IMUON, LORARITE, MUON, NAIVEMAG,
     NOMAG, NOPRODUCT, NOSHAMPOO, ONESIDED, ONESIDED_DIAG, PROTO, PROTO_DIAG,
 )
@@ -143,39 +144,6 @@ def cell_runs(where, refresh=False):
 def clear_runs_cache():
     """Drop the memo so the next panel re-reads from disk."""
     _RUNS_CACHE.clear()
-
-
-def pred_matches(cfg, pred):
-    """In-memory predicate check mirroring ``loader._matches``: literal equality,
-    list-like membership, or callable truthiness per field. A run missing a referenced
-    field does not match."""
-    for k, v in pred.items():
-        if k not in cfg:
-            return False
-        c = cfg[k]
-        if callable(v):
-            if not v(c):
-                return False
-        elif isinstance(v, (list, set, tuple, frozenset)):
-            if c not in v:
-                return False
-        elif c != v:
-            return False
-    return True
-
-
-def variant_key_fn(common, arms):
-    """``compare_variants_figure(variant_key=...)`` selecting among `arms`
-    (label -> extra-where dict) for cfgs matching `common`. Equivalent to a per-arm
-    ``load_runs(where={**common, **extra})``, applied in memory to one narrow query."""
-    def variant_key(cfg):
-        if not pred_matches(cfg, common):
-            return None
-        for label, extra in arms.items():
-            if pred_matches(cfg, extra):
-                return label
-        return None
-    return variant_key
 
 
 def om(rank):
