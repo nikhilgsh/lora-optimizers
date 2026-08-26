@@ -1065,6 +1065,20 @@ class CurvatureWhitenLoRA(Optimizer):
     λ_i = qᵢᵀ S_r qᵢ (Rayleigh quotient). So the SOAP QR machinery is reused purely
     as the efficient route to S_r^{-1/2}.
 
+    ``precond_refresh_every`` IS THE CADENCE OF THAT QR REFRESH AND NOTHING ELSE.
+    It is read at exactly ONE site in this class — the eigenbasis-refresh gate in
+    ``step()`` — and that gate is guarded by ``precond_method == "eigh"``. The
+    production sweeps run ``precond_method="gram_ns"`` (``scripts/sweep/sweep_protagonist_*.sh``
+    default to ``gram_ns``), where ``S_r^{-1/2}`` is rebuilt from the CURRENT Gram
+    every single step by ``gram_ns_inv_sqrt`` and no eigenbasis is carried at all,
+    so the knob is inert; the same is true of ``precond_method="higham"``. Only the
+    ``"eigh"`` path has a preconditioner that can go stale. Verified by trajectory:
+    K=1 and K=10 are bitwise identical under ``gram_ns``/``higham`` and differ under
+    ``eigh``. Do NOT read a nonzero ``precond_refresh_every`` in a production config
+    (or in a sweep wrapper's ``--precond_refresh_every 10``) as evidence that this
+    optimizer reuses a stale preconditioner — see ``_cw_apply_grouped`` for the
+    state that IS stale (the diagonal metric ``D_in``/``D_out``, by one step).
+
     Both inverse-sqrts use RELATIVE damping ``(λ/λ_max + δ)^{-1/2}`` with
     δ=``delta`` (caps conditioning at ~1/δ, controlling weak-direction
     amplification); a still-zero factor (early steps) falls back to identity.
@@ -1150,6 +1164,16 @@ class CurvatureWhitenLoRA(Optimizer):
         self.log_basic_diagnostics = bool(log_basic_diagnostics)
         self.log_heavy_diagnostics = bool(log_heavy_diagnostics)
         self.diagnostics_every = diagnostics_every
+        # precond_refresh_every: QR-eigenbasis refresh cadence. APPLIES ONLY WHEN
+        # precond_method == "eigh". It has exactly one reader in this class, the
+        # eigenbasis-refresh gate at the end of step() (search
+        # `self.precond_method == "eigh" and (`), which is itself guarded on "eigh".
+        # Under the PRODUCTION precond_method="gram_ns" (and under "higham") the
+        # small-side inverse-sqrt S^{-1/2} is recomputed from the current Gram EVERY
+        # step, no eigenbasis is stored, and this value CHANGES NOTHING — K=1 and
+        # K=10 give bitwise-identical trajectories there. The `--precond_refresh_every 10`
+        # that every scripts/sweep/sweep_protagonist_*.sh passes is therefore a no-op
+        # for those runs; it is kept only so the eigh reference path stays comparable.
         self.precond_refresh_every = int(precond_refresh_every)
         # KL-Shampoo-LoRA mode (soap_curvature_whitening.md exp 5). When
         # kl_coupled, the curvature factors are accumulated by the coupled KL
@@ -1472,7 +1496,15 @@ class CurvatureWhitenLoRA(Optimizer):
         # QR step (Alg 4: Q ← QR(L@Q)), every `precond_refresh_every`, batched
         # across pairs. eigh is too slow to run per refresh in production (~8× the
         # QR cost at r=256); the step's eigenvalues come from the cheap Rayleigh
-        # diagonal above, not a fresh eigh. ──────────────────────────────────
+        # diagonal above, not a fresh eigh.
+        #
+        # THIS IS THE ONLY READER OF `self.precond_refresh_every` IN THIS CLASS,
+        # and the `precond_method == "eigh"` conjunct below is what makes the knob
+        # dead in production: production runs precond_method="gram_ns", whose
+        # branch in _cw_apply_grouped rebuilds S^{-1/2} from the current Gram every
+        # step and never stores a Q, so this whole block is skipped and
+        # `precond_refresh_every` has no effect (ditto "higham"). A stale
+        # preconditioner exists ONLY on the "eigh" path. ──────────────────────
         step_count = self.pair_state[0]['step']
         if self.precond_method == "eigh" and (
                 (not self._q_initialized) or (step_count % self.precond_refresh_every == 0)):
@@ -1676,6 +1708,18 @@ class CurvatureWhitenLoRA(Optimizer):
             # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
             # SINGLE metric the diag arm commits to — used by the self small-side
             # Gram, the whitening, and the Picard cross, coherently.
+            #
+            # ── st['D_in'] / st['D_out'] ARE STALE BY ONE STEP. ───────────────
+            # Read here as the curvature EMA over g_1..g_{t-1} ONLY: this step's
+            # g_t is folded in at the END of the loop body, lines 1853-1854
+            # (kl_coupled branch) and 1861-1862 (else branch), after the update
+            # has been formed and applied. So the metric the step-t update sees
+            # EXCLUDES g_t — unlike the momentum at line 1702, which is updated
+            # with g_t before use. Same one-step lag as the grouped path (see the
+            # matching note in _cw_apply_grouped); it is the real staleness in
+            # this optimizer, whereas `precond_refresh_every` is dead outside
+            # precond_method="eigh".
+            # ─────────────────────────────────────────────────────────────────
             if self.cw_no_diag_curv:  # −Shampoo: M_in=M_out=I → C_A=BᵀB, C_B=AAᵀ
                 dinA = torch.ones_like(st['D_in']); doutB = torch.ones_like(st['D_out'])
             else:
@@ -1846,6 +1890,22 @@ class CurvatureWhitenLoRA(Optimizer):
             RB = torch.stack([S[i]['R_B'] for i in idxs])
             vA = torch.stack([S[i]['v_A'] for i in idxs])
             vB = torch.stack([S[i]['v_B'] for i in idxs])
+            # ── D_in / D_out ARE STALE BY ONE STEP. ──────────────────────────
+            # These two diagonals are the metric (P, Q) that builds the ENTIRE
+            # update below: dinA/doutB -> Din_m/Dout_m -> the small-side Grams
+            # LA/RB on the diag_metric path, the whitening, and the Picard cross.
+            # What is read here is the curvature EMA over g_1..g_{t-1} ONLY. The
+            # current step's gradient g_t is folded in at the very END of this
+            # method — lines 2143-2144 (kl_coupled branch) and 2151-2152 (else
+            # branch) — i.e. AFTER dA/dB have been formed and applied. So the
+            # metric the step-t update sees EXCLUDES g_t.
+            # Contrast the momentum above (lines 1887-1888): mA/mB DO include
+            # g_t before they are used. The lag is on the metric only, and it is
+            # the real staleness in this optimizer — `precond_refresh_every` is
+            # NOT (it is dead outside precond_method="eigh"; see step()).
+            # Mirrored in _cw_apply_per_pair (read at 1726-1727, accumulated at
+            # 1853-1854 / 1861-1862).
+            # ─────────────────────────────────────────────────────────────────
             Din = torch.stack([S[i]['D_in'] for i in idxs])
             Dout = torch.stack([S[i]['D_out'] for i in idxs])
             if timer: timer.stop()
@@ -1897,6 +1957,10 @@ class CurvatureWhitenLoRA(Optimizer):
                 # Polar-Express Gram Newton–Schulz (gram_ns_inv_sqrt docstring). fp32,
                 # eigh-free, fresh every step (no stale eigenbasis); ~wall-parity with
                 # the amortized eigh/QR path at production cadence, not a speedup.
+                # THIS IS THE PRODUCTION PATH, and it recomputes SAh/SBh from the
+                # CURRENT LA/RB on EVERY step — so `precond_refresh_every` (which only
+                # gates the eigh QR refresh in step()) is inert here regardless of what
+                # the config or the sweep wrapper's `--precond_refresh_every 10` says.
                 # eps_relative=True (NOT precond_delta_relative): the eigh path's
                 # `_rdinv` damps the NORMALIZED eigenvalues (x/x_max+δ) — i.e. an
                 # unconditional δ·λ_max relative floor — so the NS drop-in must do
@@ -4056,8 +4120,10 @@ def gram_ns_inv_sqrt(S, nsteps=8, eps=1e-4, eps_relative=False, restart_at=2,
     `lora_playground/bench/inverse_sqrt_candidates.py` + `docs/notes/inverse_sqrt_variant_plan.md`:
     matches eigh accuracy (rel_p99 ~1e-4) and converges in 8 iters vs the coupled-
     Iannazzo `spd_inv_sqrt_higham_batched`'s 16 (degree-5 Remez). The isolated-call
-    cost is far below a cold batched eigh, but the production `eigh` path AMORTIZES a
-    warm QR eigenbasis refresh 1-in-`precond_refresh_every`, so the honest end-to-end
+    cost is far below a cold batched eigh, but the `eigh` path (the FORMER production
+    default; production is now `gram_ns`) AMORTIZES a warm QR eigenbasis refresh
+    1-in-`precond_refresh_every` — the only path on which that knob does anything,
+    since `gram_ns` refreshes every step — so the honest end-to-end
     `optimizer.step()` comparison is ~wall-PARITY at the production cadence (gram_ns
     slightly faster at r256, slightly slower at r64; both <1% of the full step at
     production batch — docs/notes/inverse_sqrt_variant_plan.md). The real value is

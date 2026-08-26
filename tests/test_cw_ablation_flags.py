@@ -260,16 +260,39 @@ def test_no_rr_precond_defaults_off_and_forwards():
     assert _build_kl(m2, cw_no_rr_precond=True).cw_no_rr_precond is True
 
 
-def test_no_rr_precond_requires_diag_metric():
-    """The override targets C_B = B^T P B / C_A = A Q A^T, which only the diag_metric
-    (protagonist) path forms; anything else must refuse rather than silently no-op."""
-    # Construct directly: every spec that FORWARDS this flag (kl-diag*, diag-shampoo*)
-    # already has diag_metric=True, and the specs with diag_metric=False list it in
-    # _CW_ABL_SKIP / _CW_SOAP_SKIP so it never reaches the class. The guard therefore
-    # only fires on direct construction -- same as cw_no_diag_curv's test above.
-    m, _, _ = _make()
-    with pytest.raises(ValueError, match="cw_no_rr_precond requires diag_metric"):
-        CurvatureWhitenLoRA(m, lr=1e-2, diag_metric=False, cw_no_rr_precond=True)
+def test_no_rr_precond_is_defined_off_diag_metric():
+    """cw_no_rr_precond is defined on BOTH metric paths, and this test pins that.
+
+    It used to assert the opposite -- a ValueError('cw_no_rr_precond requires
+    diag_metric') -- because the flag was first written only for the diag_metric
+    (protagonist) path, where the r x r slot holds the PARTNER Gram
+    C_B = B^T diag(P) B / C_A = A diag(Q) A^T. Commit 62ecdde lifted that guard on
+    purpose: off the diag_metric path the r x r slot instead holds the factor's own
+    gradient Gram (L_A from g_A, R_B from g_B), and forcing THAT to identity is a
+    distinct, meaningful arm -- the fourth corner of the 2x2 over
+    {partner Gram, own Gram} x {r x r kept, r x r = I}, run as
+    `kl-shampoo-polar-lora --cw_no_rr_precond` (diag_metric=False).
+
+    So construction must succeed off the diag_metric path, and the flag must still be
+    live there rather than silently doing nothing.
+    """
+    m, x, tgt = _make(seed=7)
+    m2, _, _ = _make(seed=7)
+    kw = dict(lr=3e-2, curvature_beta=0.99, ns_steps=8, delta=1e-4, cw_nesterov=True,
+              diag_metric=False, kl_coupled=True, soap_v=False, precond_method="gram_ns")
+    keep = CurvatureWhitenLoRA(m, **kw)
+    norr = CurvatureWhitenLoRA(m2, cw_no_rr_precond=True, **kw)
+    assert norr.cw_no_rr_precond is True
+    for _ in range(4):
+        for opt, mod in ((keep, m), (norr, m2)):
+            opt.zero_grad(set_to_none=False)
+            ((mod(x) - tgt) ** 2).mean().backward()
+            opt.step()
+    diffs = [(p1.detach() - p2.detach()).norm().item()
+             for p1, p2 in zip(m.parameters(), m2.parameters())]
+    assert any(df > 1e-6 for df in diffs), \
+        "-r x r was a no-op off the diag_metric path; the fourth corner is not distinct"
+    assert all(torch.isfinite(p).all() for p in m2.parameters())
 
 
 def test_no_rr_precond_differs_and_finite():

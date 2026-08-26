@@ -32,6 +32,13 @@ class OptimizerConfig:
     precond_delta_relative: bool = False
     precond_gamma: float = 0.5
     precond_ema_beta: float = 0.99
+    # Gram-preconditioner cache refresh cadence. Live for adam-scaled-lora /
+    # adam-lin-lora / adam-lin-core-lora / adam-polar-product-lora /
+    # adamuon-polar-product-lora. For the curvature-whiten family
+    # (CurvatureWhitenLoRA: kl-diag-*, kl-shampoo-*, diag-shampoo-*,
+    # curvature-whiten-*) it gates ONLY the QR-eigenbasis refresh and therefore
+    # does nothing unless precond_method == "eigh"; the production "gram_ns"
+    # path (and "higham") rebuilds S^{-1/2} from the current Gram every step.
     precond_refresh_every: int = 1
     precond_method: str | None = None  # None → optimizer class's family default (cw=eigh, pp=higham)
     higham_iters: int = 10

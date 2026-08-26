@@ -622,11 +622,17 @@ def make_parser():
                              "of continuing a dead run.")
     parser.add_argument("--precond_refresh_every", type=int, default=1,
                         help="K-step cadence for refreshing the per-pair Gram-preconditioner cache "
-                             "(adam-scaled-lora, adam-lin-lora, adam-polar-product-lora, "
-                             "adamuon-polar-product-lora). K=1 reproduces the original per-step "
-                             "behavior; K>1 reuses the cached preconditioner for K-1 steps after "
-                             "each refresh, trading a small amount of staleness for a large step-time "
-                             "speedup at high LoRA rank.")
+                             "(adam-scaled-lora, adam-lin-lora, adam-lin-core-lora, "
+                             "adam-polar-product-lora, adamuon-polar-product-lora). K=1 reproduces "
+                             "the original per-step behavior; K>1 reuses the cached preconditioner "
+                             "for K-1 steps after each refresh, trading a small amount of staleness "
+                             "for a large step-time speedup at high LoRA rank. "
+                             "NO EFFECT on the curvature-whiten family (kl-diag-*, kl-shampoo-*, "
+                             "diag-shampoo-*, curvature-whiten-*) UNLESS --precond_method=eigh: "
+                             "there it is only the QR-eigenbasis refresh cadence, and the production "
+                             "'gram_ns' path (like 'higham') rebuilds S^{-1/2} from the current Gram "
+                             "every step, so K is inert. Do not read K>1 in one of those configs as "
+                             "meaning the run used a stale preconditioner.")
     parser.add_argument("--precond_method", choices=["eigh", "higham", "gram_ns"], default=None,
                         help="Method for computing S^{-1/2} in the curvature/polar-product optimizers. "
                              "DEFAULT None = use each optimizer family's own default (curvature-whiten → "

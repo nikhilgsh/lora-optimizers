@@ -57,10 +57,31 @@ def _diag_opt(m, lr=1e-2, use_polar=True, **kw):
                                kl_coupled=True, soap_v=False, diag_metric=True, **kw)
 
 
-def test_requires_kl_coupled():
-    m, _, _ = _make()
-    with pytest.raises(ValueError):
-        CurvatureWhitenLoRA(m, kl_coupled=False, soap_v=False, diag_metric=True)
+def test_diag_metric_without_kl_coupled_is_the_diag_shampoo_arm():
+    """diag_metric=True with kl_coupled=False is a SHIPPED configuration, not an error.
+
+    This test used to assert a ValueError, from when the diagonal metric existed only
+    as the KL coupled fixed point (Prop 4). It is now also the accumulation for
+    `diag-shampoo-lora` / `diag-shampoo-polar-lora`, where D_in/D_out are plain
+    gradient-energy EMAs instead -- see the `if self.kl_coupled:` split in
+    CurvatureWhitenLoRA._cw_apply_grouped. The guard was removed when those arms
+    landed; the test was not updated with it, so it has been asserting a constraint
+    the code stopped enforcing.
+    """
+    from lora_playground.optim_specs import REGISTRY
+    shipped = {n for n, s in REGISTRY.items()
+               if dict(s.fixed).get("diag_metric") is True
+               and dict(s.fixed).get("kl_coupled") is False}
+    assert shipped, "no registered optimizer pairs diag_metric with kl_coupled=False"
+
+    m, x, target = _make()
+    opt = CurvatureWhitenLoRA(m, lr=1e-2, kl_coupled=False, soap_v=False, diag_metric=True)
+    assert opt.kl_coupled is False and opt.diag_metric is True
+    for _ in range(3):
+        ((m(x) - target) ** 2).mean().backward()
+        opt.step()
+        opt.zero_grad()
+    assert all(torch.isfinite(p).all() for p in m.parameters())
 
 
 @pytest.mark.parametrize("use_polar", [False, True])
