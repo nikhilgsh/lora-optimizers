@@ -1,0 +1,348 @@
+"""Definitions behind ``paper/paper_plots.ipynb``.
+
+Everything the notebook needs -- arm predicates, the per-cell run cache, and the panel
+functions -- lives here rather than in notebook cells, for one concrete reason: a
+definition in a notebook cell only exists in the kernel that executed THAT cell. Editing
+it on disk does nothing until the right cell is re-run, and the definitions used to be
+spread across cells 1, 33, 35 and 47, so "which cell do I re-run" had no obvious answer.
+That cost real time: a fix to ``NOPRODUCT`` sat on disk while the notebook kept raising
+the error it fixed.
+
+Import it as a MODULE and reach through it::
+
+    %load_ext autoreload
+    %autoreload 2
+    import lora_playground.plotting.paper_plots_lib as P
+
+    P.rr_slot_panel(256)
+
+``import ... as P`` and not ``from ... import *``: autoreload re-executes this module on
+edit, so ``P.PROTO`` is always current, whereas a name star-imported into the notebook
+namespace stays bound to the old object and goes stale exactly the way the cells did.
+
+ARM PREDICATES AND WHY THEY PIN SO MUCH
+---------------------------------------
+An arm is a ``where`` dict handed to ``compare_variants_figure``. Every field it does NOT
+mention is a field two different sweeps may disagree on while both still match, in which
+case the figure silently keeps whichever run has the lower loss. That has bitten three
+times: ``global_batch_size`` (the 2048-token sweep matching the 32768-token protagonist),
+``cw_no_rr_precond`` (the r x r = I corner matching the arm it is supposed to contrast
+with), and ``beta2`` (the AdamW grid matching the AdamW baseline). Each time the fix was
+to pin one more field by hand.
+
+Pinning by hand fails open -- a NEW ablation flag is absent from every existing arm, so
+every existing arm silently stops discriminating the moment a sweep sets it. The
+durable fix derives the pinned set from ``OptimizerConfig``'s fields and defaults so a
+new flag is pinned everywhere automatically (then a sweep that sets it renders an EMPTY
+arm, which is loud, instead of merging two arms, which is silent). That lives in
+``lora_playground/plotting/arms.py``; when it lands, the dicts below become calls into
+it and this docstring section goes away.
+
+Until then the guard is ``assert_label_discriminates``, which
+``compare_variants_figure`` runs whenever ``prefetched_runs``/``variant_key`` are passed
+-- which is why every panel here passes them.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+
+from lora_playground.loader import load_runs
+from lora_playground.plotting import compare_variants_figure
+
+ROOT = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "lora_playground").is_dir())
+
+# AdamW noise floor at packed_v1, r=16/r=64 (see the repo CLAUDE.md anchors). Deltas in
+# the summary tables are quoted in units of this.
+SIGMA = 0.0017
+
+# --------------------------------------------------------------------------------------
+# Arm predicates
+# --------------------------------------------------------------------------------------
+# Shared by every CurvatureWhitenLoRA arm: these four pin the arm to the protagonist's
+# configuration so the ONLY difference between arms is the component being ablated. They
+# also exclude the legacy kl-shampoo-polar runs on other models, which used eigh and
+# plain EMA momentum.
+_CW_BASE = {
+    "cw_nesterov": True,
+    "polar_method": "polar_express",
+    "beta1": 0.9,
+    "precond_method": "gram_ns",
+}
+
+# beta2 pinned: the e2_adam_beta2 sweep is also `adamw` at this cell, so without it the
+# AdamW baseline series spans six different beta2 values.
+ADAMW = {"optimizer": "adamw", "beta2": 0.999}
+
+PROTO = {
+    "optimizer": "kl-diag-polar-lora",
+    **_CW_BASE,
+    "cw_unpinned": False,
+    "cw_no_diag_curv": False,
+    "cw_no_rr_precond": False,
+    # These are NOT optional. Without them PROTO matched 13 runs across 7 configs at
+    # lr=1e-2 alone -- cw_solved_rho=True, rdinv_variant VN and B, cw_metric_init
+    # zero/delta/ones, and the curvature_beta grid -- and compare_variants_figure
+    # silently keeps whichever has the lowest loss.
+    "cw_solved_rho": False,
+    "rdinv_variant": "A",
+    "cw_no_radius": False,
+    "cw_metric_init": "1e-12",
+    "curvature_beta": 0.99,
+    # Production batch. e2_beta2_smallbatch runs the SAME optimizer at the same
+    # (lr, r, corpus) with 1x1 = 2048 tokens/step instead of 4x4 = 32768. Pin
+    # global_batch_size and NOT batch_size: every 9000-step paper run is global 16, but
+    # the composition differs (Llama-3-8B is 2x8, the rest 4x4).
+    "global_batch_size": 16,
+}
+
+# E2 leave-one-out arms. Same optimizer as PROTO, separated by the cw_* flags, so they
+# do not contaminate the protagonist series.
+NOSHAMPOO = {**PROTO, "cw_no_diag_curv": True}          # identity metric, no curvature EMAs
+NOMAG = {**PROTO, "cw_unpinned": True, "lora_init_b": "symmetric"}   # true-scale roots, no rescale
+DOUBLE = {**PROTO, "cw_no_diag_curv": True, "cw_unpinned": True,
+          "lora_init_b": "symmetric", "max_steps": 9000}  # both removed = the LoRA-Muon step
+
+# Baselines. max_steps pins out the 1000-step lr pilots, which are ranking-only.
+IMUON = {"optimizer": "imuon-lora", "max_steps": 9000}
+MUON = {"optimizer": "muon-lora", "max_steps": 9000}     # naive factor-Muon
+LORARITE = {"optimizer": "lora-rite", "max_steps": 9000}  # LoRA-RITE (Yen ICLR'25)
+
+# Derivation ablations, selected by the registered optimizer string.
+# -per-sample: Frobenius LMO, so no msign.
+AVGLOSS = {"optimizer": "kl-diag-lora", **_CW_BASE}
+# -product: per-factor metric, no partner Gram. cw_no_rr_precond pinned because
+# e2_noprod_norr runs this SAME optimizer with --cw_no_rr_precond; that is the 2x2's
+# fourth corner (NOPRODUCT_NORR) and must not join this arm.
+NOPRODUCT = {"optimizer": "kl-shampoo-polar-lora", **_CW_BASE, "cw_no_rr_precond": False}
+# -outer un-whiten: D_A = msign(C_B^-1/2 Mhat_A Q^-1/2) with the trailing
+# C_B^-1/2 (.) Q^-1/2 dropped. msign sets every nonzero singular value to 1, so
+# ||D_A||_2 = 1 by construction and the rho/sigma_max rescale is a no-op.
+FLATOUT = {"optimizer": "kl-diag-polar-flatout-lora", **_CW_BASE}
+# -msign at HALF metric power: D_A = C_B^-1/2 Mhat_A Q^-1/2, metric applied ONCE. The
+# control for AVGLOSS, which drops msign but also composes the inner whiten with the
+# outer un-whiten (C_B^-1 Mhat_A Q^-1), confounding "no orthogonalization" with
+# "over-preconditioned".
+HALFPOW = {"optimizer": "kl-diag-flatout-lora", **_CW_BASE}
+# -r x r preconditioner: C_A, C_B forced to identity in the DIRECTION only, so
+# D_A = msign(Mhat_A Q^-1/2) Q^-1/2. P, Q and their KL estimator are untouched.
+NORR = {**PROTO, "cw_no_rr_precond": True}
+# The 2x2's fourth corner: factorwise diagonals AND r x r = I.
+NOPRODUCT_NORR = {**NOPRODUCT, "cw_no_rr_precond": True}
+# Naive magnitude rule, rho = eta flat, instead of eta/(smax(A)+smax(B)).
+NAIVEMAG = {**PROTO, "cw_no_radius": True}
+
+# The E1 cell set (paper/e1_coverage_fill.md). data_key is substring-matched on data_dir.
+CELLS = [
+    ("OLMo-2-1B opc r256",        "allenai/OLMo-2-0425-1B",     "opc",      256),
+    ("Qwen2.5-1.5B opc r256",     "Qwen/Qwen2.5-1.5B",          "opc",      256),
+    ("Llama-3.2-1B opc r256",     "meta-llama/Llama-3.2-1B",    "opc",      256),
+    ("Llama-3-8B opc r256",       "meta-llama/Meta-Llama-3-8B", "opc",      256),
+    ("Qwen2.5-1.5B bengali r256", "Qwen/Qwen2.5-1.5B",          "bengali",  256),
+    ("OLMo-2-1B openmath r256",    "allenai/OLMo-2-0425-1B",     "openmath", 256),
+    ("Qwen2.5-1.5B openmath r256", "Qwen/Qwen2.5-1.5B",          "openmath", 256),
+    ("Llama-3-8B openmath r256",   "meta-llama/Meta-Llama-3-8B", "openmath", 256),
+    ("Llama-3.2-1B openmath r16",  "meta-llama/Llama-3.2-1B",    "openmath",  16),
+    ("Llama-3.2-1B openmath r32",  "meta-llama/Llama-3.2-1B",    "openmath",  32),
+    ("Llama-3.2-1B openmath r64",  "meta-llama/Llama-3.2-1B",    "openmath",  64),
+    ("Llama-3.2-1B openmath r128", "meta-llama/Llama-3.2-1B",    "openmath", 128),
+    ("Llama-3.2-1B openmath r256", "meta-llama/Llama-3.2-1B",    "openmath", 256),
+]
+
+# --------------------------------------------------------------------------------------
+# Per-cell run cache
+# --------------------------------------------------------------------------------------
+# One narrow load_runs per cell, memoised. A full-tree load_runs costs ~21s; a
+# load_runs(where=<one cell>) is far cheaper because the narrow `where` skips parsing the
+# runs that cannot match. So a single up-front snapshot is the wrong trade -- it is fixed
+# at kernel start and cannot see a sweep that is still running.
+_RUNS_CACHE: dict[str, list] = {}
+
+
+def _fingerprint(v):
+    """Identify a `where` value for the memo key.
+
+    A callable's qualname alone does NOT identify it: panel()'s data_dir filter is an
+    inline ``lambda d, k=key: k in str(d)``, so every panel's lambda has qualname
+    '<lambda>' and they all collided -- OLMo-openmath silently reused OLMo-opc's runs and
+    drew an empty panel. The bound value lives in __defaults__ (or __closure__ for a
+    closed-over variable), so include both.
+    """
+    if callable(v):
+        return ("call", getattr(v, "__qualname__", ""),
+                repr(getattr(v, "__defaults__", None)),
+                repr(tuple(c.cell_contents for c in (getattr(v, "__closure__", None) or ()))))
+    return repr(v)
+
+
+def cell_runs(where, refresh=False):
+    """Runs for one cell, memoised per distinct `where` within a kernel.
+
+    `refresh=True` forces a re-read. Do NOT wire it on by default for live sweeps: an
+    unconditional refresh makes every panel pay the full query again, which is what made
+    the live-tracking figures the slowest cells in the notebook. Call
+    ``clear_runs_cache()`` once when a sweep has advanced and you want fresh numbers.
+    """
+    key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
+    if refresh or key not in _RUNS_CACHE:
+        _RUNS_CACHE[key] = load_runs(where=where, warn_cross_commit=False, quiet=True)
+    return _RUNS_CACHE[key]
+
+
+def clear_runs_cache():
+    """Drop the memo so the next panel re-reads from disk."""
+    _RUNS_CACHE.clear()
+
+
+def pred_matches(cfg, pred):
+    """In-memory predicate check mirroring ``loader._matches``: literal equality,
+    list-like membership, or callable truthiness per field. A run missing a referenced
+    field does not match."""
+    for k, v in pred.items():
+        if k not in cfg:
+            return False
+        c = cfg[k]
+        if callable(v):
+            if not v(c):
+                return False
+        elif isinstance(v, (list, set, tuple, frozenset)):
+            if c not in v:
+                return False
+        elif c != v:
+            return False
+    return True
+
+
+def variant_key_fn(common, arms):
+    """``compare_variants_figure(variant_key=...)`` selecting among `arms`
+    (label -> extra-where dict) for cfgs matching `common`. Equivalent to a per-arm
+    ``load_runs(where={**common, **extra})``, applied in memory to one narrow query."""
+    def variant_key(cfg):
+        if not pred_matches(cfg, common):
+            return None
+        for label, extra in arms.items():
+            if pred_matches(cfg, extra):
+                return label
+        return None
+    return variant_key
+
+
+def om(rank):
+    """common_where for Llama-3.2-1B / openmath at a rank -- the ablation cell."""
+    return dict(model_name="meta-llama/Llama-3.2-1B", lora_r=rank,
+                data_dir=(lambda d: "openmath" in str(d)))
+
+
+def has(where, rank):
+    """Is there any run for this arm at this rank? Used to drop empty arms."""
+    pred = {**where, **om(rank)}
+    return any(pred_matches(cfg, pred) for cfg, _h in cell_runs(om(rank)))
+
+
+def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True):
+    """Every panel in this module funnels through here.
+
+    Passing prefetched_runs AND variant_key is what arms the ``assert_label_discriminates``
+    guard inside compare_variants_figure -- the per-variant loading path does not run it,
+    and that is how two arms silently merged for weeks. Do not add a panel that skips it.
+    """
+    if drop_empty:
+        rank = common.get("lora_r")
+        missing = [k for k, v in arms.items() if not has(v, rank)]
+        if missing:
+            print("no data yet (omitted):", ", ".join(missing))
+        arms = {k: v for k, v in arms.items() if k not in missing}
+    fig, _t, sdf = compare_variants_figure(
+        arms, common_where=common, ref_label=ref_label,
+        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=9000,
+        allow_partial=True, allow_custom_labels=True, target_label=target_label,
+        suptitle=suptitle,
+        prefetched_runs=cell_runs(common), variant_key=variant_key_fn(common, arms))
+    plt.show()
+    return sdf
+
+
+# --------------------------------------------------------------------------------------
+# Panels
+# --------------------------------------------------------------------------------------
+def panel(name, model, key, rank):
+    """AdamW vs PoLoRA vs the baselines at one cell; Delta vs AdamW in sigma units."""
+    common = dict(model_name=model, lora_r=rank, data_dir=(lambda d, k=key: k in str(d)))
+    arms = {"AdamW": ADAMW, "Polar-LoRA (kl-diag)": PROTO, "iMuon": IMUON,
+            "Muon (naive)": MUON, "LoRA-RITE": LORARITE,
+            "w/o curvature+magnitude (LoRA-Muon step)": DOUBLE}
+    return _figure(arms, common, "AdamW", name, drop_empty=False)
+
+
+def panel_n(i):
+    """Panel for CELLS[i] -- so a notebook cell is one short line."""
+    return panel(*CELLS[i])
+
+
+def ablation_panel(rank=256):
+    """E2 leave-one-out at one rank."""
+    arms = {"Polar-LoRA (kl-diag)": PROTO, "w/o curvature control": NOSHAMPOO,
+            "w/o magnitude control": NOMAG,
+            "w/o curvature+magnitude (LoRA-Muon step)": DOUBLE}
+    return _figure(arms, om(rank), "Polar-LoRA (kl-diag)",
+                   f"E2 ablation - Llama-3.2-1B openmath r{rank}", target_label=None)
+
+
+def derivation_ablation_panel(rank=256):
+    """Which derivation premise carries the method: orthogonalization, or metric power."""
+    arms = {"AdamW": ADAMW,
+            "PoLoRA: rxr=B^T P B, shared P,Q": PROTO,
+            "no msign, metric^-1 (averaged loss)": AVGLOSS,
+            "no msign, metric^-1/2": HALFPOW,
+            "no outer un-whiten: msign only": FLATOUT}
+    return _figure(arms, om(rank), "PoLoRA: rxr=B^T P B, shared P,Q",
+                   f"Derivation: orthogonalization and metric power - "
+                   f"Llama-3.2-1B openmath r{rank}")
+
+
+def rr_slot_panel(rank=256):
+    """The r x r slot 2x2: {slot = B^T P B or I} x {d-side diagonals shared or per-factor}."""
+    arms = {"AdamW": ADAMW,
+            "PoLoRA: rxr=B^T P B, shared P,Q": PROTO,
+            "rxr = I, shared P,Q": NORR,
+            "factorwise: own P_A,Q_A / P_B,Q_B": NOPRODUCT,
+            "factorwise + rxr = I": NOPRODUCT_NORR}
+    return _figure(arms, om(rank), "PoLoRA: rxr=B^T P B, shared P,Q",
+                   f"The r x r metric slot - Llama-3.2-1B openmath r{rank}")
+
+
+def magnitude_rule_panel(rank=256):
+    """Naive rho = eta against the PoLoRA rule rho = eta/(smax(A)+smax(B))."""
+    arms = {"AdamW": ADAMW,
+            "PoLoRA: rho = eta/(smax A + smax B)": PROTO,
+            "naive: rho = eta": NAIVEMAG}
+    return _figure(arms, om(rank), "PoLoRA: rho = eta/(smax A + smax B)",
+                   f"Magnitude rule: naive vs PoLoRA - Llama-3.2-1B openmath r{rank}")
+
+
+def b2_arms(base, key, values, ref_value, ref_label):
+    """{label: predicate} for a beta2 grid, with the shipped value as the reference."""
+    return {(ref_label if v == ref_value else f"{key}={v}"): {**base, key: v}
+            for v in values}
+
+
+B2_GRID = [0.81, 0.9090, 0.9564, 0.9791, 0.99]
+
+
+def beta2_panel(rank=256):
+    """Protagonist curvature_beta grid: the EMA horizon of the P, Q metric."""
+    arms = b2_arms(PROTO, "curvature_beta", B2_GRID, 0.99,
+                   "PoLoRA (curvature_beta=0.99)")
+    return _figure(arms, om(rank), "PoLoRA (curvature_beta=0.99)",
+                   f"Protagonist beta2 sweep - Llama-3.2-1B openmath r{rank}",
+                   target_label=None)
+
+
+def adamw_beta2_panel(rank=256):
+    """AdamW beta2 control -- the negative control for the protagonist beta2 grid."""
+    arms = b2_arms({"optimizer": "adamw"}, "beta2", B2_GRID + [0.999], 0.999,
+                   "AdamW (beta2=0.999)")
+    return _figure(arms, om(rank), "AdamW (beta2=0.999)",
+                   f"AdamW beta2 control - Llama-3.2-1B openmath r{rank}",
+                   target_label=None)
