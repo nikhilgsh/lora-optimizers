@@ -103,7 +103,15 @@ class OptimizerConfig:
     cw_nesterov: bool = False
     cw_no_radius: bool = False
     cw_no_diag_curv: bool = False
-    cw_no_rr_precond: bool = False
+    # What fills the two r x r slots (C_B, C_A): "product" = (B^T P B, A Q A^T),
+    # "one-sided" = (I, I), "factorwise" = (P_A, Q_B). None inherits the optimizer
+    # spec's pinned diag_metric (product where it is True, factorwise where False)
+    # so the default changes no existing arm.
+    precond: str | None = None
+    # How accurately the matrix sign is applied to the whitened momenta — ORTHOGONAL
+    # to `precond`. "full" = msign; "diag" approximates the Gram inside it by its
+    # diagonal, giving rownorm(Z_A) / colnorm(Z_B) with no r x r inverse sqrt.
+    msign: str = "full"
     cw_unpinned: bool = False
     cw_solved_rho: bool = False
     cw_factor_a: float = 0.0

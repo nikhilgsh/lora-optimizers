@@ -80,7 +80,7 @@ PROTO = {
     **_CW_BASE,
     "cw_unpinned": False,
     "cw_no_diag_curv": False,
-    "cw_no_rr_precond": False,
+    "precond": "product",
     # These are NOT optional. Without them PROTO matched 13 runs across 7 configs at
     # lr=1e-2 alone -- cw_solved_rho=True, rdinv_variant VN and B, cw_metric_init
     # zero/delta/ones, and the curvature_beta grid -- and compare_variants_figure
@@ -112,10 +112,10 @@ LORARITE = {"optimizer": "lora-rite", "max_steps": 9000}  # LoRA-RITE (Yen ICLR'
 # Derivation ablations, selected by the registered optimizer string.
 # -per-sample: Frobenius LMO, so no msign.
 AVGLOSS = {"optimizer": "kl-diag-lora", **_CW_BASE}
-# -product: per-factor metric, no partner Gram. cw_no_rr_precond pinned because
-# e2_noprod_norr runs this SAME optimizer with --cw_no_rr_precond; that is the 2x2's
-# fourth corner (NOPRODUCT_NORR) and must not join this arm.
-NOPRODUCT = {"optimizer": "kl-shampoo-polar-lora", **_CW_BASE, "cw_no_rr_precond": False}
+# precond=factorwise: C_B = P_A, C_A = Q_B, the r x r EMAs fitted from the factor
+# gradients rather than through the partner factor. This optimizer's spec pins
+# diag_metric=False, which IS that branch, so its runs need no re-run.
+NOPRODUCT = {"optimizer": "kl-shampoo-polar-lora", **_CW_BASE, "precond": "factorwise"}
 # -outer un-whiten: D_A = msign(C_B^-1/2 Mhat_A Q^-1/2) with the trailing
 # C_B^-1/2 (.) Q^-1/2 dropped. msign sets every nonzero singular value to 1, so
 # ||D_A||_2 = 1 by construction and the rho/sigma_max rescale is a no-op.
@@ -125,11 +125,15 @@ FLATOUT = {"optimizer": "kl-diag-polar-flatout-lora", **_CW_BASE}
 # outer un-whiten (C_B^-1 Mhat_A Q^-1), confounding "no orthogonalization" with
 # "over-preconditioned".
 HALFPOW = {"optimizer": "kl-diag-flatout-lora", **_CW_BASE}
-# -r x r preconditioner: C_A, C_B forced to identity in the DIRECTION only, so
-# D_A = msign(Mhat_A Q^-1/2) Q^-1/2. P, Q and their KL estimator are untouched.
-NORR = {**PROTO, "cw_no_rr_precond": True}
-# The 2x2's fourth corner: factorwise diagonals AND r x r = I.
-NOPRODUCT_NORR = {**NOPRODUCT, "cw_no_rr_precond": True}
+# precond=one-sided: C_B = C_A = I EVERYWHERE -- in the p, q updates as well as
+# the direction, so qhat = (1/r) diag(G_A^T G_A) and D_A = msign(Mhat_A Q^-1/2) Q^-1/2.
+# Supersedes the retired cw_no_rr_precond, which put the identity in the direction
+# only and left P, Q fit through the real C_A/C_B.
+ONESIDED = {**PROTO, "precond": "one-sided"}
+# The msign axis, orthogonal to precond: approximate the Gram inside the matrix
+# sign by its diagonal (rownorm(Z_A) / colnorm(Z_B)). Run at both ends of precond.
+PROTO_DIAG = {**PROTO, "msign": "diag"}
+ONESIDED_DIAG = {**PROTO, "precond": "one-sided", "msign": "diag"}
 # Naive magnitude rule, rho = eta flat, instead of eta/(smax(A)+smax(B)).
 NAIVEMAG = {**PROTO, "cw_no_radius": True}
 
@@ -301,15 +305,27 @@ def derivation_ablation_panel(rank=256):
                    f"Llama-3.2-1B openmath r{rank}")
 
 
-def rr_slot_panel(rank=256):
-    """The r x r slot 2x2: {slot = B^T P B or I} x {d-side diagonals shared or per-factor}."""
+def precond_panel(rank=256):
+    """The three `precond` branches: what fills (C_B, C_A). All three share one
+    (P, Q), the same p, q updates and the same rho rule."""
     arms = {"AdamW": ADAMW,
-            "PoLoRA: rxr=B^T P B, shared P,Q": PROTO,
-            "rxr = I, shared P,Q": NORR,
-            "factorwise: own P_A,Q_A / P_B,Q_B": NOPRODUCT,
-            "factorwise + rxr = I": NOPRODUCT_NORR}
-    return _figure(arms, om(rank), "PoLoRA: rxr=B^T P B, shared P,Q",
+            "product: C_B=B^T P B, C_A=A Q A^T": PROTO,
+            "one-sided: C_B=C_A=I": ONESIDED,
+            "factorwise: C_B=P_A, C_A=Q_B": NOPRODUCT}
+    return _figure(arms, om(rank), "product: C_B=B^T P B, C_A=A Q A^T",
                    f"The r x r metric slot - Llama-3.2-1B openmath r{rank}")
+
+
+def msign_panel(rank=256):
+    """The `msign` axis at both ends of `precond`: can the matrix sign be replaced
+    by its diagonal (rownorm / colnorm) with the slot present, and with it gone?"""
+    arms = {"AdamW": ADAMW,
+            "product, msign": PROTO,
+            "product, diagonal msign": PROTO_DIAG,
+            "one-sided, msign": ONESIDED,
+            "one-sided, diagonal msign": ONESIDED_DIAG}
+    return _figure(arms, om(rank), "product, msign",
+                   f"Diagonal msign - Llama-3.2-1B openmath r{rank}")
 
 
 def magnitude_rule_panel(rank=256):

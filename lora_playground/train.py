@@ -43,7 +43,9 @@ from .mfu import (
     flops_per_token_for_mode,
 )
 from .optim import (
+    MSIGN_CHOICES,
     OPTIMIZER_CHOICES,
+    PRECOND_CHOICES,
     build_optimizer,
     optimizer_config_dict,
     optimizer_effective_config,
@@ -736,16 +738,33 @@ def make_parser():
                              "ρ=lr/(σmax(A)+σmax(B)). The σ_max(W) pin is KEPT — this does NOT "
                              "remove magnitude control; the magnitude-rule ablation is "
                              "--cw_unpinned. Retired from the paper (2026-06-12), kept dormant.")
-    parser.add_argument("--cw_no_rr_precond", action="store_true",
-                        help="ABLATION (-r x r preconditioner): force the r x r matrices "
-                             "C_B=B^T P B and C_A=A Q A^T to identity in the DIRECTION only, "
-                             "so dA = msign(Mhat_A Q^-1/2) Q^-1/2 and "
-                             "dB = P^-1/2 msign(P^-1/2 Mhat_B). The diagonal metric (P,Q) and "
-                             "its estimator are untouched -- P,Q are still fit through the real "
-                             "C_A/C_B, so this isolates the r x r whitening in the direction "
-                             "and nothing else. Complement of --cw_no_diag_curv, which removes "
-                             "P,Q and KEEPS the partner Grams. Requires the diag_metric "
-                             "(protagonist) path.")
+    parser.add_argument("--precond", choices=sorted(PRECOND_CHOICES),
+                        default=None,
+                        help="What fills the two r x r slots (C_B, C_A) in the "
+                             "curvature-whiten family. product: C_B=B^T P B, C_A=A Q A^T "
+                             "(PoLoRA). one-sided: C_B=C_A=I EVERYWHERE -- in the p,q "
+                             "updates as well as the direction, so "
+                             "qhat=(1/r)diag(G_A^T G_A), phat=(1/r)diag(G_B G_B^T) and "
+                             "dA=msign(Mhat_A Q^-1/2)Q^-1/2. factorwise: C_B=P_A, C_A=Q_B, "
+                             "two persistent r x r EMAs fitted from the factor gradients "
+                             "(P_A <- b2 P_A + (1-b2)/d_in G_A Q^-1 G_A^T, mirror for Q_B). "
+                             "All three share one (P,Q), one set of p,q updates and the same "
+                             "rho=eta/(smax(A)+smax(B)) rule. Default None = inherit the "
+                             "optimizer's own setting (product for kl-diag*, factorwise for "
+                             "kl-shampoo*).")
+    parser.add_argument("--msign", choices=sorted(MSIGN_CHOICES),
+                        default="full",
+                        help="How accurately the matrix sign is applied to the whitened "
+                             "momenta Z_A=C_B^-1/2 Mhat_A Q^-1/2, Z_B=P^-1/2 Mhat_B C_A^-1/2. "
+                             "ORTHOGONAL to --precond: that picks the curvature structure, "
+                             "this picks how much spectral mixing happens inside the LMO "
+                             "direction. full: U=msign(Z). diag: approximate the Gram inside "
+                             "the matrix sign by its diagonal, giving "
+                             "U_A=Diag(diag(Z_A Z_A^T))^-1/2 Z_A = rownorm(Z_A) and "
+                             "U_B=Z_B Diag(diag(Z_B^T Z_B))^-1/2 = colnorm(Z_B) -- no r x r "
+                             "matmul or inverse sqrt (RACS-style). With --precond one-sided "
+                             "the whole direction is O(rd) rather than O(r^2 d). "
+                             "Requires an optimizer that applies a matrix sign at all.")
     parser.add_argument("--cw_no_diag_curv", action="store_true",
                         help="ABLATION (−curvature): force the input/output diagonal "
                              "curvatures to identity → C_A=BᵀB, C_B=AAᵀ (partner-Gram, "
@@ -1327,7 +1346,8 @@ def main():
         cw_nesterov=args.cw_nesterov,
         cw_no_radius=args.cw_no_radius,
         cw_no_diag_curv=args.cw_no_diag_curv,
-        cw_no_rr_precond=args.cw_no_rr_precond,
+        precond=args.precond,
+        msign=args.msign,
         cw_unpinned=args.cw_unpinned,
         cw_solved_rho=args.cw_solved_rho,
         cw_factor_a=args.cw_factor_a,
@@ -1480,7 +1500,11 @@ def main():
             "cw_nesterov": getattr(optimizer, "cw_nesterov", args.cw_nesterov),
             "cw_no_radius": getattr(optimizer, "cw_no_radius", args.cw_no_radius),
             "cw_no_diag_curv": getattr(optimizer, "cw_no_diag_curv", args.cw_no_diag_curv),
-            "cw_no_rr_precond": getattr(optimizer, "cw_no_rr_precond", args.cw_no_rr_precond),
+            # Record the RESOLVED branch, not the CLI value: `precond=None` means
+            # "inherit the optimizer spec", so args.precond alone would log None
+            # for every default run and lose which of the three actually ran.
+            "precond": getattr(optimizer, "precond", args.precond),
+            "msign": getattr(optimizer, "msign", args.msign),
             "cw_unpinned": getattr(optimizer, "cw_unpinned", args.cw_unpinned),
             "cw_solved_rho": getattr(optimizer, "cw_solved_rho", args.cw_solved_rho),
             "cw_factor_a": getattr(optimizer, "cw_factor_a", args.cw_factor_a),

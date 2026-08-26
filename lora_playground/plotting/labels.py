@@ -91,8 +91,14 @@ def _shared_knobs(cfg: dict) -> str:
     s = ""
     if cfg.get("cw_no_diag_curv"):
         s += " w/o-curv"
-    if cfg.get("cw_no_rr_precond"):
-        s += " w/o-rr"
+    # `precond` is the three-branch (C_B, C_A) selector; only the two non-default
+    # branches get a suffix so product runs keep their bare label.
+    if cfg.get("precond") == "one-sided":
+        s += " one-sided"
+    elif cfg.get("precond") == "factorwise":
+        s += " factorwise"
+    if cfg.get("msign") == "diag":
+        s += " msign-diag"
     if cfg.get("cw_unpinned"):
         s += " unpinned"
     hi = cfg.get("higham_iters")

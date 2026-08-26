@@ -2,7 +2,7 @@
 
 Groups by the SAME explicit arm predicates ablation_table.py uses, not by a loose
 key. A loose key is how the first version of this script went wrong: keying on
-(optimizer, lr, cw_no_rr_precond, cw_no_diag_curv) collapsed a cw_solved_rho=True
+(optimizer, lr, precond, cw_no_diag_curv) collapsed a cw_solved_rho=True
 run -- a different arm -- into the protagonist's seed-0 slot and reported
 sigma=0.0158 instead of ~0.001. Many kl-diag-polar-lora runs at lr=1e-2 exist that
 differ in cw_solved_rho / cw_metric_init / cw_unpinned / rdinv_variant, so the
@@ -31,10 +31,10 @@ LOCKED = dict(cw_nesterov=True, polar_method="polar_express", beta1=0.9,
 
 ARMS = {
     "PoLoRA (protagonist)":    dict(optimizer="kl-diag-polar-lora", lr=0.01,
-                                    cw_no_rr_precond=False, **LOCKED),
+                                    precond="product", **LOCKED),
     "w/o rxr metric contents": dict(optimizer="kl-shampoo-polar-lora", lr=0.01, **LOCKED),
     "w/o rxr preconditioner":  dict(optimizer="kl-diag-polar-lora", lr=0.003,
-                                    cw_no_rr_precond=True, **LOCKED),
+                                    precond="one-sided", **LOCKED),
 }
 BORROWED = 0.0017
 

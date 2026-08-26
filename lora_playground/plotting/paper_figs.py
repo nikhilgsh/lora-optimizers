@@ -70,7 +70,9 @@ plt.rcParams.update({
 NAME_CURV = "w/o curvature"
 NAME_MAGN = "w/o magnitude"
 NAME_NAIVE = "Muon"            # raw per-factor polar = Muon on the factors (sec 3.1)
-NAME_NORR = "w/o r x r metric"  # cw_no_rr_precond: C_B, C_A forced to identity in the direction
+NAME_ONESIDED = "one-sided"      # precond=one-sided: C_B = C_A = I in direction AND estimator
+NAME_FACTORWISE = "factorwise"   # precond=factorwise: C_B = P_A, C_A = Q_B
+NAME_MSIGN_DIAG = "diagonal msign"  # msign=diag: rownorm(Z_A) / colnorm(Z_B)
 # Both-controls-removed ablation arm = the decoupled update with identity metric and no
 # spectral-norm magnitude rescale (iMuon's explicit decoupled update; the memoryless
 # limit of LoRA-RITE; the compositional-Muon half-split). Named subtractively, NOT
@@ -125,7 +127,7 @@ def paper_variant_key(cfg: dict) -> str | None:
         return "iMuon"
     if (_is_proto(cfg) and cfg.get("cw_no_radius") is False
             and cfg.get("cw_no_diag_curv") is False
-            and cfg.get("cw_no_rr_precond") is not True):
+            and cfg.get("precond") == "product" and cfg.get("msign") == "full"):
         return "PoLoRA"
     return None
 
@@ -133,14 +135,19 @@ def paper_variant_key(cfg: dict) -> str | None:
 def ablation_variant_key(cfg: dict) -> str | None:
     if not _is_proto(cfg):
         return None
-    if cfg.get("cw_no_rr_precond") is True:
-        return NAME_NORR
+    if cfg.get("msign") == "diag":
+        return (NAME_MSIGN_DIAG if cfg.get("precond") == "product"
+                else f"{NAME_ONESIDED} + {NAME_MSIGN_DIAG}")
+    if cfg.get("precond") == "one-sided":
+        return NAME_ONESIDED
+    if cfg.get("precond") == "factorwise":
+        return NAME_FACTORWISE
     if cfg.get("cw_no_diag_curv") is True:
         return NAME_CURV
     if cfg.get("cw_no_radius") is True:
         return NAME_MAGN
     if (cfg.get("cw_no_radius") is False and cfg.get("cw_no_diag_curv") is False
-            and cfg.get("cw_no_rr_precond") is not True):
+            and cfg.get("precond") == "product" and cfg.get("msign") == "full"):
         return "PoLoRA"
     return None
 
@@ -162,7 +169,7 @@ def arm_key(cfg: dict) -> str | None:
     if _is_proto(cfg):
         nc = cfg.get("cw_no_diag_curv") is True
         up = cfg.get("cw_unpinned") is True
-        nr = cfg.get("cw_no_rr_precond") is True
+        nr = cfg.get("precond") != "product" or cfg.get("msign") != "full"
         if not nc and not up and not nr:
             return "PoLoRA"
         if nc and not up:

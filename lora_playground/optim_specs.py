@@ -131,7 +131,10 @@ def build_from_spec(model_or_targets, name: str, config: OptimizerConfig):
 
 # ─── Curvature-whiten family (the paper protagonist) ─────────────────────────
 # All nine share CurvatureWhitenLoRA; `fixed` is the (kl_coupled, soap_v,
-# diag_metric, use_polar[, flat_outer]) identity. `eps`=1e-8 is the class default
+# diag_metric, use_polar[, flat_outer]) identity. NOTE `diag_metric` is only the
+# DEFAULT branch now: it is the implementation detail `precond` resolves into, so
+# an explicit `--precond product`/`factorwise` overrides this pin (see
+# CurvatureWhitenLoRA.__init__). The pin still decides what `--precond` unset means. `eps`=1e-8 is the class default
 # (the legacy branch passed it explicitly; same value). The cw_* ablation flags
 # auto-forward ONLY on the kl-diag / diag-shampoo protagonist branches; `skip`
 # reproduces the legacy drops on the others (soap_v=True rejects cw_nesterov /
@@ -144,11 +147,13 @@ _CW = _optim.CurvatureWhitenLoRA
 # the soap/ablation skip sets below, in case cw-only skips are needed later.
 _CW_PRECOND_SKIP: set = set()
 _CW_SOAP_SKIP = {"cw_nesterov", "cw_picard_iters", "cw_no_radius", "cw_no_diag_curv",
-                 "cw_no_rr_precond",
+                 "precond", "msign",
                  "cw_unpinned", "cw_solved_rho", "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # soap_v=True: all cw_* invalid
-# cw_no_rr_precond is deliberately NOT skipped here: it is defined off the
-# diag_metric path too (identity r x r slot with per-factor diagonals), which is the
-# fourth corner of the slot-vs-sharing 2x2. See CurvatureWhitenLoRA.__init__.
+# `precond` and `msign` are NOT skipped here: both are defined on every branch of
+# this family. `precond` selects what fills (C_B, C_A) and subsumes what these specs
+# pin as diag_metric — product where True, factorwise where False — so forwarding it
+# is what lets one optimizer name reach all three. `msign` is orthogonal to it and
+# valid wherever a matrix sign is applied at all (use_polar=True).
 _CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_unpinned", "cw_solved_rho",
                 "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # kl-shampoo/flatout
 

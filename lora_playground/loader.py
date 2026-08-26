@@ -446,6 +446,63 @@ def _argparse_defaults() -> dict[str, Any]:
     return defaults
 
 
+# Which of the three `precond` branches a pre-flag run was actually in. Before
+# `--precond` existed the branch was implied by the optimizer's pinned
+# `diag_metric`: the kl-diag / diag-shampoo specs pin it True (slots = the partner
+# Grams B^T P B, A Q A^T = "product"), the kl-shampoo / curvature-whiten / flatout
+# specs pin it False (slots = r x r EMAs of the factor's own gradients =
+# "factorwise"). Mapping the old runs onto the new names is what lets one arm
+# predicate pin ONE value: without it a pre-flag protagonist run carries no
+# `precond` at all while a new one carries "product", and the two land in
+# different arms of the same figure.
+#
+# There is no historical "one-sided": the retired `cw_no_rr_precond` put the
+# identity in the direction only and left the p, q estimator whitening by the real
+# C_A/C_B, so it is NOT the one-sided branch and is deliberately not mapped to it.
+_PRECOND_BY_OPTIMIZER: dict[str, str] = {
+    "kl-diag-lora": "product",
+    "kl-diag-polar-lora": "product",
+    "kl-diag-polar-flatout-lora": "product",
+    "kl-diag-flatout-lora": "product",
+    "diag-shampoo-lora": "product",
+    "diag-shampoo-polar-lora": "product",
+    "kl-shampoo-lora": "factorwise",
+    "kl-shampoo-polar-lora": "factorwise",
+    "curvature-whiten-lora": "factorwise",
+    "curvature-whiten-polar-lora": "factorwise",
+}
+
+
+def _backfill_precond(cfg: dict, opt_cfg: dict) -> None:
+    """Give every curvature-whiten run the RESOLVED `precond` / `msign` branch.
+
+    New runs log both directly (train.py records the optimizer's resolved
+    attribute, not the CLI value, so a default run logs "product" rather than
+    None). Pre-flag runs log neither; this derives them so old and new runs of the
+    same arm carry the same value. Never overwrites a logged value.
+    """
+    if cfg.get("precond") is None:
+        opt = cfg.get("optimizer")
+        # `diag_metric` in the recorded optimizer_config wins over the name table
+        # when present — it is what the run actually constructed with.
+        dm = opt_cfg.get("diag_metric")
+        if dm is not None:
+            cfg["precond"] = "product" if dm else "factorwise"
+        elif opt in _PRECOND_BY_OPTIMIZER:
+            cfg["precond"] = _PRECOND_BY_OPTIMIZER[opt]
+    # `msign` needs no explicit backfill: the generic argparse-default loop below
+    # fills every CLI flag that is None, and `--msign` defaults to "full", which
+    # is what every pre-flag run did wherever it applied a matrix sign at all.
+    #
+    # RETIRED FIELD. `cw_no_rr_precond` was removed from OptimizerConfig, so no
+    # arm pins it any more — but runs logged during its lifetime still carry
+    # `False` while older runs carry nothing, and `merge_runs`' hidden-axis check
+    # reads that False-vs-absent split as two distinct series under one label.
+    # The three sweeps that set it True were deleted, so no surviving run means
+    # anything by this key: drop it rather than let a dead flag split live series.
+    cfg.pop("cw_no_rr_precond", None)
+
+
 def _enrich_cfg(cfg: dict) -> dict:
     """Add a ``_derived`` namespace and (if missing) a backfilled
     ``optimizer_config`` to ``cfg``. Mutates and returns ``cfg``.
@@ -469,6 +526,7 @@ def _enrich_cfg(cfg: dict) -> dict:
     if cfg.get("optimizer_config") is None:
         cfg["optimizer_config"] = _backfill_optimizer_config(cfg)
     opt_cfg = cfg["optimizer_config"]
+    _backfill_precond(cfg, opt_cfg)
     # Diagnostic knobs are emitted at two places: the top-level cfg event
     # (CLI names ``log_basic_diagnostics`` / ``optim_diagnostics_every``) and
     # the per-optimizer kwargs in ``optimizer_config`` (constructor names

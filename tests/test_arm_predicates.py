@@ -70,15 +70,15 @@ def test_arm_pins_every_pinnable_field():
 
 
 def test_arm_override_wins_over_the_default():
-    assert A.arm("kl-diag-polar-lora")["cw_no_rr_precond"] is False
-    assert A.arm("kl-diag-polar-lora", cw_no_rr_precond=True)["cw_no_rr_precond"] is True
+    assert A.arm("kl-diag-polar-lora")["msign"] == "full"
+    assert A.arm("kl-diag-polar-lora", msign="diag")["msign"] == "diag"
 
 
 def test_arm_rejects_an_unknown_override():
     """A predicate on a misspelled field pins nothing and fails open — the
     exact failure mode this module exists to prevent, so it must raise."""
-    with pytest.raises(ValueError, match="cw_no_rr_preconditioner"):
-        A.arm("kl-diag-polar-lora", cw_no_rr_preconditioner=True)
+    with pytest.raises(ValueError, match="preconditioner"):
+        A.arm("kl-diag-polar-lora", preconditioner="one-sided")
 
 
 def test_every_exported_arm_pins_the_optimizer():

@@ -58,7 +58,38 @@ _CONFIG_DICT_ALIASES = {
         if getattr(opt, "_higham_compute_dtype", None) is not None
         else "fp32"
     ),
+    # third_party.imuon_muon.Muon takes `muon_params` / `adamw_params` — the two
+    # PARAMETER LISTS it splits the model across, not hyperparameters. They are
+    # not stored as attributes (and vendored code is not ours to change), and the
+    # tensors themselves are neither json-safe nor meaningful provenance. Record
+    # the split's SHAPE instead: how many tensors went to each side, which is the
+    # part a later reader would actually want to check.
+    "muon_params": lambda opt: _muon_group_size(opt, "muon"),
+    "adamw_params": lambda opt: _muon_group_size(opt, "adamw"),
 }
+
+
+def _muon_group_size(opt, which: str) -> int | None:
+    """Number of params Muon assigned to its `muon` or `adamw` side.
+
+    Muon tags each param in ``self.state[p]["use_muon"]``
+    (third_party/imuon_muon.py:216,219) — per-PARAM state, not a param_group
+    key — so the split is recoverable without the optimizer having stored the
+    constructor lists.
+    """
+    want = (which == "muon")
+    state = getattr(opt, "state", None)
+    if not state:
+        return None
+    n = 0
+    for grp in getattr(opt, "param_groups", []):
+        for p in grp.get("params", []):
+            flag = state.get(p, {}).get("use_muon")
+            if flag is None:
+                continue
+            if bool(flag) is want:
+                n += 1
+    return n
 
 
 def _is_json_safe(v) -> bool:
@@ -603,6 +634,25 @@ def _emit_optim_diagnostics(step_count, per_pair_records):
     if _is_main_process():
         print(json.dumps(payload, sort_keys=True), flush=True)
 
+# What fills CurvatureWhitenLoRA's two r x r slots (C_B, C_A). See the `precond`
+# block in CurvatureWhitenLoRA.__init__ for the equations; the three branches share
+# one (P, Q), one set of p/q updates, and one magnitude rule, and differ only here.
+PRECOND_CHOICES = {"product", "one-sided", "factorwise"}
+
+# How accurately the matrix sign is applied to the whitened momenta
+#   Z_A = C_B^-1/2 Mhat_A Q^-1/2   (wide: r x d_in)
+#   Z_B = P^-1/2 Mhat_B C_A^-1/2   (tall: d_out x r)
+# ORTHOGONAL to `PRECOND_CHOICES`: that one picks the curvature structure, this
+# one picks how much spectral mixing happens inside the LMO direction.
+#   full  msign(Z_A) = (Z_A Z_A^T)^-1/2 Z_A          — the r x r inverse sqrt
+#   diag  approximate that Gram by its diagonal, so
+#         U_A = Diag(diag(Z_A Z_A^T))^-1/2 Z_A = rownorm(Z_A)
+#         U_B = Z_B Diag(diag(Z_B^T Z_B))^-1/2      = colnorm(Z_B)
+# `diag` is the RACS-style simplification: a rowwise sum of squares, an rsqrt and
+# a multiply, with no r x r matmul or inverse square root anywhere. Combined with
+# precond="one-sided" the whole direction is O(rd) rather than O(r^2 d).
+MSIGN_CHOICES = {"full", "diag"}
+
 OPTIMIZER_CHOICES = {
     "adamw",
     "adafactor",
@@ -1119,7 +1169,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
                  cw_unpinned=False, cw_solved_rho=False,
-                 cw_no_rr_precond=False,
+                 precond=None, msign="full",
                  cw_factor_a=0.0, cw_factor_b=0.0,
                  rdinv_variant="A", rdinv_delta=None, cw_metric_init="1e-12",
                  dump_pre_polar_dir=None, dump_pre_polar_every=0,
@@ -1196,7 +1246,43 @@ class CurvatureWhitenLoRA(Optimizer):
         # but now whitens by M⁻¹, so the whole step is a consistent single-metric
         # two-sided program with an exact cross term (vs the mixed-metric option a).
         # Requires kl_coupled=True (it reuses the D_in/D_out EMAs).
+        # `precond` (see the block below for the three branches) resolves to
+        # `diag_metric` HERE, before the validations that read it — otherwise an
+        # explicit `--precond factorwise` on a spec that pins diag_metric=True would
+        # pass a check against the pinned value and then run with the resolved one.
+        #
+        # The default is None = "whatever this optimizer's spec pinned", NOT
+        # "product". Five specs pin diag_metric=False (curvature-whiten-lora,
+        # curvature-whiten-polar-lora, kl-shampoo-lora, kl-shampoo-polar-lora,
+        # kl-diag-polar-flatout-lora / kl-diag-flatout-lora); a "product" default
+        # would silently flip every one of them to the partner-Gram slots. So None
+        # reads the branch OFF diag_metric instead of writing it.
+        if precond is not None and precond not in PRECOND_CHOICES:
+            raise ValueError(
+                f"precond must be one of {sorted(PRECOND_CHOICES)} or None "
+                f"(inherit the spec's diag_metric); got {precond!r}.")
+        if precond == "product":
+            diag_metric = True
+        elif precond == "factorwise":
+            diag_metric = False
+        # one-sided leaves `diag_metric` as the spec pinned it: with both slots held
+        # at identity neither slot-formation path runs, so it goes unread.
         self.diag_metric = bool(diag_metric)
+        # Name the branch even when it was inherited, so diagnostics and the run cfg
+        # record which of the three actually ran rather than a None. `rr_identity`
+        # is a read-only property off this, not a second stored copy.
+        self.precond = precond or ("product" if self.diag_metric else "factorwise")
+        # ORTHOGONAL to `precond` (see MSIGN_CHOICES and `_direction_op`): how
+        # accurately the matrix sign is applied, not what curvature is applied.
+        if msign not in MSIGN_CHOICES:
+            raise ValueError(
+                f"msign must be one of {sorted(MSIGN_CHOICES)}; got {msign!r}.")
+        if msign == "diag" and not use_polar:
+            raise ValueError(
+                "msign='diag' selects HOW the matrix sign is applied, so it needs "
+                "use_polar=True (an optimizer that applies one at all). On a "
+                "no-msign spec it would silently do nothing.")
+        self.msign = msign
         if rdinv_variant not in {"A", "B", "VN"}:
             raise ValueError(f"rdinv_variant must be 'A', 'B', or 'VN', got {rdinv_variant!r}")
         if rdinv_variant == "VN" and not diag_metric:
@@ -1285,33 +1371,46 @@ class CurvatureWhitenLoRA(Optimizer):
         self.cw_no_diag_curv = bool(cw_no_diag_curv)
         if self.cw_no_diag_curv and not self.diag_metric:
             raise ValueError("cw_no_diag_curv requires diag_metric=True (the protagonist path).")
-        # ABLATION (-r x r preconditioner): force the r x r matrices C_B = B^T P B and
-        # C_A = A Q A^T to identity in the DIRECTION only, giving
-        #   dA = msign(Mhat_A Q^-1/2) Q^-1/2,   dB = P^-1/2 msign(P^-1/2 Mhat_B).
-        # The diagonal metric (P,Q) and its KL estimator are untouched: the p,q updates
-        # still whiten by the REAL C_A/C_B (SAinv_full/RBinv_full below), so P and Q are
-        # fit exactly as the protagonist fits them and the only thing removed is the
-        # r x r whitening of the direction. This is the exact complement of
-        # cw_no_diag_curv, which forces P=Q=I and KEEPS the partner Grams.
-        # Motivation: a scalar r x r metric cI cancels from the applied update exactly
-        # (msign is scale-invariant and the rho/sigma_max rescale removes c^-1/2), so the
-        # slot can only act through its eigenvalue spread; at r=256 that spread is small
-        # (measured lam_max/lam_min = 68 against Q's 3404, bench_abl_out/metric_slots.json).
-        # This arm asks whether the slot earns its place in the loss, not just the direction.
-        # It is ALSO defined off the diag_metric path. There the r x r slot holds the
-        # factor's own gradient Gram (L_A from g_A, R_B from g_B) rather than the
-        # partner Gram, and forcing it to identity gives the fourth corner of the
-        # 2x2 {slot = partner Gram or I} x {d-side diagonals shared or per-factor}:
-        #   kl-diag-polar-lora  + flag off -> partner Gram, shared (P,Q)
-        #   kl-diag-polar-lora  + flag on  -> I,            shared (P,Q)
-        #   kl-shampoo-polar    + flag off -> own Gram,     per-factor (P_A,Q_A),(P_B,Q_B)
-        #   kl-shampoo-polar    + flag on  -> I,            per-factor
-        # Without the last cell, "rxr = I, shared" and "own Gram, per-factor" land
-        # 0.6 sigma apart while differing in TWO things at once, so neither the
-        # slot's contents nor the sharing can be attributed. The override is applied
-        # after SAinv_full/RBinv_full are formed on both paths, so the estimator
-        # keeps whitening by the real Gram either way.
-        self.cw_no_rr_precond = bool(cw_no_rr_precond)
+        # ── `precond`: what fills the two r x r slots (C_B, C_A) ────────────────
+        # ONE selector with three branches. Note the name collision with
+        # `precond_method` above, which is unrelated (it picks the inverse-sqrt
+        # ALGORITHM: eigh / gram_ns / higham).
+        #
+        #                       C_B                C_A
+        #   product        B^T P B            A Q A^T        <- PoLoRA
+        #   one-sided      I_r                I_r
+        #   factorwise     P_A                Q_B
+        #
+        # All three share ONE (P, Q) on the d-sides: the p, q updates
+        #   qhat = (1/r) diag(G_A^T C_B^-1 G_A),  phat = (1/r) diag(G_B C_A^-1 G_B^T)
+        # are the same equations in every branch, differing only through which
+        # (C_B, C_A) they whiten by. Everything downstream — whiten -> msign ->
+        # unwhiten, the spectral normalization, and the magnitude rule
+        # rho = eta/(sigma_max(A) + sigma_max(B)) — is shared verbatim.
+        #
+        # `one-sided` puts the identity in the ESTIMATOR as well as the direction:
+        #   qhat = (1/r) diag(G_A^T G_A),   phat = (1/r) diag(G_B G_B^T)
+        #   D_A  = msign(Mhat_A Q^-1/2) Q^-1/2,   D_B = P^-1/2 msign(P^-1/2 Mhat_B)
+        # This is what the retired `cw_no_rr_precond` got wrong: it overrode only
+        # the direction's whiteners and left the p, q updates whitening by the real
+        # C_A/C_B, so P and Q were still fit as the product branch fits them. Note a
+        # scalar slot cI would cancel from the DIRECTION exactly (msign is
+        # scale-invariant and the rho/sigma_max rescale removes c^-1/2) but NOT from
+        # the estimator, which is why the identity has to be exact there rather than
+        # left to the damped inverse-sqrt of I.
+        #
+        # `factorwise` is the "no product structure" branch: the slots hold r x r
+        # EMAs fitted from the factor gradients themselves rather than through the
+        # partner factor,
+        #   P_A <- beta2 P_A + (1-beta2)/d_in  * G_A Q^-1 G_A^T
+        #   Q_B <- beta2 Q_B + (1-beta2)/d_out * G_B^T P^-1 G_B
+        # and it is the only branch whose slots are persistent optimizer state (the
+        # product branch recomputes its slots from A, B each step). These are the
+        # L_A/R_B buffers, which every branch already allocates.
+        # Resolved above (before the diag_metric validations): `self.precond`,
+        # `self.rr_identity`, and `diag_metric` as this branch's implementation
+        # detail — it selects between recomputing the slots from the partner factor
+        # (product) and EMA-ing them from the factor's own gradients (factorwise).
         # ABLATION (−pin / the LoRA-Muon step): remove the operator-norm magnitude rule
         # entirely. Two coupled changes vs the protagonist: (1) TRUE-SCALE inverse-sqrt
         # (eps_relative=False) instead of the λ_max-relative damping — the relative damping is
@@ -1405,6 +1504,12 @@ class CurvatureWhitenLoRA(Optimizer):
         # changes; the dump reads zA/zB and returns.
         self.dump_pre_polar_every = int(dump_pre_polar_every or 0)
         self.dump_pre_polar_dir = str(dump_pre_polar_dir) if dump_pre_polar_dir else None
+        # Stored as same-named attributes so `optimizer_config_dict` records them —
+        # they select WHICH pairs were dumped, so a dump artifact is not
+        # interpretable without them. `test_optimizer_config_dict` enforces the
+        # convention; these two were the only __init__ params missing it.
+        self.dump_pre_polar_pairs = dump_pre_polar_pairs
+        self.dump_pre_polar_max_pairs = int(dump_pre_polar_max_pairs)
         if self.dump_pre_polar_every > 0 and not self.dump_pre_polar_dir:
             raise ValueError("dump_pre_polar_every > 0 requires dump_pre_polar_dir.")
         self._dump_pair_names = None
@@ -1693,6 +1798,49 @@ class CurvatureWhitenLoRA(Optimizer):
             X, nsteps=self.ns_steps, dtype=torch.float32, pre_norm="none",
             safety_factor=1.0)
 
+    @property
+    def rr_identity(self) -> bool:
+        """True on the `precond="one-sided"` branch, where both r x r slots
+        (C_B, C_A) are held at the exact identity. Derived rather than stored so
+        there is one definition of the branch, not two that can drift."""
+        return self.precond == "one-sided"
+
+    def _direction_op(self, Z, states, key, side):
+        """The LMO direction operator applied to a whitened momentum batch.
+
+        ``msign="full"``  → ``msign(Z)``, the true matrix sign (gram-NS polar).
+        ``msign="diag"``  → the RACS-style simplification: approximate the Gram
+        inside the matrix sign by its diagonal. For the WIDE A side
+        (``Z_A`` is r x d_in, so ``msign(Z_A) = (Z_A Z_Aᵀ)^{-1/2} Z_A``)::
+
+            U_A = Diag(diag(Z_A Z_Aᵀ))^{-1/2} Z_A = rownorm(Z_A)
+
+        and for the TALL B side (``msign(Z_B) = Z_B (Z_Bᵀ Z_B)^{-1/2}``)::
+
+            U_B = Z_B Diag(diag(Z_Bᵀ Z_B))^{-1/2} = colnorm(Z_B)
+
+        i.e. a sum of squares, an rsqrt and a multiply — no r x r matmul and no
+        inverse square root. `side` is 'A' (normalize rows) or 'B' (columns).
+
+        The two operators differ in what they can fix. ``msign`` makes the small
+        side exactly orthonormal (``U Uᵀ = I``); row normalization equalizes row
+        LENGTHS but leaves the pairwise row correlations alone, so
+        ``U_A U_Aᵀ`` is the matrix of row cosine similarities rather than I. The
+        gap is not assumed small — that is the empirical question the arm asks,
+        and it is settled by held-out loss, not by agreement with ``msign``.
+
+        Degenerate rows/columns are floored RELATIVE to the largest in the same
+        matrix, matching the eps_relative convention used by the inverse-sqrt
+        paths: an exactly-zero row carries no momentum in that rank direction,
+        and must not become an unbounded direction on division.
+        """
+        if self.msign == "full":
+            return self._polar_ns_guarded(Z, states, key)
+        dim = -1 if side == "A" else -2
+        n = Z.pow(2).sum(dim=dim, keepdim=True).sqrt()
+        floor = n.amax(dim=(-2, -1), keepdim=True) * self.eps
+        return Z / n.clamp_min(floor).clamp_min(torch.finfo(Z.dtype).tiny)
+
     def _polar_ns_guarded(self, Z, states, key):
         """Scale-invariant polar of a batch ``Z`` (N,p,q) via gram-NS, guarded
         against a σ_max UNDER-estimate.
@@ -1758,17 +1906,6 @@ class CurvatureWhitenLoRA(Optimizer):
         the SAME blessed primitives (sigma_max_power_iter_batched on a 1-batch +
         _newton_schulz_batched), so it is the equivalence oracle for
         _cw_apply_grouped and the n==1 fallback. Step counters already bumped."""
-        if self.cw_no_rr_precond:
-            # The r x r identity override is implemented only in the grouped path,
-            # where it replaces the _whA/_whB closures. This reference path applies
-            # the same whitening inline in the eigenbasis (Q diag(lam) Q^T), so a
-            # copy here would be a second implementation that could silently drift
-            # from the first -- and tests/test_curvature_whiten_batched.py exists
-            # precisely to assert the two paths agree. Refuse instead of disagreeing.
-            raise NotImplementedError(
-                "cw_no_rr_precond is implemented in the grouped step only; the per-pair "
-                "reference path would silently disagree. Leave _batched_step at its "
-                "default (True).")
         from .spectral import sigma_max_power_iter_batched as _smax_b
         beta2 = self.beta2
         for i, (A, B) in enumerate(self.pairs):
@@ -1802,17 +1939,32 @@ class CurvatureWhitenLoRA(Optimizer):
                 doutB = self._rdinv(st['D_out'], partner_trace=st['D_in'].sum(dim=-1, keepdim=True))
             Din_m = (dinA * dinA).reciprocal()
             Dout_m = (doutB * doutB).reciprocal()
-            if self.diag_metric:
-                # Option (b): M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the
-                # SAME damped diagonals the cross uses (metric coherence), recomputed
-                # and stored so the eigenbasis refresh tracks it.
-                Bf = B.detach().float(); Af = A.detach().float()
-                LA = Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bf)
-                RB = (Af * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)
+            if self.rr_identity:
+                # precond="one-sided": C_B = C_A = I_r. Mirror of the grouped path —
+                # pin the slots to the identity and skip the whitening outright. lamA/
+                # lamB are set to EXACT ones rather than _rdinv(1): the damped value
+                # is a harmless scalar in the direction (msign is scale-invariant and
+                # the ρ/σ_max rescale removes it) but SAinv/RBinv below feed the p, q
+                # updates unnormalized, where a scalar would ride into the metric.
+                LA = torch.eye(st['L_A'].shape[-1], dtype=st['L_A'].dtype,
+                               device=st['L_A'].device)
+                RB = torch.eye(st['R_B'].shape[-1], dtype=st['R_B'].dtype,
+                               device=st['R_B'].device)
                 st['L_A'].copy_(LA); st['R_B'].copy_(RB)
-            evA = (QA * (LA @ QA)).sum(dim=0)
-            evB = (QB * (RB @ QB)).sum(dim=0)
-            lamA = self._rdinv(evA); lamB = self._rdinv(evB)
+                lamA = torch.ones(LA.shape[-1], dtype=LA.dtype, device=LA.device)
+                lamB = torch.ones(RB.shape[-1], dtype=RB.dtype, device=RB.device)
+            else:
+                if self.diag_metric:
+                    # Option (b): M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the
+                    # SAME damped diagonals the cross uses (metric coherence), recomputed
+                    # and stored so the eigenbasis refresh tracks it.
+                    Bf = B.detach().float(); Af = A.detach().float()
+                    LA = Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bf)
+                    RB = (Af * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)
+                    st['L_A'].copy_(LA); st['R_B'].copy_(RB)
+                evA = (QA * (LA @ QA)).sum(dim=0)
+                evB = (QB * (RB @ QB)).sum(dim=0)
+                lamA = self._rdinv(evA); lamB = self._rdinv(evB)
             # SOAP v̂ EMA (state) once; mhat for the kl path.
             if self.soap_v:
                 gA_basis = QAt @ gA
@@ -1864,8 +2016,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     self._maybe_dump_pre_polar(
                         st['step'], [i], zA.unsqueeze(0), zB.unsqueeze(0))
                 if self.use_polar:
-                    zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
-                    zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
+                    zA = self._direction_op(zA.unsqueeze(0), [st], 'v_sigma_zA', 'A')[0]
+                    zB = self._direction_op(zB.unsqueeze(0), [st], 'v_sigma_zB', 'B')[0]
                 if self.flat_outer:
                     # Robustness probe (heuristic, NOT the curvature-metric LMO):
                     # skip the un-whiten. dX ∝ φ(z) is flat-spectrum (chord-tight
@@ -1925,17 +2077,23 @@ class CurvatureWhitenLoRA(Optimizer):
                 Dout_inv = doutB * doutB
                 SAinv = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
                 RBinv = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
-                if not self.diag_metric:
+                if self.precond == "factorwise":
                     st['L_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
                                             alpha=(1.0 - cb) / d_in)
                     st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
                                             alpha=(1.0 - cb) / d_out)
-                st['D_in'].mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
-                st['D_out'].mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
+                if self.rr_identity:
+                    # Mirror of the grouped path: SAinv/RBinv are the identity, so
+                    # skip the matmul rather than compute `I @ gA`.
+                    st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=(1.0 - cb) / r)
+                    st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=(1.0 - cb) / r)
+                else:
+                    st['D_in'].mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
+                    st['D_out'].mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
             else:
                 # diag_metric recomputes L_A/R_B from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
-                if not self.diag_metric:
+                if self.precond == "factorwise":
                     st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
                     st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
@@ -2004,7 +2162,16 @@ class CurvatureWhitenLoRA(Optimizer):
                 doutB = self._rdinv(Dout, partner_trace=Din.sum(dim=-1, keepdim=True))
             Din_m = (dinA * dinA).reciprocal()
             Dout_m = (doutB * doutB).reciprocal()
-            if self.diag_metric:
+            if self.rr_identity:
+                # precond="one-sided": C_B = C_A = I_r. Nothing forms the slots and
+                # nothing EMAs them (see the KL update below); LA/RB are pinned to
+                # the identity so the Rayleigh path and the write-back stay
+                # shape-correct and idempotent.
+                LA = torch.eye(LA.shape[-1], dtype=LA.dtype, device=LA.device
+                               ).expand_as(LA).clone()
+                RB = torch.eye(RB.shape[-1], dtype=RB.dtype, device=RB.device
+                               ).expand_as(RB).clone()
+            elif self.diag_metric:
                 # Option (b): small-side curvature = conjugate-diagonal-weighted
                 # geometric Gram, recomputed each step (replaces the dense S_curv
                 # EMA). M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the SAME
@@ -2025,7 +2192,19 @@ class CurvatureWhitenLoRA(Optimizer):
             # as SAinv_full/RBinv_full. eigh: Q diag(λ^{-1/2}) Qᵀ from the QR
             # eigenbasis + Rayleigh λ. higham: the batched Newton–Schulz inverse-sqrt
             # of the small-side Gram directly (form-once: S^{-1} = S^{-1/2} @ S^{-1/2}).
-            if _eigh:
+            if self.rr_identity:
+                # C_B = C_A = I: the whiteners and their squares are the identity, so
+                # skip the inverse-sqrt entirely (it is the dominant per-step cost).
+                # The identity must be EXACT here, not the damped inverse-sqrt of I:
+                # a scalar slot cI cancels from the direction (msign is scale-invariant
+                # and the ρ/σ_max rescale removes c^{-1/2}) but NOT from the p, q
+                # updates below, which read SAinv_full/RBinv_full unnormalized and
+                # would carry c into the metric.
+                def _whA(x): return x
+                def _whB(x): return x
+                SAinv_full = LA        # already pinned to I above
+                RBinv_full = RB
+            elif _eigh:
                 evA = (QA * (LA @ QA)).sum(dim=1)
                 evB = (QB * (RB @ QB)).sum(dim=1)
                 lamA = self._rdinv(evA); lamB = self._rdinv(evB)
@@ -2078,13 +2257,6 @@ class CurvatureWhitenLoRA(Optimizer):
                 def _whB(x): return x @ SBh
                 SAinv_full = SAh @ SAh
                 RBinv_full = SBh @ SBh
-            if self.cw_no_rr_precond:
-                # -r x r preconditioner (see __init__): identity in the DIRECTION only.
-                # Placed after SAinv_full/RBinv_full so the KL estimator below still
-                # whitens by the real C_A/C_B and P,Q are fit as the protagonist fits
-                # them; only the direction's r x r whitening is removed.
-                def _whA(x): return x
-                def _whB(x): return x
             # SOAP v̂ EMA (state update, once) — only the SOAP-curvature arm.
             if self.soap_v:
                 gA_basis = QAt @ gA
@@ -2155,8 +2327,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     self._maybe_dump_pre_polar(t, idxs, zA, zB)
                 if self.use_polar:
                     if timer: timer.start("op_polar")       # matrix-sign φ(z) via Gram NS (Frobenius pre-norm for PolarExpress + a cache-warming σ_max)
-                    zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA')
-                    zB = self._polar_ns_guarded(zB, grp, 'v_sigma_zB')
+                    zA = self._direction_op(zA, grp, 'v_sigma_zA', 'A')
+                    zB = self._direction_op(zB, grp, 'v_sigma_zB', 'B')
                     if timer: timer.stop()
                 if self.flat_outer:
                     # See _cw_apply_per_pair: skip the un-whiten (flat-spectrum probe).
@@ -2220,17 +2392,27 @@ class CurvatureWhitenLoRA(Optimizer):
                 Dout_inv = doutB * doutB
                 SAinv = SAinv_full
                 RBinv = RBinv_full
-                if not self.diag_metric:
+                if self.precond == "factorwise":
                     LA.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
                                      alpha=(1.0 - cb) / d_in)
                     RB.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
                                      alpha=(1.0 - cb) / d_out)
-                Din.mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
-                Dout.mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
+                if self.rr_identity:
+                    # C_B = C_A = I, so SAinv/RBinv are the identity and the two
+                    # bmms below are `I @ gA` and `gB @ I`. Skip them: at r=256 the
+                    # matmul form costs N·r²·(d_in+d_out) MACs per step against
+                    # N·r·(d_in+d_out) for the sum of squares — an r-fold waste on
+                    # every step of every one-sided run. Same expression as the
+                    # non-coupled branch below, for the same reason.
+                    Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=(1.0 - cb) / r)
+                    Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=(1.0 - cb) / r)
+                else:
+                    Din.mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
+                    Dout.mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
             else:
                 # diag_metric recomputes LA/RB from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
-                if not self.diag_metric:
+                if self.precond == "factorwise":
                     LA.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
                     RB.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
@@ -11853,7 +12035,11 @@ def build_optimizer(
     cw_nesterov: bool = False,
     cw_no_radius: bool = False,
     cw_no_diag_curv: bool = False,
-    cw_no_rr_precond: bool = False,
+    # What fills (C_B, C_A); None = inherit the optimizer spec's diag_metric. See
+    # PRECOND_CHOICES and CurvatureWhitenLoRA.__init__.
+    precond: str | None = None,
+    # How accurately the matrix sign is applied. Orthogonal to `precond`.
+    msign: str = "full",
     cw_unpinned: bool = False,
     cw_solved_rho: bool = False,
     cw_factor_a: float = 0.0,

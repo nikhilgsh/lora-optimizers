@@ -12,9 +12,9 @@ predicate silently stops discriminating: runs with the flag ON and OFF both
 match, they land in one display-label bucket, and the figure keeps whichever
 has the lowest loss. The predicate fails OPEN. This is not hypothetical — it
 happened three times in one day, on ``global_batch_size`` (the small-batch
-sweep joining the protagonist series), on ``cw_no_rr_precond`` (the
-``e2_noprod_norr`` sweep joining the factorwise arm of the r x r 2x2), and on
-``beta2`` (the AdamW beta2 grid joining the AdamW baseline).
+sweep joining the protagonist series), on the since-retired
+``cw_no_rr_precond`` (an ``e2_noprod_norr`` sweep joining the factorwise arm),
+and on ``beta2`` (the AdamW beta2 grid joining the AdamW baseline).
 
 The inversion
 -------------
@@ -190,7 +190,15 @@ LORARITE = arm("lora-rite", max_steps=9000)
 # optimizer at the same (lr, r, corpus) with 1x1 = 2048 tokens/step instead of
 # 4x4 = 32768. Pin global_batch_size, NOT batch_size — every 9000-step paper
 # run is global 16, but the composition differs (Llama-3-8B is 2x8).
-PROTO = arm("kl-diag-polar-lora", **CW_PRODUCTION, global_batch_size=16)
+# `precond` is stated explicitly on every curvature-whiten arm rather than left
+# to the pin. The dataclass/CLI default is None ("inherit the optimizer's own
+# setting"), but `loader._backfill_precond` resolves every run of this family to
+# the branch it actually ran — "product" here — so a None pin would match none of
+# them. Stating it also makes the arm table read as the three-branch selection it
+# is: (C_B, C_A) = (B^T P B, A Q A^T) for product, (I, I) for one-sided,
+# (P_A, Q_B) for factorwise.
+PROTO = arm("kl-diag-polar-lora", **CW_PRODUCTION, global_batch_size=16,
+            precond="product")
 
 # E2 leave-one-out arms: the protagonist with one control removed.
 NOSHAMPOO = {**PROTO, "cw_no_diag_curv": True}      # w/o curvature control
@@ -201,16 +209,29 @@ DOUBLE = {**PROTO, "cw_no_diag_curv": True, "cw_unpinned": True,
 # Derivation ablations: each is its own registered optimizer, so the optimizer
 # string selects it; CW_PRODUCTION holds the rest of the config at the
 # protagonist's so the only difference is the derivation premise removed.
-AVGLOSS = arm("kl-diag-lora", **CW_PRODUCTION)               # -per-sample: no msign, metric^-1
-HALFPOW = arm("kl-diag-flatout-lora", **CW_PRODUCTION)       # -msign at half metric power
-FLATOUT = arm("kl-diag-polar-flatout-lora", **CW_PRODUCTION)  # -outer un-whiten: msign only
-NOPRODUCT = arm("kl-shampoo-polar-lora", **CW_PRODUCTION)    # -product: per-factor metric
+AVGLOSS = arm("kl-diag-lora", **CW_PRODUCTION,               # -per-sample: no msign, metric^-1
+              precond="product")
+HALFPOW = arm("kl-diag-flatout-lora", **CW_PRODUCTION,       # -msign at half metric power
+              precond="product")
+FLATOUT = arm("kl-diag-polar-flatout-lora", **CW_PRODUCTION,  # -outer un-whiten: msign only
+              precond="product")
 
-# The r x r metric slot 2x2: {slot = B^T P B or I} x {d-side diagonals shared
-# or per-factor}. NORR and NOPRODUCT_NORR are the two `cw_no_rr_precond=True`
-# corners; PROTO and NOPRODUCT are the False corners, pinned automatically.
-NORR = arm("kl-diag-polar-lora", **CW_PRODUCTION, cw_no_rr_precond=True)
-NOPRODUCT_NORR = {**NOPRODUCT, "cw_no_rr_precond": True}
+# ─── the `precond` axis: what fills (C_B, C_A) ───────────────────────────────
+# Three branches, not four corners. All three share ONE (P, Q), the same p, q
+# updates and the same rho = eta/(smax A + smax B) rule; they differ only in the
+# slots. `kl-shampoo-polar-lora` IS the factorwise branch (its spec pins
+# diag_metric=False), so its existing runs need no re-run to serve as that arm.
+ONESIDED = {**PROTO, "precond": "one-sided"}     # C_B = C_A = I everywhere
+NOPRODUCT = arm("kl-shampoo-polar-lora", **CW_PRODUCTION,  # C_B = P_A, C_A = Q_B
+                precond="factorwise")
+
+# ─── the `msign` axis: how accurately the matrix sign is applied ─────────────
+# Orthogonal to `precond`. "diag" approximates the Gram inside the matrix sign by
+# its diagonal, i.e. rownorm(Z_A) / colnorm(Z_B) — no r x r inverse sqrt. Run at
+# BOTH ends of the precond axis, so the question "can the matrix sign be cheapened"
+# is answered with the slot present and with it gone, not only after it is gone.
+PROTO_DIAG = {**PROTO, "msign": "diag"}
+ONESIDED_DIAG = {**PROTO, "precond": "one-sided", "msign": "diag"}
 
 # Magnitude rule: rho = eta flat instead of rho = eta/(smax A + smax B).
 NAIVEMAG = {**PROTO, "cw_no_radius": True}
@@ -255,12 +276,26 @@ DERIVATION_ARMS = {
     "no msign, metric^-1/2": HALFPOW,
     "no outer un-whiten: msign only": FLATOUT,
 }
-RR_SLOT_ARMS = {
+# The `precond` axis: three branches, not the four corners of a 2x2. All three
+# share one (P, Q), the same p, q updates and the same magnitude rule, and differ
+# only in what fills (C_B, C_A).
+PRECOND_ARMS = {
     "AdamW": ADAMW,
-    "PoLoRA: rxr=B^T P B, shared P,Q": PROTO,
-    "rxr = I, shared P,Q": NORR,
-    "factorwise: own P_A,Q_A / P_B,Q_B": NOPRODUCT,
-    "factorwise + rxr = I": NOPRODUCT_NORR,
+    "product: C_B=B^T P B, C_A=A Q A^T": PROTO,
+    "one-sided: C_B=C_A=I": ONESIDED,
+    "factorwise: C_B=P_A, C_A=Q_B": NOPRODUCT,
+}
+
+# The `msign` axis, run at both ends of `precond`: can the matrix sign be replaced
+# by its diagonal (row/column normalization) with the slot present, and with it
+# gone? (one-sided, diag) is the O(rd) configuration — no r x r matmul or inverse
+# square root anywhere in the direction.
+MSIGN_ARMS = {
+    "AdamW": ADAMW,
+    "product, msign": PROTO,
+    "product, diagonal msign": PROTO_DIAG,
+    "one-sided, msign": ONESIDED,
+    "one-sided, diagonal msign": ONESIDED_DIAG,
 }
 MAGNITUDE_RULE_ARMS = {
     "PoLoRA: rho = eta/(smax A + smax B)": PROTO,
@@ -274,7 +309,8 @@ ALL_ARM_DICTS = {
     "PANEL_ARMS": PANEL_ARMS,
     "ABLATION_ARMS": ABLATION_ARMS,
     "DERIVATION_ARMS": DERIVATION_ARMS,
-    "RR_SLOT_ARMS": RR_SLOT_ARMS,
+    "PRECOND_ARMS": PRECOND_ARMS,
+    "MSIGN_ARMS": MSIGN_ARMS,
     "MAGNITUDE_RULE_ARMS": MAGNITUDE_RULE_ARMS,
     "PROTO_BETA2_ARMS": PROTO_BETA2_ARMS,
     "ADAMW_BETA2_ARMS": ADAMW_BETA2_ARMS,
