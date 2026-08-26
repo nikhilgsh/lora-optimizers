@@ -1121,7 +1121,9 @@ class CurvatureWhitenLoRA(Optimizer):
                  cw_unpinned=False, cw_solved_rho=False,
                  cw_no_rr_precond=False,
                  cw_factor_a=0.0, cw_factor_b=0.0,
-                 rdinv_variant="A", rdinv_delta=None, cw_metric_init="1e-12"):
+                 rdinv_variant="A", rdinv_delta=None, cw_metric_init="1e-12",
+                 dump_pre_polar_dir=None, dump_pre_polar_every=0,
+                 dump_pre_polar_pairs=None, dump_pre_polar_max_pairs=6):
         pairs = collect_lora_pairs(model, adapter_name)
         if not pairs:
             raise ValueError("No LoRA (A,B) tensors found on model.")
@@ -1395,9 +1397,82 @@ class CurvatureWhitenLoRA(Optimizer):
                 'step': 0,
             }
 
+        # ── Pre-polar (H) dump: OFF unless dump_pre_polar_every > 0. ─────────
+        # Writes the matrices handed to msign — zA/zB at the _polar_ns_guarded
+        # call sites — so the approximate-LMO scores in
+        # lora_playground.lmo_diagnostics can be computed OFFLINE on the
+        # matrices this optimizer actually forms. Nothing about the update
+        # changes; the dump reads zA/zB and returns.
+        self.dump_pre_polar_every = int(dump_pre_polar_every or 0)
+        self.dump_pre_polar_dir = str(dump_pre_polar_dir) if dump_pre_polar_dir else None
+        if self.dump_pre_polar_every > 0 and not self.dump_pre_polar_dir:
+            raise ValueError("dump_pre_polar_every > 0 requires dump_pre_polar_dir.")
+        self._dump_pair_names = None
+        self._dump_pair_idxs = None
+        if self.dump_pre_polar_every > 0:
+            names = [nm for _, _, nm in collect_lora_pairs_named(model, adapter_name)]
+            if len(names) != len(pairs):
+                # Fall back to positional labels rather than mislabelling a pair.
+                names = [f"pair_{i}" for i in range(len(pairs))]
+            self._dump_pair_names = names
+            if dump_pre_polar_pairs:
+                wanted = [s.strip() for s in str(dump_pre_polar_pairs).split(",") if s.strip()]
+                sel = [i for i, nm in enumerate(names) if any(w in nm for w in wanted)]
+                if not sel:
+                    raise ValueError(
+                        f"dump_pre_polar_pairs={dump_pre_polar_pairs!r} matched no LoRA "
+                        f"pair; available names include {names[:4]}")
+            else:
+                # Evenly-spaced stride over all pairs: spans early/late layers and
+                # both projection shapes without hand-listing module names.
+                k = max(1, min(int(dump_pre_polar_max_pairs), len(names)))
+                step_i = max(1, len(names) // k)
+                sel = list(range(0, len(names), step_i))[:k]
+            self._dump_pair_idxs = set(sel)
+            os.makedirs(self.dump_pre_polar_dir, exist_ok=True)
+
     @staticmethod
     def _sym(M):
         return 0.5 * (M + M.transpose(-2, -1))
+
+    def _maybe_dump_pre_polar(self, step, global_idxs, zA, zB):
+        """Save the pre-msign matrices for the selected pairs at this step.
+
+        ``global_idxs`` maps the leading axis of ``zA``/``zB`` to pair indices
+        (the shape group's ``idxs``); pass ``[i]`` with 3-D single-pair tensors
+        from the per-pair path. One ``.pt`` per (step, pair) holding fp32 zA/zB —
+        fp32 because the rho scores this feeds are ratios near 1 and fp16's ~3
+        decimal digits would sit on top of the differences being measured.
+        """
+        if self.dump_pre_polar_every <= 0 or not self._dump_pair_idxs:
+            return
+        if step % self.dump_pre_polar_every != 0:
+            return
+        for local, gi in enumerate(global_idxs):
+            if gi not in self._dump_pair_idxs:
+                continue
+            name = self._dump_pair_names[gi]
+            path = os.path.join(
+                self.dump_pre_polar_dir,
+                f"step{int(step):07d}_pair{int(gi):03d}.pt")
+            torch.save({
+                "step": int(step),
+                "pair_index": int(gi),
+                "pair_name": name,
+                "zA": zA[local].detach().to(torch.float32).cpu(),
+                "zB": zB[local].detach().to(torch.float32).cpu(),
+                "optimizer_hparams": {
+                    "lr": self.param_groups[0]["lr"],
+                    "delta": self.delta,
+                    "beta1": self.beta1,
+                    "curvature_beta": self.curvature_beta,
+                    "precond_method": self.precond_method,
+                    "polar_method": self.polar_method,
+                    "ns_steps": self.ns_steps,
+                    "cw_picard_iters": self.cw_picard_iters,
+                    "diag_metric": self.diag_metric,
+                },
+            }, path)
 
     def _rdinv(self, x, partner_trace=None):
         """Relative-damped inverse-sqrt of a nonneg tensor along its last dim.
@@ -1783,6 +1858,11 @@ class CurvatureWhitenLoRA(Optimizer):
                         inB = mhatB + (1.0 / lr) * cross_B
                     zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
                     zB = (((inB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                if _pic == 0:
+                    # Mirror of the grouped path's dump (see _maybe_dump_pre_polar);
+                    # zA/zB are 2-D here, so add the leading axis it indexes.
+                    self._maybe_dump_pre_polar(
+                        st['step'], [i], zA.unsqueeze(0), zB.unsqueeze(0))
                 if self.use_polar:
                     zA = self._polar_ns_guarded(zA.unsqueeze(0), [st], 'v_sigma_zA')[0]
                     zB = self._polar_ns_guarded(zB.unsqueeze(0), [st], 'v_sigma_zB')[0]
@@ -2068,6 +2148,11 @@ class CurvatureWhitenLoRA(Optimizer):
                     zA = _whA(inA) * dinA.unsqueeze(1)
                     zB = _whB(inB) * doutB.unsqueeze(-1)
                     if timer: timer.stop()
+                if _pic == 0:
+                    # H for the approximate-LMO scores: the matrix msign is about
+                    # to be applied to, at Picard iteration 0 only (k>=2 re-forms
+                    # zA/zB with the cross-coupling correction).
+                    self._maybe_dump_pre_polar(t, idxs, zA, zB)
                 if self.use_polar:
                     if timer: timer.start("op_polar")       # matrix-sign φ(z) via Gram NS (Frobenius pre-norm for PolarExpress + a cache-warming σ_max)
                     zA = self._polar_ns_guarded(zA, grp, 'v_sigma_zA')
@@ -11776,6 +11861,10 @@ def build_optimizer(
     rdinv_variant: str = "A",
     rdinv_delta: float | None = None,
     cw_metric_init: str = "1e-12",
+    dump_pre_polar_dir: str | None = None,
+    dump_pre_polar_every: int = 0,
+    dump_pre_polar_pairs: str | None = None,
+    dump_pre_polar_max_pairs: int = 6,
     anderson_m: int = 0,
     anderson_reg: float = 1e-10,
     soap_beta: float = 0.95,
