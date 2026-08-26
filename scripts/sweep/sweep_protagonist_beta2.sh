@@ -10,9 +10,14 @@
 #
 # Positional args (must match params JSON key order):
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
-#   9: precond_method (OPTIONAL — empty=gram_ns (protagonist default); "eigh"/"higham" override)
-#  10: cw_metric_init (OPTIONAL — default "1e-12" = εI branch-free init; "zero"/"ones"/"delta" are ablations)
-#  11: cw_solved_rho (OPTIONAL — "1" adds --cw_solved_rho, the solved magnitude rule; default off)
+#   9: curvature_beta  — THE SWEPT AXIS here; inserted at 9 when this wrapper forked from
+#      sweep_protagonist_generic.sh, which pushed the three optional trailing args down one.
+#      (This block used to say 9=precond_method / 10=cw_metric_init / 11=cw_solved_rho,
+#      one slot off from what the code below reads. A params JSON written against the old
+#      numbering would have fed the beta2 grid into precond_method.)
+#  10: precond_method (OPTIONAL — empty=gram_ns (protagonist default); "eigh"/"higham" override)
+#  11: cw_metric_init (OPTIONAL — default "1e-12" = εI branch-free init; "zero"/"ones"/"delta" are ablations)
+#  12: cw_solved_rho (OPTIONAL — "1" adds --cw_solved_rho, the solved magnitude rule; default off)
 lr=${1:-3e-2}
 optimizer=${2:-kl-diag-polar-lora}      # paper protagonist (was diag-shampoo-polar-lora; pivot 2026-06-11)
 seed=${3:-0}
