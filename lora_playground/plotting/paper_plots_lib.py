@@ -60,82 +60,22 @@ SIGMA = 0.0017
 # --------------------------------------------------------------------------------------
 # Arm predicates
 # --------------------------------------------------------------------------------------
-# Shared by every CurvatureWhitenLoRA arm: these four pin the arm to the protagonist's
-# configuration so the ONLY difference between arms is the component being ablated. They
-# also exclude the legacy kl-shampoo-polar runs on other models, which used eigh and
-# plain EMA momentum.
-_CW_BASE = {
-    "cw_nesterov": True,
-    "polar_method": "polar_express",
-    "beta1": 0.9,
-    "precond_method": "gram_ns",
-}
-
-# beta2 pinned: the e2_adam_beta2 sweep is also `adamw` at this cell, so without it the
-# AdamW baseline series spans six different beta2 values.
-ADAMW = {"optimizer": "adamw", "beta2": 0.999}
-
-PROTO = {
-    "optimizer": "kl-diag-polar-lora",
-    **_CW_BASE,
-    "cw_unpinned": False,
-    "cw_no_diag_curv": False,
-    "precond": "product",
-    # These are NOT optional. Without them PROTO matched 13 runs across 7 configs at
-    # lr=1e-2 alone -- cw_solved_rho=True, rdinv_variant VN and B, cw_metric_init
-    # zero/delta/ones, and the curvature_beta grid -- and compare_variants_figure
-    # silently keeps whichever has the lowest loss.
-    "cw_solved_rho": False,
-    "rdinv_variant": "A",
-    "cw_no_radius": False,
-    "cw_metric_init": "1e-12",
-    "curvature_beta": 0.99,
-    # Production batch. e2_beta2_smallbatch runs the SAME optimizer at the same
-    # (lr, r, corpus) with 1x1 = 2048 tokens/step instead of 4x4 = 32768. Pin
-    # global_batch_size and NOT batch_size: every 9000-step paper run is global 16, but
-    # the composition differs (Llama-3-8B is 2x8, the rest 4x4).
-    "global_batch_size": 16,
-}
-
-# E2 leave-one-out arms. Same optimizer as PROTO, separated by the cw_* flags, so they
-# do not contaminate the protagonist series.
-NOSHAMPOO = {**PROTO, "cw_no_diag_curv": True}          # identity metric, no curvature EMAs
-NOMAG = {**PROTO, "cw_unpinned": True, "lora_init_b": "symmetric"}   # true-scale roots, no rescale
-DOUBLE = {**PROTO, "cw_no_diag_curv": True, "cw_unpinned": True,
-          "lora_init_b": "symmetric", "max_steps": 9000}  # both removed = the LoRA-Muon step
-
-# Baselines. max_steps pins out the 1000-step lr pilots, which are ranking-only.
-IMUON = {"optimizer": "imuon-lora", "max_steps": 9000}
-MUON = {"optimizer": "muon-lora", "max_steps": 9000}     # naive factor-Muon
-LORARITE = {"optimizer": "lora-rite", "max_steps": 9000}  # LoRA-RITE (Yen ICLR'25)
-
-# Derivation ablations, selected by the registered optimizer string.
-# -per-sample: Frobenius LMO, so no msign.
-AVGLOSS = {"optimizer": "kl-diag-lora", **_CW_BASE}
-# precond=factorwise: C_B = P_A, C_A = Q_B, the r x r EMAs fitted from the factor
-# gradients rather than through the partner factor. This optimizer's spec pins
-# diag_metric=False, which IS that branch, so its runs need no re-run.
-NOPRODUCT = {"optimizer": "kl-shampoo-polar-lora", **_CW_BASE, "precond": "factorwise"}
-# -outer un-whiten: D_A = msign(C_B^-1/2 Mhat_A Q^-1/2) with the trailing
-# C_B^-1/2 (.) Q^-1/2 dropped. msign sets every nonzero singular value to 1, so
-# ||D_A||_2 = 1 by construction and the rho/sigma_max rescale is a no-op.
-FLATOUT = {"optimizer": "kl-diag-polar-flatout-lora", **_CW_BASE}
-# -msign at HALF metric power: D_A = C_B^-1/2 Mhat_A Q^-1/2, metric applied ONCE. The
-# control for AVGLOSS, which drops msign but also composes the inner whiten with the
-# outer un-whiten (C_B^-1 Mhat_A Q^-1), confounding "no orthogonalization" with
-# "over-preconditioned".
-HALFPOW = {"optimizer": "kl-diag-flatout-lora", **_CW_BASE}
-# precond=one-sided: C_B = C_A = I EVERYWHERE -- in the p, q updates as well as
-# the direction, so qhat = (1/r) diag(G_A^T G_A) and D_A = msign(Mhat_A Q^-1/2) Q^-1/2.
-# Supersedes the retired cw_no_rr_precond, which put the identity in the direction
-# only and left P, Q fit through the real C_A/C_B.
-ONESIDED = {**PROTO, "precond": "one-sided"}
-# The msign axis, orthogonal to precond: approximate the Gram inside the matrix
-# sign by its diagonal (rownorm(Z_A) / colnorm(Z_B)). Run at both ends of precond.
-PROTO_DIAG = {**PROTO, "msign": "diag"}
-ONESIDED_DIAG = {**PROTO, "precond": "one-sided", "msign": "diag"}
-# Naive magnitude rule, rho = eta flat, instead of eta/(smax(A)+smax(B)).
-NAIVEMAG = {**PROTO, "cw_no_radius": True}
+# Arm predicates come from `arms.py`, which derives them from `OptimizerConfig`:
+# `arm()` pins EVERY config field to its default and takes overrides only for the
+# fields an arm genuinely differs on. The hand-typed dicts that used to live here
+# were allowlists of 4-14 fields, so any field they did not mention was
+# unconstrained -- which is how the `e2_beta2_nomsign` sweep (5 curvature_beta
+# values on kl-diag-lora) joined AVGLOSS and raised LabelCollisionError out of
+# derivation_ablation_panel. arms.AVGLOSS pins 76 fields including
+# curvature_beta, so a new sweep that sets a new flag falls OUT of the old arm
+# and renders empty (loud) instead of merging into it (silent).
+#
+# This is the consolidation this module's docstring asked for. Names are
+# re-exported so every caller and notebook cell keeps working unchanged.
+from .arms import (  # noqa: F401,E402
+    ADAMW, AVGLOSS, DOUBLE, FLATOUT, HALFPOW, IMUON, LORARITE, MUON, NAIVEMAG,
+    NOMAG, NOPRODUCT, NOSHAMPOO, ONESIDED, ONESIDED_DIAG, PROTO, PROTO_DIAG,
+)
 
 # The E1 cell set (paper/e1_coverage_fill.md). data_key is substring-matched on data_dir.
 CELLS = [
