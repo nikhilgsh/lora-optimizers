@@ -11684,6 +11684,7 @@ def build_optimizer(
     cw_nesterov: bool = False,
     cw_no_radius: bool = False,
     cw_no_diag_curv: bool = False,
+    cw_no_rr_precond: bool = False,
     cw_unpinned: bool = False,
     cw_solved_rho: bool = False,
     cw_factor_a: float = 0.0,

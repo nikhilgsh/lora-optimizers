@@ -91,6 +91,8 @@ def _shared_knobs(cfg: dict) -> str:
     s = ""
     if cfg.get("cw_no_diag_curv"):
         s += " w/o-curv"
+    if cfg.get("cw_no_rr_precond"):
+        s += " w/o-rr"
     if cfg.get("cw_unpinned"):
         s += " unpinned"
     hi = cfg.get("higham_iters")

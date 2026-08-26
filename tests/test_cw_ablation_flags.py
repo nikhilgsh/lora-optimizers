@@ -249,3 +249,55 @@ def test_curvature_whiten_does_not_apply_nesterov_and_logs_effective():
     opt = build_optimizer(m, "curvature-whiten-polar-lora", lr=1e-2, curvature_beta=0.99,
                           muon_ns_steps=5, precond_delta=1e-4, cw_nesterov=True)
     assert opt.cw_nesterov is False  # silently not applied; the config logs this False
+
+
+def test_no_rr_precond_defaults_off_and_forwards():
+    """The flag must default OFF (so every arm already in flight is untouched) and
+    must actually reach the optimizer through build_optimizer."""
+    m, _, _ = _make()
+    assert _build_kl(m).cw_no_rr_precond is False
+    m2, _, _ = _make()
+    assert _build_kl(m2, cw_no_rr_precond=True).cw_no_rr_precond is True
+
+
+def test_no_rr_precond_requires_diag_metric():
+    """The override targets C_B = B^T P B / C_A = A Q A^T, which only the diag_metric
+    (protagonist) path forms; anything else must refuse rather than silently no-op."""
+    # Construct directly: every spec that FORWARDS this flag (kl-diag*, diag-shampoo*)
+    # already has diag_metric=True, and the specs with diag_metric=False list it in
+    # _CW_ABL_SKIP / _CW_SOAP_SKIP so it never reaches the class. The guard therefore
+    # only fires on direct construction -- same as cw_no_diag_curv's test above.
+    m, _, _ = _make()
+    with pytest.raises(ValueError, match="cw_no_rr_precond requires diag_metric"):
+        CurvatureWhitenLoRA(m, lr=1e-2, diag_metric=False, cw_no_rr_precond=True)
+
+
+def test_no_rr_precond_differs_and_finite():
+    """Identity r x r whitening changes the trajectory once the diagonals accumulate,
+    and stays finite. Needs >1 step: at step 1 B=0 makes C_B singular-and-damped, so
+    the flag barely bites there."""
+    m1, x, tgt = _make(seed=5)
+    m2, _, _ = _make(seed=5)
+    full = _build_kl(m1)
+    norr = _build_kl(m2, cw_no_rr_precond=True)
+    for _ in range(4):
+        for opt, m in ((full, m1), (norr, m2)):
+            opt.zero_grad(set_to_none=False)
+            ((m(x) - tgt) ** 2).mean().backward()
+            opt.step()
+    diffs = [(p1.detach() - p2.detach()).norm().item()
+             for p1, p2 in zip(m1.parameters(), m2.parameters())]
+    assert any(df > 1e-6 for df in diffs), "-r x r did not change the trajectory by step 4"
+    assert all(torch.isfinite(p).all() for p in m2.parameters())
+
+
+def test_no_rr_precond_per_pair_path_refuses():
+    """The override lives in the grouped step only. The per-pair reference path applies
+    the same whitening inline in the eigenbasis, so a second copy could drift from the
+    first; it must raise rather than silently compute a different update."""
+    m, x, tgt = _make(seed=6)
+    opt = _build_kl(m, cw_no_rr_precond=True)
+    opt._batched_step = False
+    ((m(x) - tgt) ** 2).mean().backward()
+    with pytest.raises(NotImplementedError, match="grouped step only"):
+        opt.step()
