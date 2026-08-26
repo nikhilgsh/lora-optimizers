@@ -211,9 +211,41 @@ def dedup_by_canonical(runs, *, keep_longest: bool = True):
         if key not in best:
             order.append(key)
             best[key] = (cfg, evals)
-        elif keep_longest and _last_step(evals) > _last_step(best[key][1]):
+            continue
+        # Two runs under one key are a CONTINUATION (same series, resumed or
+        # re-run) only if they agree outside SERIES_AXIS_FIELDS. When they do not,
+        # collapsing them discards a real result: keep_longest would pick whichever
+        # trained further, with no error and no notice. Measured on
+        # Llama-3.2-1B/openmath/r256 before canonical_label was made to
+        # discriminate: six buckets collapsed distinct series, one of them
+        # `AdamW ... lr=1e-4` covering six -- the beta2 grid -- of which five were
+        # silently dropped and a leaderboard rendered cleanly on the survivor.
+        if series_id(cfg) != series_id(best[key][0]):
+            raise LabelCollisionError(
+                f"dedup_by_canonical: two runs share the dedup key {key!r} but are "
+                f"DIFFERENT series, so collapsing them would discard a result.\n"
+                f"  differing fields: {_series_diff(cfg, best[key][0])}\n"
+                f"Fix: make canonical_label discriminate on one of those fields "
+                f"(labels._residual_knobs derives the suffix from "
+                f"arms.PINNED_FIELDS(), so a field it misses is one listed in "
+                f"labels._LABELLED_ELSEWHERE), OR add the field to "
+                f"manifest.SERIES_AXIS_FIELDS if it is a true per-series axis."
+            )
+        if keep_longest and _last_step(evals) > _last_step(best[key][1]):
             best[key] = (cfg, evals)
     return [best[k] for k in order]
+
+
+def _series_diff(a: dict, b: dict) -> str:
+    """Fields that make two cfgs different series, for the error message."""
+    from ..manifest import SERIES_AXIS_FIELDS
+    diffs = []
+    for k in sorted(set(a) | set(b)):
+        if k in SERIES_AXIS_FIELDS or k.startswith("_"):
+            continue
+        if a.get(k) != b.get(k):
+            diffs.append(f"{k}={a.get(k)!r} vs {b.get(k)!r}")
+    return ", ".join(diffs[:6]) + ("..." if len(diffs) > 6 else "")
 
 
 def _baseline_values(runs, *, allowed_to_vary: set) -> dict:

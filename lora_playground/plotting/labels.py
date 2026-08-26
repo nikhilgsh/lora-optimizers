@@ -123,7 +123,59 @@ def _shared_knobs(cfg: dict) -> str:
     rd = cfg.get("rdinv_delta")
     if rd is not None:
         s += f" rdδ={_eps(rd)}"
-    return s
+    return s + _residual_knobs(cfg)
+
+
+# Fields the per-optimizer templates and the hand-written suffix above already put
+# in the label. Everything else that is off its default is appended generically by
+# `_residual_knobs`, so the FAILURE MODE INVERTS: a field added to OptimizerConfig
+# is absent from this set, so it is appended automatically and the label keeps
+# discriminating. Before, a new field was absent from the hand-written suffix and
+# so was silently dropped -- which is how six buckets on the hero workload came to
+# share one label, `AdamW minit=1e-12` at lr=1e-4 covering six distinct series
+# (the beta2 grid), five of which dedup_by_canonical then discarded.
+_LABELLED_ELSEWHERE = frozenset({
+    # per-optimizer templates (the headline name)
+    "precond_refresh_every", "curvature_beta", "precond_delta",
+    "precond_delta_relative", "polar_method", "muon_ns_steps", "ns_form",
+    "polar_norm_dir", "polar_sigma_power", "cw_picard_iters",
+    "picard_iters_override", "picard_alpha", "curvature_whitening",
+    "ssc_c", "ssc_nsteps", "ssc_kappa",
+    # the hand-written suffix above
+    "cw_no_diag_curv", "precond", "msign", "cw_unpinned", "higham_iters",
+    "beta1", "cw_metric_init", "rdinv_variant", "rdinv_delta",
+})
+
+
+def _fmt(v):
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
+def _residual_knobs(cfg: dict) -> str:
+    """`k=v` for every pinnable config field that is off its default and is not
+    already shown in the label.
+
+    Derived from `arms.PINNED_FIELDS()` (OptimizerConfig minus the per-series
+    axes), not from a remembered list, so it cannot go stale as fields are added.
+    """
+    from .arms import PINNED_FIELDS, _config_defaults
+    defaults = _config_defaults()
+    out = []
+    for f in sorted(PINNED_FIELDS() - _LABELLED_ELSEWHERE):
+        if f not in cfg:
+            continue
+        v = cfg[f]
+        if v == defaults.get(f):
+            continue
+        # `+flag` / `-flag` rather than `flag=True` -- booleans dominate this
+        # suffix and "=True" carries no information the name does not.
+        if isinstance(v, bool):
+            out.append(("+" if v else "-") + f)
+        else:
+            out.append(f"{f}={_fmt(v)}")
+    return (" " + " ".join(out)) if out else ""
 
 
 def canonical_label(cfg: dict) -> str | None:
