@@ -709,6 +709,16 @@ def make_parser():
                              "ρ=lr/(σmax(A)+σmax(B)). The σ_max(W) pin is KEPT — this does NOT "
                              "remove magnitude control; the magnitude-rule ablation is "
                              "--cw_unpinned. Retired from the paper (2026-06-12), kept dormant.")
+    parser.add_argument("--cw_no_rr_precond", action="store_true",
+                        help="ABLATION (-r x r preconditioner): force the r x r matrices "
+                             "C_B=B^T P B and C_A=A Q A^T to identity in the DIRECTION only, "
+                             "so dA = msign(Mhat_A Q^-1/2) Q^-1/2 and "
+                             "dB = P^-1/2 msign(P^-1/2 Mhat_B). The diagonal metric (P,Q) and "
+                             "its estimator are untouched -- P,Q are still fit through the real "
+                             "C_A/C_B, so this isolates the r x r whitening in the direction "
+                             "and nothing else. Complement of --cw_no_diag_curv, which removes "
+                             "P,Q and KEEPS the partner Grams. Requires the diag_metric "
+                             "(protagonist) path.")
     parser.add_argument("--cw_no_diag_curv", action="store_true",
                         help="ABLATION (−curvature): force the input/output diagonal "
                              "curvatures to identity → C_A=BᵀB, C_B=AAᵀ (partner-Gram, "
@@ -1290,6 +1300,7 @@ def main():
         cw_nesterov=args.cw_nesterov,
         cw_no_radius=args.cw_no_radius,
         cw_no_diag_curv=args.cw_no_diag_curv,
+        cw_no_rr_precond=args.cw_no_rr_precond,
         cw_unpinned=args.cw_unpinned,
         cw_solved_rho=args.cw_solved_rho,
         cw_factor_a=args.cw_factor_a,
@@ -1438,6 +1449,7 @@ def main():
             "cw_nesterov": getattr(optimizer, "cw_nesterov", args.cw_nesterov),
             "cw_no_radius": getattr(optimizer, "cw_no_radius", args.cw_no_radius),
             "cw_no_diag_curv": getattr(optimizer, "cw_no_diag_curv", args.cw_no_diag_curv),
+            "cw_no_rr_precond": getattr(optimizer, "cw_no_rr_precond", args.cw_no_rr_precond),
             "cw_unpinned": getattr(optimizer, "cw_unpinned", args.cw_unpinned),
             "cw_solved_rho": getattr(optimizer, "cw_solved_rho", args.cw_solved_rho),
             "cw_factor_a": getattr(optimizer, "cw_factor_a", args.cw_factor_a),

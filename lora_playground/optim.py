@@ -1104,6 +1104,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
                  cw_unpinned=False, cw_solved_rho=False,
+                 cw_no_rr_precond=False,
                  cw_factor_a=0.0, cw_factor_b=0.0,
                  rdinv_variant="A", rdinv_delta=None, cw_metric_init="1e-12"):
         pairs = collect_lora_pairs(model, adapter_name)
@@ -1251,6 +1252,22 @@ class CurvatureWhitenLoRA(Optimizer):
         self.cw_no_diag_curv = bool(cw_no_diag_curv)
         if self.cw_no_diag_curv and not self.diag_metric:
             raise ValueError("cw_no_diag_curv requires diag_metric=True (the protagonist path).")
+        # ABLATION (-r x r preconditioner): force the r x r matrices C_B = B^T P B and
+        # C_A = A Q A^T to identity in the DIRECTION only, giving
+        #   dA = msign(Mhat_A Q^-1/2) Q^-1/2,   dB = P^-1/2 msign(P^-1/2 Mhat_B).
+        # The diagonal metric (P,Q) and its KL estimator are untouched: the p,q updates
+        # still whiten by the REAL C_A/C_B (SAinv_full/RBinv_full below), so P and Q are
+        # fit exactly as the protagonist fits them and the only thing removed is the
+        # r x r whitening of the direction. This is the exact complement of
+        # cw_no_diag_curv, which forces P=Q=I and KEEPS the partner Grams.
+        # Motivation: a scalar r x r metric cI cancels from the applied update exactly
+        # (msign is scale-invariant and the rho/sigma_max rescale removes c^-1/2), so the
+        # slot can only act through its eigenvalue spread; at r=256 that spread is small
+        # (measured lam_max/lam_min = 68 against Q's 3404, bench_abl_out/metric_slots.json).
+        # This arm asks whether the slot earns its place in the loss, not just the direction.
+        self.cw_no_rr_precond = bool(cw_no_rr_precond)
+        if self.cw_no_rr_precond and not self.diag_metric:
+            raise ValueError("cw_no_rr_precond requires diag_metric=True (the protagonist path).")
         # ABLATION (−pin / the LoRA-Muon step): remove the operator-norm magnitude rule
         # entirely. Two coupled changes vs the protagonist: (1) TRUE-SCALE inverse-sqrt
         # (eps_relative=False) instead of the λ_max-relative damping — the relative damping is
@@ -1616,6 +1633,17 @@ class CurvatureWhitenLoRA(Optimizer):
         the SAME blessed primitives (sigma_max_power_iter_batched on a 1-batch +
         _newton_schulz_batched), so it is the equivalence oracle for
         _cw_apply_grouped and the n==1 fallback. Step counters already bumped."""
+        if self.cw_no_rr_precond:
+            # The r x r identity override is implemented only in the grouped path,
+            # where it replaces the _whA/_whB closures. This reference path applies
+            # the same whitening inline in the eigenbasis (Q diag(lam) Q^T), so a
+            # copy here would be a second implementation that could silently drift
+            # from the first -- and tests/test_curvature_whiten_batched.py exists
+            # precisely to assert the two paths agree. Refuse instead of disagreeing.
+            raise NotImplementedError(
+                "cw_no_rr_precond is implemented in the grouped step only; the per-pair "
+                "reference path would silently disagree. Leave _batched_step at its "
+                "default (True).")
         from .spectral import sigma_max_power_iter_batched as _smax_b
         beta2 = self.beta2
         for i, (A, B) in enumerate(self.pairs):
@@ -1888,6 +1916,13 @@ class CurvatureWhitenLoRA(Optimizer):
                 def _whB(x): return x @ SBh
                 SAinv_full = SAh @ SAh
                 RBinv_full = SBh @ SBh
+            if self.cw_no_rr_precond:
+                # -r x r preconditioner (see __init__): identity in the DIRECTION only.
+                # Placed after SAinv_full/RBinv_full so the KL estimator below still
+                # whitens by the real C_A/C_B and P,Q are fit as the protagonist fits
+                # them; only the direction's r x r whitening is removed.
+                def _whA(x): return x
+                def _whB(x): return x
             # SOAP v̂ EMA (state update, once) — only the SOAP-curvature arm.
             if self.soap_v:
                 gA_basis = QAt @ gA
