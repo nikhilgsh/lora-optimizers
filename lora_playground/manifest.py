@@ -39,9 +39,10 @@ no scope strings. To remove an old sweep from analysis, delete its log dir.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-from .plotting import RUNTIME_FIELDS, has_runs
+from .plotting import RUNTIME_FIELDS, has_runs, parallel_map, prescan_groups
 
 
 # Phase 3 deletion (2026-05-14): EXCLUDED_COMMITS, EXCLUDED_GROUPS,
@@ -107,6 +108,33 @@ class UntaggedSweepError(RuntimeError):
 _LOAD_MANIFESTS_CACHE: dict[tuple[str, bool], tuple[tuple, list[dict]]] = {}
 
 
+def _groups_with_run_info(logs_root: str) -> list[str]:
+    """Sorted group names under ``logs_root`` that have a ``run_info/`` dir.
+
+    Replaces ``root.glob("*/run_info")``: one ``scandir`` of ``logs/`` plus one
+    ``stat`` per child, and it never follows into the group directories.
+    """
+    try:
+        children = sorted(e.name for e in os.scandir(logs_root) if e.is_dir())
+    except OSError:
+        return []
+    return [g for g in children
+            if os.path.isdir(os.path.join(logs_root, g, "run_info"))]
+
+
+def _meta_stats(logs_root: str, groups: list[str]
+                ) -> list[tuple[str, int, int]]:
+    """``(group, meta.json mtime_ns, size)`` per group, missing file → (0, 0)."""
+    def one(group: str) -> tuple[str, int, int]:
+        try:
+            st = os.stat(os.path.join(logs_root, group, "run_info", "meta.json"))
+        except OSError:
+            return (group, 0, 0)
+        return (group, st.st_mtime_ns, st.st_size)
+
+    return parallel_map(one, groups)
+
+
 def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict]:
     """Return one manifest dict per sweep that has both a ``meta.json`` and
     at least one populated run output. Manifests without runs are skipped
@@ -128,14 +156,13 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
         return []
     try:
         root_mtime = root.stat().st_mtime_ns
-        meta_sig = tuple(
-            (run_info.parent.name,
-             (run_info / "meta.json").stat().st_mtime_ns
-             if (run_info / "meta.json").exists() else 0,
-             (run_info / "meta.json").stat().st_size
-             if (run_info / "meta.json").exists() else 0)
-            for run_info in sorted(root.glob("*/run_info"))
-        )
+        groups = _groups_with_run_info(logs_root)
+        # One `stat` per meta.json instead of the four the exists()+stat()+
+        # exists()+stat() form cost, and issued concurrently: this runs on
+        # every `load_runs` call (it is what decides the cache hit) over
+        # 500+ groups on a shared parallel filesystem, where the syscall is
+        # latency-bound and the GIL is released for its duration.
+        meta_sig = tuple(_meta_stats(logs_root, groups))
         sig = (root_mtime, meta_sig)
         cache_key = (str(root.resolve()), strict)
         cached = _LOAD_MANIFESTS_CACHE.get(cache_key)
@@ -144,17 +171,23 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
     except OSError:
         sig = None
         cache_key = None
+        groups = _groups_with_run_info(logs_root)
 
+    prescan_groups(groups, logs_root)
     manifests: list[dict] = []
     bad: list[tuple[str, str]] = []  # (group, reason)
-    for run_info in sorted(root.glob("*/run_info")):
-        group = run_info.parent.name
+    for group in groups:
+        run_info = root / group / "run_info"
         if not has_runs(group, logs_root):
             continue
         meta_path = run_info / "meta.json"
-        if meta_path.exists():
+        try:
+            raw = meta_path.read_text()
+        except OSError:
+            raw = None
+        if raw is not None:
             try:
-                m = json.loads(meta_path.read_text())
+                m = json.loads(raw)
             except json.JSONDecodeError:
                 m = {"group": group, "scope": [], "purpose": "", "_corrupt": True}
                 bad.append((group, "corrupt meta.json"))

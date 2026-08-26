@@ -59,12 +59,19 @@ from .colors import (
 
 # Loading
 from .loading import (
+    GroupScan,
     clear_run_caches,
     has_runs,
+    iter_sweep_raw,
     load_run,
     load_sweep,
     parse_cli_command,
     parse_flag,
+    parallel_map,
+    prescan_groups,
+    scan_epoch,
+    scan_group,
+    scan_workers,
 )
 
 # Series identity + dedup

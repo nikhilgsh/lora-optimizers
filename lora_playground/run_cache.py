@@ -192,10 +192,17 @@ def compute_group_sig(
 
 
 def get_cached_sweep(
-    group: str, logs_root: str
+    group: str,
+    logs_root: str,
+    sig: tuple[tuple[str, int, int], ...] | None = None,
 ) -> list[tuple[dict, list[dict]]] | None:
     """Return the cached runs for `group` if its source-file signature
     matches the cache entry; otherwise None. Caller re-parses on None.
+
+    `sig` lets a caller that has already scanned the group's log directory
+    (`plotting.loading.scan_group`) hand the signature over instead of making
+    this function re-walk the same directory — the signature format is
+    identical either way. Omit it and the directory is walked here.
 
     Returned cfgs are deep-copied shallow (one level) so downstream mutation
     (`merge_runs` writing `log_group`, `_enrich_cfg` writing `_derived`)
@@ -205,7 +212,7 @@ def get_cached_sweep(
     entry = _load_group(logs_root, group)
     if entry is None:
         return None
-    current_sig = compute_group_sig(logs_root, group)
+    current_sig = compute_group_sig(logs_root, group) if sig is None else sig
     if entry["sig"] != current_sig:
         return None
     return [(dict(cfg), evs) for cfg, evs in entry["runs"]]

@@ -13,20 +13,21 @@ of how old the run is or how complete its raw cfg was. See ``_enrich_cfg``.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import warnings
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from .manifest import (
     SERIES_AXIS_FIELDS, live_manifests_newest_first, load_manifests, warn_untagged,
 )
 from .plotting import (
     DIVERGE_THRESHOLD, OPTIM_COLORS, RUNTIME_FIELDS, has_runs, load_sweep,
-    max_loss, merge_runs, parse_flag,
+    max_loss, merge_runs, parse_flag, prescan_groups, scan_epoch, scan_group,
 )
 
 
@@ -702,11 +703,18 @@ _WHERE_FIELD_ALIASES: dict[str, str] = {
 }
 
 
+_MISSING = object()
+
+
+def _resolve_where(where: dict[str, Any]) -> dict[str, Any]:
+    return {_WHERE_FIELD_ALIASES.get(k, k): v for k, v in where.items()}
+
+
 def _build_filter(where: dict[str, Any] | None) -> Callable[[dict], bool] | None:
     if not where:
         return None
 
-    resolved = {_WHERE_FIELD_ALIASES.get(k, k): v for k, v in where.items()}
+    resolved = _resolve_where(where)
 
     def predicate(cfg: dict) -> bool:
         for field_name, spec in resolved.items():
@@ -717,6 +725,102 @@ def _build_filter(where: dict[str, Any] | None) -> Callable[[dict], bool] | None
         return True
 
     return predicate
+
+
+# ─── where-filter pushdown ────────────────────────────────────────────────────
+#
+# `load_runs` used to postprocess EVERY run in `logs/` and only then apply
+# `where`: 2311 runs enriched to return 131. The postprocess (argparse-default
+# backfill + `_enrich_cfg`) is the single most expensive per-run step, so the
+# filter is now pushed in front of it — but only on the fields where doing so is
+# provably the same answer.
+#
+# What `_wrapped_postprocess` does to a cfg, exhaustively:
+#   1. argparse-default backfill — writes `cfg[k]` only when `cfg.get(k) is None`
+#   2. `_enrich_cfg`             — writes `run_id`, `_derived`,
+#      `effective_picard_iters` unconditionally; `effective_polar_iters` /
+#      `effective_inner_polar` / `effective_polar_pre_norm` whenever their
+#      derivation is non-None; `optimizer_config` and the three diagnostics
+#      fields only when already None; then the same argparse backfill again
+#   3. the caller's own `cfg_postprocess` — arbitrary
+#
+# So a raw cfg value is guaranteed to survive postprocess unchanged exactly when
+# it is non-None and its field is not in `_ENRICHMENT_WRITTEN_FIELDS`. On those
+# fields the pre-filter may reject; on every other field it must abstain and let
+# the run take the full path. A caller-supplied `cfg_postprocess` disables the
+# pushdown altogether, since it can rewrite anything.
+_ENRICHMENT_WRITTEN_FIELDS: frozenset[str] = frozenset({
+    "run_id", "_derived", "optimizer_config",
+    "effective_picard_iters", "effective_polar_iters",
+    "effective_inner_polar", "effective_polar_pre_norm",
+    "log_basic_diagnostics", "log_heavy_diagnostics", "optim_diagnostics_every",
+})
+
+# Cfg keys that appear only after `merge_runs` has processed a run — `log_group`
+# plus what `_wrapped_postprocess` writes — and so are absent from the raw cfg
+# the pre-filter sees. Folded into the where-key-existence pool
+# (`_seen_cfg_keys`) so the typo warning keeps recognising them as real fields
+# without postprocessing the runs the pre-filter rejected. The three
+# `effective_polar*` / `effective_inner_polar` entries are added only when their
+# derivation is non-None, so listing them here is a deliberate
+# over-approximation: it costs a typo warning we would otherwise have raised for
+# a `where` on one of them in a pool with no polar runs at all, and buys back a
+# spurious warning in every pool that does have them.
+_ALWAYS_ADDED_BY_POSTPROCESS: frozenset[str] = frozenset({
+    "log_group", "run_id", "_derived", "optimizer_config",
+    "effective_picard_iters",
+    "effective_inner_polar", "effective_polar_pre_norm", "effective_polar_iters",
+    "log_basic_diagnostics", "log_heavy_diagnostics", "optim_diagnostics_every",
+})
+
+
+def _build_pushdown(
+    where: dict[str, Any] | None,
+    cfg_postprocess: Callable[[dict, str], None] | None,
+) -> tuple[Callable[[dict, str], bool] | None, Callable[[str], bool] | None]:
+    """Return ``(pre_filter, group_filter)`` for :func:`merge_runs`.
+
+    ``pre_filter(raw_cfg, group)`` returns False only when some ``where`` field
+    is decidable from the raw cfg and rejects it — in which case the full
+    filter would have rejected the postprocessed cfg too, because postprocess
+    provably leaves that field alone. Otherwise it returns True and the run
+    takes the original path (postprocess, then the full filter).
+
+    ``group_filter(group)`` handles a ``where`` on ``log_group`` / ``_group``:
+    ``merge_runs`` assigns ``cfg["log_group"] = group`` before postprocess, so
+    the predicate is decidable from the group name and a non-matching group can
+    be skipped without reading its logs at all.
+    """
+    if not where or cfg_postprocess is not None:
+        return None, None
+
+    resolved = _resolve_where(where)
+
+    group_spec = resolved.get("log_group", _MISSING)
+    group_filter = (
+        None if group_spec is _MISSING
+        else (lambda group, _spec=group_spec: _matches(_spec, group))
+    )
+
+    decidable = {
+        k: v for k, v in resolved.items()
+        if k != "log_group" and k not in _ENRICHMENT_WRITTEN_FIELDS
+    }
+    if not decidable:
+        return None, group_filter
+
+    def pre_filter(cfg: dict, group: str) -> bool:
+        for field_name, spec in decidable.items():
+            value = cfg.get(field_name)
+            if value is None:
+                # Absent, or logged as an explicit None: postprocess may fill
+                # it with the argparse default, so the raw cfg cannot decide.
+                continue
+            if not _matches(spec, value):
+                return False
+        return True
+
+    return pre_filter, group_filter
 
 
 def load_runs(
@@ -769,12 +873,48 @@ def load_runs(
       Production plotting via ``standard_sweep_figure`` already gets this
       via ``assert_label_discriminates``; ``unique_on`` is the load-time
       analogue for ad-hoc cells.
+
+    Cost model: ``where`` is pushed in front of the per-run cfg postprocess
+    (see ``_build_pushdown``), so a narrow query enriches only the runs it can
+    still return rather than every run in ``logs/``. Passing your own
+    ``cfg_postprocess`` turns the pushdown off, because it may rewrite any
+    field the predicate reads. Directory scanning is shared across the call
+    and issued concurrently; ``logs_signature`` exposes just that half, for
+    callers that want to skip a re-query when the tree has not moved.
     """
     if logs_root is None:
         logs_root = _default_logs_root()
+    # One scan epoch for the whole call: `load_manifests`' has_runs check,
+    # `merge_runs`' has_runs check, and each group's cache-freshness signature
+    # all read the same `os.scandir` result instead of walking the tree three
+    # times over. The epoch ends when this call returns, so the next call
+    # re-stats every file and picks up in-flight sweeps.
+    with scan_epoch():
+        return _load_runs_inner(
+            where, key_axes=key_axes, runtime_fields=runtime_fields,
+            cfg_postprocess=cfg_postprocess, logs_root=logs_root,
+            warn_cross_commit=warn_cross_commit, unique_on=unique_on,
+            allow_axes=allow_axes, quiet=quiet,
+        )
+
+
+def _load_runs_inner(
+    where: dict[str, Any] | None,
+    *,
+    key_axes: tuple[str, ...] | None,
+    runtime_fields: frozenset[str],
+    cfg_postprocess: Callable[[dict, str], None] | None,
+    logs_root: str,
+    warn_cross_commit: bool,
+    unique_on: tuple[str, ...] | None,
+    allow_axes: tuple[str, ...],
+    quiet: bool,
+) -> list[tuple[dict, list[dict]]]:
+    """Body of :func:`load_runs`, run inside a `scan_epoch`."""
     manifests = load_manifests(logs_root, strict=False)
     groups = [m["group"] for m in live_manifests_newest_first(manifests)]
     filter_fn = _build_filter(where)
+    pre_filter, group_filter = _build_pushdown(where, cfg_postprocess)
 
     if key_axes is None:
         def key_fn(cfg: dict) -> frozenset:
@@ -910,16 +1050,20 @@ def load_runs(
     # disagreement set has been reviewed; the JSON commit_exclusions
     # reproduces every legacy entry's effect by construction.
     _user_filter = filter_fn
-    # Pool of cfg keys seen during filtering (used by where-key validation
-    # post-merge: tracking BEFORE the user_filter rejects on missing keys
-    # tells us "does this key exist anywhere in the candidate pool?").
-    _seen_cfg_keys: set[str] = set()
+    # Evidence for the where-key validation below: which of the caller's
+    # where-keys exist on SOME candidate cfg ("does this field exist at all, or
+    # is it a typo?"). Only the where-keys are tracked, not every cfg key —
+    # unioning ~350 keys per candidate over the whole tree cost more than the
+    # postprocess this function's pre-filter was added to avoid, and the answer
+    # never depended on the other 345. `_sample_cfg_keys` keeps one cfg's key
+    # list purely so the warning can show the reader what real keys look like.
+    _where_keys_present: set[str] = set()
+    _sample_cfg_keys: set[str] = set()
+    _resolved_where_keys = (
+        {_WHERE_FIELD_ALIASES.get(k, k) for k in where} if where else set()
+    )
+    _n_candidates = 0
     def _wrapped_filter(cfg: dict) -> bool:
-        # Key-existence pool for the where-key typo warning below. Collect from
-        # EVERY candidate cfg, independent of either filter, so a where-key that
-        # legitimately narrows the pool to nothing still validates as a real
-        # field. (`_evaluate_new_layer` is a pure read, so order vs. it is free.)
-        _seen_cfg_keys.update(cfg.keys())
         # Cheap user predicate FIRST. `_evaluate_new_layer` can shell out to git
         # for dirty-tree content-hash resolution (~10s over a full multi-hundred
         # group pool, dominated by in-flight runs); paying that for runs the
@@ -966,12 +1110,28 @@ def load_runs(
         if cfg_postprocess is not None:
             cfg_postprocess(cfg, group)
 
+    def _wrapped_pre_filter(cfg: dict, group: str) -> bool:
+        # Key-existence evidence for the where-key typo warning below, gathered
+        # from EVERY candidate cfg independent of either filter, so a where-key
+        # that legitimately narrows the pool to nothing still validates as a
+        # real field.
+        nonlocal _n_candidates
+        _n_candidates += 1
+        if not _sample_cfg_keys:
+            _sample_cfg_keys.update(cfg.keys())
+        for k in _resolved_where_keys:
+            if k not in _where_keys_present and k in cfg:
+                _where_keys_present.add(k)
+        return pre_filter is None or pre_filter(cfg, group)
+
     runs = merge_runs(
         groups,
         key_fn=key_fn,
         filter_fn=filter_fn,
         cfg_postprocess=_wrapped_postprocess,
         logs_root=logs_root,
+        pre_filter=_wrapped_pre_filter if where else None,
+        group_filter=group_filter,
     )
 
     # Enrichment: every cfg gains a `_derived` namespace and (if missing) a
@@ -998,16 +1158,23 @@ def load_runs(
     # silently empty. Warn so typos ('datset' for 'dataset_name') surface
     # loudly. We check against `_seen_cfg_keys` (collected pre-user-filter)
     # so legitimate value-misses don't fire the warning.
-    if where and _seen_cfg_keys:
-        resolved_keys = {_WHERE_FIELD_ALIASES.get(k, k) for k in where.keys()}
-        unknown = sorted(k for k in resolved_keys if k not in _seen_cfg_keys)
+    #
+    # The evidence is gathered from RAW cfgs; the pool the check wants is the
+    # postprocessed one, so a key that postprocess adds to every cfg
+    # (argparse-flag backfill + the enrichment namespace) also counts as known.
+    # Filtering on `log_group` narrows the candidate pool to the selected
+    # groups, which is what the check then reports against.
+    if where and _n_candidates:
+        known = _where_keys_present | set(_defaults) | _ALWAYS_ADDED_BY_POSTPROCESS
+        unknown = sorted(k for k in _resolved_where_keys if k not in known)
         if unknown:
+            sample = sorted(_sample_cfg_keys | set(_defaults))
             warnings.warn(
                 f"load_runs: where-key(s) {unknown!r} do not appear in any "
-                f"cfg in the candidate pool ({len(_seen_cfg_keys)} unique "
-                f"fields seen). Possible typo or filtering on a field that "
+                f"cfg in the candidate pool ({_n_candidates} runs examined). "
+                f"Possible typo or filtering on a field that "
                 f"doesn't exist for this dataset. Known cfg keys (sample): "
-                f"{sorted(_seen_cfg_keys)[:20]}...",
+                f"{sample[:20]}...",
                 stacklevel=2,
             )
 
@@ -1044,6 +1211,53 @@ def load_runs(
         pass
 
     return runs
+
+
+def logs_signature(logs_root: str | None = None,
+                   groups: Iterable[str] | None = None) -> str:
+    """Fingerprint of what ``load_runs`` reads off disk.
+
+    Changes iff some group's manifest or some log file changed — including a
+    running sweep appending to a ``log_NN.out``, which is why this stats every
+    log file rather than trusting directory mtimes. It is the cheap half of a
+    ``load_runs`` call: the same concurrent scan, without parsing, filtering,
+    postprocessing or dedup.
+
+    Intended use is a live-refresh memo, so a panel re-reads only when the tree
+    actually moved::
+
+        sig = logs_signature(LOGS)
+        if key not in cache or cache[key][0] != sig:
+            cache[key] = (sig, load_runs(where=..., logs_root=LOGS))
+        runs = cache[key][1]
+
+    Cheaper than the ``refresh=True`` pattern it replaces, which paid a full
+    query per call to discover that nothing had changed. The manifest layer
+    (one ``stat`` per ``meta.json``) is always included, so a newly submitted
+    sweep changes the signature even before it has written a log line.
+
+    ``groups`` narrows the log-file half to a subset — e.g. the groups a
+    previous result came from. That makes an unrelated sweep's writes stop
+    invalidating this query's memo, at the cost of missing a group that was
+    already on disk, contributed nothing last time, and has since started
+    producing matching runs. Leave it None (the default, whole tree) unless
+    that trade is one you have thought about.
+    """
+    if logs_root is None:
+        logs_root = _default_logs_root()
+    from .manifest import _groups_with_run_info, _meta_stats
+    h = hashlib.blake2b(digest_size=16)
+    with scan_epoch():
+        all_groups = _groups_with_run_info(logs_root)
+        scanned = all_groups if groups is None else sorted(set(groups))
+        prescan_groups(scanned, logs_root)
+        for group, mtime, size in _meta_stats(logs_root, all_groups):
+            h.update(f"{group}\0{mtime}\0{size}\0".encode())
+        for group in scanned:
+            h.update(f"|{group}|".encode())
+            for name, f_mtime, f_size in scan_group(group, logs_root).sig:
+                h.update(f"{name}\0{f_mtime}\0{f_size}\0".encode())
+    return h.hexdigest()
 
 
 # ─── inventory ────────────────────────────────────────────────────────────────
@@ -1104,11 +1318,18 @@ def inventory_runs(logs_root: str | None = None) -> RunInventory:
     """
     if logs_root is None:
         logs_root = _default_logs_root()
+    with scan_epoch():
+        return _inventory_runs_inner(logs_root)
+
+
+def _inventory_runs_inner(logs_root: str) -> RunInventory:
+    """Body of :func:`inventory_runs`, run inside a `scan_epoch`."""
     manifests = load_manifests(logs_root, strict=False)
     on_disk = sorted(m["group"] for m in manifests)
     orphaned = sorted(warn_untagged(manifests))
     live = live_manifests_newest_first(manifests)
     live_groups = [m["group"] for m in live]
+    prescan_groups(live_groups, logs_root)
 
     # Single pass over all runs in live groups. We do NOT dedup here — the
     # inventory wants raw coverage across groups; downstream load_runs() does

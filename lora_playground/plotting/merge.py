@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Callable, Iterable
 
 from .dedup import _hashable
-from .loading import has_runs, load_sweep
+from .loading import has_runs, iter_sweep_raw, prescan_groups, scan_epoch
 from .style import DIVERGE_THRESHOLD
 
 
@@ -147,7 +147,10 @@ def merge_runs(group_priority: Iterable[str],
                filter_fn: Callable[[dict], bool] | None = None,
                cfg_postprocess: Callable[[dict, str], None] | None = None,
                logs_root: str = "../logs",
-               *, strict_hidden_axes: bool = True) -> list[tuple[dict, list[dict]]]:
+               *, strict_hidden_axes: bool = True,
+               pre_filter: Callable[[dict, str], bool] | None = None,
+               group_filter: Callable[[str], bool] | None = None,
+               ) -> list[tuple[dict, list[dict]]]:
     """Merge sweeps, deduplicating by ``key_fn(cfg)``.
 
     Dedup rule: **same-key runs are stitched into one step-monotonic
@@ -167,45 +170,78 @@ def merge_runs(group_priority: Iterable[str],
 
     Pass ``strict_hidden_axes=False`` only when you genuinely want axes
     collapsed (e.g., showing the best-of across m∈{1,4} as one curve).
+
+    Two optional early-rejection hooks let a caller keep ``cfg_postprocess``
+    off runs it is going to discard anyway — the postprocess is the expensive
+    part of a whole-tree pass, and running it on every run in ``logs/`` to
+    return a few dozen was the dominant cost of ``loader.load_runs``:
+
+    ``group_filter(group)``
+        Consulted before the group's logs are touched at all. Only sound for a
+        predicate that depends on the group NAME alone.
+    ``pre_filter(raw_cfg, group)``
+        Consulted on each run's cfg *as parsed from the log*, before
+        ``log_group`` is written and before ``cfg_postprocess`` runs. Must
+        return True whenever it cannot rule the run out; a False is a promise
+        that ``filter_fn`` would also have rejected the postprocessed cfg.
+        ``loader.load_runs`` derives one that only rejects on cfg fields its
+        postprocess provably leaves alone (see ``loader._build_pushdown``).
+
+    Both default to None, in which case every run takes the original path.
     """
     prio = {g: i for i, g in enumerate(group_priority)}
+    ordered = sorted(prio.items(), key=lambda kv: kv[1])
     collected: dict[tuple, list[tuple[int, int, dict, list[dict]]]] = {}
-    for group, idx in sorted(prio.items(), key=lambda kv: kv[1]):
-        if not has_runs(group, logs_root):
-            continue
-        for cfg, evs in load_sweep(group, logs_root):
-            cfg["log_group"] = group
-            if cfg_postprocess is not None:
-                cfg_postprocess(cfg, group)
-            if filter_fn is not None and not filter_fn(cfg):
+    with scan_epoch():
+        # One concurrent pass over the tree; `has_runs` and the per-group
+        # freshness signature then read the same scan instead of re-walking.
+        prescan_groups([g for g, _ in ordered
+                        if group_filter is None or group_filter(g)], logs_root)
+        for group, idx in ordered:
+            if group_filter is not None and not group_filter(group):
                 continue
-            k = key_fn(cfg)
-            final_step = evs[-1]["step"] if evs else 0
-            bucket = collected.get(k)
-            if bucket is None:
-                collected[k] = [(final_step, idx, cfg, evs)]
+            if not has_runs(group, logs_root):
                 continue
-            if strict_hidden_axes:
-                # Compare against the bucket's first cfg; if all members agree
-                # with it on non-runtime fields they mutually agree (transitive).
-                ex_cfg = bucket[0][2]
-                diffs = _hidden_axis_diffs(ex_cfg, cfg)
-                if diffs:
-                    field_summary = ", ".join(
-                        f"{f}={va!r}↔{vb!r}" for f, va, vb in diffs[:5]
-                    )
-                    if len(diffs) > 5:
-                        field_summary += f", … (+{len(diffs)-5} more)"
-                    raise ValueError(
-                        f"merge_runs: dedup key collision on {k!r} between cfgs "
-                        f"that differ on non-runtime field(s): {field_summary}. "
-                        f"Two distinct runs would be silently collapsed. Either "
-                        f"include these fields in key_fn (or use the deny-list "
-                        f"default in load_runs), or pass strict_hidden_axes=False "
-                        f"if collapsing is intended. "
-                        f"Groups: {ex_cfg.get('log_group')!r} vs {cfg.get('log_group')!r}."
-                    )
-            bucket.append((final_step, idx, cfg, evs))
+            for cfg, evs in iter_sweep_raw(group, logs_root):
+                if pre_filter is not None and not pre_filter(cfg, group):
+                    continue
+                # `iter_sweep_raw` yields the cache's own dicts; copy before
+                # writing `log_group` / enriching. Copying here rather than
+                # inside the loader means a rejected run costs no allocation.
+                cfg = dict(cfg)
+                cfg["log_group"] = group
+                if cfg_postprocess is not None:
+                    cfg_postprocess(cfg, group)
+                if filter_fn is not None and not filter_fn(cfg):
+                    continue
+                k = key_fn(cfg)
+                final_step = evs[-1]["step"] if evs else 0
+                bucket = collected.get(k)
+                if bucket is None:
+                    collected[k] = [(final_step, idx, cfg, evs)]
+                    continue
+                if strict_hidden_axes:
+                    # Compare against the bucket's first cfg; if all members
+                    # agree with it on non-runtime fields they mutually agree
+                    # (transitive).
+                    ex_cfg = bucket[0][2]
+                    diffs = _hidden_axis_diffs(ex_cfg, cfg)
+                    if diffs:
+                        field_summary = ", ".join(
+                            f"{f}={va!r}↔{vb!r}" for f, va, vb in diffs[:5]
+                        )
+                        if len(diffs) > 5:
+                            field_summary += f", … (+{len(diffs)-5} more)"
+                        raise ValueError(
+                            f"merge_runs: dedup key collision on {k!r} between cfgs "
+                            f"that differ on non-runtime field(s): {field_summary}. "
+                            f"Two distinct runs would be silently collapsed. Either "
+                            f"include these fields in key_fn (or use the deny-list "
+                            f"default in load_runs), or pass strict_hidden_axes=False "
+                            f"if collapsing is intended. "
+                            f"Groups: {ex_cfg.get('log_group')!r} vs {cfg.get('log_group')!r}."
+                        )
+                bucket.append((final_step, idx, cfg, evs))
     return [_stitch_runs(runs) for runs in collected.values()]
 
 
