@@ -96,6 +96,7 @@ OPTIM_COLORS = {
     "kl-shampoo-polar-lora":       "#9c27b0",
     # Option (b): consistent diagonal global metric (geometric small side); polar A/B
     "kl-diag-lora":                "#c2185b",
+    "kl-diag-flatout-lora":        "#00838f",
     "kl-diag-polar-lora":          "#6a1b9a",
     # kl-diag-polar with the un-whiten removed (flat-spectrum robustness probe)
     "kl-diag-polar-flatout-lora":  "#ad1457",
@@ -132,6 +133,7 @@ OPTIM_FAMILIES = {
         "kl-shampoo-lora",
         "kl-shampoo-polar-lora",
         "kl-diag-lora",
+        "kl-diag-flatout-lora",
         "kl-diag-polar-lora",
         "kl-diag-polar-flatout-lora",
         "diag-shampoo-lora",

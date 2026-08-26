@@ -164,6 +164,13 @@ spec("kl-diag-polar-lora", _CW, skip=_CW_PRECOND_SKIP,
 spec("kl-diag-polar-flatout-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": True,
             "flat_outer": True})
+# Half-power whitening: D_A = C_B^{-1/2} Mhat_A Q^{-1/2}, the metric applied ONCE.
+# Control for kl-diag-lora, which drops msign but applies the metric twice
+# (C_B^{-1} Mhat_A Q^{-1}) and so confounds "no orthogonalization" with
+# "over-preconditioned".
+spec("kl-diag-flatout-lora", _CW, skip=_CW_ABL_SKIP,
+     fixed={"kl_coupled": True, "soap_v": False, "diag_metric": True, "use_polar": False,
+            "flat_outer": True})
 spec("diag-shampoo-lora", _CW, skip=_CW_PRECOND_SKIP,
      fixed={"kl_coupled": False, "soap_v": False, "diag_metric": True, "use_polar": False})
 spec("diag-shampoo-polar-lora", _CW, skip=_CW_PRECOND_SKIP,

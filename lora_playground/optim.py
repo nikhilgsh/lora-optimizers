@@ -618,6 +618,7 @@ OPTIMIZER_CHOICES = {
     "kl-diag-lora",
     "kl-diag-polar-lora",
     "kl-diag-polar-flatout-lora",
+    "kl-diag-flatout-lora",
     "diag-shampoo-lora",
     "diag-shampoo-polar-lora",
     "adam-scaled-lora-post",
@@ -1217,12 +1218,18 @@ class CurvatureWhitenLoRA(Optimizer):
         # step (no cross-term). k>=2 corrects the simultaneous-step coupling via the
         # diagonal cross-term (kl_shampoo_polar_derivation.md §Cross-coupling) and is
         # only defined for the kl path (the cross-term uses the D_in/D_out diagonals).
-        # flat_outer: skip the un-whiten so dX ∝ φ(z) (flat-spectrum, chord-tight
-        # basin, curvature-chosen frame). Heuristic robustness probe — NOT the
-        # curvature-metric LMO. Only meaningful with polar (it IS the polar step).
+        # flat_outer: skip the un-whiten, so the direction is whatever the inner
+        # whitening produced rather than C^{-1/2}(.)Q^{-1/2} applied to it a second
+        # time. Both polar settings are meaningful arms:
+        #   use_polar=True  -> D_A = msign(C_B^{-1/2} Mhat_A Q^{-1/2}); op-norm 1 by
+        #     construction, so the rho/sigma_max rescale is a no-op.
+        #   use_polar=False -> D_A = C_B^{-1/2} Mhat_A Q^{-1/2}; the metric applied
+        #     ONCE, at half power. This is the standard Shampoo/Adafactor whitening,
+        #     and it is the control for the no-msign arm: dropping msign from the
+        #     protagonist also doubles the metric's power (the inner and outer halves
+        #     compose to C_B^{-1} Mhat_A Q^{-1}), so without this arm "no msign" and
+        #     "over-preconditioned" are confounded.
         self.flat_outer = bool(flat_outer)
-        if self.flat_outer and not use_polar:
-            raise ValueError("flat_outer=True requires use_polar=True (it is the polar-without-unwhiten step).")
         self.cw_picard_iters = int(cw_picard_iters)
         if self.cw_picard_iters < 1:
             raise ValueError("cw_picard_iters must be >= 1.")
