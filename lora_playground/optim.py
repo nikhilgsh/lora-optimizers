@@ -1272,9 +1272,20 @@ class CurvatureWhitenLoRA(Optimizer):
         # slot can only act through its eigenvalue spread; at r=256 that spread is small
         # (measured lam_max/lam_min = 68 against Q's 3404, bench_abl_out/metric_slots.json).
         # This arm asks whether the slot earns its place in the loss, not just the direction.
+        # It is ALSO defined off the diag_metric path. There the r x r slot holds the
+        # factor's own gradient Gram (L_A from g_A, R_B from g_B) rather than the
+        # partner Gram, and forcing it to identity gives the fourth corner of the
+        # 2x2 {slot = partner Gram or I} x {d-side diagonals shared or per-factor}:
+        #   kl-diag-polar-lora  + flag off -> partner Gram, shared (P,Q)
+        #   kl-diag-polar-lora  + flag on  -> I,            shared (P,Q)
+        #   kl-shampoo-polar    + flag off -> own Gram,     per-factor (P_A,Q_A),(P_B,Q_B)
+        #   kl-shampoo-polar    + flag on  -> I,            per-factor
+        # Without the last cell, "rxr = I, shared" and "own Gram, per-factor" land
+        # 0.6 sigma apart while differing in TWO things at once, so neither the
+        # slot's contents nor the sharing can be attributed. The override is applied
+        # after SAinv_full/RBinv_full are formed on both paths, so the estimator
+        # keeps whitening by the real Gram either way.
         self.cw_no_rr_precond = bool(cw_no_rr_precond)
-        if self.cw_no_rr_precond and not self.diag_metric:
-            raise ValueError("cw_no_rr_precond requires diag_metric=True (the protagonist path).")
         # ABLATION (−pin / the LoRA-Muon step): remove the operator-norm magnitude rule
         # entirely. Two coupled changes vs the protagonist: (1) TRUE-SCALE inverse-sqrt
         # (eps_relative=False) instead of the λ_max-relative damping — the relative damping is

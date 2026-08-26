@@ -146,7 +146,10 @@ _CW_PRECOND_SKIP: set = set()
 _CW_SOAP_SKIP = {"cw_nesterov", "cw_picard_iters", "cw_no_radius", "cw_no_diag_curv",
                  "cw_no_rr_precond",
                  "cw_unpinned", "cw_solved_rho", "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # soap_v=True: all cw_* invalid
-_CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_no_rr_precond", "cw_unpinned", "cw_solved_rho",
+# cw_no_rr_precond is deliberately NOT skipped here: it is defined off the
+# diag_metric path too (identity r x r slot with per-factor diagonals), which is the
+# fourth corner of the slot-vs-sharing 2x2. See CurvatureWhitenLoRA.__init__.
+_CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_unpinned", "cw_solved_rho",
                 "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # kl-shampoo/flatout
 
 spec("curvature-whiten-lora", _CW, skip=_CW_SOAP_SKIP,
