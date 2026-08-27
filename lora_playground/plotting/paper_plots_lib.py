@@ -10,16 +10,13 @@ the error it fixed.
 
 Import it as a MODULE and reach through it::
 
-    %load_ext autoreload
-    %autoreload 1
-    %aimport lora_playground.plotting.paper_plots_lib
     import lora_playground.plotting.paper_plots_lib as P
 
     P.precond_panel(256)
 
-Mode 1 reloads this facade without rewriting dependency classes while cached
-instances of those classes are alive. Reach through ``P`` so facade reloads are
-visible; restart the kernel once after changing this policy.
+Keep one module generation for the kernel lifetime. Restart the kernel after
+editing plotting code so cached records and their classes cannot come from
+different imports.
 
 Reviewed panels resolve checked-in stable-ID views. Panels whose historical
 semantics are not yet sealed retain the existing ``arms.py`` compatibility path;
@@ -51,10 +48,9 @@ from lora_playground.plotting.dedup import (
     assert_curve_source_coherent,
 )
 from lora_playground.publication_paper import publication_view_panel
-from lora_playground.plotting.notebook_profile import profile_span
 from lora_playground.plotting.paper_view_semantics import project_paper_precond_cohort
 from lora_playground.run_catalog import RunCatalog
-from lora_playground.run_records import run_view, thaw_value
+from lora_playground.run_records import run_view
 from lora_playground.run_schema import MEASUREMENT_SEMANTICS_REVISION
 from lora_playground.workloads import resolve_dataset
 
@@ -225,22 +221,20 @@ def cell_runs(where, refresh=False):
             "paper panels need the live logs/ tree"
         )
     global _CATALOG_SNAPSHOT
-    with profile_span("cell_runs"):
-        sig = _logs_signature_now()
-        key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
-        cached = _RUNS_CACHE.get(key)
-        if cached is not None and cached[0] == sig and not refresh:
-            return cached[1]
-        catalog = _catalog_for_signature(sig)
-        with profile_span("load_runs"):
-            runs = load_runs(
-                where=where,
-                catalog=catalog,
-                warn_cross_commit=False,
-                quiet=True,
-            )
-        _RUNS_CACHE[key] = (sig, runs)
-        return runs
+    sig = _logs_signature_now()
+    key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
+    cached = _RUNS_CACHE.get(key)
+    if cached is not None and cached[0] == sig and not refresh:
+        return cached[1]
+    catalog = _catalog_for_signature(sig)
+    runs = load_runs(
+        where=where,
+        catalog=catalog,
+        warn_cross_commit=False,
+        quiet=True,
+    )
+    _RUNS_CACHE[key] = (sig, runs)
+    return runs
 
 
 def clear_runs_cache():
@@ -255,9 +249,9 @@ def _catalog_for_signature(signature: str) -> RunCatalog:
     """Reuse one parsed catalog while the recorded log tree is unchanged."""
     global _CATALOG_SNAPSHOT
     if _CATALOG_SNAPSHOT is None or _CATALOG_SNAPSHOT[0] != signature:
-        with profile_span("catalog_discovery"):
-            catalog = RunCatalog.discover(ROOT / "logs")
-        _CATALOG_SNAPSHOT = (signature, catalog)
+        _CATALOG_SNAPSHOT = (
+            signature, RunCatalog.discover(ROOT / "logs")
+        )
     return _CATALOG_SNAPSHOT[1]
 
 
@@ -281,8 +275,7 @@ _SIG_HOLD: dict[str, str] = {}
 
 def _logs_signature_now() -> str:
     if "sig" not in _SIG_HOLD:
-        with profile_span("logs_signature"):
-            return logs_signature(str(ROOT / "logs"))
+        return logs_signature(str(ROOT / "logs"))
     return _SIG_HOLD["sig"]
 
 
@@ -291,8 +284,7 @@ def _held_logs_signature():
     """Freeze the tree signature for the duration of one panel."""
     outer = "sig" in _SIG_HOLD
     if not outer:
-        with profile_span("logs_signature"):
-            _SIG_HOLD["sig"] = logs_signature(str(ROOT / "logs"))
+        _SIG_HOLD["sig"] = logs_signature(str(ROOT / "logs"))
     try:
         yield
     finally:
@@ -414,16 +406,15 @@ def _render_panel_comparison(
     horizon,
 ):
     """Render an already-built comparison without crossing a loader adapter."""
-    with profile_span("render_figure"):
-        _fig, _table, summary = render_comparison(
-            comparison,
-            reference_id=reference_id,
-            target_id=target_id,
-            sigma_ref=SIGMA,
-            horizon=horizon,
-            show_partials=True,
-            suptitle=suptitle,
-        )
+    _fig, _table, summary = render_comparison(
+        comparison,
+        reference_id=reference_id,
+        target_id=target_id,
+        sigma_ref=SIGMA,
+        horizon=horizon,
+        show_partials=True,
+        suptitle=suptitle,
+    )
     plt.show()
 
     if target_id is None:
@@ -478,80 +469,73 @@ def _records_figure(arms, workload, ref_label, suptitle, *,
                         _UNPINNED_MEASUREMENT_REVISION
                     )):
     """Render one live workload without converting records back to tuples."""
-    with profile_span("records_panel"):
-        with _held_logs_signature():
-            from lora_playground.workloads import workload_records
+    with _held_logs_signature():
+        from lora_playground.workloads import workload_records
 
-            records = workload_records(
-                workload,
-                catalog=_catalog_for_signature(_logs_signature_now()),
-            )
-            excluded = ()
-            if semantic_view is not None:
-                records, excluded = project_paper_precond_cohort(
-                    records,
-                    view_id=semantic_view,
-                )
-            if measurement_semantics_revision is not _UNPINNED_MEASUREMENT_REVISION:
-                records = tuple(
-                    record for index, record in enumerate(records)
-                    if run_view(record, index).semantic_config.get(
-                        "measurement_semantics_revision"
-                    ) == measurement_semantics_revision
-                )
-            if reviewed_e1_polora:
-                records = tuple(
-                    record for index, record in enumerate(records)
-                    if _in_reviewed_e1_polora_cohort(
-                        run_view(record, index).semantic_config
-                    )
-                )
-
-            variant_key = _canonical_variant_key({}, arms)
-            specs = tuple(
-                VariantSpec(
-                    id=label,
-                    label=label,
-                    style_key=label,
-                    predicate=(
-                        lambda cfg, expected=label:
-                        variant_key(cfg) == expected
-                    ),
-                )
-                for label in arms
-            )
-            comparison = build_comparison(
+        records = workload_records(
+            workload,
+            catalog=_catalog_for_signature(_logs_signature_now()),
+        )
+        excluded = ()
+        if semantic_view is not None:
+            records, excluded = project_paper_precond_cohort(
                 records,
-                specs,
-                horizon=workload.horizon,
+                view_id=semantic_view,
             )
-            missing = [
-                spec.label for spec in specs
-                if comparison.best_completed[spec.id] is None
-                and comparison.best_partial[spec.id] is None
-            ]
-            if missing:
-                print("no data yet (omitted):", ", ".join(missing))
-            if ref_label in missing:
-                raise ValueError(
-                    f"{workload.label} has no recorded reference arm "
-                    f"{ref_label!r}"
-                )
-            summary = _render_panel_comparison(
-                comparison,
-                reference_id=ref_label,
-                target_id=(target_label if target_label in arms else None),
-                target_label=target_label,
-                suptitle=suptitle,
-                horizon=workload.horizon,
+        if measurement_semantics_revision is not _UNPINNED_MEASUREMENT_REVISION:
+            records = tuple(
+                record for index, record in enumerate(records)
+                if run_view(record, index).semantic_config.get(
+                    "measurement_semantics_revision"
+                ) == measurement_semantics_revision
             )
-            if excluded:
-                reasons = sorted({decision.reason for _run, decision in excluded})
-                print(
-                    f"{len(excluded)} run(s) excluded by {semantic_view!r} "
-                    f"semantic cohort: {'; '.join(reasons)}"
+        if reviewed_e1_polora:
+            records = tuple(
+                record for index, record in enumerate(records)
+                if _in_reviewed_e1_polora_cohort(
+                    run_view(record, index).semantic_config
                 )
-            return summary
+            )
+
+        variant_key = _canonical_variant_key({}, arms)
+        specs = tuple(
+            VariantSpec(
+                id=label,
+                label=label,
+                style_key=label,
+                predicate=(
+                    lambda cfg, expected=label: variant_key(cfg) == expected
+                ),
+            )
+            for label in arms
+        )
+        comparison = build_comparison(records, specs, horizon=workload.horizon)
+        missing = [
+            spec.label for spec in specs
+            if comparison.best_completed[spec.id] is None
+            and comparison.best_partial[spec.id] is None
+        ]
+        if missing:
+            print("no data yet (omitted):", ", ".join(missing))
+        if ref_label in missing:
+            raise ValueError(
+                f"{workload.label} has no recorded reference arm {ref_label!r}"
+            )
+        summary = _render_panel_comparison(
+            comparison,
+            reference_id=ref_label,
+            target_id=(target_label if target_label in arms else None),
+            target_label=target_label,
+            suptitle=suptitle,
+            horizon=workload.horizon,
+        )
+        if excluded:
+            reasons = sorted({decision.reason for _run, decision in excluded})
+            print(
+                f"{len(excluded)} run(s) excluded by {semantic_view!r} "
+                f"semantic cohort: {'; '.join(reasons)}"
+            )
+        return summary
 
 
 def has(where, common):
@@ -614,11 +598,10 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     guard inside compare_variants_figure -- the per-variant loading path does not run it,
     and that is how two arms silently merged for weeks. Do not add a panel that skips it.
     """
-    with profile_span("legacy_panel"):
-        with _held_logs_signature():
-            return _figure_inner(arms, common, ref_label, suptitle, target_label,
-                                 drop_empty, horizon, trajectory_only,
-                                 left_exclude)
+    with _held_logs_signature():
+        return _figure_inner(arms, common, ref_label, suptitle, target_label,
+                             drop_empty, horizon, trajectory_only,
+                             left_exclude)
 
 
 def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon,
@@ -692,13 +675,12 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
                   f"not step-matched to the other arms.")
         else:
             print(f"read at step {horizon} (every arm truncated).")
-    with profile_span("render_figure"):
-        fig, _t, sdf = compare_variants_figure(
-            arms, common_where=common, ref_label=ref_label,
-            logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
-            allow_partial=True, allow_custom_labels=True, target_label=target_label,
-            suptitle=suptitle,
-            prefetched_runs=runs, variant_key=base_key)
+    fig, _t, sdf = compare_variants_figure(
+        arms, common_where=common, ref_label=ref_label,
+        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
+        allow_partial=True, allow_custom_labels=True, target_label=target_label,
+        suptitle=suptitle,
+        prefetched_runs=runs, variant_key=base_key)
     plt.show()
     if target_label in arms:
         print(speedup_table(
@@ -925,135 +907,12 @@ def rank_lr_panel(
     data_key="openmath",
     model_label="Llama-3.2-1B",
 ):
-    """Final-loss LR curves across ranks for the E1 protagonist and AdamW.
+    """Compatibility name for the canonical publication rank figure."""
+    if model != "meta-llama/Llama-3.2-1B" or data_key != "openmath":
+        raise ValueError("the publication rank figure is defined for Llama/openmath")
+    from lora_playground.plotting.paper_figs import fig3
 
-    This is the records-native implementation of the notebook's former
-    hand-written all-ranks cell. One held signature covers every rank, so the
-    five workloads share one catalog snapshot and cannot be invalidated by an
-    active sweep midway through the figure.
-    """
-    import numpy as np
-    import matplotlib.cm as cm
-    from matplotlib.lines import Line2D
-    from lora_playground.workloads import find_workload
-
-    ranks = tuple(ranks)
-    if not ranks:
-        raise ValueError("rank_lr_panel requires at least one rank")
-    arms = {
-        "Polar-LoRA (kl-diag)": PROTO,
-        "AdamW": ADAMW,
-    }
-    panel_data = {label: {} for label in arms}
-    empty = []
-
-    with profile_span("rank_lr_panel"):
-        with _held_logs_signature():
-            ladder_common = cell(model, data_key, ranks)
-            ladder_runs = [
-                (cfg, history)
-                for cfg, history in cell_runs(ladder_common)
-                if cfg.get("measurement_semantics_revision") is None
-            ]
-            for rank in ranks:
-                workload = find_workload(model, data_key, rank)
-                common = cell(workload.model_name, workload.dataset, rank)
-                runs = [
-                    (cfg, history)
-                    for cfg, history in ladder_runs
-                    if cfg.get("lora_r") == rank
-                ]
-                key = variant_key_fn(
-                    common,
-                    arms,
-                )
-                labeled = labeled_completed_runs(
-                    runs,
-                    key,
-                    horizon=workload.horizon,
-                )
-                for label in arms:
-                    values = {
-                        lr: final_and_history[0]
-                        for lr, final_and_history in sorted(
-                            labeled.get(label, {}).items()
-                        )
-                    }
-                    panel_data[label][rank] = values
-                    if not values:
-                        empty.append(f"{label} r{rank}")
-
-        all_values = [
-            value
-            for rank_data in panel_data.values()
-            for lr_data in rank_data.values()
-            for value in lr_data.values()
-        ]
-        if not all_values:
-            raise ValueError(
-                f"no completed E1 data for {model_label} {data_key} at "
-                f"ranks {ranks!r}"
-            )
-        median = float(np.median(all_values))
-        converged = [value for value in all_values if value < 3 * median]
-        lo, hi = min(all_values), max(converged)
-        value_range = hi - lo
-        ylo = lo - 0.10 * value_range
-        yhi = hi + 0.06 * value_range
-        colors = dict(zip(
-            ranks,
-            cm.viridis_r(np.linspace(0.12, 0.92, len(ranks))),
-        ))
-
-        with profile_span("render_figure"):
-            fig, axes = plt.subplots(
-                1, len(arms), figsize=(10.5, 4.4), sharey=True
-            )
-            for ax, (label, rank_data) in zip(axes, panel_data.items()):
-                for rank in ranks:
-                    values = rank_data[rank]
-                    if values:
-                        ax.plot(
-                            list(values),
-                            list(values.values()),
-                            "o-",
-                            color=colors[rank],
-                            label=f"r={rank}",
-                        )
-                ax.set_xscale("log")
-                ax.set_xlabel("lr")
-                ax.set_title(label)
-                ax.grid(alpha=0.3)
-                ax.set_ylim(ylo, yhi)
-            axes[0].set_ylabel(f"final eval loss ({HORIZON} steps)")
-            rank_handles = [
-                Line2D(
-                    [], [], color=colors[rank], marker="o", lw=2,
-                    label=f"r={rank}",
-                )
-                for rank in ranks
-            ]
-            axes[-1].legend(
-                handles=rank_handles,
-                title="rank",
-                loc="best",
-                fontsize=8,
-            )
-            fig.suptitle(
-                f"Final loss vs lr, all ranks ({model_label} {data_key}, "
-                f"{HORIZON} steps)"
-            )
-            plt.tight_layout()
-        clipped = sum(value > yhi for value in all_values)
-        if clipped:
-            print(
-                f"{clipped} high-lr point(s) above y-window (divergence), "
-                f"clipped at {yhi:.3f}"
-            )
-        if empty:
-            print("NO completed data (arm not run yet):", ", ".join(empty))
-        plt.show()
-        return panel_data
+    return fig3(ranks=tuple(ranks), figsize=(10.5, 4.4))
 
 
 def ablation_panel(rank=256):

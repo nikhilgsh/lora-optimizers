@@ -45,10 +45,9 @@ from lora_playground.leaderboard import (
     reach_fraction, speedup_from_frac,
 )
 from lora_playground.publication_paper import (
-    LEGACY_ADAMW_VARIANT_LABEL,
-    LEGACY_POLORA_VARIANT_LABEL,
     labeled_completed,
-    publication_panel,
+    publication_view_panel,
+    publication_workload_view_panel,
 )
 from lora_playground.workloads import find_workload, iter_workloads, workload_runs
 from lora_playground.plotting import arms as _arms
@@ -156,17 +155,10 @@ ablation_variant_key = _arms.variant_key_fn({}, _ABLATION_ARMS)
 arm_key = _arms.variant_key_fn({}, _ARM_KEY_ARMS)
 
 
-# Archive-backed figures select the reviewed publication views explicitly.  The
-# paper keeps its short editorial names, while aggregation is keyed by the
-# archive's stable view IDs (see ``publication_paper.publication_panel``).
-_ARCHIVE_ADAM_POLORA = {
-    "Adam": LEGACY_ADAMW_VARIANT_LABEL,
-    "PoLoRA": LEGACY_POLORA_VARIANT_LABEL,
-}
-
-
 def _adam_polora_comparison(wl):
-    panel = publication_panel(wl, _ARCHIVE_ADAM_POLORA)
+    panel = publication_workload_view_panel(
+        "paper.adamw_polora.all_workloads.v1", wl
+    )
     return panel, labeled_completed(panel)
 
 
@@ -568,9 +560,13 @@ def fig2():
               numbers, so no separate table is needed.
     AdamW appears only as a reference (the target line / the 1.0x baseline), not as a
     competing trajectory (that is the hero's job)."""
-    wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", 256)
-    labeled = labeled_completed_runs(workload_runs(wl), arm_key, horizon=wl.horizon)
-    rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
+    panel = publication_view_panel("paper.fig2_ablation.v1")
+    labeled = labeled_completed(panel)
+    rows, target = leaderboard_rows_from_comparison(
+        panel.comparison,
+        horizon=panel.horizon,
+        baseline_id=panel.target_id,
+    )
     rows = {r["variant"]: r for r in rows}
     labels = {NAME_NAIVE: "Muon", NAME_LM: "w/o curvature\nor magnitude",
               NAME_CURV: "w/o curvature", "PoLoRA": "PoLoRA (ours)"}
@@ -633,8 +629,12 @@ def fig2():
     return fig
 
 
-def fig3(star_ms=11, figsize=(6.5, 2.6)):
-    """lr basins on the openmath r>=32 ladder, two panels (PoLoRA | AdamW),
+def fig3(
+    star_ms=11,
+    figsize=(6.5, 2.6),
+    ranks=(32, 64, 128, 256),
+):
+    """LR basins on a requested openmath rank ladder (PoLoRA | AdamW),
     one curve per rank (color = rank, reversed viridis), shared y windowed to the
     converged band. A star marks each curve's minimum, making the per-optimizer
     minimum-lr shift across rank directly readable: PoLoRA's holds at one lr,
@@ -642,12 +642,14 @@ def fig3(star_ms=11, figsize=(6.5, 2.6)):
     `star_ms`/`figsize` from the cell, or edit here and re-run (autoreload)."""
     import numpy as np
     import matplotlib.cm as cm
-    ranks = [32, 64, 128, 256]   # r16 excluded (flat/under-resolved basin top)
+    ranks = tuple(ranks)
+    if not ranks:
+        raise ValueError("fig3 requires at least one rank")
     rcol = {r: c for r, c in zip(ranks, cm.viridis_r(np.linspace(0.12, 0.92, len(ranks))))}
     arms = ["PoLoRA", "Adam"]
     data = {a: {} for a in arms}                 # arm -> rank -> {lr: final_loss}
     allv = []
-    print("── fig3 lr transfer (openmath r>=32 ladder) ──")
+    print("── fig3 lr transfer (openmath rank ladder) ──")
     for rank in ranks:
         wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
         _panel, lab = _adam_polora_comparison(wl)

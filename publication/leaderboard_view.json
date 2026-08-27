@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "archive_projection_id": "legacy_leaderboard_v1",
+  "horizon": 9000,
+  "workload_selector": {
+    "data_pipeline_version": "packed_v1.1"
+  },
+  "views": [
+    {
+      "id": "leaderboard.all_variants.v1",
+      "title": "All archived variants against the AdamW target",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
+          "label": "AdamW",
+          "roles": ["reference", "target"]
+        }
+      ]
+    },
+    {
+      "id": "paper.adamw_polora.all_workloads.v1",
+      "title": "AdamW and PoLoRA",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
+          "label": "Adam",
+          "roles": ["reference", "target"]
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:d837ff8c700deedfe262d16f|lora_init_b=zero",
+          "label": "PoLoRA",
+          "roles": []
+        }
+      ]
+    }
+  ]
+}

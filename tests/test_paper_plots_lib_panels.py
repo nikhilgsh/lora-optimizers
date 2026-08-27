@@ -77,7 +77,6 @@ def test_reviewed_e1_polora_cohort_rejects_later_probe_controls():
         "cw_unpinned": False,
     })
 
-
 def test_priority_notebook_panels_execute_against_recorded_evidence(monkeypatch):
     """Exercise the exact Figure 14--16 calls that previously raised KeyError."""
     from lora_playground.plotting import paper_plots_lib as plots

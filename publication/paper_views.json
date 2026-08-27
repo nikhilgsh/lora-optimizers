@@ -145,6 +145,32 @@
           "roles": ["reference"]
         }
       ]
+    },
+    {
+      "id": "paper.fig2_ablation.v1",
+      "title": "PoLoRA component ablation",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:d837ff8c700deedfe262d16f|lora_init_b=zero",
+          "label": "PoLoRA",
+          "roles": ["reference"]
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:c3815587c890bc2687af348b|lora_init_b=symmetric",
+          "label": "w/o curvature or magnitude",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:8727c82e5f247736ee64d926|lora_init_b=zero",
+          "label": "w/o curvature",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
+          "label": "Adam",
+          "roles": ["target"]
+        }
+      ]
     }
   ]
 }

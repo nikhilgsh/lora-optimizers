@@ -7,10 +7,9 @@ Reported per method at (a) its best lr and (b) the reciprocal of the mean
 fraction over {best lr, one grid-step below, one grid-step above} (NaN when
 lr-pinned).
 
-Cells come from the shared `lora_playground.workloads` registry. Their run
-membership and publication identities come from the checked-in records-native
-archive, so regeneration never reconstructs executed optimizer semantics from
-today's loader or labeling defaults.
+Cells and variant identities are derived from the checked-in records-native
+archive under a declarative report view. Regeneration never reconstructs
+executed optimizer semantics from today's loader or labeling defaults.
 
 Run:  python scripts/analysis/build_leaderboard_doc.py
 Out:  docs/notes/leaderboard.md
@@ -33,8 +32,11 @@ from lora_playground.leaderboard_variants import publication_variant_specs
 from lora_playground.publication_archive import (
     load_publication_archive,
 )
-from lora_playground.publication_queries import publication_workload_runs
-from lora_playground.workloads import iter_workloads
+from lora_playground.publication_queries import (
+    publication_runs_for_workload,
+    publication_workloads,
+)
+from lora_playground.publication_views import load_publication_views
 
 # Cross-setting ranking shows only variants run on >= AGG_MIN_COVERAGE workloads;
 # scores are only comparable between variants that span a similar set of cells.
@@ -42,6 +44,7 @@ AGG_MIN_COVERAGE = 5
 
 ROOT = Path(__file__).resolve().parents[2]
 ARCHIVE = ROOT / "publication" / "legacy_leaderboard_v1.json"
+VIEW_CONFIG = ROOT / "publication" / "leaderboard_view.json"
 OUT = ROOT / "docs" / "notes" / "leaderboard.md"
 
 
@@ -52,14 +55,21 @@ def _fmt_speedup(x):
     return "—" if isinstance(s, float) and math.isnan(s) else f"{s:.2f}×"
 
 
-def build_section(wl, rows: list[dict], target: float) -> str:
+def build_section(
+    wl,
+    rows: list[dict],
+    target: float,
+    *,
+    baseline_id: str,
+    baseline_label: str,
+) -> str:
     """Format one cell's table. `rows`/`target` come from leaderboard_rows."""
     title = f"### {wl.title}"
     if not rows:
         return f"{title}\n\n_No completed runs found._\n"
 
     def sort_key(r):
-        if r["variant"] == "AdamW":
+        if r["variant_id"] == baseline_id:
             return (0, 0.0)
         f = r["frac_best_lr"]
         return (1, math.inf if (f is None or math.isnan(f)) else f)
@@ -67,7 +77,10 @@ def build_section(wl, rows: list[dict], target: float) -> str:
 
     lines = [title, ""]
     tgt = "—" if math.isnan(target) else f"{target:.4f}"
-    lines.append(f"AdamW speed target (best-lr final loss): **{tgt}**  ·  horizon {wl.horizon} steps")
+    lines.append(
+        f"{baseline_label} speed target (best-lr final loss): **{tgt}**  ·  "
+        f"horizon {wl.horizon} steps"
+    )
     lines.append("")
     lines.append("| method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |")
     lines.append("|---|---|---|---|---|")
@@ -80,7 +93,11 @@ def build_section(wl, rows: list[dict], target: float) -> str:
     return "\n".join(lines)
 
 
-def build_aggregate(perf_matrix: dict, workloads: list) -> str:
+def build_aggregate(
+    perf_matrix: dict,
+    workloads: list,
+    variant_labels: dict[str, str],
+) -> str:
     """Cross-setting robustness ranking (AlgoPerf-style performance profiles).
 
     `perf_matrix[variant][workload] = frac_best_lr`, keyed by the stable
@@ -117,13 +134,15 @@ def build_aggregate(perf_matrix: dict, workloads: list) -> str:
         "|---|---|---|---|",
     ]
     for r in shown:
+        label = variant_labels[r["variant"]]
         lines.append(
-            f"| `{r['variant']}` | {r['coverage']}/{r['n_workloads']} "
+            f"| `{label}` | {r['coverage']}/{r['n_workloads']} "
             f"| {r['robustness_score']:.3f} | {r['mean_ratio']:.3f} |"
         )
     if hidden:
         listed = "; ".join(
-            f"`{r['variant']}` ({r['coverage']}/{n})" for r in hidden
+            f"`{variant_labels[r['variant']]}` ({r['coverage']}/{n})"
+            for r in hidden
         )
         lines += [
             "",
@@ -134,16 +153,6 @@ def build_aggregate(perf_matrix: dict, workloads: list) -> str:
     return "\n".join(lines)
 
 
-def _unique_variant_id(variants, label: str) -> str:
-    matches = [variant.id for variant in variants if variant.label == label]
-    if len(matches) != 1:
-        raise ValueError(
-            f"expected exactly one publication variant labeled {label!r}; "
-            f"found {matches!r}"
-        )
-    return matches[0]
-
-
 def _unscored_section(wl, issue: str) -> str:
     return (
         f"### {wl.title}\n\n"
@@ -152,11 +161,27 @@ def _unscored_section(wl, issue: str) -> str:
     )
 
 
-def render_doc(archive_path: str | Path = ARCHIVE) -> str:
+def render_doc(
+    archive_path: str | Path = ARCHIVE,
+    view_path: str | Path = VIEW_CONFIG,
+) -> str:
     """Build the full leaderboard markdown from the checked-in archive."""
     archive = load_publication_archive(archive_path)
-    variants = publication_variant_specs(archive.runs)
-    baseline_id = _unique_variant_id(variants, "AdamW")
+    report = load_publication_views(view_path, archive=archive)
+    report_view = report.view("leaderboard.all_variants.v1")
+    baseline_id = report_view.target_id
+    if baseline_id is None:
+        raise ValueError("leaderboard report view must declare a target role")
+    report_runs = tuple(run for run in archive.runs if report.matches_workload(run))
+    variants = publication_variant_specs(report_runs)
+    labels_by_id = {variant.id: variant.label for variant in variants}
+    baseline_label = next(
+        arm.label for arm in report_view.arms if arm.variant_id == baseline_id
+    )
+    declared_workloads = publication_workloads(
+        report_runs,
+        horizon=report.horizon,
+    )
     header = [
         "# Optimizer leaderboard — speed-to-AdamW-target",
         "",
@@ -177,8 +202,8 @@ def render_doc(archive_path: str | Path = ARCHIVE) -> str:
         "swept boundary (lr-pinned) or any of the three never reaches the target.",
         "",
         "Generated by `scripts/analysis/build_leaderboard_doc.py` from the "
-        "checked-in records-native publication archive and the shared workload "
-        "registry (`lora_playground.workloads`). Stable archived variant IDs, "
+        "checked-in records-native publication archive and its declarative "
+        "report view. Stable archived variant IDs, "
         "not current loader or labeling defaults, define optimizer identity. "
         "Each cell selects archived long-horizon records at a fixed "
         "(model_name, dataset, lora_r, data_pipeline_version). AdamW's own "
@@ -186,30 +211,36 @@ def render_doc(archive_path: str | Path = ARCHIVE) -> str:
         "best recorded AdamW LR is sweep-boundary-pinned, because that does not "
         "establish a best-LR target. Horizon is "
         "9000 steps (Tulu-3 exhausts at ~8970 = one epoch, absorbed by the "
-        "completion slack).",
+        f"completion slack). The declared horizon is {report.horizon} steps.",
         "",
     ]
     # One records-native comparison feeds BOTH the per-section table and the
     # cross-setting aggregate matrix (frac_best_lr per workload).
     sections, perf_matrix, workloads = [], {}, []
-    for wl in iter_workloads():
-        runs = publication_workload_runs(archive, wl)
+    for wl in declared_workloads:
+        runs = publication_runs_for_workload(report_runs, wl)
         comparison = build_comparison(runs, variants, horizon=wl.horizon)
         try:
             rows, target = leaderboard_rows_from_comparison(
                 comparison,
-                horizon=wl.horizon,
+                horizon=report.horizon,
                 baseline_id=baseline_id,
             )
         except UncertifiedBaselineError as exc:
             sections.append(_unscored_section(wl, exc.reason))
             continue
-        sections.append(build_section(wl, rows, target))
+        sections.append(build_section(
+            wl,
+            rows,
+            target,
+            baseline_id=baseline_id,
+            baseline_label=baseline_label,
+        ))
         workloads.append(wl.label)
         for r in rows:
-            perf_matrix.setdefault(r["variant"], {})[wl.label] = r["frac_best_lr"]
+            perf_matrix.setdefault(r["variant_id"], {})[wl.label] = r["frac_best_lr"]
 
-    aggregate = build_aggregate(perf_matrix, workloads)
+    aggregate = build_aggregate(perf_matrix, workloads, labels_by_id)
     return ("\n".join(header) + "\n" + aggregate + "\n"
             + "\n".join(sections) + "\n")
 
@@ -235,6 +266,10 @@ def main(argv=None):
         ),
     )
     ap.add_argument(
+        "--view", default=str(VIEW_CONFIG),
+        help="declarative leaderboard report view",
+    )
+    ap.add_argument(
         "--output", default=str(OUT),
         help="generated markdown path (default: docs/notes/leaderboard.md).",
     )
@@ -244,6 +279,7 @@ def main(argv=None):
     )
     args = ap.parse_args(argv)
     archive_path = Path(args.archive).resolve()
+    view_path = Path(args.view).resolve()
     output = Path(args.output).resolve()
 
     if not _archive_present(archive_path):
@@ -253,7 +289,11 @@ def main(argv=None):
         )
         return 2 if args.require_archive else 0
 
-    fresh = render_doc(archive_path)
+    if not _archive_present(view_path):
+        print(f"no leaderboard view at {view_path} — leaving {output} untouched")
+        return 2
+
+    fresh = render_doc(archive_path, view_path)
 
     if args.check:
         current = output.read_text() if output.exists() else ""

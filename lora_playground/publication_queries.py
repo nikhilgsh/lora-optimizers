@@ -7,13 +7,101 @@ cell identity.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Iterable
 
 from .publication_archive import PublicationArchive, PublicationArchiveError
 from .workloads import Workload, resolve_record_dataset
 
 if TYPE_CHECKING:
     from .publication_archive import ArchivedPublicationRun
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationWorkload:
+    """One workload identity derived from recorded archive semantics."""
+
+    model_name: str
+    dataset_id: str
+    rank: int
+    data_pipeline_version: str
+    horizon: int
+
+    @property
+    def label(self) -> str:
+        return (
+            f"{self.model_name}|{self.dataset_id}|r={self.rank}|"
+            f"{self.data_pipeline_version}"
+        )
+
+    @property
+    def title(self) -> str:
+        return f"{self.model_name} × {self.dataset_id} × r={self.rank}"
+
+
+def publication_workloads(
+    runs: Iterable["ArchivedPublicationRun"],
+    *,
+    horizon: int,
+    completion_slack: int = 300,
+) -> tuple[PublicationWorkload, ...]:
+    """Derive completed workload cells from archive records, never a registry."""
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon <= 0:
+        raise ValueError("horizon must be a positive integer")
+    if (
+        isinstance(completion_slack, bool)
+        or not isinstance(completion_slack, int)
+        or completion_slack < 0
+    ):
+        raise ValueError("completion_slack must be a non-negative integer")
+    cells = set()
+    for index, run in enumerate(runs):
+        cfg = run.effective_config
+        last_step = max(
+            (event.get("step", 0) for event in run.history),
+            default=0,
+        )
+        if last_step < horizon - completion_slack:
+            continue
+        model = cfg.get("model_name")
+        dataset = resolve_record_dataset(run, index=index)
+        rank = cfg.get("lora_r")
+        pipeline = cfg.get("data_pipeline_version")
+        if (
+            not isinstance(model, str)
+            or not model
+            or not isinstance(dataset, str)
+            or not dataset
+            or isinstance(rank, bool)
+            or not isinstance(rank, int)
+            or rank <= 0
+            or not isinstance(pipeline, str)
+            or not pipeline
+        ):
+            raise PublicationArchiveError(
+                f"archived run {run.physical_id!r} lacks a complete workload identity"
+            )
+        cells.add((model, dataset, rank, pipeline))
+    return tuple(
+        PublicationWorkload(model, dataset, rank, pipeline, horizon)
+        for model, dataset, rank, pipeline in sorted(cells)
+    )
+
+
+def publication_runs_for_workload(
+    runs: Iterable["ArchivedPublicationRun"],
+    workload: PublicationWorkload,
+) -> tuple["ArchivedPublicationRun", ...]:
+    """Select one archive-derived workload from an already-scoped run set."""
+    return tuple(
+        run
+        for index, run in enumerate(runs)
+        if run.effective_config.get("model_name") == workload.model_name
+        and run.effective_config.get("lora_r") == workload.rank
+        and run.effective_config.get("data_pipeline_version")
+        == workload.data_pipeline_version
+        and resolve_record_dataset(run, index=index) == workload.dataset_id
+    )
 
 
 def publication_workload_runs(
@@ -61,4 +149,9 @@ def publication_workload_runs(
     return tuple(selected)
 
 
-__all__ = ["publication_workload_runs"]
+__all__ = [
+    "PublicationWorkload",
+    "publication_runs_for_workload",
+    "publication_workload_runs",
+    "publication_workloads",
+]

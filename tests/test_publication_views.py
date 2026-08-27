@@ -202,4 +202,5 @@ def test_checked_in_paper_view_resolves_against_checked_in_archive():
         "paper.magnitude_rule.v1",
         "paper.polora_beta2.v1",
         "paper.adamw_beta2.v1",
+        "paper.fig2_ablation.v1",
     }

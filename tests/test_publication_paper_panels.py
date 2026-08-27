@@ -5,24 +5,17 @@ import pytest
 
 from lora_playground.publication_paper import (
     labeled_completed,
-    publication_panel,
+    publication_workload_view_panel,
 )
 from lora_playground.workloads import find_workload
 
 
-POLORA = (
-    "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
-    "H=8 precond_method=gram_ns"
-)
-
-
-def test_publication_panel_keeps_stable_identity_under_editorial_labels():
+def test_cross_workload_view_keeps_stable_identity():
     workload = find_workload(
         "meta-llama/Llama-3.2-1B", "openmath", 256
     )
-    panel = publication_panel(
-        workload,
-        {"Adam": "AdamW", "PoLoRA": POLORA},
+    panel = publication_workload_view_panel(
+        "paper.adamw_polora.all_workloads.v1", workload,
     )
 
     assert panel.variant_id("Adam") != "Adam"
@@ -30,16 +23,12 @@ def test_publication_panel_keeps_stable_identity_under_editorial_labels():
     assert panel.comparison.best_completed[panel.variant_id("Adam")] is not None
     assert panel.comparison.best_completed[panel.variant_id("PoLoRA")] is not None
     assert set(labeled_completed(panel)) == {"Adam", "PoLoRA"}
-
-
-def test_publication_panel_rejects_unknown_or_duplicate_sealed_views():
+def test_cross_workload_view_rejects_unknown_view():
     workload = find_workload(
         "meta-llama/Llama-3.2-1B", "openmath", 256
     )
-    with pytest.raises(KeyError, match="absent from archive"):
-        publication_panel(workload, {"candidate": "not a sealed variant"})
-    with pytest.raises(ValueError, match="selected more than once"):
-        publication_panel(workload, {"Adam": "AdamW", "baseline": "AdamW"})
+    with pytest.raises(KeyError, match="not declared"):
+        publication_workload_view_panel("paper.missing.v1", workload)
 
 
 @pytest.mark.parametrize(
@@ -104,3 +93,16 @@ def test_archive_backed_paper_figs_pair_never_calls_workload_runs(monkeypatch):
     panel, labeled = paper_figs._adam_polora_comparison(workload)
     assert set(labeled) == {"Adam", "PoLoRA"}
     assert panel.variant_id("Adam") != "Adam"
+
+
+def test_fig2_uses_declarative_archive_view(monkeypatch, tmp_path):
+    from lora_playground.plotting import paper_figs
+
+    monkeypatch.setattr(
+        paper_figs,
+        "workload_runs",
+        lambda *args, **kwargs: pytest.fail("fig2 called the live workload loader"),
+    )
+    monkeypatch.setattr(paper_figs, "FIGS", tmp_path)
+    fig = paper_figs.fig2()
+    assert len(fig.axes) == 2

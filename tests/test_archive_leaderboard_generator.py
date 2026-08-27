@@ -14,7 +14,12 @@ from lora_playground.publication_archive import (
     PublicationArchiveError,
     load_publication_archive,
 )
-from lora_playground.publication_queries import publication_workload_runs
+from lora_playground.publication_queries import (
+    publication_runs_for_workload,
+    publication_workload_runs,
+    publication_workloads,
+)
+from lora_playground.publication_views import load_publication_views
 from lora_playground.workloads import (
     find_workload,
     resolve_record_dataset,
@@ -36,14 +41,12 @@ def _generator_module():
     return module
 
 
-def test_archive_generator_renders_a_records_native_workload(monkeypatch):
+def test_archive_generator_renders_archive_derived_workloads():
     generator = _generator_module()
-    workload = find_workload("OLMo-2-1B", "opc", 256)
-    monkeypatch.setattr(generator, "iter_workloads", lambda: [workload])
 
     rendered = generator.render_doc(ARCHIVE)
 
-    assert f"### {workload.title}" in rendered
+    assert "### allenai/OLMo-2-0425-1B × opc × r=256" in rendered
     assert "checked-in records-native publication archive" in rendered
     assert "## Cross-setting robustness ranking" in rendered
     # The historical beta1 request was not executed and must not split the
@@ -67,20 +70,31 @@ def test_checked_in_archive_preserves_reviewed_evidence_counts():
 
 def test_olmo_opc_r64_pins_recorded_publication_pipeline():
     archive = load_publication_archive(ARCHIVE)
-    workload = find_workload("OLMo-2-1B", "opc", 64)
+    views = load_publication_views(
+        ROOT / "publication" / "leaderboard_view.json",
+        archive=archive,
+    )
+    report_runs = tuple(run for run in archive.runs if views.matches_workload(run))
+    workloads = publication_workloads(report_runs, horizon=views.horizon)
+    workload = next(
+        workload for workload in workloads
+        if workload.model_name == "allenai/OLMo-2-0425-1B"
+        and workload.dataset_id == "opc"
+        and workload.rank == 64
+    )
     dimension_records = [
         run
         for run in archive.runs
         if run.effective_config["model_name"] == workload.model_name
         and run.effective_config["lora_r"] == workload.rank
-        and resolve_record_dataset(run) == workload.dataset
+        and resolve_record_dataset(run) == workload.dataset_id
     ]
 
     assert Counter(
         run.effective_config["data_pipeline_version"]
         for run in dimension_records
     ) == {"packed_v1": 6, "packed_v1.1": 83}
-    selected = publication_workload_runs(archive, workload)
+    selected = publication_runs_for_workload(report_runs, workload)
     assert len(selected) == 83
     assert workload.data_pipeline_version == "packed_v1.1"
     assert {
@@ -100,7 +114,7 @@ def test_archive_generator_renders_all_pipeline_scoped_workloads():
         in rendered
     )
     cell = rendered.split(
-        "### OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=64", 1
+        "### allenai/OLMo-2-0425-1B × opc × r=64", 1
     )[1].split("\n### ", 1)[0]
     assert "36.00×" not in cell
 
@@ -137,3 +151,10 @@ def test_missing_archive_does_not_create_output(tmp_path):
         "--require-archive",
     ]) == 2
     assert not output.exists()
+
+
+def test_generator_does_not_import_the_manual_workload_registry():
+    source = GENERATOR.read_text()
+    assert "iter_workloads" not in source
+    assert "WORKLOADS" not in source
+    assert "find_workload" not in source

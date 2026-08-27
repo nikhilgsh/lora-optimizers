@@ -1,20 +1,19 @@
 """Small records-native boundary for paper panels backed by the sealed archive.
 
-The checked-in publication archive owns reviewed historical semantics and
-cohort membership.  Paper modules supply only an explicit mapping from their
-editorial labels to the archive's sealed labels; comparison identity remains
-the archive ``view_key`` throughout assignment and aggregation.
+The checked-in archive owns reviewed historical semantics and cohort
+membership. Declarative view files own presentation labels and roles;
+comparison identity remains the archive ``view_key`` throughout aggregation.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
 from .comparison import ComparisonResult, build_comparison
-from .leaderboard_variants import publication_variant_specs
+from .leaderboard_variants import PUBLICATION_VARIANT_ID_FIELD
 from .publication_archive import PublicationArchive, load_publication_archive
 from .publication_queries import publication_workload_runs
 from .publication_views import PublicationViews, load_publication_views
@@ -24,11 +23,7 @@ from .workloads import Workload
 ROOT = Path(__file__).absolute().parents[1]
 DEFAULT_PUBLICATION_ARCHIVE = ROOT / "publication" / "legacy_leaderboard_v1.json"
 DEFAULT_PUBLICATION_VIEWS = ROOT / "publication" / "paper_views.json"
-LEGACY_ADAMW_VARIANT_LABEL = "AdamW"
-LEGACY_POLORA_VARIANT_LABEL = (
-    "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
-    "H=8 precond_method=gram_ns"
-)
+DEFAULT_LEADERBOARD_VIEWS = ROOT / "publication" / "leaderboard_view.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,80 +61,10 @@ def load_paper_publication_views() -> PublicationViews:
 
 
 @lru_cache(maxsize=1)
-def _default_specs_by_label():
+def load_leaderboard_publication_views() -> PublicationViews:
+    """Load cross-workload paper/report views once per process."""
     archive = load_paper_publication_archive()
-    return MappingProxyType({
-        spec.label: spec for spec in publication_variant_specs(archive.runs)
-    })
-
-
-def publication_panel(
-    workload: Workload,
-    variants: Mapping[str, str],
-    *,
-    horizon: int | None = None,
-    completion_slack: int = 300,
-    archive: PublicationArchive | None = None,
-) -> PublicationPanel:
-    """Build a paper comparison from sealed archive variant labels.
-
-    ``variants`` maps the paper's editorial label to the exact label stored in
-    the named archive projection.  Labels are used only to resolve that sealed
-    projection once.  Each resulting :class:`VariantSpec` retains the archive's
-    stable view ID, predicate, and optimizer-semantic key.
-    """
-    if not variants:
-        raise ValueError("publication panel needs at least one variant")
-    use_default_archive = archive is None
-    if use_default_archive:
-        archive = load_paper_publication_archive()
-    assert archive is not None
-    specs_by_label = (
-        _default_specs_by_label()
-        if use_default_archive
-        else {
-            spec.label: spec
-            for spec in publication_variant_specs(archive.runs)
-        }
-    )
-    if len(specs_by_label) != len(archive.variants):
-        raise ValueError("publication archive labels do not resolve one-to-one")
-
-    selected = []
-    variant_ids: dict[str, str] = {}
-    for editorial_label, sealed_label in variants.items():
-        if not isinstance(editorial_label, str) or not editorial_label:
-            raise ValueError("editorial publication labels must be non-empty strings")
-        try:
-            source = specs_by_label[sealed_label]
-        except KeyError as exc:
-            raise KeyError(
-                f"sealed publication variant {sealed_label!r} is absent from "
-                f"archive {archive.projection_id!r}"
-            ) from exc
-        if source.id in variant_ids.values():
-            raise ValueError(
-                f"publication view {source.id!r} was selected more than once"
-            )
-        selected.append(replace(
-            source,
-            label=editorial_label,
-            style_key=editorial_label,
-        ))
-        variant_ids[editorial_label] = source.id
-
-    records = publication_workload_runs(archive, workload)
-    comparison = build_comparison(
-        records,
-        selected,
-        horizon=workload.horizon if horizon is None else horizon,
-        completion_slack=completion_slack,
-    )
-    return PublicationPanel(
-        comparison=comparison,
-        variant_ids=MappingProxyType(variant_ids),
-        horizon=workload.horizon if horizon is None else horizon,
-    )
+    return load_publication_views(DEFAULT_LEADERBOARD_VIEWS, archive=archive)
 
 
 def publication_view_panel(
@@ -178,6 +103,38 @@ def publication_view_panel(
     )
 
 
+def publication_workload_view_panel(
+    view_id: str,
+    workload: Workload,
+    *,
+    completion_slack: int = 300,
+) -> PublicationPanel:
+    """Apply one declarative stable-ID view to one archived workload."""
+    archive = load_paper_publication_archive()
+    resolved = load_leaderboard_publication_views().resolve(view_id, archive)
+    arm_ids = {spec.id for spec in resolved.variant_specs}
+    records = tuple(
+        run for run in publication_workload_runs(archive, workload)
+        if run.effective_config.get(PUBLICATION_VARIANT_ID_FIELD) in arm_ids
+    )
+    comparison = build_comparison(
+        records,
+        resolved.variant_specs,
+        horizon=workload.horizon,
+        completion_slack=completion_slack,
+    )
+    return PublicationPanel(
+        comparison=comparison,
+        variant_ids=MappingProxyType({
+            spec.label: spec.id for spec in resolved.variant_specs
+        }),
+        reference_id=resolved.reference_id,
+        target_id=resolved.target_id,
+        horizon=workload.horizon,
+        title=resolved.view.title,
+    )
+
+
 def labeled_completed(panel: PublicationPanel) -> dict[str, dict[float, tuple]]:
     """Return the established labeled-curve shape from one comparison result."""
     labels = {spec.id: spec.label for spec in panel.comparison.variants}
@@ -193,13 +150,13 @@ def labeled_completed(panel: PublicationPanel) -> dict[str, dict[float, tuple]]:
 
 __all__ = [
     "DEFAULT_PUBLICATION_ARCHIVE",
+    "DEFAULT_LEADERBOARD_VIEWS",
     "DEFAULT_PUBLICATION_VIEWS",
-    "LEGACY_ADAMW_VARIANT_LABEL",
-    "LEGACY_POLORA_VARIANT_LABEL",
     "PublicationPanel",
     "labeled_completed",
+    "load_leaderboard_publication_views",
     "load_paper_publication_archive",
     "load_paper_publication_views",
-    "publication_panel",
     "publication_view_panel",
+    "publication_workload_view_panel",
 ]

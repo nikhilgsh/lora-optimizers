@@ -415,7 +415,7 @@ def leaderboard_rows_from_comparison(
         best = comparison.best_completed.get(spec.id)
         if not by_lr or best is None:
             continue
-        rows.append(_leaderboard_row(
+        row = _leaderboard_row(
             spec.label,
             by_lr,
             best_lr=best.lr,
@@ -424,7 +424,12 @@ def leaderboard_rows_from_comparison(
             target=target,
             horizon=horizon,
             unreached_avg_value=unreached_avg_value,
-        ))
+        )
+        # Structured callers retain stable identity through downstream report
+        # aggregation; ``variant`` remains the presentation label for legacy
+        # table consumers.
+        row["variant_id"] = spec.id
+        rows.append(row)
     return rows, target
 
 
