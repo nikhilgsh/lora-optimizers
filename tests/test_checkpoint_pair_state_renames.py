@@ -8,13 +8,26 @@ of the guard asked whether any renamed key was live, which is true of every
 post-rename CW state (it has `Q_B`), so the shim silently never fired and an
 old-name checkpoint resumed with its curvature EMAs reset to their init value.
 
+The map itself is SCOPED TO THE OPTIMIZER CLASS (`PAIR_STATE_ALIASES`, read by
+`_pair_state_aliases`), which is what keeps `AdamSOAPPolarProductLoRA` — still
+using `L_A`, `R_B`, `Q_A`, `Q_B` with their original SOAP meanings — out of the
+translation entirely rather than relying on a guard to spare it.
+
 The live key sets here are read off freshly constructed optimizers rather than
 hand-typed, so a future pair_state change cannot leave this test asserting
 against a schema that no longer exists.
+
+The end-to-end counterpart (save, downgrade the keys on disk, load, resume)
+lives in `tests/test_checkpoint.py`, where the save/load fixtures are.
 """
+import pytest
 import torch
 
-from lora_playground.checkpoint import _apply_pair_state_renames
+from lora_playground.checkpoint import (
+    _PAIR_STATE_RENAMES_FALLBACK,
+    _apply_pair_state_renames,
+    _pair_state_aliases,
+)
 from lora_playground.optim import AdamSOAPPolarProductLoRA, CurvatureWhitenLoRA
 
 R, D_IN, D_OUT = 8, 64, 32
@@ -77,3 +90,63 @@ def test_new_schema_entry_is_left_alone():
     live = _live_keys(CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise"))
     entry = {"P_A": torch.ones(R, R), "Q_B": torch.eye(R), "U_A": torch.eye(R)}
     assert _apply_pair_state_renames(dict(entry), live) == entry
+
+
+# ── the map is scoped to the optimizer class ────────────────────────────────
+
+
+class _DeclaresAliases:
+    PAIR_STATE_ALIASES = {"old": "new"}
+
+
+class _DeclaresNoRenames:
+    PAIR_STATE_ALIASES = {}
+
+
+def test_a_declared_alias_map_wins_over_the_module_fallback():
+    """The class attribute is the source of truth, empty included — that is
+    what makes an identically-spelled key in another optimizer unable to
+    participate, rather than something a second guard table has to exclude."""
+    assert _pair_state_aliases(_DeclaresAliases()) == {"old": "new"}
+    assert _pair_state_aliases(_DeclaresNoRenames()) == {}
+    # A copy, so a caller cannot mutate the class attribute through it.
+    got = _pair_state_aliases(_DeclaresAliases())
+    got["old"] = "tampered"
+    assert _DeclaresAliases.PAIR_STATE_ALIASES == {"old": "new"}
+
+
+def test_an_empty_alias_map_disables_the_rename():
+    live = _live_keys(CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise"))
+    assert _apply_pair_state_renames(dict(OLD_ENTRY), live, {}) == OLD_ENTRY
+
+
+def test_temporary_fallback_matches_the_class_attribute():
+    """Tripwire for removing the temporary fallback in `checkpoint.py`.
+
+    While `CurvatureWhitenLoRA` has no `PAIR_STATE_ALIASES` this skips. The
+    moment it gains one, this checks the declared map agrees with the table
+    that stood in for it — and `_PAIR_STATE_RENAMES_FALLBACK`, the fallback
+    branch of `_pair_state_aliases`, and this test can all be deleted.
+    """
+    declared = getattr(CurvatureWhitenLoRA, "PAIR_STATE_ALIASES", None)
+    if declared is None:
+        pytest.skip("CurvatureWhitenLoRA.PAIR_STATE_ALIASES not declared yet; "
+                    "checkpoint._PAIR_STATE_RENAMES_FALLBACK still stands in")
+    assert dict(declared) == _PAIR_STATE_RENAMES_FALLBACK, (
+        "the declared alias map disagrees with the fallback it replaces — one "
+        "of the two is wrong, and an old checkpoint would load into the wrong "
+        "slots")
+
+
+def test_soap_is_untouched_once_curvature_whiten_declares_its_own_map(monkeypatch):
+    """Scoping, stated as the property that matters: giving CurvatureWhitenLoRA
+    its own alias map must not change how an AdamSOAPPolarProductLoRA
+    checkpoint is read, because the map is looked up per instance."""
+    monkeypatch.setattr(CurvatureWhitenLoRA, "PAIR_STATE_ALIASES",
+                        dict(_PAIR_STATE_RENAMES_FALLBACK), raising=False)
+    soap = AdamSOAPPolarProductLoRA(_FakeLoRALinear())
+    out = _apply_pair_state_renames(
+        dict(OLD_ENTRY), _live_keys(soap), _pair_state_aliases(soap))
+    assert set(out) == set(OLD_ENTRY), "SOAP state must pass through untouched"
+    for k, v in OLD_ENTRY.items():
+        assert torch.equal(out[k], v)

@@ -95,6 +95,8 @@ PEFT convention throughout — A: (r, d_in), B: (d_out, r), adapter output = `(a
 
 Custom optimizers collect pairs via `collect_lora_pairs()` in `utils.py` and operate directly on `A.grad`/`B.grad` without going through PyTorch's standard parameter-group mechanics. They store per-pair state in `self.pair_state` (a plain dict) rather than `self.state` to avoid conflicts with `Optimizer.state`.
 
+**`pair_state` keys are serialized.** `checkpoint.py` persists every entry by key, so renaming one strands every checkpoint written before the rename — silently, because load inserts the unknown key and leaves the live buffer at its init value. Renaming a key therefore means declaring the old name in a `PAIR_STATE_ALIASES = {old: new}` class attribute (`checkpoint._pair_state_aliases` reads it off the optimizer, `load_checkpoint` applies it) and adding a test that an old-name checkpoint resumes. The map is scoped to the class deliberately: `AdamSOAPPolarProductLoRA` spells `L_A`/`R_B`/`Q_A`/`Q_B` with its own meanings and must never be translated. Two things the map has to get right — it is applied as one simultaneous permutation, because a name can be retired and current at once (`CurvatureWhitenLoRA`'s old eigenbasis `Q_B` became `U_B` while `Q_B` is now the free Kronecker factor); and an entry only counts as old-schema if it carries an alias key that is not live, which is derived rather than listed. `CurvatureWhitenLoRA` does not declare its map yet — `checkpoint._PAIR_STATE_RENAMES_FALLBACK` stands in, and `test_temporary_fallback_matches_the_class_attribute` is the tripwire for removing it.
+
 ### Key Math Utilities (`utils.py`)
 
 - `spdify(M, eps)` — symmetrizes and adds δI, outputs float32

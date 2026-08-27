@@ -52,39 +52,87 @@ _GROUP_STATE_PERSIST_PREFIXES = (
 # buffer. No special exclusion required for the test-equality semantics.
 _PAIR_STATE_SKIP_LOAD = {"_group", "_local_idx"}
 
-# Renamed pair_state keys: old checkpoint key -> current key. Without this the
-# load loop below takes its "key not in the live state" branch and INSERTS the
-# stale key as a new entry, leaving the current buffer at its init value — a
-# resume that silently starts its curvature EMAs from scratch rather than
-# failing. CurvatureWhitenLoRA's two r x r slots were `L_A`/`R_B` and its eigh
-# eigenbasis `Q_A`/`Q_B`; the slots are now `P_A`/`Q_B` (the free Kronecker
-# factors P_A, Q_B) and the eigenbasis `U_A`/`U_B`, so `Q_B` means two different
-# things across the boundary and the rename must be applied as one simultaneous
-# permutation, not key by key.
-_PAIR_STATE_RENAMES = {"L_A": "P_A", "R_B": "Q_B", "Q_A": "U_A", "Q_B": "U_B"}
+# Renamed pair_state keys: old checkpoint key -> current key. Without a
+# translation the load loop below takes its "key not in the live state" branch
+# and INSERTS the stale key as a new entry, leaving the current buffer at its
+# init value — a resume that silently starts its curvature EMAs from scratch
+# rather than failing.
+#
+# The map is read off the OPTIMIZER (`PAIR_STATE_ALIASES` class attribute, see
+# `_pair_state_aliases`), not kept as one module-level table, because the same
+# key spelling means different things in different optimizers:
+# `AdamSOAPPolarProductLoRA` uses `L_A`, `R_B`, `Q_A` and `Q_B` with their
+# original SOAP meanings and must never be translated. Scoping the map to the
+# class that did the renaming makes that collision unrepresentable instead of
+# something a second table has to patch around.
 
-# The subset of retired keys that can only ever mean the OLD schema. `Q_B` is
-# excluded on purpose and this is the whole subtlety: it is simultaneously a
-# retired key (the old eigenbasis, -> U_B) and the CURRENT name of the free
-# Kronecker factor. So a live optimizer having `Q_B` says nothing about which
-# schema it is on, and guarding on `_PAIR_STATE_RENAMES` itself matched every
-# post-rename CurvatureWhitenLoRA and disabled the shim entirely.
-_PAIR_STATE_OLD_ONLY = ("L_A", "R_B", "Q_A")
+# TEMPORARY — stands in for `CurvatureWhitenLoRA.PAIR_STATE_ALIASES`, which
+# does not exist yet in lora_playground/optim.py. CurvatureWhitenLoRA's two
+# r x r slots were `L_A`/`R_B` and its eigh eigenbasis `Q_A`/`Q_B`; the slots
+# are now `P_A`/`Q_B` (the free Kronecker factors) and the eigenbasis
+# `U_A`/`U_B`.
+#
+# REMOVAL CONDITION: the moment `CurvatureWhitenLoRA` declares
+# `PAIR_STATE_ALIASES` with these same four pairs, delete this table, delete
+# the fallback branch in `_pair_state_aliases`, make `aliases` a required
+# argument of `_apply_pair_state_renames`, and delete
+# `test_temporary_fallback_matches_the_class_attribute` in
+# tests/test_checkpoint_pair_state_renames.py — that test is the tripwire: it
+# skips while the attribute is absent and starts checking the two agree the
+# moment it lands.
+_PAIR_STATE_RENAMES_FALLBACK = {
+    "L_A": "P_A", "R_B": "Q_B", "Q_A": "U_A", "Q_B": "U_B",
+}
 
 
-def _apply_pair_state_renames(entry, live_keys):
+def _pair_state_aliases(optimizer) -> dict:
+    """Old-name -> current-name map for THIS optimizer's `pair_state` keys.
+
+    Because pair_state is persisted key by key, renaming a key would strand
+    every checkpoint written before the rename — a running sweep would resume
+    into a freshly-initialized buffer with no error. An optimizer that renames
+    its state declares the translation as a `PAIR_STATE_ALIASES` class
+    attribute and load applies it.
+
+    Read off the optimizer instance rather than kept as a module-level table:
+    different optimizers spell the same key name to mean different things, so
+    the map has to be scoped to the class that renamed it. A declared attribute
+    always wins, including an empty one.
+    """
+    aliases = getattr(optimizer, "PAIR_STATE_ALIASES", None)
+    if aliases is not None:
+        return dict(aliases)
+    return dict(_PAIR_STATE_RENAMES_FALLBACK)   # temporary, see above
+
+
+def _apply_pair_state_renames(entry, live_keys, aliases=None):
     """Map a loaded pair_state entry's keys onto the current schema.
 
-    Applied only when the entry carries a retired key AND the live optimizer is
-    not itself on the old schema -- so `AdamSOAPPolarProductLoRA`, which still
-    uses `L_A`, `R_B`, `Q_A` and `Q_B` with their original SOAP meanings, is
-    spared (it has `L_A` live, which is old-only).
+    `aliases` is the optimizer's own old -> new map, from
+    `_pair_state_aliases`; it defaults to the temporary fallback table above
+    so the existing two-argument call sites keep their behaviour.
+
+    The rename is applied as ONE SIMULTANEOUS PERMUTATION, never key by key,
+    because a name can be retired and current at the same time: the old
+    eigenbasis `Q_B` became `U_B` while `Q_B` is now the free Kronecker factor.
+    A key-at-a-time "translate it only if the live state lacks it" rule would
+    leave that tensor in the wrong slot.
+
+    Whether the ENTRY is on the old schema is decided by the alias keys that
+    are NOT live — derived from the map and the live optimizer rather than
+    listed in a second table that can go stale. If no alias key is retired
+    (`AdamSOAPPolarProductLoRA` under the fallback map has all four live)
+    nothing distinguishes the two schemas, so the entry passes through
+    untouched.
     """
-    if not any(k in entry for k in _PAIR_STATE_OLD_ONLY):
+    if aliases is None:
+        aliases = _PAIR_STATE_RENAMES_FALLBACK
+    if not aliases:
         return entry
-    if any(k in live_keys for k in _PAIR_STATE_OLD_ONLY):
+    old_only = set(aliases) - set(live_keys)
+    if not old_only or not (old_only & set(entry)):
         return entry
-    return {_PAIR_STATE_RENAMES.get(k, k): v for k, v in entry.items()}
+    return {aliases.get(k, k): v for k, v in entry.items()}
 
 
 def _adapter_dir(ckpt_dir: Path) -> Path:
@@ -328,11 +376,12 @@ def load_checkpoint(
             pass
 
     if "pair_state" in payload and getattr(optimizer, "pair_state", None) is not None:
+        aliases = _pair_state_aliases(optimizer)
         for i, entry in payload["pair_state"].items():
             dst = optimizer.pair_state.get(i)
             if dst is None:
                 continue
-            entry = _apply_pair_state_renames(entry, dst.keys())
+            entry = _apply_pair_state_renames(entry, dst.keys(), aliases)
             for k, v in entry.items():
                 if k in _PAIR_STATE_SKIP_LOAD:
                     continue

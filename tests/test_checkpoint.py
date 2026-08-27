@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lora_playground.checkpoint import (
+    _pair_state_aliases,
     ckpt_dir_for_step,
     load_checkpoint,
     prune_checkpoints,
@@ -177,6 +178,11 @@ def _assert_rng_draws_equal(actual, expected):
 @pytest.mark.parametrize("optimizer_type", [
     "adam-lin-lora",
     "adam-polar-product-lora-coupled-spectral-chord-tight",
+    # AdamSOAPPolarProductLoRA: keeps `L_A`/`R_B`/`Q_A`/`Q_B` with their
+    # original SOAP meanings, i.e. the spellings CurvatureWhitenLoRA retired.
+    # Its state must survive a real save/load with those keys untranslated —
+    # the end-to-end guard on the rename shim never firing on the wrong class.
+    "adam-soap-polar-product-lora",
 ])
 def test_save_load_round_trip(tmp_path, optimizer_type):
     """Save after N steps, instantiate fresh model+optimizer, load,
@@ -570,6 +576,190 @@ def test_resume_then_step_matches_no_resume(tmp_path, optimizer_type):
 
     # Final LoRA weights must match the reference run bitwise (deterministic
     # inputs; no sampler / RNG drift in this synthetic setup).
+    ref_params = dict(ref_model.inner.named_parameters())
+    for k, v in resumed_model.inner.named_parameters():
+        assert torch.allclose(v, ref_params[k], atol=1e-6), \
+            f"final param {k!r} drifted: max abs diff = " \
+            f"{(v - ref_params[k]).abs().max().item():.3e}"
+
+
+# ── pair_state key rename: old checkpoints must still resume ────────────────
+#
+# `pair_state` keys are persisted verbatim ("persist EVERY entry"), so renaming
+# one strands every checkpoint written before the rename — silently, since load
+# simply inserts the unknown key and leaves the live buffer at its init value.
+# `CurvatureWhitenLoRA`'s r x r slots `L_A`/`R_B` and eigenbasis `Q_A`/`Q_B`
+# became `P_A`/`Q_B` and `U_A`/`U_B`; `checkpoint._pair_state_aliases` supplies
+# the translation and `load_checkpoint` applies it.
+#
+# `tests/test_checkpoint_pair_state_renames.py` unit-tests the mapping function.
+# These three go through the real save/load path, which is what pins the WIRING:
+# that the aliases reach the load loop at all, and that a resume from a
+# pre-rename checkpoint stays on the same trajectory.
+
+_CW_OPT = "kl-diag-polar-lora"
+
+
+def _downgrade_pair_state_keys(ckpt_dir, aliases):
+    """Rewrite a saved checkpoint's pair_state keys to their pre-rename names.
+
+    Faithful to a real old checkpoint because the rename changed key STRINGS
+    only: the tensor written under 'L_A' by the old code is the tensor written
+    under 'P_A' by the new one. Applied as one simultaneous permutation for the
+    same reason load applies it that way — `Q_B` is both a retired name and a
+    current one. Returns the number of keys downgraded.
+    """
+    path = Path(ckpt_dir) / "optimizer.pt"
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    back = {new: old for old, new in aliases.items()}
+    assert len(back) == len(aliases), "alias map is not invertible"
+    n = 0
+    for i, entry in payload["pair_state"].items():
+        renamed = {}
+        for k, v in entry.items():
+            if k in back:
+                n += 1
+            renamed[back.get(k, k)] = v
+        payload["pair_state"][i] = renamed
+    torch.save(payload, path)
+    return n
+
+
+def _expected_downgrade_count(optimizer, aliases):
+    """How many keys `_downgrade_pair_state_keys` should rewrite, read off the
+    LIVE optimizer rather than hand-typed, so a pair_state change cannot leave
+    the assertion below checking a schema that no longer exists."""
+    targets = set(aliases.values())
+    return sum(len(targets & set(e)) for e in optimizer.pair_state.values())
+
+
+def _save_cw_checkpoint(tmp_path, steps=3):
+    """Train a CurvatureWhitenLoRA for `steps`, save, and downgrade the saved
+    pair_state keys to the pre-rename spelling.
+
+    Returns (model, optimizer, ckpt_dir, aliases)."""
+    from lora_playground.optim import CurvatureWhitenLoRA
+
+    torch.manual_seed(0)
+    src_model = _PeftLikeWrapper(_ToyModel())
+    src_opt = _make_optimizer(src_model.inner, _CW_OPT)
+    assert isinstance(src_opt, CurvatureWhitenLoRA)
+
+    x = torch.randn(2, 8)
+    y = torch.randn(2, 8)
+    for _ in range(steps):
+        _step_once(src_model.inner, src_opt, x, y)
+
+    ckpt = ckpt_dir_for_step(tmp_path, step=steps)
+    save_checkpoint(
+        ckpt, bare_model=src_model, optimizer=src_opt, scheduler=None,
+        step=steps, total_tokens=0, resume_segment=0, cfg_snapshot={},
+    )
+    aliases = _pair_state_aliases(src_opt)
+    expected = _expected_downgrade_count(src_opt, aliases)
+    # Guards against a typo in the alias table making these tests vacuous: if
+    # nothing was rewritten, the "old" checkpoint is just a current one.
+    assert expected > 0, "live optimizer carries none of the renamed keys"
+    n = _downgrade_pair_state_keys(ckpt, aliases)
+    assert n == expected, f"downgraded {n} keys, expected {expected}"
+    return src_model, src_opt, ckpt, aliases
+
+
+def test_old_pair_state_names_load_into_the_renamed_optimizer(tmp_path):
+    """A checkpoint written with 'L_A'/'R_B'/'Q_A'/'Q_B' must restore into
+    'P_A'/'Q_B'/'U_A'/'U_B' with every tensor intact."""
+    _src_model, src_opt, ckpt, aliases = _save_cw_checkpoint(tmp_path)
+
+    torch.manual_seed(99)   # different weights before load
+    dst_model = _PeftLikeWrapper(_ToyModel())
+    dst_opt = _make_optimizer(dst_model.inner, _CW_OPT)
+    live_before = {i: set(e) for i, e in dst_opt.pair_state.items()}
+
+    info = load_checkpoint(ckpt, bare_model=dst_model, optimizer=dst_opt)
+    assert info is not None
+
+    # No retired key survived into the live state, and every current key matches.
+    for i, entry in dst_opt.pair_state.items():
+        retired = set(aliases) - live_before[i]
+        leaked = retired & set(entry)
+        assert not leaked, f"pair {i} kept a pre-rename key: {sorted(leaked)}"
+    _equal_state(src_opt, dst_opt)
+
+
+def test_the_alias_map_is_what_makes_the_old_checkpoint_load(tmp_path, monkeypatch):
+    """Negative control: with the alias table emptied, the same load leaves the
+    curvature state at its init value instead of erroring. That silence is
+    exactly why the table has to exist."""
+    from lora_playground.optim import CurvatureWhitenLoRA
+
+    _src_model, src_opt, ckpt, aliases = _save_cw_checkpoint(tmp_path)
+
+    # Pick a renamed key to watch, derived from the live optimizer:
+    #   - `new` must be live, or there is no slot to check;
+    #   - `new` must not itself be a retired name, or the un-aliased load would
+    #     write some OTHER tensor into it and blur the two failure modes;
+    #   - the trained value must differ from the fresh one, or a failed load is
+    #     indistinguishable from a successful one.
+    torch.manual_seed(99)
+    probe_opt = _make_optimizer(_PeftLikeWrapper(_ToyModel()).inner, _CW_OPT)
+    fresh, trained = probe_opt.pair_state[0], src_opt.pair_state[0]
+    watched = [(o, n) for o, n in aliases.items()
+               if n in fresh and n not in aliases
+               and not torch.equal(trained[n], fresh[n])]
+    assert watched, "no renamed key moved during training — test is vacuous"
+    old_name, new_name = watched[0]
+
+    # An explicitly EMPTY class attribute: a declared map wins over the
+    # temporary module-level fallback, so this really does disable translation.
+    monkeypatch.setattr(
+        CurvatureWhitenLoRA, "PAIR_STATE_ALIASES", {}, raising=False)
+
+    torch.manual_seed(99)
+    dst_model = _PeftLikeWrapper(_ToyModel())
+    dst_opt = _make_optimizer(dst_model.inner, _CW_OPT)
+    load_checkpoint(ckpt, bare_model=dst_model, optimizer=dst_opt)
+
+    assert not torch.equal(dst_opt.pair_state[0][new_name], trained[new_name]), \
+        f"without the alias map {old_name!r} should NOT have reached {new_name!r}"
+    assert torch.equal(dst_opt.pair_state[0][old_name], trained[new_name]), \
+        f"the un-aliased {old_name!r} should have been kept verbatim instead"
+
+
+def test_old_checkpoint_resume_then_step_matches_no_resume(tmp_path):
+    """The operational claim: a sweep resuming from a pre-rename checkpoint
+    continues the SAME trajectory it would have had without the interruption."""
+    K, J = 3, 4
+    input_gen = torch.Generator().manual_seed(42)
+    x = torch.randn(2, 8, generator=input_gen)
+    y = torch.randn(2, 8, generator=input_gen)
+
+    torch.manual_seed(0)
+    ref_model = _PeftLikeWrapper(_ToyModel())
+    ref_opt = _make_optimizer(ref_model.inner, _CW_OPT)
+    for _ in range(K + J):
+        _step_once(ref_model.inner, ref_opt, x, y)
+
+    torch.manual_seed(0)
+    trial_model = _PeftLikeWrapper(_ToyModel())
+    trial_opt = _make_optimizer(trial_model.inner, _CW_OPT)
+    for _ in range(K):
+        _step_once(trial_model.inner, trial_opt, x, y)
+    ckpt = ckpt_dir_for_step(tmp_path, step=K)
+    save_checkpoint(
+        ckpt, bare_model=trial_model, optimizer=trial_opt, scheduler=None,
+        step=K, total_tokens=0, resume_segment=0, cfg_snapshot={},
+    )
+    aliases = _pair_state_aliases(trial_opt)
+    assert _downgrade_pair_state_keys(ckpt, aliases) > 0
+
+    del trial_model, trial_opt
+    torch.manual_seed(0)
+    resumed_model = _PeftLikeWrapper(_ToyModel())
+    resumed_opt = _make_optimizer(resumed_model.inner, _CW_OPT)
+    load_checkpoint(tmp_path, bare_model=resumed_model, optimizer=resumed_opt)
+    for _ in range(J):
+        _step_once(resumed_model.inner, resumed_opt, x, y)
+
     ref_params = dict(ref_model.inner.named_parameters())
     for k, v in resumed_model.inner.named_parameters():
         assert torch.allclose(v, ref_params[k], atol=1e-6), \
