@@ -66,24 +66,6 @@ _PAIR_STATE_SKIP_LOAD = {"_group", "_local_idx"}
 # class that did the renaming makes that collision unrepresentable instead of
 # something a second table has to patch around.
 
-# TEMPORARY — stands in for `CurvatureWhitenLoRA.PAIR_STATE_ALIASES`, which
-# does not exist yet in lora_playground/optim.py. CurvatureWhitenLoRA's two
-# r x r slots were `L_A`/`R_B` and its eigh eigenbasis `Q_A`/`Q_B`; the slots
-# are now `P_A`/`Q_B` (the free Kronecker factors) and the eigenbasis
-# `U_A`/`U_B`.
-#
-# REMOVAL CONDITION: the moment `CurvatureWhitenLoRA` declares
-# `PAIR_STATE_ALIASES` with these same four pairs, delete this table, delete
-# the fallback branch in `_pair_state_aliases`, make `aliases` a required
-# argument of `_apply_pair_state_renames`, and delete
-# `test_temporary_fallback_matches_the_class_attribute` in
-# tests/test_checkpoint_pair_state_renames.py — that test is the tripwire: it
-# skips while the attribute is absent and starts checking the two agree the
-# moment it lands.
-_PAIR_STATE_RENAMES_FALLBACK = {
-    "L_A": "P_A", "R_B": "Q_B", "Q_A": "U_A", "Q_B": "U_B",
-}
-
 
 def _pair_state_aliases(optimizer) -> dict:
     """Old-name -> current-name map for THIS optimizer's `pair_state` keys.
@@ -96,21 +78,18 @@ def _pair_state_aliases(optimizer) -> dict:
 
     Read off the optimizer instance rather than kept as a module-level table:
     different optimizers spell the same key name to mean different things, so
-    the map has to be scoped to the class that renamed it. A declared attribute
-    always wins, including an empty one.
+    the map has to be scoped to the class that renamed it. An optimizer that
+    has never renamed a key declares nothing and gets an empty map.
     """
-    aliases = getattr(optimizer, "PAIR_STATE_ALIASES", None)
-    if aliases is not None:
-        return dict(aliases)
-    return dict(_PAIR_STATE_RENAMES_FALLBACK)   # temporary, see above
+    return dict(getattr(optimizer, "PAIR_STATE_ALIASES", None) or {})
 
 
-def _apply_pair_state_renames(entry, live_keys, aliases=None):
+def _apply_pair_state_renames(entry, live_keys, aliases):
     """Map a loaded pair_state entry's keys onto the current schema.
 
     `aliases` is the optimizer's own old -> new map, from
-    `_pair_state_aliases`; it defaults to the temporary fallback table above
-    so the existing two-argument call sites keep their behaviour.
+    `_pair_state_aliases`. An empty map means this optimizer never renamed a
+    key, so the entry passes through.
 
     The rename is applied as ONE SIMULTANEOUS PERMUTATION, never key by key,
     because a name can be retired and current at the same time: the old
@@ -120,13 +99,10 @@ def _apply_pair_state_renames(entry, live_keys, aliases=None):
 
     Whether the ENTRY is on the old schema is decided by the alias keys that
     are NOT live — derived from the map and the live optimizer rather than
-    listed in a second table that can go stale. If no alias key is retired
-    (`AdamSOAPPolarProductLoRA` under the fallback map has all four live)
+    listed in a second table that can go stale. If no alias key is retired,
     nothing distinguishes the two schemas, so the entry passes through
     untouched.
     """
-    if aliases is None:
-        aliases = _PAIR_STATE_RENAMES_FALLBACK
     if not aliases:
         return entry
     old_only = set(aliases) - set(live_keys)

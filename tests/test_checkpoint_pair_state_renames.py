@@ -24,7 +24,6 @@ import pytest
 import torch
 
 from lora_playground.checkpoint import (
-    _PAIR_STATE_RENAMES_FALLBACK,
     _apply_pair_state_renames,
     _pair_state_aliases,
 )
@@ -66,8 +65,9 @@ def test_curvature_whiten_live_keys_are_the_new_schema():
 
 
 def test_old_checkpoint_renames_onto_curvature_whiten():
-    live = _live_keys(CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise"))
-    out = _apply_pair_state_renames(dict(OLD_ENTRY), live)
+    cw = CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise")
+    out = _apply_pair_state_renames(
+        dict(OLD_ENTRY), _live_keys(cw), _pair_state_aliases(cw))
     assert set(out) == {"P_A", "Q_B", "U_A", "U_B", "m_A"}
     # The permutation is simultaneous: old L_A -> P_A and old Q_B -> U_B, so the
     # value that was under `Q_B` must land under `U_B`, not stay under `Q_B`.
@@ -78,18 +78,25 @@ def test_old_checkpoint_renames_onto_curvature_whiten():
 
 
 def test_soap_optimizer_keeps_its_own_old_names():
-    """AdamSOAPPolarProductLoRA still uses L_A/R_B/Q_A/Q_B with SOAP meanings."""
-    live = _live_keys(AdamSOAPPolarProductLoRA(_FakeLoRALinear()))
-    assert {"L_A", "R_B", "Q_A", "Q_B"} <= live
-    out = _apply_pair_state_renames(dict(OLD_ENTRY), live)
+    """AdamSOAPPolarProductLoRA still uses L_A/R_B/Q_A/Q_B with SOAP meanings.
+
+    It never renamed a key, so it declares no `PAIR_STATE_ALIASES` and gets an
+    empty map — the protection is structural, not a guard that could go stale.
+    """
+    soap = AdamSOAPPolarProductLoRA(_FakeLoRALinear())
+    assert {"L_A", "R_B", "Q_A", "Q_B"} <= _live_keys(soap)
+    assert _pair_state_aliases(soap) == {}, "SOAP must declare no alias map"
+    out = _apply_pair_state_renames(
+        dict(OLD_ENTRY), _live_keys(soap), _pair_state_aliases(soap))
     assert set(out) == set(OLD_ENTRY), "SOAP state must pass through untouched"
 
 
 def test_new_schema_entry_is_left_alone():
     """A current-schema checkpoint carries no old-only key, so nothing happens."""
-    live = _live_keys(CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise"))
+    cw = CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise")
     entry = {"P_A": torch.ones(R, R), "Q_B": torch.eye(R), "U_A": torch.eye(R)}
-    assert _apply_pair_state_renames(dict(entry), live) == entry
+    assert _apply_pair_state_renames(
+        dict(entry), _live_keys(cw), _pair_state_aliases(cw)) == entry
 
 
 # ── the map is scoped to the optimizer class ────────────────────────────────
@@ -120,30 +127,23 @@ def test_an_empty_alias_map_disables_the_rename():
     assert _apply_pair_state_renames(dict(OLD_ENTRY), live, {}) == OLD_ENTRY
 
 
-def test_temporary_fallback_matches_the_class_attribute():
-    """Tripwire for removing the temporary fallback in `checkpoint.py`.
+def test_the_declared_map_covers_every_renamed_slot():
+    """The map is the only record of the rename, so pin its content here.
 
-    While `CurvatureWhitenLoRA` has no `PAIR_STATE_ALIASES` this skips. The
-    moment it gains one, this checks the declared map agrees with the table
-    that stood in for it — and `_PAIR_STATE_RENAMES_FALLBACK`, the fallback
-    branch of `_pair_state_aliases`, and this test can all be deleted.
+    `Q_B` appearing as a KEY while also being a live slot name is the whole
+    reason the map is class-scoped and applied as one permutation; if a future
+    edit drops it, `_apply_pair_state_renames` silently stops recognizing an
+    old-schema entry.
     """
-    declared = getattr(CurvatureWhitenLoRA, "PAIR_STATE_ALIASES", None)
-    if declared is None:
-        pytest.skip("CurvatureWhitenLoRA.PAIR_STATE_ALIASES not declared yet; "
-                    "checkpoint._PAIR_STATE_RENAMES_FALLBACK still stands in")
-    assert dict(declared) == _PAIR_STATE_RENAMES_FALLBACK, (
-        "the declared alias map disagrees with the fallback it replaces — one "
-        "of the two is wrong, and an old checkpoint would load into the wrong "
-        "slots")
+    assert CurvatureWhitenLoRA.PAIR_STATE_ALIASES == {
+        "L_A": "P_A", "R_B": "Q_B", "Q_A": "U_A", "Q_B": "U_B"}
 
 
-def test_soap_is_untouched_once_curvature_whiten_declares_its_own_map(monkeypatch):
-    """Scoping, stated as the property that matters: giving CurvatureWhitenLoRA
+def test_soap_is_untouched_although_curvature_whiten_declares_its_own_map():
+    """Scoping, stated as the property that matters: CurvatureWhitenLoRA having
     its own alias map must not change how an AdamSOAPPolarProductLoRA
     checkpoint is read, because the map is looked up per instance."""
-    monkeypatch.setattr(CurvatureWhitenLoRA, "PAIR_STATE_ALIASES",
-                        dict(_PAIR_STATE_RENAMES_FALLBACK), raising=False)
+    assert CurvatureWhitenLoRA.PAIR_STATE_ALIASES, "precondition: CW declares a map"
     soap = AdamSOAPPolarProductLoRA(_FakeLoRALinear())
     out = _apply_pair_state_renames(
         dict(OLD_ENTRY), _live_keys(soap), _pair_state_aliases(soap))
