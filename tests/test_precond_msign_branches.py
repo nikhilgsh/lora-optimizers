@@ -4,7 +4,7 @@
 
     product     C_B = B^T P B,  C_A = A Q A^T
     one-sided   C_B = C_A = I_r
-    factorwise  C_B = P_A,      C_A = Q_B   (EMAs of G_A Q^-1 G_A^T / G_B^T P^-1 G_B)
+    factorwise  C_B = P_A,      C_A = U_B   (EMAs of G_A Q^-1 G_A^T / G_B^T P^-1 G_B)
 
 ``msign`` picks how accurately the matrix sign is applied to the whitened momenta::
 
@@ -138,11 +138,11 @@ def test_one_sided_holds_both_slots_at_exact_identity():
     opt = CurvatureWhitenLoRA(m, precond="one-sided", **_KW)
     assert opt.rr_identity is True
     _run(m, opt, x, tgt, steps=3)
-    r = opt.pair_state[0]['L_A'].shape[-1]
+    r = opt.pair_state[0]['P_A'].shape[-1]
     eye = torch.eye(r)
     for st in opt.pair_state.values() if isinstance(opt.pair_state, dict) else opt.pair_state:
-        assert torch.equal(st['L_A'], eye), "C_B drifted off the identity"
-        assert torch.equal(st['R_B'], eye), "C_A drifted off the identity"
+        assert torch.equal(st['P_A'], eye), "C_B drifted off the identity"
+        assert torch.equal(st['Q_B'], eye), "C_A drifted off the identity"
 
 
 def test_one_sided_q_update_is_the_unwhitened_gram_diagonal():

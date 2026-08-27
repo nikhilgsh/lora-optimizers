@@ -10,7 +10,7 @@ two-sided program.
 
 Covers: step runs & changes params, multistep finiteness, the batched↔per-pair
 equivalence on the diag path (both code paths were edited), the defining identity
-L_A == Bᵀ diag(D_out) B, factory dispatch, and that diag (b) actually differs from
+P_A == Bᵀ diag(D_out) B, factory dispatch, and that diag (b) actually differs from
 dense kl-shampoo (a).
 """
 import torch
@@ -118,7 +118,7 @@ def test_batched_matches_per_pair(use_polar):
 
 
 def test_small_side_is_geometric_gram():
-    """The defining identity: after a step, the stored small-side factor L_A equals
+    """The defining identity: after a step, the stored small-side factor P_A equals
     Bᵀ diag(M_out) B, where M_out = (D_out/D_out.max() + δ) is the relative-damped
     output diagonal — the SAME metric the whitening and the Picard cross use (metric
     coherence). Built from the factor and diagonal as they were at the START of that
@@ -140,8 +140,8 @@ def test_small_side_is_geometric_gram():
         # M_out = _rdinv(D_out)^(-2), mirroring the code exactly (incl. the xmax≈0 floor).
         M_out = opt._rdinv(Dout_pre).pow(-2)
         M_A = B_pre.transpose(-2, -1) @ (M_out.unsqueeze(-1) * B_pre)
-        assert torch.allclose(opt.pair_state[i]['L_A'], M_A, atol=1e-5, rtol=1e-4), \
-            f"pair {i}: L_A is not Bᵀ diag(M_out) B (relative-damped)"
+        assert torch.allclose(opt.pair_state[i]['P_A'], M_A, atol=1e-5, rtol=1e-4), \
+            f"pair {i}: P_A is not Bᵀ diag(M_out) B (relative-damped)"
 
 
 def test_diag_differs_from_dense_kl():

@@ -140,6 +140,7 @@ These are the project-specific facts that global skills (`/slurm-submit`, `/disb
 - PascalCase for optimizer classes, snake_case for functions
 - New optimizers: add class to `optim.py`, add entry to `OPTIMIZER_CHOICES`, add branch in `build_optimizer()`, register in `OPTIM_COLORS` and at least one `OPTIM_FAMILIES` set in `lora_playground/plot_utils.py` (the orphan-warning fires at notebook startup if you forget the family).
 - Optimizer math operates in float32 (cast inputs, cast updates back to param dtype/device before applying)
+- **`CurvatureWhitenLoRA` symbols track the manuscript: `P`/`Q` with subscripts for preconditioner factors, `U` for eigenbases** — `r×r` slots `P_A`/`Q_B`, eigh eigenbasis `U_A`/`U_B`. Never `L_A`/`R_B` (those stay `AdamSOAPPolarProductLoRA`'s). A rename agreed in conversation lands in the same edit pass, or the two spellings coexist.
 - Tests: shapes, dtype/device behavior, numerical residuals, determinism on tiny tensors; CPU-only for unit tests; GPU required for functional smokes
 - **Spectral-norm rescaling is load-bearing.** Any optimizer that divides by an
   estimated `sigma_max` must defend against underestimated denominators.

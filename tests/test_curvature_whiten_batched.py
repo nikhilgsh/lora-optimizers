@@ -71,7 +71,7 @@ def test_grouped_matches_per_pair_no_diag_curv():
 
 def test_grouped_matches_per_pair_diag_shampoo():
     # The diag-shampoo arm: diag_metric=True, soap_v=False, kl_coupled=False.
-    # Touches the else-branch L_A/R_B clobber guard in BOTH step paths, so the
+    # Touches the else-branch P_A/Q_B clobber guard in BOTH step paths, so the
     # batched↔per-pair equivalence must still hold.
     _run(use_polar=True, diag_metric=True, soap_v=False, kl_coupled=False)
 

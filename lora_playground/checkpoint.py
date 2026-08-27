@@ -52,6 +52,40 @@ _GROUP_STATE_PERSIST_PREFIXES = (
 # buffer. No special exclusion required for the test-equality semantics.
 _PAIR_STATE_SKIP_LOAD = {"_group", "_local_idx"}
 
+# Renamed pair_state keys: old checkpoint key -> current key. Without this the
+# load loop below takes its "key not in the live state" branch and INSERTS the
+# stale key as a new entry, leaving the current buffer at its init value — a
+# resume that silently starts its curvature EMAs from scratch rather than
+# failing. CurvatureWhitenLoRA's two r x r slots were `L_A`/`R_B` and its eigh
+# eigenbasis `Q_A`/`Q_B`; the slots are now `P_A`/`Q_B` (the free Kronecker
+# factors P_A, Q_B) and the eigenbasis `U_A`/`U_B`, so `Q_B` means two different
+# things across the boundary and the rename must be applied as one simultaneous
+# permutation, not key by key.
+_PAIR_STATE_RENAMES = {"L_A": "P_A", "R_B": "Q_B", "Q_A": "U_A", "Q_B": "U_B"}
+
+# The subset of retired keys that can only ever mean the OLD schema. `Q_B` is
+# excluded on purpose and this is the whole subtlety: it is simultaneously a
+# retired key (the old eigenbasis, -> U_B) and the CURRENT name of the free
+# Kronecker factor. So a live optimizer having `Q_B` says nothing about which
+# schema it is on, and guarding on `_PAIR_STATE_RENAMES` itself matched every
+# post-rename CurvatureWhitenLoRA and disabled the shim entirely.
+_PAIR_STATE_OLD_ONLY = ("L_A", "R_B", "Q_A")
+
+
+def _apply_pair_state_renames(entry, live_keys):
+    """Map a loaded pair_state entry's keys onto the current schema.
+
+    Applied only when the entry carries a retired key AND the live optimizer is
+    not itself on the old schema -- so `AdamSOAPPolarProductLoRA`, which still
+    uses `L_A`, `R_B`, `Q_A` and `Q_B` with their original SOAP meanings, is
+    spared (it has `L_A` live, which is old-only).
+    """
+    if not any(k in entry for k in _PAIR_STATE_OLD_ONLY):
+        return entry
+    if any(k in live_keys for k in _PAIR_STATE_OLD_ONLY):
+        return entry
+    return {_PAIR_STATE_RENAMES.get(k, k): v for k, v in entry.items()}
+
 
 def _adapter_dir(ckpt_dir: Path) -> Path:
     return ckpt_dir / "adapter"
@@ -298,6 +332,7 @@ def load_checkpoint(
             dst = optimizer.pair_state.get(i)
             if dst is None:
                 continue
+            entry = _apply_pair_state_renames(entry, dst.keys())
             for k, v in entry.items():
                 if k in _PAIR_STATE_SKIP_LOAD:
                     continue

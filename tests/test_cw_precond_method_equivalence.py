@@ -26,7 +26,7 @@ from lora_playground.utils import collect_lora_pairs
 
 class _FakePair(nn.Module):
     """One (A, B) LoRA pair in the PEFT convention (lora_A: r×d_in, lora_B: d_out×r)
-    with a NONZERO B so the small-side curvature R_B is full-rank from step 1."""
+    with a NONZERO B so the small-side curvature Q_B is full-rank from step 1."""
     def __init__(self, r, d_in, d_out, seed=0):
         super().__init__()
         g = torch.Generator().manual_seed(seed)

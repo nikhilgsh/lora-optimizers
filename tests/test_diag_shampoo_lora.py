@@ -9,7 +9,7 @@ fixed diagonal-metric geometry.
 
 Covers: factory dispatch + flags for both names, step finiteness/change (both
 arms), the clobber guard (with diag_metric the else-branch must NOT overwrite the
-recomputed L_A/R_B with a Gram EMA), and multistep finiteness.
+recomputed P_A/Q_B with a Gram EMA), and multistep finiteness.
 """
 import torch
 import torch.nn as nn
@@ -95,12 +95,12 @@ def test_multistep_finite(use_polar):
 
 @pytest.mark.parametrize("batched", [False, True])
 def test_diag_metric_LA_recomputed_not_clobbered(batched):
-    """With diag_metric=True the small-side L_A/R_B are recomputed each step as
+    """With diag_metric=True the small-side P_A/Q_B are recomputed each step as
     M_A = Bᵀ diag(Dout_m) B (resp. M_B = A diag(Din_m) Aᵀ), NOT accumulated as a
-    Gram EMA. The else-branch (kl_coupled=False) must skip the L_A/R_B Gram EMA so
+    Gram EMA. The else-branch (kl_coupled=False) must skip the P_A/Q_B Gram EMA so
     it doesn't clobber the recompute. On step 1 the diagonals are still zero ⇒
     Dout_m=Din_m=1 ⇒ M_A = B0ᵀ B0 exactly (B0 = pre-step factor). If the clobber
-    guard were missing, L_A would instead hold (1-β_c)·gA gAᵀ.
+    guard were missing, P_A would instead hold (1-β_c)·gA gAᵀ.
     """
     m, x, target = _make(seed=3)
     opt = build_optimizer(m, "diag-shampoo-polar-lora", lr=1e-2, precond_delta=1e-4)
@@ -112,9 +112,9 @@ def test_diag_metric_LA_recomputed_not_clobbered(batched):
     opt.step()
     for i in range(len(opt.pairs)):
         st = opt.pair_state[i]
-        exp_LA = B_pre[i].T @ B_pre[i]          # r×r, Dout_m=1 at step 1
-        exp_RB = A_pre[i] @ A_pre[i].T          # r×r, Din_m=1 at step 1
-        assert torch.allclose(st["L_A"], exp_LA, atol=1e-5, rtol=1e-4), \
-            f"pair {i}: L_A not the diag-metric recompute (clobbered?)"
-        assert torch.allclose(st["R_B"], exp_RB, atol=1e-5, rtol=1e-4), \
-            f"pair {i}: R_B not the diag-metric recompute (clobbered?)"
+        exp_PA = B_pre[i].T @ B_pre[i]          # r×r, Dout_m=1 at step 1
+        exp_QB = A_pre[i] @ A_pre[i].T          # r×r, Din_m=1 at step 1
+        assert torch.allclose(st["P_A"], exp_PA, atol=1e-5, rtol=1e-4), \
+            f"pair {i}: P_A not the diag-metric recompute (clobbered?)"
+        assert torch.allclose(st["Q_B"], exp_QB, atol=1e-5, rtol=1e-4), \
+            f"pair {i}: Q_B not the diag-metric recompute (clobbered?)"

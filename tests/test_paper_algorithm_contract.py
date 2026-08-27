@@ -45,7 +45,9 @@ import torch
 import torch.nn as nn
 
 import lora_playground.optim as O
-from lora_playground.optim import CurvatureWhitenLoRA, gram_ns_inv_sqrt
+from lora_playground.optim import (
+    RR_FREE_INIT_EPS, CurvatureWhitenLoRA, gram_ns_inv_sqrt,
+)
 
 R, D_IN, D_OUT = 8, 64, 48
 
@@ -421,7 +423,7 @@ def test_factorwise_recursion_normalises_by_d_in_and_d_out():
     EMAs fitted from the factor gradients themselves,
 
         P_A <- beta2 P_A + (1 - beta2)/d_in  * G_A Q^-1 G_A^T
-        Q_B <- beta2 Q_B + (1 - beta2)/d_out * G_B^T P^-1 G_B
+        U_B <- beta2 U_B + (1 - beta2)/d_out * G_B^T P^-1 G_B
 
     THIS RECURSION HAS NO COUNTERPART IN THE MANUSCRIPT. Alg 1 has one pair of
     EMAs, the p, q of lines 439-440, and they are normalised by r; there is no
@@ -432,8 +434,11 @@ def test_factorwise_recursion_normalises_by_d_in_and_d_out():
     Until then it pins the /d_in and /d_out that the ablation's recorded runs
     were produced with, so the arm keeps its meaning.
 
-    Step one again: the L_A / R_B buffers start at zero, so the beta2 * prev term
-    drops out and the normaliser is the only thing left to get wrong.
+    Step one again: the P_A / Q_B buffers start at `RR_FREE_INIT_EPS * I`, which
+    is 1e-12 against a gradient Gram of order 1, so the beta2 * prev term is
+    numerically negligible and the normaliser is the only thing left to get
+    wrong. It is carried in `want_PA`/`want_QB` regardless rather than assumed
+    away.
     """
     model, x, tgt = _make(seed=3)
     opt = CurvatureWhitenLoRA(model, precond="factorwise", **PROTO)
@@ -442,8 +447,15 @@ def test_factorwise_recursion_normalises_by_d_in_and_d_out():
     st = opt.pair_state[0]
 
     q0, p0 = st["D_in"].clone(), st["D_out"].clone()
-    LA0, RB0 = st["L_A"].clone(), st["R_B"].clone()
-    assert LA0.abs().max().item() == 0.0 and RB0.abs().max().item() == 0.0
+    PA0, QB0 = st["P_A"].clone(), st["Q_B"].clone()
+    # The free r x r factors start at eps * I, not zero: the lambda_max
+    # normalization at consume maps that to exactly the identity metric on step
+    # 1 (the analogue of the paper's p = q = eps * 1, `app:init`) while leaving
+    # no statistical prior. A raw identity would instead inject an O(1) prior
+    # decaying only as beta2^t.
+    eye_r = torch.eye(R, dtype=PA0.dtype)
+    assert PA0 == pytest.approx(RR_FREE_INIT_EPS * eye_r, rel=0.0, abs=1e-20)
+    assert QB0 == pytest.approx(RR_FREE_INIT_EPS * eye_r, rel=0.0, abs=1e-20)
 
     _backward(model, x, tgt, opt)
     gA = A.grad.detach().float().clone()
@@ -453,12 +465,12 @@ def test_factorwise_recursion_normalises_by_d_in_and_d_out():
     b2 = opt.curvature_beta
     Q_inv = opt._rdinv(q0) ** 2          # Q^-1 on the d_in side
     P_inv = opt._rdinv(p0) ** 2          # P^-1 on the d_out side
-    want_LA = b2 * LA0 + (1.0 - b2) / D_IN * ((gA * Q_inv.unsqueeze(0)) @ gA.T)
-    want_RB = b2 * RB0 + (1.0 - b2) / D_OUT * (gB.T @ (gB * P_inv.unsqueeze(-1)))
-    assert st["L_A"] == pytest.approx(want_LA, rel=1e-5, abs=0.0)
-    assert st["R_B"] == pytest.approx(want_RB, rel=1e-5, abs=0.0)
+    want_PA = b2 * PA0 + (1.0 - b2) / D_IN * ((gA * Q_inv.unsqueeze(0)) @ gA.T)
+    want_QB = b2 * QB0 + (1.0 - b2) / D_OUT * (gB.T @ (gB * P_inv.unsqueeze(-1)))
+    assert st["P_A"] == pytest.approx(want_PA, rel=1e-5, abs=0.0)
+    assert st["Q_B"] == pytest.approx(want_QB, rel=1e-5, abs=0.0)
 
     # Discrimination: Alg 1's own /r would be off by d_in/r = 8 here.
-    wrong = b2 * LA0 + (1.0 - b2) / R * ((gA * Q_inv.unsqueeze(0)) @ gA.T)
-    assert not torch.allclose(st["L_A"], wrong, rtol=1e-3, atol=0.0)
+    wrong = b2 * PA0 + (1.0 - b2) / R * ((gA * Q_inv.unsqueeze(0)) @ gA.T)
+    assert not torch.allclose(st["P_A"], wrong, rtol=1e-3, atol=0.0)
     assert math.isclose(D_IN / R, 8.0)

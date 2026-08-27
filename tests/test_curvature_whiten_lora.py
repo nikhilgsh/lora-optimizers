@@ -105,7 +105,7 @@ def test_curvature_whiten_matches_soap_sxd_chord_tight_formula(use_polar):
     """Pin the requested update equation.
 
     No-polar:
-        z_A = Q_A [(Q_Aᵀ m_A) / sqrt(v_A)]
+        z_A = U_A [(Q_Aᵀ m_A) / sqrt(v_A)]
         W_A = S_A^{-1/2} z_A D_in^{-1/2}
     Polar:
         W_A = S_A^{-1/2} polar(z_A) D_in^{-1/2}
@@ -140,20 +140,20 @@ def test_curvature_whiten_matches_soap_sxd_chord_tight_formula(use_polar):
     st = opt.pair_state[0]
     theta_A = torch.tensor(0.37)
     theta_B = torch.tensor(-0.51)
-    QA = torch.tensor([
+    UA = torch.tensor([
         [torch.cos(theta_A), -torch.sin(theta_A)],
         [torch.sin(theta_A), torch.cos(theta_A)],
     ])
-    QB = torch.tensor([
+    UB = torch.tensor([
         [torch.cos(theta_B), -torch.sin(theta_B)],
         [torch.sin(theta_B), torch.cos(theta_B)],
     ])
     lam_A = torch.tensor([4.0, 1.0])
     lam_B = torch.tensor([1.0, 16.0])
-    st["Q_A"].copy_(QA)
-    st["Q_B"].copy_(QB)
-    st["L_A"].copy_(QA @ torch.diag(lam_A) @ QA.T)
-    st["R_B"].copy_(QB @ torch.diag(lam_B) @ QB.T)
+    st["U_A"].copy_(UA)
+    st["U_B"].copy_(UB)
+    st["P_A"].copy_(UA @ torch.diag(lam_A) @ UA.T)
+    st["Q_B"].copy_(UB @ torch.diag(lam_B) @ UB.T)
     st["D_in"].copy_(torch.tensor([9.0, 1.0, 4.0]))
     st["D_out"].copy_(torch.tensor([1.0, 4.0, 9.0, 16.0]))
     opt._q_initialized = True
@@ -163,16 +163,16 @@ def test_curvature_whiten_matches_soap_sxd_chord_tight_formula(use_polar):
     din_is = _rdinv_like(torch.tensor([9.0, 1.0, 4.0]), delta)
     dout_is = _rdinv_like(torch.tensor([1.0, 4.0, 9.0, 16.0]), delta)
 
-    zA_basis = QA.T @ gA
-    zB_basis = gB @ QB
-    zA = QA @ (zA_basis / (zA_basis.abs() + opt.eps))
-    zB = (zB_basis / (zB_basis.abs() + opt.eps)) @ QB.T
+    zA_basis = UA.T @ gA
+    zB_basis = gB @ UB
+    zA = UA @ (zA_basis / (zA_basis.abs() + opt.eps))
+    zB = (zB_basis / (zB_basis.abs() + opt.eps)) @ UB.T
     if use_polar:
         zA = _newton_schulz(zA, nsteps=12, pre_norm="spec")
         zB = _newton_schulz(zB, nsteps=12, pre_norm="spec")
-    WA = QA @ ((QA.T @ zA) * lamA_is.unsqueeze(-1))
+    WA = UA @ ((UA.T @ zA) * lamA_is.unsqueeze(-1))
     WA = WA * din_is.unsqueeze(0)
-    WB = ((zB @ QB) * lamB_is.unsqueeze(0)) @ QB.T
+    WB = ((zB @ UB) * lamB_is.unsqueeze(0)) @ UB.T
     WB = dout_is.unsqueeze(-1) * WB
 
     # Warm-start power iteration at the exact top singular vectors so the

@@ -128,7 +128,7 @@ def test_warmup_kl_gram_identity():
     """On step 1 the factors are zero ⇒ the relative-damped inverses fall back to
     identity, so the coupled KL Gram update reduces to its one-sided warm form
     with the 1/d normalizer:
-        L_A  = (1-β_c)/d_in * g_A g_Aᵀ
+        P_A  = (1-β_c)/d_in * g_A g_Aᵀ
         D_in = (1-β_c)/r    * diag(g_Aᵀ g_A)
     This pins both the 1/d normalizers and the identity-inverse warmup fallback.
     """
@@ -142,9 +142,9 @@ def test_warmup_kl_gram_identity():
     gA = A.grad.detach().float().clone()  # captured before step() zeros it
     opt.step()
     st = opt.pair_state[0]
-    expected_LA = (1.0 - cb) / d_in * (gA @ gA.T)
+    expected_PA = (1.0 - cb) / d_in * (gA @ gA.T)
     expected_Din = (1.0 - cb) / r * (gA * gA).sum(dim=0)
-    assert torch.allclose(st["L_A"], expected_LA, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(st["P_A"], expected_PA, atol=1e-6, rtol=1e-5)
     assert torch.allclose(st["D_in"], expected_Din, atol=1e-6, rtol=1e-5)
 
 
@@ -156,7 +156,7 @@ def test_coupled_kl_gram_update_nontrivial():
     in both paths). This recomputes the four coupled EMA targets from the
     pre-update factors using the reference formula and the optimizer's own
     relative-damped inverse, then checks the post-step state matches:
-        L_A  ← β L_A  + ((1-β)/d_in)  g_A diag(D_in)^{-1} g_A^T
+        P_A  ← β P_A  + ((1-β)/d_in)  g_A diag(D_in)^{-1} g_A^T
         D_in ← β D_in + ((1-β)/r)     diag(g_A^T S_curv,A^{-1} g_A)
     (B-side symmetric with 1/d_out and 1/r). precond_refresh_every is set huge so
     the injected eigenbasis Q is not overwritten mid-step.
@@ -172,19 +172,19 @@ def test_coupled_kl_gram_update_nontrivial():
     st = opt.pair_state[0]
 
     torch.manual_seed(1)
-    QA = torch.linalg.qr(torch.randn(r, r))[0]
-    QB = torch.linalg.qr(torch.randn(r, r))[0]
+    UA = torch.linalg.qr(torch.randn(r, r))[0]
+    UB = torch.linalg.qr(torch.randn(r, r))[0]
     lamA_eig = torch.tensor([4.0, 1.0, 0.5, 2.0])[:r]
     lamB_eig = torch.tensor([1.0, 3.0, 0.25, 1.5])[:r]
-    st["Q_A"].copy_(QA)
-    st["Q_B"].copy_(QB)
-    st["L_A"].copy_(QA @ torch.diag(lamA_eig) @ QA.T)
-    st["R_B"].copy_(QB @ torch.diag(lamB_eig) @ QB.T)
+    st["U_A"].copy_(UA)
+    st["U_B"].copy_(UB)
+    st["P_A"].copy_(UA @ torch.diag(lamA_eig) @ UA.T)
+    st["Q_B"].copy_(UB @ torch.diag(lamB_eig) @ UB.T)
     st["D_in"].copy_(torch.linspace(0.5, 3.0, d_in))
     st["D_out"].copy_(torch.linspace(0.4, 2.5, d_out))
 
-    LA0 = st["L_A"].clone(); Din0 = st["D_in"].clone()
-    RB0 = st["R_B"].clone(); Dout0 = st["D_out"].clone()
+    PA0 = st["P_A"].clone(); Din0 = st["D_in"].clone()
+    QB0 = st["Q_B"].clone(); Dout0 = st["D_out"].clone()
 
     loss = ((m(x) - target) ** 2).mean()
     loss.backward()
@@ -193,21 +193,21 @@ def test_coupled_kl_gram_update_nontrivial():
     opt.step()
 
     # Reference inverses from the PRE-update factors (matches the code path).
-    lamA = opt._rdinv((QA * (LA0 @ QA)).sum(dim=0))      # (-1/2)
-    lamB = opt._rdinv((QB * (RB0 @ QB)).sum(dim=0))
+    lamA = opt._rdinv((UA * (PA0 @ UA)).sum(dim=0))      # (-1/2)
+    lamB = opt._rdinv((UB * (QB0 @ UB)).sum(dim=0))
     dinA = opt._rdinv(Din0); doutB = opt._rdinv(Dout0)
     Din_inv = dinA * dinA; Dout_inv = doutB * doutB       # (-1)
-    SAinv = QA @ (torch.diag(lamA * lamA) @ QA.T)
-    RBinv = QB @ (torch.diag(lamB * lamB) @ QB.T)
+    SAinv = UA @ (torch.diag(lamA * lamA) @ UA.T)
+    RBinv = UB @ (torch.diag(lamB * lamB) @ UB.T)
 
-    exp_LA = cb * LA0 + ((1 - cb) / d_in) * ((gA * Din_inv.unsqueeze(0)) @ gA.T)
+    exp_PA = cb * PA0 + ((1 - cb) / d_in) * ((gA * Din_inv.unsqueeze(0)) @ gA.T)
     exp_Din = cb * Din0 + ((1 - cb) / r) * (gA * (SAinv @ gA)).sum(dim=0)
-    exp_RB = cb * RB0 + ((1 - cb) / d_out) * (gB.T @ (gB * Dout_inv.unsqueeze(-1)))
+    exp_QB = cb * QB0 + ((1 - cb) / d_out) * (gB.T @ (gB * Dout_inv.unsqueeze(-1)))
     exp_Dout = cb * Dout0 + ((1 - cb) / r) * (gB * (gB @ RBinv)).sum(dim=1)
 
-    assert torch.allclose(st["L_A"], exp_LA, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(st["P_A"], exp_PA, atol=1e-6, rtol=1e-5)
     assert torch.allclose(st["D_in"], exp_Din, atol=1e-6, rtol=1e-5)
-    assert torch.allclose(st["R_B"], exp_RB, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(st["Q_B"], exp_QB, atol=1e-6, rtol=1e-5)
     assert torch.allclose(st["D_out"], exp_Dout, atol=1e-6, rtol=1e-5)
 
 

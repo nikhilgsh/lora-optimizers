@@ -1,7 +1,7 @@
 """Candidate inverse-sqrt methods for the protagonist's small-side Shampoo
 `S_a^{-1/2}` — implement, stress-test, and pick the production method.
 
-The protagonist (`CurvatureWhitenLoRA`) inverts the r×r curvature Gram `L_A`/`R_B`
+The protagonist (`CurvatureWhitenLoRA`) inverts the r×r curvature Gram `P_A`/`Q_B`
 once per refresh, batched over all LoRA pairs. The relative-δ damping (`_rdinv`,
 δ=1e-4) caps the *effective* condition number it ever sees at ~1/δ = 1e4, so the
 discriminating regime is cond ∈ [1e1, 1e4] in fp32 AND bf16.

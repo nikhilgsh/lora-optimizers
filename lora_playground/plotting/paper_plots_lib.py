@@ -26,10 +26,14 @@ than a remembered subset.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
+from lora_playground.leaderboard import (
+    labeled_completed_runs, leaderboard_rows, speedup_from_frac,
+)
 from lora_playground.loader import load_runs, logs_signature
 from lora_playground.plotting import compare_variants_figure
 
@@ -226,7 +230,70 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
         suptitle=suptitle,
         prefetched_runs=cell_runs(common), variant_key=variant_key_fn(common, arms))
     plt.show()
+    if target_label in arms:
+        print(speedup_table(arms, common, baseline_label=target_label)[0])
+    else:
+        print(f"no speedup table: '{target_label}' is not one of this panel's arms, "
+              f"so there is no speed target. Pass target_label=<an arm> to get one.")
     return sdf
+
+
+# --------------------------------------------------------------------------------------
+# Speed-to-target table
+# --------------------------------------------------------------------------------------
+def speedup_table(arms, common, *, baseline_label="AdamW", horizon=HORIZON):
+    """``(text, rows, target)`` for one cell's arms, keyed on speedup-vs-baseline.
+
+    This is the metric optimizer decisions are made on -- HORIZON / (steps to
+    reach the baseline arm's best final loss), per ``docs/notes/leaderboard.md``
+    -- and `_figure` prints it under every panel so a panel is never read off
+    final loss alone. Reading loss instead understates the effect by a lot: at
+    the Llama-3.2-1B / openmath / r16 cell the `factorwise` precond arm is
+    0.0034 above `one-sided` in final loss, which is 1.10x against 1.26x in
+    speedup -- a 2.6x cut in the gain over AdamW.
+
+    Every arm, the baseline included, must come from ``arms.py``: it pins all of
+    `OptimizerConfig`, whereas a hand-typed ``{"optimizer": "adamw"}`` admits the
+    deliberate `beta2` grid alongside the shipped baseline (6 distinct AdamW
+    `series_id`s at one lr) and `labeled_completed_runs` raises
+    `LabelCollisionError`. Loading goes through `cell_runs`, so the panel above
+    and this table always read the same snapshot.
+    """
+    if baseline_label not in arms:
+        raise ValueError(
+            f"baseline_label={baseline_label!r} is not in arms {sorted(arms)}; "
+            f"the speed target is the baseline arm's best final loss, so the "
+            f"baseline has to be one of the arms being loaded.")
+    labeled = labeled_completed_runs(
+        cell_runs(common), variant_key_fn(common, arms), horizon=horizon)
+    rows, target = leaderboard_rows(
+        labeled, horizon=horizon, baseline_label=baseline_label)
+    for r in rows:
+        r["speedup"] = speedup_from_frac(r["frac_best_lr"])
+        r["speedup_lr_avg"] = speedup_from_frac(r["frac_lr_avg"])
+    # NaN speedup means "never reached the target", which sorts last, not first.
+    rows.sort(key=lambda r: math.inf if math.isnan(r["speedup"]) else -r["speedup"])
+    return _speedup_text(rows, target, baseline_label), rows, target
+
+
+def _fmt_x(v):
+    return "—" if v is None or math.isnan(v) else f"{v:.2f}x"
+
+
+def _speedup_text(rows, target, baseline_label):
+    if math.isnan(target):
+        return (f"speed target is NaN: no completed {baseline_label} run in this "
+                f"cell. Check that the {baseline_label} arm's pinned fields admit "
+                f"the runs that exist (`arms.ADAMW` pinning `cw_nesterov=True` "
+                f"left 5 of the 13 CELLS with no baseline at all).")
+    w = max(len(r["variant"]) for r in rows)
+    head = (f"speedup vs {baseline_label} (target {target:.4f}, horizon {HORIZON})\n"
+            f"  {'arm':<{w}}  {'best eta':>9}  {'final':>7}  {'speedup':>8}"
+            f"  {'lr-avg':>7}  n_lr")
+    body = [f"  {r['variant']:<{w}}  {r['best_lr']:>9g}  {r['final_at_best']:>7.4f}"
+            f"  {_fmt_x(r['speedup']):>8}  {_fmt_x(r['speedup_lr_avg']):>7}"
+            f"  {r['n_lrs']}" for r in rows]
+    return "\n".join([head, *body])
 
 
 # --------------------------------------------------------------------------------------

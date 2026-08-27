@@ -216,12 +216,20 @@ CW_PRODUCTION = dict(
     muon_ns_steps=8,
 )
 
-# Baselines. `precond_method` is inert for AdamW — LoRAPlusAdamW.__init__ takes
-# (model, lr, lora_plus_multiplier, betas, eps, weight_decay, adapter_name) and
-# no preconditioner — but six older adamw groups inherited
-# `--precond_method higham` from a shared sweep wrapper while the newer ones
-# log None, so the baseline must admit both or it drops half its runs.
-ADAMW = arm("adamw", beta2=0.999, precond_method=(None, "higham"))
+# Baselines. `precond_method` and `cw_nesterov` are both inert for AdamW —
+# LoRAPlusAdamW.__init__ takes (model, lr, lora_plus_multiplier, betas, eps,
+# weight_decay, adapter_name) and neither a preconditioner nor a Nesterov flag —
+# but different sweep wrappers logged different values for each, so the baseline
+# must admit both or it drops runs. `precond_method`: six older adamw groups
+# inherited `--precond_method higham` from a shared wrapper while the newer ones
+# log None. `cw_nesterov`: measured, every adamw run at the Llama-3.2-1B /
+# openmath / r16 cell logs False against the `arm()` default True, so pinning it
+# left `precond_panel(16)` with NO AdamW row and `leaderboard_rows` with a NaN
+# speed target — the panel still rendered, just with no baseline to speak of.
+# Any field an optimizer never reads is a provenance record, not an axis: admit
+# every logged value rather than pinning one.
+ADAMW = arm("adamw", beta2=0.999, precond_method=(None, "higham"),
+            cw_nesterov=(False, True))
 # max_steps pins exclude the 1000-step lr pilots (ranking-only, never measured).
 IMUON = arm("imuon-lora", max_steps=9000)
 MUON = arm("muon-lora", max_steps=9000,

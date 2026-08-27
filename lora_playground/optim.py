@@ -639,6 +639,15 @@ def _emit_optim_diagnostics(step_count, per_pair_records):
 # one (P, Q), one set of p/q updates, and one magnitude rule, and differ only here.
 PRECOND_CHOICES = {"product", "one-sided", "factorwise"}
 
+# Raw-EMA init for the FREE r x r Kronecker factors P_A, Q_B that `precond
+# ="factorwise"` fits (the `L_A`/`R_B` pair_state buffers on that branch only).
+# The analogue of the paper's p = q = ε·1 (`app:init`): small enough that the
+# lambda_max normalization at consume maps it to exactly the identity metric on
+# step 1 with no statistical prior. Deliberately NOT `cw_metric_init`, which
+# selects the diagonal p, q init and admits values that are wrong for a free
+# matrix factor -- see the allocation site in CurvatureWhitenLoRA.__init__.
+RR_FREE_INIT_EPS = 1e-12
+
 # How accurately the matrix sign is applied to the whitened momenta
 #   Z_A = C_B^-1/2 Mhat_A Q^-1/2   (wide: r x d_in)
 #   Z_B = P^-1/2 Mhat_B C_A^-1/2   (tall: d_out x r)
@@ -1429,7 +1438,7 @@ class CurvatureWhitenLoRA(Optimizer):
         #   Q_B <- beta2 Q_B + (1-beta2)/d_out * G_B^T P^-1 G_B
         # and it is the only branch whose slots are persistent optimizer state (the
         # product branch recomputes its slots from A, B each step). These are the
-        # L_A/R_B buffers, which every branch already allocates.
+        # P_A/Q_B buffers, which every branch already allocates.
         # Resolved above (before the diag_metric validations): `self.precond`,
         # `self.rr_identity`, and `diag_metric` as this branch's implementation
         # detail — it selects between recomputing the slots from the partner factor
@@ -1505,14 +1514,41 @@ class CurvatureWhitenLoRA(Optimizer):
                 # run they are provably all-zero -- 45.1 MB of a 94.1 MB checkpoint
                 # measured on a live r=16 job.
                 # small (r) side: full r×r curvature, whitened via its eigenbasis.
-                'L_A': torch.zeros((r, r), dtype=torch.float32, device=A.device),
-                'R_B': torch.zeros((r, r), dtype=torch.float32, device=A.device),
+                #
+                # ── ONE BUFFER, TWO DIFFERENT OBJECTS. ───────────────────────
+                # precond="factorwise": these are the FREE Kronecker factors
+                # P_A, Q_B of Sigma_A ~ Q (x) P_A and Sigma_B ~ Q_B (x) P. They
+                # are fitted, they are persistent EMA state, and — exactly like
+                # the paper's p, q (`app:init`, eq:ours-klcoupling) — they carry
+                # the (a P_A, a^-1 q) rescaling degeneracy, so they are held RAW
+                # here and NORMALIZED to lambda_max = 1 where they are consumed.
+                # Init is `RR_FREE_INIT_EPS · I` (an ε·I, NOT I): the
+                # normalization maps it to exactly the identity metric on step 1
+                # while leaving essentially no statistical prior, whereas a raw I
+                # would inject an O(1) identity prior decaying only as beta2^t
+                # (~100 steps at beta2=0.99). Decoupled from `cw_metric_init`,
+                # which selects the DIAGONAL p, q init and admits values ("ones",
+                # "zero") that are wrong here: 1.0 is the O(1) prior just
+                # described, and 0.0 leaves lambda_max = 0 with no normalized
+                # representative at all.
+                # precond="product": the buffer instead holds C_B = BᵀPB and
+                # C_A = AQAᵀ, which are NOT free factors — they are induced from
+                # the already-normalized P, Q and the current A, B, so they are
+                # true-scale relatively damped and never independently
+                # normalized (`app:damping`). The product branch overwrites the
+                # buffer from A, B every step, so its init value is inert; it is
+                # kept zero-filled, as before.
+                # precond="one-sided": pinned to exactly I every step; init inert.
+                'P_A': (eye * RR_FREE_INIT_EPS if self.precond == "factorwise"
+                        else torch.zeros((r, r), dtype=torch.float32, device=A.device)),
+                'Q_B': (eye * RR_FREE_INIT_EPS if self.precond == "factorwise"
+                        else torch.zeros((r, r), dtype=torch.float32, device=A.device)),
                 # large side: diagonal curvature = EMA of per-column / per-row
                 # gradient energy.
                 'D_in': torch.full((d_in,), _minit_val, dtype=torch.float32, device=A.device),
                 'D_out': torch.full((d_out,), _minit_val, dtype=torch.float32, device=B.device),
-                'Q_A': eye.clone(),
-                'Q_B': eye.clone(),
+                'U_A': eye.clone(),
+                'U_B': eye.clone(),
                 'step': 0,
             }
             if self.soap_v:
@@ -1713,20 +1749,20 @@ class CurvatureWhitenLoRA(Optimizer):
         if self.precond_method == "eigh" and (
                 (not self._q_initialized) or (step_count % self.precond_refresh_every == 0)):
             if _timer: _timer.start("cw_refresh")
-            LA_stack = torch.stack([self.pair_state[i]['L_A'] for i in range(n)])
-            RB_stack = torch.stack([self.pair_state[i]['R_B'] for i in range(n)])
+            PA_stack = torch.stack([self.pair_state[i]['P_A'] for i in range(n)])
+            QB_stack = torch.stack([self.pair_state[i]['Q_B'] for i in range(n)])
             if not self._q_initialized:
-                QA = torch.linalg.eigh(self._sym(LA_stack))[1]
-                QB = torch.linalg.eigh(self._sym(RB_stack))[1]
+                UA = torch.linalg.eigh(self._sym(PA_stack))[1]
+                UB = torch.linalg.eigh(self._sym(QB_stack))[1]
                 self._q_initialized = True
             else:
-                QA_prev = torch.stack([self.pair_state[i]['Q_A'] for i in range(n)])
-                QB_prev = torch.stack([self.pair_state[i]['Q_B'] for i in range(n)])
-                QA = torch.linalg.qr(LA_stack @ QA_prev)[0]
-                QB = torch.linalg.qr(RB_stack @ QB_prev)[0]
+                UA_prev = torch.stack([self.pair_state[i]['U_A'] for i in range(n)])
+                UB_prev = torch.stack([self.pair_state[i]['U_B'] for i in range(n)])
+                UA = torch.linalg.qr(PA_stack @ UA_prev)[0]
+                UB = torch.linalg.qr(QB_stack @ UB_prev)[0]
             for i in range(n):
-                self.pair_state[i]['Q_A'] = QA[i]
-                self.pair_state[i]['Q_B'] = QB[i]
+                self.pair_state[i]['U_A'] = UA[i]
+                self.pair_state[i]['U_B'] = UB[i]
             if _timer: _timer.stop()
 
         # Tier-1 factor diagnostics (shared library): balance_resid /
@@ -1939,8 +1975,8 @@ class CurvatureWhitenLoRA(Optimizer):
             st['m_B'].mul_(b1).add_(gB, alpha=1.0 - b1)
             bc1 = 1.0 - b1 ** st['step']
             bc2 = 1.0 - beta2 ** st['step']
-            QA, QB, LA, RB = st['Q_A'], st['Q_B'], st['L_A'], st['R_B']
-            QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+            UA, UB, PA, QB = st['U_A'], st['U_B'], st['P_A'], st['Q_B']
+            UAt = UA.transpose(-2, -1); UBt = UB.transpose(-2, -1)
             # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
             # SINGLE metric the diag arm commits to — used by the self small-side
             # Gram, the whitening, and the Picard cross, coherently.
@@ -1968,31 +2004,51 @@ class CurvatureWhitenLoRA(Optimizer):
                 # pin the slots to the identity and skip the whitening outright. lamA/
                 # lamB are set to EXACT ones rather than _rdinv(1): the damped value
                 # is a harmless scalar in the direction (msign is scale-invariant and
-                # the ρ/σ_max rescale removes it) but SAinv/RBinv below feed the p, q
+                # the ρ/σ_max rescale removes it) but PAinv/QBinv below feed the p, q
                 # updates unnormalized, where a scalar would ride into the metric.
-                LA = torch.eye(st['L_A'].shape[-1], dtype=st['L_A'].dtype,
-                               device=st['L_A'].device)
-                RB = torch.eye(st['R_B'].shape[-1], dtype=st['R_B'].dtype,
-                               device=st['R_B'].device)
-                st['L_A'].copy_(LA); st['R_B'].copy_(RB)
-                lamA = torch.ones(LA.shape[-1], dtype=LA.dtype, device=LA.device)
-                lamB = torch.ones(RB.shape[-1], dtype=RB.dtype, device=RB.device)
+                PA = torch.eye(st['P_A'].shape[-1], dtype=st['P_A'].dtype,
+                               device=st['P_A'].device)
+                QB = torch.eye(st['Q_B'].shape[-1], dtype=st['Q_B'].dtype,
+                               device=st['Q_B'].device)
+                st['P_A'].copy_(PA); st['Q_B'].copy_(QB)
+                lamA = torch.ones(PA.shape[-1], dtype=PA.dtype, device=PA.device)
+                lamB = torch.ones(QB.shape[-1], dtype=QB.dtype, device=QB.device)
             else:
                 if self.diag_metric:
                     # Option (b): M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the
                     # SAME damped diagonals the cross uses (metric coherence), recomputed
                     # and stored so the eigenbasis refresh tracks it.
                     Bf = B.detach().float(); Af = A.detach().float()
-                    LA = Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bf)
-                    RB = (Af * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)
-                    st['L_A'].copy_(LA); st['R_B'].copy_(RB)
-                evA = (QA * (LA @ QA)).sum(dim=0)
-                evB = (QB * (RB @ QB)).sum(dim=0)
+                    PA = Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bf)
+                    QB = (Af * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)
+                    st['P_A'].copy_(PA); st['Q_B'].copy_(QB)
+                else:
+                    # precond="factorwise": normalize the FREE Kronecker factors
+                    # P_A, Q_B to lambda_max = 1 at consume. Mirror of the
+                    # grouped path — see the long note there for why (the
+                    # paper's Normalization paragraph) and why it is done here
+                    # rather than in place on the buffer (an in-place rescale
+                    # would reweight the EMA history every step). `PA`/`QB` were
+                    # bound to the live buffers above, so these must be new
+                    # tensors: the EMA update at the end of this loop body still
+                    # accumulates into st['P_A']/st['Q_B'] at raw scale.
+                    from .spectral import lambda_max_power_iter_psd_batched as _lmax_b
+                    lamPA, _ = _lmax_b(self._sym(PA).unsqueeze(0), n_iters=8)
+                    lamQB, _ = _lmax_b(self._sym(QB).unsqueeze(0), n_iters=8)
+                    PA = PA / lamPA[0].clamp_min(1e-30)
+                    QB = QB / lamQB[0].clamp_min(1e-30)
+                    # NO write-back here: the buffer must stay raw. The product
+                    # branch above writes its recomputed Gram back so the eigh
+                    # eigenbasis refresh in step() tracks it; there is nothing to
+                    # write back on this branch, whose buffer the EMA at the end
+                    # of this loop body owns.
+                evA = (UA * (PA @ UA)).sum(dim=0)
+                evB = (UB * (QB @ UB)).sum(dim=0)
                 lamA = self._rdinv(evA); lamB = self._rdinv(evB)
             # SOAP v̂ EMA (state) once; mhat for the kl path.
             if self.soap_v:
-                gA_basis = QAt @ gA
-                gB_basis = gB @ QB
+                gA_basis = UAt @ gA
+                gB_basis = gB @ UB
                 st['v_A'].mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
                 st['v_B'].mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
             else:
@@ -2022,8 +2078,8 @@ class CurvatureWhitenLoRA(Optimizer):
             dB = torch.zeros_like(gB)
             for _pic in range(self.cw_picard_iters):
                 if self.soap_v:
-                    zA = QA @ ((QAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
-                    zB = (((st['m_B'] / bc1) @ QB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ QBt
+                    zA = UA @ ((UAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
+                    zB = (((st['m_B'] / bc1) @ UB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ UBt
                 else:
                     if _pic == 0:
                         inA = mhatA; inB = mhatB
@@ -2032,8 +2088,8 @@ class CurvatureWhitenLoRA(Optimizer):
                         cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
                         inA = mhatA + (1.0 / lr) * cross_A
                         inB = mhatB + (1.0 / lr) * cross_B
-                    zA = (QA @ ((QAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                    zB = (((inB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                    zA = (UA @ ((UAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                    zB = (((inB @ UB) * lamB.unsqueeze(0)) @ UBt) * doutB.unsqueeze(-1)
                 if _pic == 0:
                     # Mirror of the grouped path's dump (see _maybe_dump_pre_polar);
                     # zA/zB are 2-D here, so add the leading axis it indexes.
@@ -2049,8 +2105,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     # direction, not magnitude. σmax(φ(z))≈1, so the rescale → ρ.
                     WA, WB = zA, zB
                 else:
-                    WA = (QA @ ((QAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                    WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
+                    WA = (UA @ ((UAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
+                    WB = (((zB @ UB) * lamB.unsqueeze(0)) @ UBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
                 dA = -(cA * rho / sWA.clamp_min(self.alg1_magnitude_floor)) * WA
@@ -2099,27 +2155,27 @@ class CurvatureWhitenLoRA(Optimizer):
                 r = gA.shape[0]; d_in = gA.shape[1]; d_out = gB.shape[0]
                 Din_inv = dinA * dinA
                 Dout_inv = doutB * doutB
-                SAinv = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
-                RBinv = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
+                PAinv = UA @ ((lamA * lamA).unsqueeze(-1) * UAt)
+                QBinv = UB @ ((lamB * lamB).unsqueeze(-1) * UBt)
                 if self.precond == "factorwise":
-                    st['L_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
+                    st['P_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
                                             alpha=(1.0 - cb) / d_in)
-                    st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
+                    st['Q_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
                                             alpha=(1.0 - cb) / d_out)
                 if self.rr_identity:
-                    # Mirror of the grouped path: SAinv/RBinv are the identity, so
+                    # Mirror of the grouped path: PAinv/QBinv are the identity, so
                     # skip the matmul rather than compute `I @ gA`.
                     st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=(1.0 - cb) / r)
                     st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=(1.0 - cb) / r)
                 else:
-                    st['D_in'].mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
-                    st['D_out'].mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
+                    st['D_in'].mul_(cb).add_((gA * (PAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
+                    st['D_out'].mul_(cb).add_((gB * (gB @ QBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
             else:
-                # diag_metric recomputes L_A/R_B from the diagonals each step (above), so
+                # diag_metric recomputes P_A/Q_B from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
                 if self.precond == "factorwise":
-                    st['L_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-                    st['R_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+                    st['P_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+                    st['Q_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
                 st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
             A.grad.zero_(); B.grad.zero_()
@@ -2148,15 +2204,23 @@ class CurvatureWhitenLoRA(Optimizer):
             Bw = torch.stack([pairs[i][1].detach().float() for i in idxs])
             mA = torch.stack([S[i]['m_A'] for i in idxs]).mul_(b1).add_(gA, alpha=1.0 - b1)
             mB = torch.stack([S[i]['m_B'] for i in idxs]).mul_(b1).add_(gB, alpha=1.0 - b1)
-            LA = torch.stack([S[i]['L_A'] for i in idxs])
-            RB = torch.stack([S[i]['R_B'] for i in idxs])
+            # PA_raw/QB_raw alias the RAW stacked buffers. On the factorwise
+            # branch `PA`/`QB` are rebound below to lambda_max-normalized copies
+            # for the step to consume, while the EMA update and the write-back
+            # keep using PA_raw/QB_raw -- otherwise the in-place `PA.mul_(cb)`
+            # would divide the accumulated history by a fresh lambda_max every
+            # step and silently change the effective beta2. On the product and
+            # one-sided branches PA/QB are replaced wholesale (recomputed Gram,
+            # pinned identity) and these aliases go unread.
+            PA = PA_raw = torch.stack([S[i]['P_A'] for i in idxs])
+            QB = QB_raw = torch.stack([S[i]['Q_B'] for i in idxs])
             if self.soap_v:
                 vA = torch.stack([S[i]['v_A'] for i in idxs])
                 vB = torch.stack([S[i]['v_B'] for i in idxs])
             # ── D_in / D_out ARE STALE BY ONE STEP. ──────────────────────────
             # These two diagonals are the metric (P, Q) that builds the ENTIRE
             # update below: dinA/doutB -> Din_m/Dout_m -> the small-side Grams
-            # LA/RB on the diag_metric path, the whitening, and the Picard cross.
+            # PA/QB on the diag_metric path, the whitening, and the Picard cross.
             # What is read here is the curvature EMA over g_1..g_{t-1} ONLY. The
             # current step's gradient g_t is folded in at the very END of this
             # method — lines 2143-2144 (kl_coupled branch) and 2151-2152 (else
@@ -2174,9 +2238,9 @@ class CurvatureWhitenLoRA(Optimizer):
             if timer: timer.stop()
             _eigh = (self.precond_method == "eigh")
             if _eigh:
-                QA = torch.stack([S[i]['Q_A'] for i in idxs])
-                QB = torch.stack([S[i]['Q_B'] for i in idxs])
-                QAt = QA.transpose(-2, -1); QBt = QB.transpose(-2, -1)
+                UA = torch.stack([S[i]['U_A'] for i in idxs])
+                UB = torch.stack([S[i]['U_B'] for i in idxs])
+                UAt = UA.transpose(-2, -1); UBt = UB.transpose(-2, -1)
             # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
             # SINGLE metric the diag arm commits to — used by the self small-side
             # Gram, the whitening, and the Picard cross, coherently.
@@ -2189,24 +2253,53 @@ class CurvatureWhitenLoRA(Optimizer):
             Dout_m = (doutB * doutB).reciprocal()
             if self.rr_identity:
                 # precond="one-sided": C_B = C_A = I_r. Nothing forms the slots and
-                # nothing EMAs them (see the KL update below); LA/RB are pinned to
+                # nothing EMAs them (see the KL update below); PA/QB are pinned to
                 # the identity so the Rayleigh path and the write-back stay
                 # shape-correct and idempotent.
-                LA = torch.eye(LA.shape[-1], dtype=LA.dtype, device=LA.device
-                               ).expand_as(LA).clone()
-                RB = torch.eye(RB.shape[-1], dtype=RB.dtype, device=RB.device
-                               ).expand_as(RB).clone()
+                PA = torch.eye(PA.shape[-1], dtype=PA.dtype, device=PA.device
+                               ).expand_as(PA).clone()
+                QB = torch.eye(QB.shape[-1], dtype=QB.dtype, device=QB.device
+                               ).expand_as(QB).clone()
             elif self.diag_metric:
                 # Option (b): small-side curvature = conjugate-diagonal-weighted
                 # geometric Gram, recomputed each step (replaces the dense S_curv
                 # EMA). M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the SAME
                 # damped diagonals the cross uses (metric coherence). Downstream
                 # Rayleigh eigenvalues / QR refresh / whitening and the diagonal KL
-                # coupling are unchanged; the write-back of L_A/R_B below stores M so
+                # coupling are unchanged; the write-back of P_A/Q_B below stores M so
                 # the eigenbasis refresh tracks it.
                 if timer: timer.start("op_curv_gram")   # small-side curvature Grams M_A=Bᵀdiag(D_out)B, M_B=A diag(D_in)Aᵀ
-                LA = Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bw)
-                RB = (Aw * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)
+                PA = Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bw)
+                QB = (Aw * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)
+                if timer: timer.stop()
+            else:
+                # precond="factorwise": PA/QB hold the FREE Kronecker factors
+                # P_A, Q_B of Sigma_A ~ Q (x) P_A and Sigma_B ~ Q_B (x) P, as RAW
+                # EMA buffers. Normalize to lambda_max = 1 here, at consume, for
+                # the reason the paper normalizes p, q (the Normalization
+                # paragraph, eq:ours-klcoupling): the Kronecker model sees only
+                # Q (x) P_A, so (a P_A, a^-1 q) is the same model, the direction
+                # is invariant under it but qhat_t(a P_A) = a^-1 qhat_t(P_A) is
+                # not, and without this the estimator EMA reweights its own
+                # history by a drifting scale.
+                #
+                # Normalized HERE and not after the EMA update below: rescaling
+                # the buffer in place would divide the accumulated history by a
+                # fresh lambda_max every step, which changes the effective decay
+                # instead of leaving beta2 to set it. The buffer stays raw; only
+                # what the step consumes is normalized.
+                #
+                # Product's C_B = BᵀPB / C_A = AQAᵀ get NO such normalization
+                # (they are the `elif` above): they are induced from the already
+                # normalized P, Q and the current A, B rather than independently
+                # fitted, so their scale is part of the pullback geometry and
+                # `app:damping` relative-damps them at true scale.
+                if timer: timer.start("op_rr_normalize")   # lambda_max(P_A), lambda_max(Q_B) for the free-factor normalization
+                from .spectral import lambda_max_power_iter_psd_batched as _lmax_b
+                lamLA, _ = _lmax_b(self._sym(PA), n_iters=8)
+                lamRB, _ = _lmax_b(self._sym(QB), n_iters=8)
+                PA = PA / lamLA.reshape(-1, 1, 1).clamp_min(1e-30)
+                QB = QB / lamRB.reshape(-1, 1, 1).clamp_min(1e-30)
                 if timer: timer.stop()
             if timer: timer.start("cw_basis_proj")
             # Relative-damped inverse-sqrt factors (-1/2 power) for the small (λ)
@@ -2214,7 +2307,7 @@ class CurvatureWhitenLoRA(Optimizer):
             # KL-Shampoo inner core. evA/evB are the Rayleigh eigenvalues of the
             # curvature in the current eigenbasis.
             # S_A^{-1/2}, S_B^{-1/2} applied as closures _whA/_whB; S_A^{-1}, S_B^{-1}
-            # as SAinv_full/RBinv_full. eigh: Q diag(λ^{-1/2}) Qᵀ from the QR
+            # as PAinv_full/QBinv_full. eigh: Q diag(λ^{-1/2}) Qᵀ from the QR
             # eigenbasis + Rayleigh λ. higham: the batched Newton–Schulz inverse-sqrt
             # of the small-side Gram directly (form-once: S^{-1} = S^{-1/2} @ S^{-1/2}).
             if self.rr_identity:
@@ -2223,26 +2316,26 @@ class CurvatureWhitenLoRA(Optimizer):
                 # The identity must be EXACT here, not the damped inverse-sqrt of I:
                 # a scalar slot cI cancels from the direction (msign is scale-invariant
                 # and the ρ/σ_max rescale removes c^{-1/2}) but NOT from the p, q
-                # updates below, which read SAinv_full/RBinv_full unnormalized and
+                # updates below, which read PAinv_full/QBinv_full unnormalized and
                 # would carry c into the metric.
                 def _whA(x): return x
                 def _whB(x): return x
-                SAinv_full = LA        # already pinned to I above
-                RBinv_full = RB
+                PAinv_full = PA        # already pinned to I above
+                QBinv_full = QB
             elif _eigh:
-                evA = (QA * (LA @ QA)).sum(dim=1)
-                evB = (QB * (RB @ QB)).sum(dim=1)
+                evA = (UA * (PA @ UA)).sum(dim=1)
+                evB = (UB * (QB @ UB)).sum(dim=1)
                 lamA = self._rdinv(evA); lamB = self._rdinv(evB)
-                def _whA(x): return QA @ ((QAt @ x) * lamA.unsqueeze(-1))
-                def _whB(x): return ((x @ QB) * lamB.unsqueeze(1)) @ QBt
-                SAinv_full = QA @ ((lamA * lamA).unsqueeze(-1) * QAt)
-                RBinv_full = QB @ ((lamB * lamB).unsqueeze(-1) * QBt)
+                def _whA(x): return UA @ ((UAt @ x) * lamA.unsqueeze(-1))
+                def _whB(x): return ((x @ UB) * lamB.unsqueeze(1)) @ UBt
+                PAinv_full = UA @ ((lamA * lamA).unsqueeze(-1) * UAt)
+                QBinv_full = UB @ ((lamB * lamB).unsqueeze(-1) * UBt)
             elif self.precond_method == "gram_ns":
                 # Polar-Express Gram Newton–Schulz (gram_ns_inv_sqrt docstring). fp32,
                 # eigh-free, fresh every step (no stale eigenbasis); ~wall-parity with
                 # the amortized eigh/QR path at production cadence, not a speedup.
-                # THIS IS THE PRODUCTION PATH, and it recomputes SAh/SBh from the
-                # CURRENT LA/RB on EVERY step — so `precond_refresh_every` (which only
+                # THIS IS THE PRODUCTION PATH, and it recomputes PAh/QBh from the
+                # CURRENT PA/QB on EVERY step — so `precond_refresh_every` (which only
                 # gates the eigh QR refresh in step()) is inert here regardless of what
                 # the config or the sweep wrapper's `--precond_refresh_every 10` says.
                 # eps_relative=True (NOT precond_delta_relative): the eigh path's
@@ -2255,37 +2348,37 @@ class CurvatureWhitenLoRA(Optimizer):
                 # cw_unpinned (−pin / LoRA-Muon step): TRUE-SCALE damping (eps_relative=False) so
                 # the whitener carries the native (S+δI)^{-1/2} magnitude, not the λ_max-relative
                 # √λ scale the σ_max(W) pin would reabsorb. (With cw_no_diag_curv the curvature
-                # coupling that also reads SAinv_full=SAh² is off, so the only effect is the
+                # coupling that also reads PAinv_full=SAh² is off, so the only effect is the
                 # whitener magnitude; with curvature on it shifts the coupling damping negligibly.)
                 _wh_rel = not self.cw_unpinned
-                SAh = gram_ns_inv_sqrt(
-                    self._sym(LA), nsteps=self.higham_iters, eps=self.delta,
+                PAh = gram_ns_inv_sqrt(
+                    self._sym(PA), nsteps=self.higham_iters, eps=self.delta,
                     eps_relative=_wh_rel)
-                SBh = gram_ns_inv_sqrt(
-                    self._sym(RB), nsteps=self.higham_iters, eps=self.delta,
+                QBh = gram_ns_inv_sqrt(
+                    self._sym(QB), nsteps=self.higham_iters, eps=self.delta,
                     eps_relative=_wh_rel)
-                def _whA(x): return SAh @ x
-                def _whB(x): return x @ SBh
-                SAinv_full = SAh @ SAh
-                RBinv_full = SBh @ SBh
+                def _whA(x): return PAh @ x
+                def _whB(x): return x @ QBh
+                PAinv_full = PAh @ PAh
+                QBinv_full = QBh @ QBh
                 if timer: timer.stop()
             else:  # "higham" — coupled Iannazzo/Denman–Beavers (needs ≥16 iters;
                    # under-converged at the default 10. Kept for the A/B retiming).
                 from .utils import spd_inv_sqrt_higham_batched
-                SAh = spd_inv_sqrt_higham_batched(
-                    self._sym(LA), n_iters=self.higham_iters, eps=self.delta,
+                PAh = spd_inv_sqrt_higham_batched(
+                    self._sym(PA), n_iters=self.higham_iters, eps=self.delta,
                     eps_relative=True)
-                SBh = spd_inv_sqrt_higham_batched(
-                    self._sym(RB), n_iters=self.higham_iters, eps=self.delta,
+                QBh = spd_inv_sqrt_higham_batched(
+                    self._sym(QB), n_iters=self.higham_iters, eps=self.delta,
                     eps_relative=True)
-                def _whA(x): return SAh @ x
-                def _whB(x): return x @ SBh
-                SAinv_full = SAh @ SAh
-                RBinv_full = SBh @ SBh
+                def _whA(x): return PAh @ x
+                def _whB(x): return x @ QBh
+                PAinv_full = PAh @ PAh
+                QBinv_full = QBh @ QBh
             # SOAP v̂ EMA (state update, once) — only the SOAP-curvature arm.
             if self.soap_v:
-                gA_basis = QAt @ gA
-                gB_basis = gB @ QB
+                gA_basis = UAt @ gA
+                gB_basis = gB @ UB
                 vA.mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
                 vB.mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
             else:
@@ -2331,8 +2424,8 @@ class CurvatureWhitenLoRA(Optimizer):
             if timer: timer.start("cw_picard")
             for _pic in range(self.cw_picard_iters):
                 if self.soap_v:
-                    zA = QA @ ((QAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
-                    zB = (((mB / bc1) @ QB) / ((vB / bc2).sqrt() + self.eps)) @ QBt
+                    zA = UA @ ((UAt @ (mA / bc1)) / ((vA / bc2).sqrt() + self.eps))
+                    zB = (((mB / bc1) @ UB) / ((vB / bc2).sqrt() + self.eps)) @ UBt
                 else:
                     if _pic == 0:
                         inA = mhatA; inB = mhatB
@@ -2409,21 +2502,21 @@ class CurvatureWhitenLoRA(Optimizer):
                 # Coupled KL fixed point (Prop 4): each Gram whitens g by the
                 # OTHER factor's relative-damped inverse before forming, with 1/d
                 # normalizers — the streaming flip-flop toward the matrix-normal
-                # MLE. dinA²/lamA² are the power-(-1) factors; SAinv = Q diag(λ⁻¹) Qᵀ.
+                # MLE. dinA²/lamA² are the power-(-1) factors; PAinv = Q diag(λ⁻¹) Qᵀ.
                 # At warmup the factors are zero ⇒ _rdinv returns ones ⇒ identity
                 # whitening ⇒ first alternation is one-sided Shampoo.
                 r = gA.shape[1]; d_in = gA.shape[2]; d_out = gB.shape[1]
                 Din_inv = dinA * dinA
                 Dout_inv = doutB * doutB
-                SAinv = SAinv_full
-                RBinv = RBinv_full
+                PAinv = PAinv_full
+                QBinv = QBinv_full
                 if self.precond == "factorwise":
-                    LA.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
+                    PA_raw.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
                                      alpha=(1.0 - cb) / d_in)
-                    RB.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
+                    QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
                                      alpha=(1.0 - cb) / d_out)
                 if self.rr_identity:
-                    # C_B = C_A = I, so SAinv/RBinv are the identity and the two
+                    # C_B = C_A = I, so PAinv/QBinv are the identity and the two
                     # bmms below are `I @ gA` and `gB @ I`. Skip them: at r=256 the
                     # matmul form costs N·r²·(d_in+d_out) MACs per step against
                     # N·r·(d_in+d_out) for the sum of squares — an r-fold waste on
@@ -2432,17 +2525,25 @@ class CurvatureWhitenLoRA(Optimizer):
                     Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=(1.0 - cb) / r)
                     Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=(1.0 - cb) / r)
                 else:
-                    Din.mul_(cb).add_((gA * (SAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
-                    Dout.mul_(cb).add_((gB * (gB @ RBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
+                    Din.mul_(cb).add_((gA * (PAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
+                    Dout.mul_(cb).add_((gB * (gB @ QBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
             else:
-                # diag_metric recomputes LA/RB from the diagonals each step (above), so
+                # diag_metric recomputes PA/QB from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
                 if self.precond == "factorwise":
-                    LA.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-                    RB.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+                    PA_raw.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+                    QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
                 Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
             if timer: timer.stop()
+            # What goes back into the P_A/Q_B buffers. factorwise: the RAW EMA
+            # just accumulated above (never the lambda_max-normalized copy the
+            # step consumed -- writing that back would rescale the whole history
+            # every step). product: the Gram recomputed from A, B this step, so
+            # the eigh eigenbasis refresh in step() tracks it. one-sided: the
+            # pinned identity, idempotent.
+            PA_st, QB_st = ((PA_raw, QB_raw) if self.precond == "factorwise"
+                            else (PA, QB))
             for j, i in enumerate(idxs):
                 A_, B_ = pairs[i]
                 A_.add_(dA[j].to(dtype=A_.dtype, device=A_.device))
@@ -2465,7 +2566,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 S[i]['m_A'].copy_(mA[j]); S[i]['m_B'].copy_(mB[j])
                 if self.soap_v:
                     S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])
-                S[i]['L_A'].copy_(LA[j]); S[i]['R_B'].copy_(RB[j])
+                S[i]['P_A'].copy_(PA_st[j]); S[i]['Q_B'].copy_(QB_st[j])
                 S[i]['D_in'].copy_(Din[j]); S[i]['D_out'].copy_(Dout[j])
                 A_.grad.zero_(); B_.grad.zero_()
 
