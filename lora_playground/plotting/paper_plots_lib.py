@@ -289,7 +289,7 @@ def _max_step(where, common):
     return max(steps) if steps else None
 
 
-def _truncate(runs, horizon):
+def _truncate(runs, horizon, keep_full=None):
     """Cut every history at `horizon` steps, dropping runs that never reach it.
 
     A panel comparing arms run to DIFFERENT horizons has to read them at a
@@ -299,9 +299,24 @@ def _truncate(runs, horizon):
     the sweep wrappers override neither, so the first N steps of a longer run
     ARE an N-step run and this truncation is exact rather than approximate.
     Re-check that if a schedule is ever introduced.
+
+    `keep_full` is a predicate on cfg naming runs to leave UNCUT. It exists for
+    the reference arm: AdamW is not one of the things being compared, it is the
+    scale the reader reads the others against, and cutting it at 2000 throws away
+    the part of its curve that says where the run ends up. Its full trajectory is
+    drawn while every COMPARED arm stays matched at `horizon`.
+
+    The cost of that is real and is why this is opt-in: the reference's own
+    `final` in the summary table is then its step-9000 loss while the compared
+    arms report step-`horizon`, so the speed target is computed against a longer
+    run. `_figure` therefore says so in the panel rather than leaving the reader
+    to infer it from the legend.
     """
     out = []
     for cfg, hist in runs:
+        if keep_full is not None and keep_full(cfg):
+            out.append((cfg, hist))
+            continue
         cut = [e for e in hist if e.get("step") is not None and e["step"] <= horizon]
         if cut and max(e["step"] for e in cut) >= horizon:
             out.append((cfg, cut))
@@ -346,7 +361,21 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
               + ", ".join(f"{k} @{n}" for k, n in in_flight.items()))
     runs = cell_runs(common)
     if horizon is not None:
-        runs = _truncate(runs, horizon)
+        # The reference arm keeps its full trajectory. It is the scale the other
+        # arms are read against, not one of the things being compared, and
+        # cutting it at `horizon` discards exactly the part that says where the
+        # workload ends up. Say so in the panel: its `final` in the table below
+        # is then a longer run's than the compared arms'.
+        ref_pred = arms.get(target_label)
+        keep_full = ((lambda c: pred_matches(c, {**common, **ref_pred}))
+                     if ref_pred is not None else None)
+        runs = _truncate(runs, horizon, keep_full=keep_full)
+        if ref_pred is not None:
+            print(f"read at step {horizon}; {target_label!r} is the reference and "
+                  f"keeps its full {HORIZON}-step curve, so its 'final' below is "
+                  f"not step-matched to the other arms.")
+        else:
+            print(f"read at step {horizon} (every arm truncated).")
     fig, _t, sdf = compare_variants_figure(
         arms, common_where=common, ref_label=ref_label,
         logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
