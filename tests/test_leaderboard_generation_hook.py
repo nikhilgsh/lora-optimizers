@@ -1,4 +1,4 @@
-"""The leaderboard hook reminds; explicit commands generate and stage."""
+"""The leaderboard hook regenerates derived output without manual upkeep."""
 from __future__ import annotations
 
 import os
@@ -46,7 +46,7 @@ def _commit_all(repo: Path) -> None:
         "lora_playground/leaderboard_variants.py",
     ],
 )
-def test_hook_warns_without_invoking_generator_for_relevant_staged_paths(
+def test_hook_regenerates_and_stages_for_relevant_paths(
     tmp_path: Path, staged_path: str,
 ):
     repo = tmp_path / "repo"
@@ -69,10 +69,8 @@ def test_hook_warns_without_invoking_generator_for_relevant_staged_paths(
     _run(repo, "git", "add", staged_path)
     marker = repo / "hook-called"
     env = {**os.environ, "LEADERBOARD_HOOK_MARKER": str(marker)}
-    result = _run(repo, "bash", "pre-commit", env=env)
-    assert not marker.exists()
-    assert "leaderboard inputs changed" in result.stderr
-    assert "regenerate and review" in result.stderr
+    _run(repo, "bash", "pre-commit", env=env)
+    assert marker.read_text() == "--stage\n"
 
 
 @pytest.mark.parametrize(
@@ -103,11 +101,16 @@ def test_hook_is_noop_for_unrelated_staged_path(
     assert not marker.exists()
 
 
-def test_hook_is_silent_when_reviewed_doc_is_staged_with_inputs(tmp_path: Path):
+def test_hook_regenerates_even_when_generated_doc_is_already_staged(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
     shutil.copy2(ROOT / "githooks" / "pre-commit", repo / "pre-commit")
+    _write(
+        repo / "scripts/analysis/update_leaderboard.sh",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$LEADERBOARD_HOOK_MARKER\"\n",
+    )
+    os.chmod(repo / "scripts/analysis/update_leaderboard.sh", 0o755)
     _write(repo / "lora_playground/leaderboard.py", "base\n")
     _write(repo / "docs/notes/leaderboard.md", "base\n")
     _commit_all(repo)
@@ -122,8 +125,10 @@ def test_hook_is_silent_when_reviewed_doc_is_staged_with_inputs(tmp_path: Path):
         "docs/notes/leaderboard.md",
     )
 
-    result = _run(repo, "bash", "pre-commit")
-    assert result.stderr == ""
+    marker = repo / "hook-called"
+    env = {**os.environ, "LEADERBOARD_HOOK_MARKER": str(marker)}
+    _run(repo, "bash", "pre-commit", env=env)
+    assert marker.read_text() == "--stage\n"
 
 
 def _workflow_repo(tmp_path: Path) -> Path:

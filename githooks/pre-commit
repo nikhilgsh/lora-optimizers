@@ -1,32 +1,27 @@
 #!/usr/bin/env bash
-# Remind when generated-leaderboard inputs change; never mutate the index.
+# Regenerate and stage the generated leaderboard when its inputs change.
 #
 # Enable once per clone (tracked hooks aren't active by default):
 #     git config core.hooksPath githooks
 #
-# The leaderboard is data-derived publication material. Its documented workflow
-# requires a fresh canonical load, review of the concrete diff, and user
-# confirmation. A commit hook cannot perform that review. Explicit regeneration
-# remains available through scripts/analysis/update_leaderboard.sh.
 set -eo pipefail
 
 RELEVANT=0
-DOC_STAGED=0
 
 while IFS= read -r -d '' path; do
-  if [[ "$path" == "docs/notes/leaderboard.md" ]]; then
-    DOC_STAGED=1
-  fi
   case "$path" in
     docs/notes/leaderboard.md|\
     publication/legacy_leaderboard_v1.json|\
+    publication/leaderboard_view.json|\
     scripts/analysis/build_leaderboard_doc.py|\
     scripts/analysis/update_leaderboard.sh|\
     lora_playground/comparison.py|\
     lora_playground/leaderboard.py|\
     lora_playground/leaderboard_variants.py|\
     lora_playground/publication_archive.py|\
+    lora_playground/publication_queries.py|\
     lora_playground/publication_semantics.py|\
+    lora_playground/publication_views.py|\
     lora_playground/workloads.py|\
     lora_playground/run_records.py)
       RELEVANT=1
@@ -39,7 +34,4 @@ if [[ "$RELEVANT" == 0 ]]; then
   exit 0
 fi
 
-if [[ "$DOC_STAGED" == 0 ]]; then
-  echo "pre-commit: leaderboard inputs changed; regenerate and review docs/notes/leaderboard.md explicitly if this change affects published values" >&2
-fi
-exit 0
+./scripts/analysis/update_leaderboard.sh --stage
