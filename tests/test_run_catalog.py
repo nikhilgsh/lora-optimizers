@@ -418,7 +418,7 @@ def test_logged_schema_drives_effective_config_and_explicit_queries(
         raise AssertionError("current-code default introspection was consulted")
 
     monkeypatch.setattr(legacy_loader, "_argparse_defaults", forbidden)
-    monkeypatch.setattr(legacy_loader, "_precond_by_optimizer", forbidden)
+    assert not hasattr(legacy_loader, "_precond_by_optimizer")
 
     catalog = RunCatalog(tmp_path)
     record = catalog.query(equals={"optimizer": "method"})[0]

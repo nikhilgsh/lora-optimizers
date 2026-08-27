@@ -120,7 +120,7 @@ def test_facade_is_filesystem_led_logged_only_and_does_not_call_legacy_path(
         raise AssertionError("legacy reconstruction/admission path was called")
 
     monkeypatch.setattr(loader, "_argparse_defaults", forbidden)
-    monkeypatch.setattr(loader, "_precond_by_optimizer", forbidden)
+    assert not hasattr(loader, "_precond_by_optimizer")
 
     with pytest.warns(DeprecationWarning):
         runs = loader.load_runs(
