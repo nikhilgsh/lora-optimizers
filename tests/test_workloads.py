@@ -60,16 +60,20 @@ def test_deny_pattern():
     assert not _denied(None)
 
 
-def test_registry_shape():
-    assert len(WORKLOADS) == 18
-    # 6 OLMo-2-1B (opc/openmath/tulu3 × r{64,256}) + 6 Llama-3.2-1B (opc r{64,256};
-    # openmath r{32,64,128,256}) + 3 Qwen2.5-1.5B (opc, openmath, bengali)
-    # + 2 Meta-Llama-3-8B (opc, openmath) + 1 Qwen3-0.6B (openwebmath), all unique.
-    keys = {(w.model_name, w.dataset, w.rank) for w in WORKLOADS}
+def test_registry_entries_are_valid_and_unique():
+    # The live-data coverage test owns completeness. A hard-coded list length
+    # merely breaks whenever a legitimate cell is added without identifying
+    # what is missing or duplicated.
+    keys = {
+        (w.model_name, w.dataset, w.rank, w.data_pipeline_version)
+        for w in WORKLOADS
+    }
+    assert keys
     assert len(keys) == len(WORKLOADS)
-    assert ("Qwen/Qwen2.5-1.5B", "opc", 256) in keys
-    assert ("Qwen/Qwen2.5-1.5B", "bengali", 256) in keys
-    assert ("meta-llama/Meta-Llama-3-8B", "opc", 256) in keys
+    dimensions = {(model, dataset, rank) for model, dataset, rank, _ in keys}
+    assert ("Qwen/Qwen2.5-1.5B", "opc", 256) in dimensions
+    assert ("Qwen/Qwen2.5-1.5B", "bengali", 256) in dimensions
+    assert ("meta-llama/Meta-Llama-3-8B", "opc", 256) in dimensions
     for w in WORKLOADS:
         assert isinstance(w, Workload)
         assert w.horizon >= w.min_completed_steps

@@ -41,7 +41,11 @@ def _commit_all(repo: Path) -> None:
 
 @pytest.mark.parametrize(
     "staged_path",
-    ["lora_playground/plotting/labels.py", "docs/notes/leaderboard.md"],
+    [
+        "publication/legacy_leaderboard_v1.json",
+        "lora_playground/leaderboard_variants.py",
+        "docs/notes/leaderboard.md",
+    ],
 )
 def test_hook_invokes_generator_only_for_relevant_staged_paths(
     tmp_path: Path, staged_path: str,
@@ -56,7 +60,8 @@ def test_hook_invokes_generator_only_for_relevant_staged_paths(
     )
     os.chmod(repo / "scripts/analysis/update_leaderboard.sh", 0o755)
     _write(repo / "README.md", "base\n")
-    _write(repo / "lora_playground/plotting/labels.py", "base\n")
+    _write(repo / "lora_playground/leaderboard_variants.py", "base\n")
+    _write(repo / "publication/legacy_leaderboard_v1.json", "{}\n")
     _write(repo / "docs/notes/leaderboard.md", "base\n")
     _commit_all(repo)
 
@@ -70,7 +75,12 @@ def test_hook_invokes_generator_only_for_relevant_staged_paths(
     assert marker.read_text().strip() == "--from-hook"
 
 
-def test_hook_is_noop_for_unrelated_staged_path(tmp_path: Path):
+@pytest.mark.parametrize(
+    "staged_path", ["README.md", "lora_playground/optim.py"]
+)
+def test_hook_is_noop_for_unrelated_staged_path(
+    tmp_path: Path, staged_path: str
+):
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -81,10 +91,11 @@ def test_hook_is_noop_for_unrelated_staged_path(tmp_path: Path):
     )
     os.chmod(repo / "scripts/analysis/update_leaderboard.sh", 0o755)
     _write(repo / "README.md", "base\n")
+    _write(repo / "lora_playground/optim.py", "base\n")
     _commit_all(repo)
 
-    _write(repo / "README.md", "unrelated\n")
-    _run(repo, "git", "add", "README.md")
+    _write(repo / staged_path, "unrelated\n")
+    _run(repo, "git", "add", staged_path)
     marker = repo / "hook-called"
     env = {**os.environ, "LEADERBOARD_HOOK_MARKER": str(marker)}
     _run(repo, "bash", "pre-commit", env=env)
@@ -107,6 +118,7 @@ def _workflow_repo(tmp_path: Path) -> Path:
     os.chmod(repo / "scripts/analysis/update_leaderboard.sh", 0o755)
     _write(repo / "lora_playground/__init__.py", "")
     _write(repo / "lora_playground/leaderboard.py", "committed-source\n")
+    _write(repo / "publication/legacy_leaderboard_v1.json", "{}\n")
     _write(repo / "docs/notes/leaderboard.md", "committed-doc\n")
     _write(repo / "logs/group/run_info/logs/log_0.out", "fixture\n")
     _write(
@@ -116,11 +128,11 @@ import argparse
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--logs-root", required=True)
+parser.add_argument("--archive", required=True)
 parser.add_argument("--output", required=True)
-parser.add_argument("--require-logs", action="store_true")
+parser.add_argument("--require-archive", action="store_true")
 args = parser.parse_args()
-if args.require_logs and not Path(args.logs_root).is_dir():
+if args.require_archive and not Path(args.archive).is_file():
     raise SystemExit(2)
 root = Path(__file__).resolve().parents[2]
 Path(args.output).write_text((root / "lora_playground/leaderboard.py").read_text())

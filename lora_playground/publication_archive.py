@@ -20,10 +20,16 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
+from .publication_identity import (
+    LORA_INIT_B_MODES,
+    composite_publication_identity,
+    require_lora_init_b,
+    split_publication_identity,
+)
 from .run_records import freeze_value
 
 
-ARCHIVE_SCHEMA_VERSION = 1
+ARCHIVE_SCHEMA_VERSION = 2
 _REQUIRED_CONFIG_FIELDS = {
     "optimizer",
     "model_name",
@@ -31,6 +37,8 @@ _REQUIRED_CONFIG_FIELDS = {
     "lora_r",
     "lr",
     "max_steps",
+    "data_pipeline_version",
+    "lora_init_b",
     "measurement_semantics_revision",
 }
 
@@ -46,6 +54,7 @@ class PublicationVariant:
     view_key: str
     label: str
     optimizer_semantic_key: str
+    lora_init_b: str
     exact_ids: tuple[str, ...]
     style_key: str
 
@@ -99,6 +108,29 @@ def _require_nonempty_string(value: Any, context: str) -> str:
     return value
 
 
+def _require_lora_init_b(value: Any, context: str) -> str:
+    try:
+        return require_lora_init_b(value)
+    except ValueError as exc:
+        raise PublicationArchiveError(
+            f"{context}: {exc}"
+        ) from exc
+
+
+def _require_semantic_revision(value: Any, context: str) -> str | int:
+    if isinstance(value, bool):
+        raise PublicationArchiveError(
+            f"{context} must be a non-empty string or positive integer"
+        )
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.strip():
+        return value
+    raise PublicationArchiveError(
+        f"{context} must be a non-empty string or positive integer"
+    )
+
+
 def _parse_variants(payload: Any) -> tuple[PublicationVariant, ...]:
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
         raise PublicationArchiveError("variants must be an array")
@@ -118,6 +150,18 @@ def _parse_variants(payload: Any) -> tuple[PublicationVariant, ...]:
             item.get("optimizer_semantic_key"),
             f"variants[{index}].optimizer_semantic_key",
         )
+        lora_init_b = _require_lora_init_b(
+            item.get("lora_init_b"), f"variants[{index}].lora_init_b"
+        )
+        expected_view_key = composite_publication_identity(
+            optimizer_semantic_key, lora_init_b
+        )
+        if view_key != expected_view_key:
+            raise PublicationArchiveError(
+                f"variants[{index}].view_key must compose optimizer_semantic_key "
+                f"and lora_init_b; expected {expected_view_key!r}, got "
+                f"{view_key!r}"
+            )
         style_key = _require_nonempty_string(
             item.get("style_key"), f"variants[{index}].style_key"
         )
@@ -140,6 +184,18 @@ def _parse_variants(payload: Any) -> tuple[PublicationVariant, ...]:
             raise PublicationArchiveError(
                 f"variants[{index}].exact_ids must be non-empty and unique"
             )
+        for exact_id in cohort_exact_ids:
+            try:
+                _, exact_init = split_publication_identity(exact_id)
+            except ValueError as exc:
+                raise PublicationArchiveError(
+                    f"variants[{index}].exact_ids: {exc}"
+                ) from exc
+            if exact_init != lora_init_b:
+                raise PublicationArchiveError(
+                    f"variants[{index}] exact id {exact_id!r} disagrees with "
+                    f"lora_init_b={lora_init_b!r}"
+                )
         overlap = exact_ids.intersection(cohort_exact_ids)
         if overlap:
             raise PublicationArchiveError(
@@ -160,6 +216,7 @@ def _parse_variants(payload: Any) -> tuple[PublicationVariant, ...]:
             view_key=view_key,
             label=label,
             optimizer_semantic_key=optimizer_semantic_key,
+            lora_init_b=lora_init_b,
             exact_ids=cohort_exact_ids,
             style_key=style_key,
         ))
@@ -304,10 +361,19 @@ def publication_archive_from_payload(payload: Mapping[str, Any]) -> PublicationA
             raise PublicationArchiveError(
                 f"runs[{index}].config is missing required fields {missing!r}"
             )
-        for field_name in ("optimizer", "model_name", "data_dir"):
+        for field_name in (
+            "optimizer", "model_name", "data_dir", "data_pipeline_version"
+        ):
             _require_nonempty_string(
                 config[field_name], f"runs[{index}].config.{field_name}"
             )
+        lora_init_b = _require_lora_init_b(
+            config["lora_init_b"], f"runs[{index}].config.lora_init_b"
+        )
+        _require_semantic_revision(
+            config["measurement_semantics_revision"],
+            f"runs[{index}].config.measurement_semantics_revision",
+        )
         for field_name in ("lora_r", "max_steps"):
             value = config[field_name]
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -321,6 +387,11 @@ def publication_archive_from_payload(payload: Mapping[str, Any]) -> PublicationA
                 f"runs[{index}].config.lr must be finite and positive"
             )
         variant = variants_by_id[exact_id]
+        if lora_init_b != variant.lora_init_b:
+            raise PublicationArchiveError(
+                f"runs[{index}].config.lora_init_b={lora_init_b!r} disagrees "
+                f"with variant mode {variant.lora_init_b!r}"
+            )
         config["_publication_exact_id"] = exact_id
         config["_publication_variant_id"] = variant.view_key
         config["_publication_variant_label"] = variant.label

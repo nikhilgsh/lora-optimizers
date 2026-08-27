@@ -5,7 +5,7 @@
 #   ./scripts/analysis/update_leaderboard.sh          # regenerate worktree doc
 #   ./scripts/analysis/update_leaderboard.sh --stage  # regenerate + stage doc
 #
-# Regenerates docs/notes/leaderboard.md from the live logs/ tree. Handles conda
+# Regenerates docs/notes/leaderboard.md from the sealed publication archive. Handles conda
 # env activation for you (the underlying python script needs the `lora_playground`
 # package importable). The pre-commit-only `--from-hook` mode renders from the
 # staged index into a temporary file, then stages that deterministic output. It
@@ -17,6 +17,7 @@ ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 DOC_REL="docs/notes/leaderboard.md"
 DOC="${ROOT}/${DOC_REL}"
 GENERATOR_REL="scripts/analysis/build_leaderboard_doc.py"
+ARCHIVE_REL="publication/legacy_leaderboard_v1.json"
 MODE="write"
 
 case "${1:-}" in
@@ -68,8 +69,9 @@ if [[ "$MODE" == "hook" ]]; then
     exit 1
   fi
   MPLCONFIGDIR="${TMP_DIR}/mpl" XDG_CACHE_HOME="${TMP_DIR}/cache" \
-    PYTHONPATH="$INDEX_TREE" python "${INDEX_TREE}/${GENERATOR_REL}" \
-    --logs-root "${ROOT}/logs" --output "$FRESH" --require-logs "$@"
+  PYTHONPATH="$INDEX_TREE" python "${INDEX_TREE}/${GENERATOR_REL}" \
+    --archive "${INDEX_TREE}/${ARCHIVE_REL}" \
+    --output "$FRESH" --require-archive "$@"
   apply_and_stage "$FRESH"
   echo "pre-commit: regenerated and staged ${DOC_REL} from staged leaderboard inputs"
   exit 0
@@ -82,7 +84,8 @@ if [[ "$MODE" == "stage" ]]; then
   mkdir -p "${TMP_DIR}/mpl" "${TMP_DIR}/cache"
   MPLCONFIGDIR="${TMP_DIR}/mpl" XDG_CACHE_HOME="${TMP_DIR}/cache" \
     python "${ROOT}/${GENERATOR_REL}" \
-    --logs-root "${ROOT}/logs" --output "$FRESH" --require-logs "$@"
+    --archive "${ROOT}/${ARCHIVE_REL}" \
+    --output "$FRESH" --require-archive "$@"
   apply_and_stage "$FRESH"
   echo "regenerated and staged ${DOC_REL}"
   exit 0

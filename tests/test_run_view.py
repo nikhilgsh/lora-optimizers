@@ -98,6 +98,7 @@ def test_legacy_command_only_datasets_are_selected_by_workload_records(tmp_path)
                     "lora_r": 64,
                     "lr": 1e-3,
                     "max_steps": 9000,
+                    "data_pipeline_version": "packed_v1.1",
                     "dataset_name": "stale/magicoder",
                     "command": f"python train.py --data_dir {data_dir}",
                 },
@@ -105,7 +106,8 @@ def test_legacy_command_only_datasets_are_selected_by_workload_records(tmp_path)
             ],
         )
         workload = Workload(
-            "model", dataset, 64, "Model", dataset, 9000, 0.001, True
+            "model", dataset, 64, "Model", dataset, 9000, 0.001, True,
+            "packed_v1.1",
         )
         selected = workload_records(workload, logs_root=str(logs))
         assert len(selected) == 1

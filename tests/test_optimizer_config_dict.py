@@ -9,6 +9,7 @@ store its __init__ args as same-named attributes (or via _CONFIG_DICT_ALIASES)
 fails CI before merge, instead of silently producing config events that omit
 algorithm-distinguishing hyperparameters.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -25,9 +26,13 @@ from lora_playground.optim import (
     OPTIMIZER_CHOICES,
     build_optimizer,
     optimizer_config_dict,
+    optimizer_effective_config,
 )
 from lora_playground.constructor_introspection import (
     forwardable_constructor_parameters,
+)
+from lora_playground.publication_semantics import (
+    build_optimizer_variant_semantics_payload,
 )
 
 
@@ -93,6 +98,16 @@ def test_config_dict_records_all_init_params(optimizer_type):
         f"{sorted(expected - cfg.keys())}"
     )
     assert cfg["_optim_class"] == type(opt).__name__
+    payload = build_optimizer_variant_semantics_payload(
+        optimizer=optimizer_type,
+        optimizer_instance=opt,
+        optimizer_config=cfg,
+        optimizer_effective=optimizer_effective_config(opt),
+        semantic_revision=1,
+        implementation_revision="test-source",
+    )
+    assert payload["optimizer"] == optimizer_type
+    json.dumps(payload, sort_keys=True, allow_nan=False)
 
 
 def test_config_dict_rejects_group_specific_betas():

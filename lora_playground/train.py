@@ -50,6 +50,7 @@ from .optim import (
     optimizer_config_dict,
     optimizer_effective_config,
 )
+from .publication_identity import LORA_INIT_B_CHOICES
 from .publication_semantics import build_optimizer_variant_semantics_payload
 from .run_schema import (
     ATTEMPT_ID_ENV,
@@ -475,7 +476,7 @@ def make_parser():
     parser.add_argument("--lora_dropout", type=float, default=0.0)
     parser.add_argument(
         "--lora_init_b",
-        choices=["zero", "gaussian", "symmetric"],
+        choices=LORA_INIT_B_CHOICES,
         default="zero",
         help=(
             "LoRA init scheme. 'zero' (default, PEFT standard): A Kaiming, B=0. "

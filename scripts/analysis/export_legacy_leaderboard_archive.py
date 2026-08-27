@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from lora_playground.leaderboard import is_final
+from lora_playground.publication_identity import (
+    LORA_INIT_B_MODES,
+    composite_publication_identity,
+    lora_init_label_suffix,
+    require_lora_init_b,
+)
 from lora_playground.plotting.labels import canonical_label
 from lora_playground.publication_archive import (
     ARCHIVE_SCHEMA_VERSION,
@@ -116,8 +122,19 @@ _LEGACY_NEUTRAL_FIELDS = {
 @dataclass(frozen=True, slots=True)
 class LegacyVariantProjection:
     semantics: PublicationVariantSemantics
+    lora_init_b: str
     label: str | None
     style_key: str | None
+
+
+def _require_lora_init_b(cfg: Mapping[str, Any]) -> str:
+    mode = cfg.get("lora_init_b")
+    try:
+        return require_lora_init_b(mode)
+    except ValueError as exc:
+        raise PublicationArchiveError(
+            f"legacy run must explicitly record a valid mode: {exc}"
+        ) from exc
 
 
 def legacy_publication_semantics(
@@ -207,10 +224,13 @@ def legacy_publication_semantics(
 def project_legacy_variant(cfg: Mapping[str, Any]) -> LegacyVariantProjection:
     """Derive exact ID, view key, label, and style from one snapshot."""
     semantics = legacy_publication_semantics(cfg)
-    label = canonical_label(dict(semantics.label_config))
+    lora_init_b = _require_lora_init_b(cfg)
+    label_config = dict(semantics.label_config)
+    label_config["lora_init_b"] = lora_init_b
+    label = canonical_label(label_config)
     if label is not None and (not isinstance(label, str) or not label):
         raise PublicationArchiveError("publication labels must be non-empty strings")
-    return LegacyVariantProjection(semantics, label, label)
+    return LegacyVariantProjection(semantics, lora_init_b, label, label)
 
 
 def _source_segments(
@@ -241,7 +261,10 @@ def _source_segments(
 
 
 def _archive_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
-    required = ("optimizer", "model_name", "data_dir", "lora_r", "lr", "max_steps")
+    required = (
+        "optimizer", "model_name", "data_dir", "lora_r", "lr", "max_steps",
+        "data_pipeline_version", "lora_init_b",
+    )
     missing = [field for field in required if cfg.get(field) is None]
     if missing:
         raise PublicationArchiveError(
@@ -251,7 +274,7 @@ def _archive_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
         field: cfg[field]
         for field in (
             "optimizer", "model_name", "data_dir", "lora_r", "lr",
-            "max_steps", "data_pipeline_version", "seed",
+            "max_steps", "data_pipeline_version", "lora_init_b", "seed",
         )
         if cfg.get(field) is not None
     }
@@ -278,6 +301,7 @@ def build_archive_payload(
             last = max(history, key=lambda event: event.get("step", 0) or 0)
             if not is_final(last.get("step"), workload.horizon):
                 continue
+            lora_init_b = _require_lora_init_b(cfg)
             projection = variant_adapter(cfg)
             # ``canonical_label`` returning None is the established declaration
             # that this optimizer is outside the reviewed leaderboard families.
@@ -290,8 +314,17 @@ def build_archive_payload(
                     "a publication variant with a label must have a style key"
                 )
             semantics = projection.semantics
-            exact_id = semantics.exact_id
-            view_key = semantics.view_key
+            if projection.lora_init_b != lora_init_b:
+                raise PublicationArchiveError(
+                    "legacy variant projection lora_init_b disagrees with the "
+                    f"recorded run: {projection.lora_init_b!r} != {lora_init_b!r}"
+                )
+            exact_id = composite_publication_identity(
+                semantics.exact_id, lora_init_b
+            )
+            view_key = composite_publication_identity(
+                semantics.view_key, lora_init_b
+            )
             previous_view = exact_to_view.get(exact_id)
             if previous_view is not None and previous_view != view_key:
                 raise PublicationArchiveError(
@@ -302,7 +335,8 @@ def build_archive_payload(
             expected = {
                 "label": projection.label,
                 "style_key": projection.style_key,
-                "optimizer_semantic_key": view_key,
+                "optimizer_semantic_key": semantics.view_key,
+                "lora_init_b": lora_init_b,
             }
             if metadata is not None and any(
                 metadata[key] != value for key, value in expected.items()
@@ -363,6 +397,7 @@ def build_archive_payload(
                 "label": metadata["label"],
                 "style_key": metadata["style_key"],
                 "optimizer_semantic_key": metadata["optimizer_semantic_key"],
+                "lora_init_b": metadata["lora_init_b"],
                 "exact_ids": sorted(metadata["exact_ids"]),
             }
             for view_key, metadata in ordered_views
@@ -371,6 +406,211 @@ def build_archive_payload(
     }
     publication_archive_from_payload(payload)
     return payload
+
+
+def migrate_sealed_archive_initialization_identity(
+    payload: Mapping[str, Any],
+    *,
+    source_config: Callable[[str], Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Upgrade reviewed schema-v1 membership with recorded init semantics.
+
+    This migration deliberately does not rediscover workloads or runs.  The
+    sealed archive already owns that reviewed evidence set; every logical run,
+    source segment, and history is copied unchanged.  The only new input is
+    ``lora_init_b`` read from each named physical source config.  Missing,
+    unknown, or cross-segment disagreement fails instead of defaulting.
+    """
+    if payload.get("schema_version") != 1:
+        raise PublicationArchiveError(
+            "initialization migration requires publication archive schema 1; "
+            f"got {payload.get('schema_version')!r}"
+        )
+    if not callable(source_config):
+        raise TypeError("source_config must be callable")
+
+    raw_variants = payload.get("variants")
+    raw_runs = payload.get("runs")
+    if not isinstance(raw_variants, Sequence) or isinstance(
+        raw_variants, (str, bytes)
+    ):
+        raise PublicationArchiveError("schema-v1 variants must be an array")
+    if not isinstance(raw_runs, Sequence) or isinstance(raw_runs, (str, bytes)):
+        raise PublicationArchiveError("schema-v1 runs must be an array")
+
+    variants_by_exact: dict[str, Mapping[str, Any]] = {}
+    for index, raw_variant in enumerate(raw_variants):
+        if not isinstance(raw_variant, Mapping):
+            raise PublicationArchiveError(f"schema-v1 variants[{index}] must be an object")
+        exact_ids = raw_variant.get("exact_ids")
+        if not isinstance(exact_ids, Sequence) or isinstance(exact_ids, (str, bytes)):
+            raise PublicationArchiveError(
+                f"schema-v1 variants[{index}].exact_ids must be an array"
+            )
+        for exact_id in exact_ids:
+            if not isinstance(exact_id, str) or not exact_id:
+                raise PublicationArchiveError(
+                    f"schema-v1 variants[{index}] has an invalid exact id"
+                )
+            if exact_id in variants_by_exact:
+                raise PublicationArchiveError(
+                    f"schema-v1 exact id {exact_id!r} belongs to multiple variants"
+                )
+            variants_by_exact[exact_id] = raw_variant
+
+    views: dict[str, dict[str, Any]] = {}
+    migrated_runs: list[dict[str, Any]] = []
+    for index, raw_run in enumerate(raw_runs):
+        if not isinstance(raw_run, Mapping):
+            raise PublicationArchiveError(f"schema-v1 runs[{index}] must be an object")
+        exact_id = raw_run.get("exact_id")
+        old_variant = variants_by_exact.get(exact_id)
+        if old_variant is None:
+            raise PublicationArchiveError(
+                f"schema-v1 runs[{index}] references unknown exact id {exact_id!r}"
+            )
+        raw_segments = raw_run.get("source_segments")
+        if not isinstance(raw_segments, Sequence) or isinstance(
+            raw_segments, (str, bytes)
+        ) or not raw_segments:
+            raise PublicationArchiveError(
+                f"schema-v1 runs[{index}].source_segments must be non-empty"
+            )
+        modes = []
+        for segment_index, segment in enumerate(raw_segments):
+            if not isinstance(segment, Mapping):
+                raise PublicationArchiveError(
+                    f"schema-v1 runs[{index}].source_segments[{segment_index}] "
+                    "must be an object"
+                )
+            physical_id = segment.get("physical_id")
+            if not isinstance(physical_id, str) or not physical_id:
+                raise PublicationArchiveError(
+                    f"schema-v1 runs[{index}] has an invalid source physical_id"
+                )
+            config = source_config(physical_id)
+            if not isinstance(config, Mapping):
+                raise PublicationArchiveError(
+                    f"source {physical_id!r} has no recorded config object"
+                )
+            modes.append(_require_lora_init_b(config))
+        if len(set(modes)) != 1:
+            raise PublicationArchiveError(
+                f"schema-v1 run {raw_run.get('logical_id')!r} source segments "
+                f"disagree on lora_init_b: {modes!r}"
+            )
+        lora_init_b = modes[0]
+
+        optimizer_semantic_key = old_variant.get("optimizer_semantic_key")
+        if not isinstance(optimizer_semantic_key, str) or not optimizer_semantic_key:
+            raise PublicationArchiveError(
+                f"schema-v1 variant for exact id {exact_id!r} has no optimizer key"
+            )
+        view_key = composite_publication_identity(
+            optimizer_semantic_key, lora_init_b
+        )
+        migrated_exact_id = composite_publication_identity(exact_id, lora_init_b)
+        old_label = old_variant.get("label")
+        old_style = old_variant.get("style_key")
+        if not isinstance(old_label, str) or not old_label:
+            raise PublicationArchiveError("schema-v1 variant has no label")
+        if not isinstance(old_style, str) or not old_style:
+            raise PublicationArchiveError("schema-v1 variant has no style key")
+        label = old_label + lora_init_label_suffix(lora_init_b)
+        style_key = label if old_style == old_label else old_style
+        expected = {
+            "view_key": view_key,
+            "label": label,
+            "style_key": style_key,
+            "optimizer_semantic_key": optimizer_semantic_key,
+            "lora_init_b": lora_init_b,
+        }
+        metadata = views.get(view_key)
+        if metadata is not None and any(
+            metadata[field] != value for field, value in expected.items()
+        ):
+            raise PublicationArchiveError(
+                f"migrated view {view_key!r} has conflicting metadata"
+            )
+        if metadata is None:
+            metadata = {**expected, "exact_ids": set()}
+            views[view_key] = metadata
+        metadata["exact_ids"].add(migrated_exact_id)
+
+        config = raw_run.get("config")
+        if not isinstance(config, Mapping):
+            raise PublicationArchiveError(
+                f"schema-v1 runs[{index}].config must be an object"
+            )
+        migrated_runs.append({
+            **dict(raw_run),
+            "exact_id": migrated_exact_id,
+            "config": {**dict(config), "lora_init_b": lora_init_b},
+        })
+
+    migrated = {
+        "schema_version": ARCHIVE_SCHEMA_VERSION,
+        "projection_id": payload.get("projection_id"),
+        "variants": [
+            {
+                **{field: metadata[field] for field in (
+                    "view_key", "label", "style_key",
+                    "optimizer_semantic_key", "lora_init_b",
+                )},
+                "exact_ids": sorted(metadata["exact_ids"]),
+            }
+            for _, metadata in sorted(
+                views.items(),
+                key=lambda item: (
+                    item[1]["label"] != "AdamW", item[1]["label"], item[0]
+                ),
+            )
+        ],
+        "runs": sorted(migrated_runs, key=lambda run: run["logical_id"]),
+    }
+    publication_archive_from_payload(migrated)
+    return migrated
+
+
+def verify_sealed_archive_initialization_sources(
+    payload: Mapping[str, Any],
+    *,
+    source_config: Callable[[str], Mapping[str, Any]],
+) -> None:
+    """Verify current sealed membership against recorded source init modes."""
+    publication_archive_from_payload(payload)
+    for index, raw_run in enumerate(payload["runs"]):
+        archived_mode = _require_lora_init_b(raw_run["config"])
+        source_modes = []
+        for segment in raw_run["source_segments"]:
+            physical_id = segment["physical_id"]
+            config = source_config(physical_id)
+            if not isinstance(config, Mapping):
+                raise PublicationArchiveError(
+                    f"source {physical_id!r} has no recorded config object"
+                )
+            source_modes.append(_require_lora_init_b(config))
+        if set(source_modes) != {archived_mode}:
+            raise PublicationArchiveError(
+                f"sealed run {raw_run.get('logical_id')!r} records "
+                f"lora_init_b={archived_mode!r}, but source segments record "
+                f"{source_modes!r}"
+            )
+
+
+def _source_config_from_logs(logs_root: Path, physical_id: str) -> Mapping[str, Any]:
+    from lora_playground.run_parsing import parse_run_file
+
+    group, separator, filename = physical_id.partition("/")
+    if not separator or not group or not filename:
+        raise PublicationArchiveError(
+            f"source physical_id must be '<group>/<filename>', got {physical_id!r}"
+        )
+    path = logs_root / group / "run_info" / "logs" / filename
+    config = parse_run_file(path).raw_config()
+    if config is None:
+        raise PublicationArchiveError(f"source {physical_id!r} has no config event")
+    return config
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -389,6 +629,13 @@ def main(argv=None) -> int:
     parser.add_argument("--logs-root", default=str(DEFAULT_LOGS))
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument(
+        "--source-archive",
+        help=(
+            "migrate reviewed schema-v1 membership instead of rediscovering "
+            "runs from the current workload registry"
+        ),
+    )
+    parser.add_argument(
         "--check", action="store_true",
         help="compare with an existing archive without writing",
     )
@@ -396,14 +643,48 @@ def main(argv=None) -> int:
     logs_root = str(Path(args.logs_root).absolute())
     output = Path(args.output).absolute()
 
-    cells = (
-        (workload, workload_runs(workload, logs_root=logs_root))
-        for workload in iter_workloads()
-    )
-    payload = build_archive_payload(
-        cells,
-        variant_adapter=project_legacy_variant,
-    )
+    source_path = Path(args.source_archive).absolute() if args.source_archive else None
+    if source_path is not None:
+        try:
+            source_payload = json.loads(source_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PublicationArchiveError(
+                f"could not read source archive {source_path}: {exc}"
+            ) from exc
+        payload = migrate_sealed_archive_initialization_identity(
+            source_payload,
+            source_config=lambda physical_id: _source_config_from_logs(
+                Path(logs_root), physical_id
+            ),
+        )
+    elif output.exists():
+        try:
+            payload = json.loads(output.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PublicationArchiveError(
+                f"could not read sealed archive {output}: {exc}"
+            ) from exc
+        if payload.get("schema_version") != ARCHIVE_SCHEMA_VERSION:
+            raise PublicationArchiveError(
+                f"existing archive {output} uses schema "
+                f"{payload.get('schema_version')!r}; migrate it explicitly with "
+                "--source-archive before replacing reviewed membership"
+            )
+        verify_sealed_archive_initialization_sources(
+            payload,
+            source_config=lambda physical_id: _source_config_from_logs(
+                Path(logs_root), physical_id
+            ),
+        )
+    else:
+        cells = (
+            (workload, workload_runs(workload, logs_root=logs_root))
+            for workload in iter_workloads()
+        )
+        payload = build_archive_payload(
+            cells,
+            variant_adapter=project_legacy_variant,
+        )
     rendered = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     if args.check:
         current = output.read_text() if output.exists() else ""

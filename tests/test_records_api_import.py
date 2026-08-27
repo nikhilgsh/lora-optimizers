@@ -86,6 +86,7 @@ def test_records_native_workload_consumer_avoids_legacy_loader():
                     "lora_r": 64,
                     "lr": 0.001,
                     "max_steps": 10,
+                    "data_pipeline_version": "packed_v1.1",
                     "data_dir": "/data/openmath_instruct_2_2m_packed_seq2048",
                 },
                 {"event": "eval", "step": 10, "eval_loss": 0.9},
@@ -94,7 +95,7 @@ def test_records_native_workload_consumer_avoids_legacy_loader():
                                    for event in events))
             workload = Workload(
                 "model", "openmath", 64, "Model", "OpenMath", 10, 0.001,
-                True, min_completed_steps=10,
+                True, "packed_v1.1", min_completed_steps=10,
             )
             records = workload_records(workload, logs_root=directory)
 

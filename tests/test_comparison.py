@@ -272,6 +272,48 @@ def test_one_variant_cannot_splice_semantic_revisions_across_lrs():
         )
 
 
+@pytest.mark.parametrize(
+    ("changed_field", "changed_value"),
+    [
+        ("measurement_semantics_revision", 2),
+        ("data_pipeline_version", "packed_v2"),
+    ],
+)
+def test_variants_share_one_global_measurement_and_pipeline(
+    changed_field, changed_value,
+):
+    common = {
+        "measurement_semantics_revision": 1,
+        "data_pipeline_version": "packed_v1.1",
+    }
+    changed = {**common, changed_field: changed_value}
+    runs = [
+        _run(
+            "adamw", 1e-3, [(1000, 0.8)], run_id="baseline",
+            optimizer_impl_revision=1,
+            **common,
+        ),
+        _run(
+            "method", 1e-2, [(1000, 0.7)], run_id="candidate",
+            optimizer_impl_revision=2,
+            **changed,
+        ),
+    ]
+    variants = [
+        VariantSpec("adam", "AdamW", {"optimizer": "adamw"}),
+        VariantSpec("method", "Method", {"optimizer": "method"}),
+    ]
+
+    with pytest.raises(SemanticRevisionConflictError) as exc_info:
+        build_comparison(runs, variants, horizon=1000, completion_slack=0)
+
+    assert exc_info.value.variant_id is None
+    assert set(exc_info.value.signatures.values()) == {
+        ("baseline",), ("candidate",),
+    }
+    assert "comparison" in str(exc_info.value)
+
+
 def _factorwise_view_key(cfg):
     return cfg.get("_factorwise_slot_revision", cfg.get("optimizer_impl_revision"))
 

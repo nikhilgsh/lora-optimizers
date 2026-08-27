@@ -17,6 +17,12 @@ from .publication_semantics import (
     PublicationVariantSemantics,
     publication_semantics_from_payload,
 )
+from .publication_identity import (
+    LORA_INIT_B_MODES,
+    composite_publication_identity,
+    require_lora_init_b,
+    split_publication_identity,
+)
 from .run_records import freeze_value, run_view, thaw_value
 
 
@@ -58,13 +64,24 @@ def _require_text(value: Any, context: str) -> str:
     return value
 
 
+def _require_lora_init_b(value: Any, context: str) -> str:
+    try:
+        return require_lora_init_b(value)
+    except ValueError as exc:
+        raise PublicationVariantProjectionError(
+            f"{context}: {exc}"
+        ) from exc
+
+
 def stable_publication_variant_id(
     semantics: PublicationVariantSemantics,
+    *,
+    lora_init_b: str,
 ) -> str:
-    """Return the exact ID of one already-normalized semantic snapshot."""
+    """Return the composite exact ID for one normalized publication arm."""
     if not isinstance(semantics, PublicationVariantSemantics):
         raise TypeError("semantics must be PublicationVariantSemantics")
-    return semantics.exact_id
+    return composite_publication_identity(semantics.exact_id, lora_init_b)
 
 
 def _publication_fields(
@@ -129,6 +146,10 @@ def project_publication_runs(
     projected: list[ProjectedPublicationRun] = []
     for index, run in enumerate(runs):
         view = run_view(run, index=index)
+        lora_init_b = _require_lora_init_b(
+            view.semantic_config.get("lora_init_b"),
+            f"run {view.physical_id!r} lora_init_b",
+        )
         existing = _publication_fields(
             view.semantic_config, physical_id=view.physical_id
         )
@@ -145,16 +166,44 @@ def project_publication_runs(
                     f"got {view.run_schema_version!r}"
                 )
             semantics = _recorded_semantics(view)
-            exact_id = semantics.exact_id
-            view_key = semantics.view_key
+            exact_id = composite_publication_identity(
+                semantics.exact_id, lora_init_b
+            )
+            view_key = composite_publication_identity(
+                semantics.view_key, lora_init_b
+            )
             optimizer_semantic_key = semantics.view_key
+            label_config = thaw_value(semantics.label_config)
+            label_config["lora_init_b"] = lora_init_b
             label = _require_text(
-                label_adapter(thaw_value(semantics.label_config)),
+                label_adapter(label_config),
                 f"run {view.physical_id!r} publication variant label",
             )
             style_key = label
         else:
             exact_id, view_key, label, optimizer_semantic_key, style_key = existing
+            try:
+                exact_optimizer_id, exact_init = split_publication_identity(exact_id)
+                view_optimizer_id, view_init = split_publication_identity(view_key)
+            except ValueError as exc:
+                raise PublicationVariantProjectionError(
+                    f"run {view.physical_id!r}: {exc}"
+                ) from exc
+            if exact_init != lora_init_b or view_init != lora_init_b:
+                raise PublicationVariantProjectionError(
+                    f"run {view.physical_id!r} publication identities disagree "
+                    f"with lora_init_b={lora_init_b!r}"
+                )
+            if view_optimizer_id != optimizer_semantic_key:
+                raise PublicationVariantProjectionError(
+                    f"run {view.physical_id!r} publication view embeds optimizer "
+                    f"identity {view_optimizer_id!r}, but optimizer semantic key "
+                    f"is {optimizer_semantic_key!r}"
+                )
+            if not exact_optimizer_id:
+                raise PublicationVariantProjectionError(
+                    f"run {view.physical_id!r} has an empty exact optimizer identity"
+                )
 
         cfg = dict(view.semantic_config)
         cfg[PUBLICATION_EXACT_ID_FIELD] = exact_id
@@ -243,6 +292,7 @@ def _publication_optimizer_semantic_key(cfg: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "LORA_INIT_B_MODES",
     "PRODUCER_SEMANTICS_FIELD",
     "MIN_PRODUCER_RUN_SCHEMA_VERSION",
     "PUBLICATION_EXACT_ID_FIELD",
@@ -252,7 +302,9 @@ __all__ = [
     "PUBLICATION_VARIANT_LABEL_FIELD",
     "ProjectedPublicationRun",
     "PublicationVariantProjectionError",
+    "composite_publication_identity",
     "project_publication_runs",
     "publication_variant_specs",
+    "split_publication_identity",
     "stable_publication_variant_id",
 ]

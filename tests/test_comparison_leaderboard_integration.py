@@ -6,7 +6,10 @@ import math
 import pytest
 
 from lora_playground.comparison import VariantSpec, build_comparison
-from lora_playground.leaderboard import leaderboard_rows_from_comparison
+from lora_playground.leaderboard import (
+    UncertifiedBaselineError,
+    leaderboard_rows_from_comparison,
+)
 
 
 def _run(optimizer, lr, losses, *, run_id, seed=0):
@@ -18,7 +21,9 @@ def _run(optimizer, lr, losses, *, run_id, seed=0):
 
 def test_rows_consume_replicate_mean_and_core_best_lr_by_stable_id():
     runs = [
+        _run("adamw", 3e-5, [(500, 1.00), (1000, 0.90)], run_id="adam-low"),
         _run("adamw", 1e-4, [(500, 0.95), (1000, 0.80)], run_id="adam"),
+        _run("adamw", 3e-4, [(500, 1.00), (1000, 0.90)], run_id="adam-high"),
         # The lucky first seed would make 3e-4 look best on its own, but its
         # replicate mean is 0.90, so the comparison core selects 1e-3 at 0.85.
         _run("method", 3e-4, [(500, 0.80), (1000, 0.80)],
@@ -56,7 +61,7 @@ def test_rows_consume_replicate_mean_and_core_best_lr_by_stable_id():
     assert result.completed["candidate"][3e-4].n_replicates == 2
 
 
-def test_missing_baseline_id_matches_legacy_nan_target_behavior():
+def test_missing_baseline_id_fails_closed():
     result = build_comparison(
         [_run("method", 1e-3, [(1000, 0.7)], run_id="method")],
         [VariantSpec("candidate", "method", {"optimizer": "method"})],
@@ -64,11 +69,24 @@ def test_missing_baseline_id_matches_legacy_nan_target_behavior():
         completion_slack=0,
     )
 
-    rows, target = leaderboard_rows_from_comparison(
-        result, horizon=1000, baseline_id="not-present"
+    with pytest.raises(UncertifiedBaselineError, match="no completed finite"):
+        leaderboard_rows_from_comparison(
+            result, horizon=1000, baseline_id="not-present"
+        )
+
+
+def test_boundary_pinned_baseline_fails_closed():
+    result = build_comparison(
+        [
+            _run("adamw", 1e-4, [(1000, 0.8)], run_id="low"),
+            _run("adamw", 3e-4, [(1000, 0.9)], run_id="high"),
+        ],
+        [VariantSpec("baseline", "AdamW", {"optimizer": "adamw"})],
+        horizon=1000,
+        completion_slack=0,
     )
 
-    assert math.isnan(target)
-    assert len(rows) == 1
-    assert math.isnan(rows[0]["frac_best_lr"])
-    assert math.isnan(rows[0]["frac_lr_avg"])
+    with pytest.raises(UncertifiedBaselineError, match="boundary-pinned"):
+        leaderboard_rows_from_comparison(
+            result, horizon=1000, baseline_id="baseline"
+        )

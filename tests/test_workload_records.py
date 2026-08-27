@@ -64,7 +64,8 @@ def test_workload_records_uses_semantics_and_explicit_cross_group_lineage(
         {"event": "eval", "step": 9000, "eval_loss": 0.7, "lr": 1e-3},
     ])
     workload = Workload(
-        "model", "openmath", 64, "Model", "OpenMath", 9000, 0.001, True
+        "model", "openmath", 64, "Model", "OpenMath", 9000, 0.001, True,
+        "packed_v1.1",
     )
 
     records = workload_records(workload, logs_root=str(logs))
@@ -87,6 +88,7 @@ def test_workload_records_compose_directly_with_explicit_ids_and_renderer(
         "lora_r": 64,
         "lr": 1e-3,
         "max_steps": 9000,
+        "data_pipeline_version": "packed_v1.1",
         "data_dir": "/data/openmath_instruct_2_2m_packed_seq2048",
     }
     for task, optimizer, loss in (
@@ -99,7 +101,8 @@ def test_workload_records_compose_directly_with_explicit_ids_and_renderer(
              "eval_loss": loss, "lr": 1e-3},
         ])
     workload = Workload(
-        "model", "openmath", 64, "Model", "OpenMath", 9000, 0.001, True
+        "model", "openmath", 64, "Model", "OpenMath", 9000, 0.001, True,
+        "packed_v1.1",
     )
     records = workload_records(workload, logs_root=str(logs))
     specs = (

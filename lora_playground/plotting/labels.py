@@ -18,6 +18,7 @@ Both derive from one field extractor (`_axes`) so they can never diverge.
 """
 from __future__ import annotations
 
+from ..publication_identity import lora_init_label_suffix
 from .colors import OPTIM_COLORS, distinct_palette
 
 OPT_ADAMW = "adamw"
@@ -116,8 +117,6 @@ def _shared_knobs(cfg: dict) -> str:
         s += f" H={hi}"
     if (b1 := _off_default(cfg, "beta1")) is not None:
         s += f" β1={b1:g}"
-    if (ib := _off_default(cfg, "lora_init_b")) is not None:
-        s += f" initB={ib}"
     if (cm := _off_default(cfg, "cw_metric_init")) is not None:
         s += f" minit={cm}"
     if (rv := _off_default(cfg, "rdinv_variant")) is not None:
@@ -125,7 +124,11 @@ def _shared_knobs(cfg: dict) -> str:
     rd = cfg.get("rdinv_delta")
     if rd is not None:
         s += f" rdδ={_eps(rd)}"
-    return s + _residual_knobs(cfg)
+    return (
+        s
+        + _residual_knobs(cfg)
+        + lora_init_label_suffix(cfg.get("lora_init_b", "zero"))
+    )
 
 
 def _off_default(cfg: dict, field: str):

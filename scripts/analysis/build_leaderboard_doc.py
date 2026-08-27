@@ -7,11 +7,10 @@ Reported per method at (a) its best lr and (b) the reciprocal of the mean
 fraction over {best lr, one grid-step below, one grid-step above} (NaN when
 lr-pinned).
 
-Cells and their run membership come from the shared registry
-`lora_playground.workloads` — the SAME source the leaderboard notebooks consume,
-so the doc and notebooks can never drift. Each cell is every completed
-long-horizon run at a fixed (model_name, lora_r) whose `--data_dir` resolves to
-the cell's dataset; there are no hand-maintained log-group lists here.
+Cells come from the shared `lora_playground.workloads` registry. Their run
+membership and publication identities come from the checked-in records-native
+archive, so regeneration never reconstructs executed optimizer semantics from
+today's loader or labeling defaults.
 
 Run:  python scripts/analysis/build_leaderboard_doc.py
 Out:  docs/notes/leaderboard.md
@@ -23,19 +22,26 @@ import math
 import sys
 from pathlib import Path
 
+from lora_playground.comparison import build_comparison
 from lora_playground.leaderboard import (
-    labeled_completed_runs, leaderboard_rows, performance_profile,
+    UncertifiedBaselineError,
+    leaderboard_rows_from_comparison,
+    performance_profile,
     speedup_from_frac,
 )
-from lora_playground.plotting.labels import canonical_label
-from lora_playground.workloads import iter_workloads, workload_runs
+from lora_playground.leaderboard_variants import publication_variant_specs
+from lora_playground.publication_archive import (
+    PublicationArchiveError,
+    load_publication_archive,
+)
+from lora_playground.workloads import iter_workloads, resolve_record_dataset
 
 # Cross-setting ranking shows only variants run on >= AGG_MIN_COVERAGE workloads;
 # scores are only comparable between variants that span a similar set of cells.
 AGG_MIN_COVERAGE = 5
 
 ROOT = Path(__file__).resolve().parents[2]
-LOGS = str(ROOT / "logs")
+ARCHIVE = ROOT / "publication" / "legacy_leaderboard_v1.json"
 OUT = ROOT / "docs" / "notes" / "leaderboard.md"
 
 
@@ -77,8 +83,8 @@ def build_section(wl, rows: list[dict], target: float) -> str:
 def build_aggregate(perf_matrix: dict, workloads: list) -> str:
     """Cross-setting robustness ranking (AlgoPerf-style performance profiles).
 
-    `perf_matrix[variant][workload] = frac_best_lr`, keyed by the fully
-    discriminating `canonical_label` so one row is exactly one algorithm in
+    `perf_matrix[variant][workload] = frac_best_lr`, keyed by the stable
+    publication label so one row is exactly one algorithm in
     every setting. A variant's score is computed only over the workloads it
     ran, so scores are comparable only between variants of similar coverage —
     the ranking therefore shows only variants with coverage >= AGG_MIN_COVERAGE
@@ -92,10 +98,10 @@ def build_aggregate(perf_matrix: dict, workloads: list) -> str:
         "## Cross-setting robustness ranking",
         "",
         "AlgoPerf-style performance profile across the "
-        f"{n} (model, dataset, rank) workloads "
+        f"{n} pipeline-scoped (model, dataset, rank) workloads "
         "(method: `lora_playground.leaderboard.performance_profile`). Rows are "
-        "keyed by the fully discriminating `canonical_label` "
-        "(`lora_playground.plotting.labels`), so **one row is exactly one "
+        "keyed by the archive's stable publication variant identity, so **one "
+        "row is exactly one "
         "algorithm** — `ns=5`, `ns=8`, and `PE=10` (polar_express) are kept "
         "distinct and never merged. For each workload the fastest variant "
         "present has ratio 1.0; `robustness_score` is the normalised area under "
@@ -128,8 +134,53 @@ def build_aggregate(perf_matrix: dict, workloads: list) -> str:
     return "\n".join(lines)
 
 
-def render_doc(logs_root: str = LOGS) -> str:
-    """Build the full leaderboard markdown from the live logs. Pure (no I/O)."""
+def _workload_archive_runs(archive_runs, wl) -> tuple:
+    """Select one declared workload from immutable archived records."""
+    selected = []
+    for index, run in enumerate(archive_runs):
+        cfg = run.effective_config
+        max_steps = cfg.get("max_steps")
+        if cfg.get("model_name") != wl.model_name or cfg.get("lora_r") != wl.rank:
+            continue
+        if not isinstance(max_steps, int) or max_steps < wl.min_completed_steps:
+            continue
+        if resolve_record_dataset(run, index=index) != wl.dataset:
+            continue
+        pipeline = cfg.get("data_pipeline_version")
+        if not isinstance(pipeline, str) or not pipeline:
+            raise PublicationArchiveError(
+                f"archived run {run.physical_id!r} has no recorded "
+                "config.data_pipeline_version"
+            )
+        if pipeline != wl.data_pipeline_version:
+            continue
+        selected.append(run)
+    return tuple(selected)
+
+
+def _unique_variant_id(variants, label: str) -> str:
+    matches = [variant.id for variant in variants if variant.label == label]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one publication variant labeled {label!r}; "
+            f"found {matches!r}"
+        )
+    return matches[0]
+
+
+def _unscored_section(wl, issue: str) -> str:
+    return (
+        f"### {wl.title}\n\n"
+        f"_Not scored: {issue}; no speed-to-AdamW target is published for this "
+        "cell._\n"
+    )
+
+
+def render_doc(archive_path: str | Path = ARCHIVE) -> str:
+    """Build the full leaderboard markdown from the checked-in archive."""
+    archive = load_publication_archive(archive_path)
+    variants = publication_variant_specs(archive.runs)
+    baseline_id = _unique_variant_id(variants, "AdamW")
     header = [
         "# Optimizer leaderboard — speed-to-AdamW-target",
         "",
@@ -149,24 +200,34 @@ def render_doc(logs_root: str = LOGS) -> str:
         "one grid-step below, one grid-step above}. `—` when the best lr is at a "
         "swept boundary (lr-pinned) or any of the three never reaches the target.",
         "",
-        "Generated by `scripts/analysis/build_leaderboard_doc.py` from the shared "
-        "workload registry (`lora_playground.workloads`) — the same source the "
-        "leaderboard notebooks consume, so the doc and notebooks cannot drift. "
-        "Each cell is every completed long-horizon run at a fixed "
-        "(model_name, lora_r) whose `--data_dir` resolves to the cell's dataset "
-        "(the cfg `dataset_name` field is the stale Magicoder argparse default "
-        "and is not used). AdamW's own row is ≈1.0 by construction. Horizon is "
+        "Generated by `scripts/analysis/build_leaderboard_doc.py` from the "
+        "checked-in records-native publication archive and the shared workload "
+        "registry (`lora_playground.workloads`). Stable archived variant IDs, "
+        "not current loader or labeling defaults, define optimizer identity. "
+        "Each cell selects archived long-horizon records at a fixed "
+        "(model_name, dataset, lora_r, data_pipeline_version). AdamW's own "
+        "row is ≈1.0 by construction. A cell is withheld from scoring when the "
+        "best recorded AdamW LR is sweep-boundary-pinned, because that does not "
+        "establish a best-LR target. Horizon is "
         "9000 steps (Tulu-3 exhausts at ~8970 = one epoch, absorbed by the "
         "completion slack).",
         "",
     ]
-    # One labeling pass per cell (canonical_label) feeds BOTH the per-section
-    # table and the cross-setting aggregate matrix (frac_best_lr per workload).
+    # One records-native comparison feeds BOTH the per-section table and the
+    # cross-setting aggregate matrix (frac_best_lr per workload).
     sections, perf_matrix, workloads = [], {}, []
     for wl in iter_workloads():
-        runs = workload_runs(wl, logs_root=logs_root)
-        labeled = labeled_completed_runs(runs, canonical_label, horizon=wl.horizon)
-        rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
+        runs = _workload_archive_runs(archive.runs, wl)
+        comparison = build_comparison(runs, variants, horizon=wl.horizon)
+        try:
+            rows, target = leaderboard_rows_from_comparison(
+                comparison,
+                horizon=wl.horizon,
+                baseline_id=baseline_id,
+            )
+        except UncertifiedBaselineError as exc:
+            sections.append(_unscored_section(wl, exc.reason))
+            continue
         sections.append(build_section(wl, rows, target))
         workloads.append(wl.label)
         for r in rows:
@@ -177,10 +238,10 @@ def render_doc(logs_root: str = LOGS) -> str:
             + "\n".join(sections) + "\n")
 
 
-def _logs_present(logs_root: str = LOGS) -> bool:
-    """True if the logs tree exists and holds at least one group dir."""
-    p = Path(logs_root)
-    return p.is_dir() and any(p.iterdir())
+def _archive_present(archive_path: str | Path = ARCHIVE) -> bool:
+    """True when the publication archive path names a non-empty file."""
+    path = Path(archive_path)
+    return path.is_file() and path.stat().st_size > 0
 
 
 def main(argv=None):
@@ -191,27 +252,32 @@ def main(argv=None):
              "drift without writing (for staleness detection / CI gating).",
     )
     ap.add_argument(
-        "--logs-root", default=LOGS,
-        help="logs tree to read (default: this checkout's logs/).",
+        "--archive", default=str(ARCHIVE),
+        help=(
+            "publication archive to read (default: "
+            "publication/legacy_leaderboard_v1.json)."
+        ),
     )
     ap.add_argument(
         "--output", default=str(OUT),
         help="generated markdown path (default: docs/notes/leaderboard.md).",
     )
     ap.add_argument(
-        "--require-logs", action="store_true",
-        help="fail instead of silently leaving output untouched when logs are absent.",
+        "--require-archive", action="store_true",
+        help="fail instead of leaving output untouched when the archive is absent.",
     )
     args = ap.parse_args(argv)
-    logs_root = str(Path(args.logs_root).resolve())
+    archive_path = Path(args.archive).resolve()
     output = Path(args.output).resolve()
 
-    if not _logs_present(logs_root):
-        # Clean checkout / machine without data: never blank the doc.
-        print(f"no logs under {logs_root} — leaving {output} untouched")
-        return 2 if args.require_logs else 0
+    if not _archive_present(archive_path):
+        print(
+            f"no publication archive at {archive_path} — "
+            f"leaving {output} untouched"
+        )
+        return 2 if args.require_archive else 0
 
-    fresh = render_doc(logs_root)
+    fresh = render_doc(archive_path)
 
     if args.check:
         current = output.read_text() if output.exists() else ""

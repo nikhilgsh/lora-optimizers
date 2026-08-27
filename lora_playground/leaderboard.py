@@ -41,6 +41,24 @@ if TYPE_CHECKING:
 DEFAULT_COMPLETION_SLACK = 300
 
 
+class UncertifiedBaselineError(ValueError):
+    """A speed-to-baseline target lacks a bracketed completed LR sweep."""
+
+    def __init__(
+        self,
+        baseline_id: str,
+        reason: str,
+        *,
+        learning_rates: tuple[float, ...] = (),
+        best_lr: float | None = None,
+    ):
+        self.baseline_id = baseline_id
+        self.reason = reason
+        self.learning_rates = learning_rates
+        self.best_lr = best_lr
+        super().__init__(f"baseline {baseline_id!r} is not certified: {reason}")
+
+
 def is_final(last_step, horizon: int,
              completion_slack: int = DEFAULT_COMPLETION_SLACK) -> bool:
     """Whether a run's last eval step counts as having reached the horizon.
@@ -369,8 +387,27 @@ def leaderboard_rows_from_comparison(
     ``comparison`` imports :func:`is_final` and :func:`mean_over_seeds` from
     this module; a runtime import here would create a module cycle.
     """
+    baseline_curves = comparison.completed.get(baseline_id, {})
     baseline = comparison.best_completed.get(baseline_id)
-    target = math.nan if baseline is None else baseline.final_loss
+    baseline_lrs = tuple(sorted(baseline_curves))
+    if baseline is None or not math.isfinite(baseline.final_loss):
+        raise UncertifiedBaselineError(
+            baseline_id,
+            "no completed finite baseline is recorded",
+            learning_rates=baseline_lrs,
+        )
+    if (
+        not baseline_lrs
+        or baseline.lr == baseline_lrs[0]
+        or baseline.lr == baseline_lrs[-1]
+    ):
+        raise UncertifiedBaselineError(
+            baseline_id,
+            f"best LR {baseline.lr:g} is boundary-pinned in {list(baseline_lrs)!r}",
+            learning_rates=baseline_lrs,
+            best_lr=baseline.lr,
+        )
+    target = baseline.final_loss
 
     rows: list[dict] = []
     for spec in comparison.variants:

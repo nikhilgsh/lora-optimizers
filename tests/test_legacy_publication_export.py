@@ -10,13 +10,16 @@ from scripts.analysis.export_legacy_leaderboard_archive import (
     LegacyVariantProjection,
     build_archive_payload,
     legacy_publication_semantics,
+    migrate_sealed_archive_initialization_identity,
     project_legacy_variant,
+    verify_sealed_archive_initialization_sources,
 )
 
 
 def _workload():
     return Workload(
-        "model", "openmath", 64, "Model", "OpenMath", 1000, 0.001, True
+        "model", "openmath", 64, "Model", "OpenMath", 1000, 0.001, True,
+        "packed_v1.1",
     )
 
 
@@ -28,6 +31,7 @@ def _run(
     lr=1e-3,
     final_step=1000,
     sources=None,
+    lora_init_b="zero",
 ):
     cfg = {
         "optimizer": "adamw",
@@ -37,6 +41,7 @@ def _run(
         "lr": lr,
         "max_steps": 1000,
         "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": lora_init_b,
         "seed": 0,
         "label": label,
         "variant_id": variant_id,
@@ -71,6 +76,7 @@ def _build(runs):
         )
         return LegacyVariantProjection(
             semantics=semantics,
+            lora_init_b=cfg["lora_init_b"],
             label=cfg["label"],
             style_key=cfg["label"],
         )
@@ -97,6 +103,7 @@ def test_export_keeps_completed_logical_trajectories_and_source_segments():
     ])
 
     assert payload["projection_id"] == "legacy_leaderboard_v1"
+    assert payload["schema_version"] == 2
     assert [variant["label"] for variant in payload["variants"]] == [
         "AdamW", "Method",
     ]
@@ -119,6 +126,169 @@ def test_export_keeps_completed_logical_trajectories_and_source_segments():
         },
     ]
     assert resumed["history"][-1] == {"step": 1000, "eval_loss": 0.8}
+    assert resumed["config"]["lora_init_b"] == "zero"
+
+
+def test_export_splits_initialization_arms_but_keeps_optimizer_key():
+    payload = _build([
+        _run("zero", label="Method", variant_id="method.v1"),
+        _run(
+            "symmetric",
+            label="Method initB=symmetric",
+            variant_id="method.v1",
+            lr=3e-3,
+            lora_init_b="symmetric",
+        ),
+    ])
+
+    variants = {variant["lora_init_b"]: variant for variant in payload["variants"]}
+    assert set(variants) == {"zero", "symmetric"}
+    assert variants["zero"]["view_key"] != variants["symmetric"]["view_key"]
+    assert variants["zero"]["exact_ids"] != variants["symmetric"]["exact_ids"]
+    assert variants["zero"]["optimizer_semantic_key"] == (
+        variants["symmetric"]["optimizer_semantic_key"]
+    )
+    assert {run["config"]["lora_init_b"] for run in payload["runs"]} == {
+        "zero", "symmetric",
+    }
+
+
+@pytest.mark.parametrize("mode", [None, "unknown", 0, [], {}])
+def test_export_requires_known_recorded_initialization_mode(mode):
+    cfg, history = _run("bad")
+    if mode is None:
+        cfg.pop("lora_init_b")
+    else:
+        cfg["lora_init_b"] = mode
+
+    with pytest.raises(PublicationArchiveError, match="lora_init_b"):
+        _build([(cfg, history)])
+
+
+def test_sealed_archive_migration_preserves_membership_segments_and_history():
+    source = {
+        "schema_version": 1,
+        "projection_id": "legacy_leaderboard_v1",
+        "variants": [{
+            "view_key": "optimizer.view",
+            "label": "Method precond_method=gram_ns",
+            "style_key": "Method precond_method=gram_ns",
+            "optimizer_semantic_key": "optimizer.view",
+            "exact_ids": ["optimizer.exact"],
+        }],
+        "runs": [{
+            "logical_id": "new/log.out.resume_1",
+            "exact_id": "optimizer.exact",
+            "source_segments": [
+                {
+                    "physical_id": "old/log.out",
+                    "contributed_start_step": 500,
+                    "contributed_end_step": 500,
+                },
+                {
+                    "physical_id": "new/log.out.resume_1",
+                    "contributed_start_step": 1000,
+                    "contributed_end_step": 1000,
+                },
+            ],
+            "config": {
+                "optimizer": "method",
+                "model_name": "model",
+                "data_dir": "/data/openmath_instruct_2_2m_packed",
+                "lora_r": 64,
+                "lr": 1e-3,
+                "max_steps": 1000,
+                "data_pipeline_version": "packed_v1.1",
+                "measurement_semantics_revision": "measurement.v1",
+            },
+            "history": [
+                {"step": 500, "eval_loss": 0.9},
+                {"step": 1000, "eval_loss": 0.8},
+            ],
+        }],
+    }
+
+    migrated = migrate_sealed_archive_initialization_identity(
+        source,
+        source_config=lambda _physical_id: {"lora_init_b": "symmetric"},
+    )
+
+    assert migrated["schema_version"] == 2
+    assert [run["logical_id"] for run in migrated["runs"]] == [
+        run["logical_id"] for run in source["runs"]
+    ]
+    assert migrated["runs"][0]["source_segments"] == (
+        source["runs"][0]["source_segments"]
+    )
+    assert migrated["runs"][0]["history"] == source["runs"][0]["history"]
+    assert migrated["runs"][0]["config"]["lora_init_b"] == "symmetric"
+    assert migrated["variants"][0]["label"] == (
+        "Method precond_method=gram_ns initB=symmetric"
+    )
+    assert migrated["variants"][0]["optimizer_semantic_key"] == "optimizer.view"
+    verify_sealed_archive_initialization_sources(
+        migrated,
+        source_config=lambda _physical_id: {"lora_init_b": "symmetric"},
+    )
+    with pytest.raises(PublicationArchiveError, match="source segments record"):
+        verify_sealed_archive_initialization_sources(
+            migrated,
+            source_config=lambda _physical_id: {"lora_init_b": "zero"},
+        )
+
+
+def test_sealed_archive_migration_rejects_cross_segment_init_disagreement():
+    source = {
+        "schema_version": 1,
+        "projection_id": "legacy_leaderboard_v1",
+        "variants": [{
+            "view_key": "optimizer.view",
+            "label": "Method",
+            "style_key": "Method",
+            "optimizer_semantic_key": "optimizer.view",
+            "exact_ids": ["optimizer.exact"],
+        }],
+        "runs": [{
+            "logical_id": "new/log.out.resume_1",
+            "exact_id": "optimizer.exact",
+            "source_segments": [
+                {
+                    "physical_id": "old/log.out",
+                    "contributed_start_step": 500,
+                    "contributed_end_step": 500,
+                },
+                {
+                    "physical_id": "new/log.out.resume_1",
+                    "contributed_start_step": 1000,
+                    "contributed_end_step": 1000,
+                },
+            ],
+            "config": {
+                "optimizer": "method",
+                "model_name": "model",
+                "data_dir": "/data/openmath_instruct_2_2m_packed",
+                "lora_r": 64,
+                "lr": 1e-3,
+                "max_steps": 1000,
+                "data_pipeline_version": "packed_v1.1",
+                "measurement_semantics_revision": "measurement.v1",
+            },
+            "history": [
+                {"step": 500, "eval_loss": 0.9},
+                {"step": 1000, "eval_loss": 0.8},
+            ],
+        }],
+    }
+
+    with pytest.raises(PublicationArchiveError, match="disagree on lora_init_b"):
+        migrate_sealed_archive_initialization_identity(
+            source,
+            source_config=lambda physical_id: {
+                "lora_init_b": (
+                    "zero" if physical_id == "old/log.out" else "symmetric"
+                )
+            },
+        )
 
 
 def test_export_excludes_optimizer_outside_reviewed_publication_families():
@@ -180,6 +350,7 @@ def test_export_rejects_non_bijective_variant_identity(runs):
 def test_legacy_label_does_not_backfill_nesterov_into_pre_flag_run():
     common = {
         "optimizer": "diag-shampoo-polar-lora",
+        "lora_init_b": "zero",
         "cw_nesterov": True,  # compatibility default, not producer evidence
         "precond_refresh_every": 10,
         "curvature_beta": 0.99,

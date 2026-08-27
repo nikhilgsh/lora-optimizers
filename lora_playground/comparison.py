@@ -12,6 +12,9 @@ that every plot needs:
   the longest trajectory cohort; and
 * select each variant's best completed LR from those replicate means.
 
+All assigned variants must share one measurement-semantics revision and data
+pipeline. Optimizer implementation identity remains variant-specific.
+
 Human labels and style keys are presentation metadata.  All grouping and
 selection is keyed exclusively by ``VariantSpec.id``.
 """
@@ -125,22 +128,27 @@ class AmbiguousVariantError(ValueError):
 
 
 class SemanticRevisionConflictError(ValueError):
-    """One displayed variant contains multiple recorded semantics."""
+    """A comparison scope contains multiple recorded semantics."""
 
     def __init__(
         self,
-        variant_id: str,
+        variant_id: str | None,
         signatures: Mapping,
         lr: float | None = None,
     ):
         self.variant_id = variant_id
         self.lr = lr
         self.signatures = MappingProxyType(dict(signatures))
-        location = (
-            f"at lr={lr:g}" if lr is not None else "across selected LRs"
-        )
+        if variant_id is None:
+            scope = "comparison"
+            location = "across assigned variants"
+        else:
+            scope = f"variant {variant_id!r}"
+            location = (
+                f"at lr={lr:g}" if lr is not None else "across selected LRs"
+            )
         super().__init__(
-            f"variant {variant_id!r} {location} mixes semantic revisions: "
+            f"{scope} {location} mixes semantic revisions: "
             + "; ".join(
                 f"{signature!r} -> {list(run_ids)!r}"
                 for signature, run_ids in self.signatures.items()
@@ -321,6 +329,27 @@ def _require_one_semantic_signature(
         )
 
 
+def _require_one_comparison_signature(
+    members: Sequence[_AssignedRun],
+) -> None:
+    """Require shared measurement and pipeline semantics across variants."""
+    signatures: dict[tuple[Any, Any], list[str]] = {}
+    for member in members:
+        signature = (
+            member.cfg.get("measurement_semantics_revision"),
+            member.cfg.get("data_pipeline_version"),
+        )
+        signatures.setdefault(signature, []).append(member.run_id)
+    if len(signatures) > 1:
+        raise SemanticRevisionConflictError(
+            None,
+            {
+                signature: tuple(run_ids)
+                for signature, run_ids in signatures.items()
+            },
+        )
+
+
 def _partial_curve(
     variant_id: str,
     lr: float,
@@ -357,10 +386,11 @@ def build_comparison(
     run carrying ``cfg['_aborted']`` is completed-but-diverged, matching the
     current prefetched plotting path.  In-flight runs remain available in
     ``partials``; per (variant, LR), the first most-progressed run is retained.
-    By default, every variant also requires one exact recorded optimizer,
-    measurement, and data-pipeline semantic signature across all selected LRs.
-    A variant's ``optimizer_semantic_key`` may replace only the first component
-    for a view with an explicit historical-semantic adapter.
+    The whole comparison requires one shared measurement revision and data
+    pipeline across every assigned variant. By default, each variant also
+    requires one exact recorded optimizer semantic signature across all
+    selected LRs. A variant's ``optimizer_semantic_key`` may replace only that
+    optimizer component for a view with an explicit historical-semantic adapter.
     """
     if horizon <= 0:
         raise ValueError(f"horizon must be positive, got {horizon}")
@@ -426,10 +456,21 @@ def build_comparison(
     if ambiguities:
         raise AmbiguousVariantError(ambiguities)
 
-    # One displayed optimizer curve cannot splice implementation or
-    # measurement semantics across learning rates. This is deliberately wider
-    # than per-(variant, LR) replicate validation: best-LR selection itself is
-    # a cross-LR comparison.
+    # A comparison target and its candidates cannot come from different
+    # measurement objectives or data pipelines, even when every individual
+    # variant is internally consistent.
+    all_semantic_members = [
+        member
+        for members in (
+            list(completed_members.values()) + list(partial_members.values())
+        )
+        for member in members
+    ]
+    _require_one_comparison_signature(all_semantic_members)
+
+    # One displayed optimizer curve cannot splice implementation semantics
+    # across learning rates. This is deliberately wider than per-(variant, LR)
+    # replicate validation: best-LR selection itself is a cross-LR comparison.
     specs_by_id = {spec.id: spec for spec in specs}
     for variant_id in ids:
         semantic_members = [

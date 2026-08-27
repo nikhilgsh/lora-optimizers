@@ -9,11 +9,12 @@ Discovery is **predicate-based**: a cell is every completed long-horizon run at 
 fixed `(model_name, lora_r)` whose resolved dataset matches, minus a deny-pattern
 for probe/snapshot/intervention groups. New sweeps join a cell automatically.
 
-Discovery deliberately keys on **cfg fields only**. Scope tags and
-`data_pipeline_version` are NOT used — `phase_L` is applied inconsistently (the
-eps_rel=1e-3, r64-epsrel and lrext campaigns lack it) and some manifests carry
-string-splatted corrupt scopes. The horizon floor (`max_steps >= 8000`) cleanly
-separates the 9000-step phase-L / robustness runs from the 4k/2k regimes.
+Discovery deliberately keys on **cfg fields only**. Scope tags are not used —
+`phase_L` is applied inconsistently (the eps_rel=1e-3, r64-epsrel and lrext
+campaigns lack it) and some manifests carry string-splatted corrupt scopes.
+Each declared workload selects one recorded `data_pipeline_version`; the
+horizon floor (`max_steps >= 8000`) separates the 9000-step phase-L /
+robustness runs from the 4k/2k regimes within that pipeline.
 
 This module is a leaf: it imports nothing from `lora_playground` at import time
 (`load_runs` is imported lazily inside `workload_runs`) to avoid an import cycle
@@ -173,7 +174,12 @@ class Workload:
     horizon: int             # speed-to-target horizon (9000; slack absorbs tulu3's 8970)
     sigma_ref: float         # AdamW noise-floor proxy for Δ/σ reporting
     sigma_is_proxy: bool     # True unless a same-cell multiseed σ at this horizon exists
+    data_pipeline_version: str  # executed data/measurement pipeline identity
     min_completed_steps: int = MIN_COMPLETED_STEPS  # max_steps discovery floor
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data_pipeline_version, str) or not self.data_pipeline_version:
+            raise ValueError("Workload.data_pipeline_version must be non-empty")
 
     @property
     def label(self) -> str:
@@ -196,38 +202,42 @@ _BENGALI_DISPLAY = "Aya-Bengali"
 # at r64) is at the 2k horizon, not the 9k leaderboard horizon. 0.0017 mirrors the
 # value the notebooks have always used so Δ/σ reporting is unchanged by this refactor.
 _SIGMA = 0.0017
+_PUBLICATION_PIPELINE = "packed_v1.1"
 
 WORKLOADS: list[Workload] = [
     # ── OLMo-2-1B ────────────────────────────────────────────────────────────
-    Workload("allenai/OLMo-2-0425-1B", "opc", 64, "OLMo-2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
-    Workload("allenai/OLMo-2-0425-1B", "opc", 256, "OLMo-2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
-    Workload("allenai/OLMo-2-0425-1B", "openmath", 64, "OLMo-2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
-    Workload("allenai/OLMo-2-0425-1B", "openmath", 256, "OLMo-2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
-    Workload("allenai/OLMo-2-0425-1B", "tulu3", 64, "OLMo-2-1B", _TULU3_DISPLAY, 9000, _SIGMA, True),
-    Workload("allenai/OLMo-2-0425-1B", "tulu3", 256, "OLMo-2-1B", _TULU3_DISPLAY, 9000, _SIGMA, True),
+    # OLMo/opc/r64 has six older packed_v1 records but 83 packed_v1.1 records
+    # spanning the publication comparison. Pinning the latter keeps one
+    # executed objective instead of splicing the older two-variant LR fragment.
+    Workload("allenai/OLMo-2-0425-1B", "opc", 64, "OLMo-2-1B", _OPC_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("allenai/OLMo-2-0425-1B", "opc", 256, "OLMo-2-1B", _OPC_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("allenai/OLMo-2-0425-1B", "openmath", 64, "OLMo-2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("allenai/OLMo-2-0425-1B", "openmath", 256, "OLMo-2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("allenai/OLMo-2-0425-1B", "tulu3", 64, "OLMo-2-1B", _TULU3_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("allenai/OLMo-2-0425-1B", "tulu3", 256, "OLMo-2-1B", _TULU3_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
     # ── Llama-3.2-1B ─────────────────────────────────────────────────────────
-    Workload("meta-llama/Llama-3.2-1B", "opc", 64, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
-    Workload("meta-llama/Llama-3.2-1B", "opc", 256, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
+    Workload("meta-llama/Llama-3.2-1B", "opc", 64, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("meta-llama/Llama-3.2-1B", "opc", 256, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
     # r16 completes the rank ladder. It was absent while r32/64/128/256 were all
     # declared, so `find_workload(..., 16)` raised while `paper_plots_lib.CELLS`
     # listed the cell -- the leaderboard and the paper panels disagreed about
     # whether it exists. It is the cell the `precond` ablation is read at.
-    Workload("meta-llama/Llama-3.2-1B", "openmath", 16, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
-    Workload("meta-llama/Llama-3.2-1B", "openmath", 32, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
-    Workload("meta-llama/Llama-3.2-1B", "openmath", 64, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
-    Workload("meta-llama/Llama-3.2-1B", "openmath", 128, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
-    Workload("meta-llama/Llama-3.2-1B", "openmath", 256, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 16, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 32, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 64, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 128, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 256, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
     # ── Qwen2.5-1.5B ─────────────────────────────────────────────────────────
-    Workload("Qwen/Qwen2.5-1.5B", "opc", 256, "Qwen2.5-1.5B", _OPC_DISPLAY, 9000, _SIGMA, True),
-    Workload("Qwen/Qwen2.5-1.5B", "openmath", 256, "Qwen2.5-1.5B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
-    Workload("Qwen/Qwen2.5-1.5B", "bengali", 256, "Qwen2.5-1.5B", _BENGALI_DISPLAY, 9000, _SIGMA, True),
+    Workload("Qwen/Qwen2.5-1.5B", "opc", 256, "Qwen2.5-1.5B", _OPC_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("Qwen/Qwen2.5-1.5B", "openmath", 256, "Qwen2.5-1.5B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("Qwen/Qwen2.5-1.5B", "bengali", 256, "Qwen2.5-1.5B", _BENGALI_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
     # ── Meta-Llama-3-8B (scale-up; model_display gives label "Meta/..." so it
     #    does not collide with Llama-3.2-1B's "Llama/..." cross-setting key) ────
-    Workload("meta-llama/Meta-Llama-3-8B", "opc", 256, "Meta-Llama-3-8B", _OPC_DISPLAY, 9000, _SIGMA, True),
-    Workload("meta-llama/Meta-Llama-3-8B", "openmath", 256, "Meta-Llama-3-8B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
+    Workload("meta-llama/Meta-Llama-3-8B", "opc", 256, "Meta-Llama-3-8B", _OPC_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+    Workload("meta-llama/Meta-Llama-3-8B", "openmath", 256, "Meta-Llama-3-8B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
     # ── Qwen3-0.6B-Base (continued PRETRAINING on OpenWebMath; tanya-style
     #    polar-family sweep — all-token loss, not instruction tuning) ──────────
-    Workload("Qwen/Qwen3-0.6B-Base", "openwebmath", 64, "Qwen3-0.6B", _OPENWEBMATH_DISPLAY, 9000, _SIGMA, True),
+    Workload("Qwen/Qwen3-0.6B-Base", "openwebmath", 64, "Qwen3-0.6B", _OPENWEBMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
 ]
 
 
@@ -286,21 +296,47 @@ def iter_workloads() -> list[Workload]:
     return list(WORKLOADS)
 
 
-def find_workload(model_name: str, dataset: str, rank: int) -> Workload:
+def find_workload(
+    model_name: str,
+    dataset: str,
+    rank: int,
+    data_pipeline_version: str | None = None,
+) -> Workload:
     """Look up a declared cell. Raises KeyError on miss.
 
     `model_name` may be the cfg model id (e.g. 'allenai/OLMo-2-0425-1B') or the
-    display name (e.g. 'OLMo-2-1B').
+    display name (e.g. 'OLMo-2-1B'). When more than one pipeline is declared
+    for the same model/dataset/rank, callers must select one explicitly.
     """
-    for wl in WORKLOADS:
-        if (model_name in (wl.model_name, wl.model_display)
-                and wl.dataset == dataset and wl.rank == rank):
-            return wl
-    raise KeyError(f"no workload for (model={model_name!r}, dataset={dataset!r}, rank={rank})")
+    matches = [
+        wl
+        for wl in WORKLOADS
+        if (
+            model_name in (wl.model_name, wl.model_display)
+            and wl.dataset == dataset
+            and wl.rank == rank
+            and (
+                data_pipeline_version is None
+                or wl.data_pipeline_version == data_pipeline_version
+            )
+        )
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise KeyError(
+            "multiple workloads match; specify data_pipeline_version: "
+            f"{[wl.data_pipeline_version for wl in matches]!r}"
+        )
+    raise KeyError(
+        "no workload for "
+        f"(model={model_name!r}, dataset={dataset!r}, rank={rank}, "
+        f"data_pipeline_version={data_pipeline_version!r})"
+    )
 
 
 def workload_runs(wl: Workload, *, logs_root: str | None = None) -> list[tuple[dict, list]]:
-    """Discover a cell's runs: predicate load → dataset filter → deny-pattern.
+    """Discover a pipeline-scoped cell's runs, then filter dataset/deny groups.
 
     Does NOT dedup — callers dedup by canonical (label, lr) via
     `labeled_completed_runs` / `compare_variants_figure`. `logs_root` defaults to
@@ -312,6 +348,7 @@ def workload_runs(wl: Workload, *, logs_root: str | None = None) -> list[tuple[d
         where={
             "model_name": wl.model_name,
             "lora_r": wl.rank,
+            "data_pipeline_version": wl.data_pipeline_version,
             "max_steps": lambda s: isinstance(s, int) and s >= wl.min_completed_steps,
         },
         logs_root=logs_root or DEFAULT_LOGS_ROOT,
@@ -338,7 +375,11 @@ def workload_records(
     from lora_playground.run_records import run_view
 
     records = load_records(
-        equals={"model_name": wl.model_name, "lora_r": wl.rank},
+        equals={
+            "model_name": wl.model_name,
+            "lora_r": wl.rank,
+            "data_pipeline_version": wl.data_pipeline_version,
+        },
         logs_root=(logs_root or DEFAULT_LOGS_ROOT) if catalog is None else None,
         catalog=catalog,
     )

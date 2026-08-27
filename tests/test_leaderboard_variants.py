@@ -13,6 +13,7 @@ from lora_playground.leaderboard_variants import (
     PUBLICATION_VARIANT_ID_FIELD,
     PUBLICATION_VARIANT_LABEL_FIELD,
     PublicationVariantProjectionError,
+    composite_publication_identity,
     project_publication_runs,
     publication_variant_specs,
     stable_publication_variant_id,
@@ -33,6 +34,7 @@ def _versioned_run(
     optimizer_config=None,
     optimizer_effective=None,
     optimizer_impl_revision: int = 3,
+    lora_init_b: str = "zero",
 ) -> RunView:
     optimizer_config = dict(optimizer_config or {
         "_optim_class": "ToyOptimizer",
@@ -46,6 +48,7 @@ def _versioned_run(
         "run_schema_version": 2,
         "run_id": physical_id,
         "optimizer": optimizer,
+        "lora_init_b": lora_init_b,
         "optimizer_config": optimizer_config,
         "optimizer_effective": optimizer_effective,
         PRODUCER_SEMANTICS_FIELD: {
@@ -67,6 +70,7 @@ def _versioned_run(
     })
     semantic = freeze_value({
         "optimizer": optimizer,
+        "lora_init_b": lora_init_b,
         "lr": lr,
         "momentum": optimizer_config.get("momentum"),
         "mode": optimizer_effective.get("mode"),
@@ -96,22 +100,27 @@ def _archive_payload():
         ("archive.alpha", "Alpha"),
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "projection_id": "paper-v1",
         "variants": [
             {
-                "view_key": variant_id,
+                "view_key": composite_publication_identity(variant_id, "zero"),
                 "label": label,
                 "style_key": label,
                 "optimizer_semantic_key": variant_id,
-                "exact_ids": [f"exact.{variant_id}"],
+                "lora_init_b": "zero",
+                "exact_ids": [composite_publication_identity(
+                    f"exact.{variant_id}", "zero"
+                )],
             }
             for variant_id, label in variants
         ],
         "runs": [
             {
                 "logical_id": f"run-{index}",
-                "exact_id": f"exact.{variant_id}",
+                "exact_id": composite_publication_identity(
+                    f"exact.{variant_id}", "zero"
+                ),
                 "source_segments": [{
                     "physical_id": f"logs/source-{index}.log",
                     "contributed_start_step": 10,
@@ -124,6 +133,8 @@ def _archive_payload():
                     "lora_r": 16,
                     "lr": 1e-3,
                     "max_steps": 10,
+                    "data_pipeline_version": "packed_v1.1",
+                    "lora_init_b": "zero",
                     "measurement_semantics_revision": "measurement.v1",
                 },
                 "history": [{"step": 10, "eval_loss": 1.0 + index}],
@@ -208,7 +219,7 @@ def test_new_constructor_field_automatically_forms_a_distinct_identity():
         semantic_revision=3,
         implementation_class="tests.ToyOptimizer",
         implementation_revision=3,
-    ))
+    ), lora_init_b="zero")
     new = stable_publication_variant_id(PublicationVariantSemantics(
         optimizer="toy-optimizer",
         config={"momentum": 0.9, "new_semantic_knob": 7},
@@ -216,10 +227,18 @@ def test_new_constructor_field_automatically_forms_a_distinct_identity():
         semantic_revision=3,
         implementation_class="tests.ToyOptimizer",
         implementation_revision=3,
-    ))
+    ), lora_init_b="zero")
 
     assert old != new
     assert new.startswith("publication.exact.v1:toy-optimizer:")
+    assert new.endswith("|lora_init_b=zero")
+
+
+def test_publication_identity_rejects_nested_separator():
+    with pytest.raises(ValueError, match="separator"):
+        composite_publication_identity(
+            "optimizer|lora_init_b=zero", "symmetric"
+        )
 
 
 @pytest.mark.parametrize(
@@ -234,7 +253,7 @@ def test_effective_semantics_and_impl_revision_change_identity(effective, revisi
         semantic_revision=3,
         implementation_class="tests.ToyOptimizer",
         implementation_revision=3,
-    ))
+    ), lora_init_b="zero")
     changed = stable_publication_variant_id(PublicationVariantSemantics(
         optimizer="toy-optimizer",
         config={"momentum": 0.9},
@@ -242,7 +261,7 @@ def test_effective_semantics_and_impl_revision_change_identity(effective, revisi
         semantic_revision=revision,
         implementation_class="tests.ToyOptimizer",
         implementation_revision=revision,
-    ))
+    ), lora_init_b="zero")
 
     assert baseline != changed
 
@@ -260,6 +279,49 @@ def test_label_changes_do_not_change_identity():
         first.effective_config[PUBLICATION_VARIANT_LABEL_FIELD]
         != second.effective_config[PUBLICATION_VARIANT_LABEL_FIELD]
     )
+
+
+def test_initialization_mode_changes_arm_identity_but_not_optimizer_key():
+    seen = []
+
+    def adapter(cfg):
+        seen.append(cfg["lora_init_b"])
+        return f"Method initB={cfg['lora_init_b']}"
+
+    zero, symmetric = project_publication_runs(
+        [
+            _versioned_run(physical_id="zero", lora_init_b="zero"),
+            _versioned_run(physical_id="symmetric", lora_init_b="symmetric"),
+        ],
+        label_adapter=adapter,
+    )
+
+    assert seen == ["zero", "symmetric"]
+    assert zero.effective_config[PUBLICATION_EXACT_ID_FIELD] != (
+        symmetric.effective_config[PUBLICATION_EXACT_ID_FIELD]
+    )
+    assert zero.effective_config[PUBLICATION_VARIANT_ID_FIELD] != (
+        symmetric.effective_config[PUBLICATION_VARIANT_ID_FIELD]
+    )
+    assert zero.effective_config[PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD] == (
+        symmetric.effective_config[PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD]
+    )
+
+
+@pytest.mark.parametrize("mode", [None, "unknown", 0, [], {}])
+def test_initialization_mode_is_required_and_known(mode):
+    run = _versioned_run(lora_init_b="zero")
+    semantic = dict(run.semantic_config)
+    if mode is None:
+        semantic.pop("lora_init_b")
+    else:
+        semantic["lora_init_b"] = mode
+
+    with pytest.raises(PublicationVariantProjectionError, match="lora_init_b"):
+        project_publication_runs(
+            [replace(run, semantic_config=freeze_value(semantic))],
+            label_adapter=_label,
+        )
 
 
 def test_projected_runs_are_immutable():
@@ -287,9 +349,9 @@ def test_archive_publication_fields_are_preserved_without_adapter_reclassificati
     specs = publication_variant_specs(projected)
 
     assert tuple(spec.id for spec in specs) == (
-        "archive.adamw",
-        "archive.alpha",
-        "archive.zeta",
+        composite_publication_identity("archive.adamw", "zero"),
+        composite_publication_identity("archive.alpha", "zero"),
+        composite_publication_identity("archive.zeta", "zero"),
     )
     assert tuple(spec.label for spec in specs) == ("AdamW", "Alpha", "Zeta")
     assert all(spec.style_key == spec.label for spec in specs)
@@ -304,10 +366,16 @@ def _publication_view(
     label: str,
     *,
     exact_id: str | None = None,
+    lora_init_b: str = "zero",
 ) -> RunView:
     cfg = freeze_value({
-        PUBLICATION_EXACT_ID_FIELD: exact_id or f"exact.{physical_id}",
-        PUBLICATION_VARIANT_ID_FIELD: variant_id,
+        "lora_init_b": lora_init_b,
+        PUBLICATION_EXACT_ID_FIELD: composite_publication_identity(
+            exact_id or f"exact.{physical_id}", lora_init_b
+        ),
+        PUBLICATION_VARIANT_ID_FIELD: composite_publication_identity(
+            variant_id, lora_init_b
+        ),
         PUBLICATION_VARIANT_LABEL_FIELD: label,
         PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD: variant_id,
         PUBLICATION_STYLE_KEY_FIELD: label,
@@ -352,7 +420,7 @@ def test_spec_registry_allows_multiple_exact_ids_in_one_reviewed_view():
     ])
 
     assert len(specs) == 1
-    assert specs[0].id == "shared-view"
+    assert specs[0].id == composite_publication_identity("shared-view", "zero")
     assert specs[0].optimizer_semantic_key({
         PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD: "shared-view"
     }) == "shared-view"
