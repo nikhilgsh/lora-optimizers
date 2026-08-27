@@ -680,7 +680,8 @@ def derivation_ablation_panel(rank=256):
 
 
 def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
-                  data_key="openmath", model_label="Llama-3.2-1B"):
+                  data_key="openmath", model_label="Llama-3.2-1B",
+                  trusted_only=False):
     """The three `precond` branches: what fills (C_B, C_A). All three share one
     (P, Q), the same p, q updates and the same rho rule.
 
@@ -688,17 +689,45 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
     (C_B and C_A are r x r, so the slot has less to offer as r falls) or on
     another architecture, without a second copy of the figure.
 
-    Factorwise and one-sided are restricted to the same trusted execution
-    snapshot; operationally invalid legacy logs stay on disk but never enter the
-    figure or table. The remaining arms must each be source-coherent.
+    Factorwise and one-sided PREFER the trusted execution snapshot, and fall
+    back to whatever exists when this cell has none of it.
+
+    The preference is right: `7792797` changed the factorwise arm, so a curve
+    joining pre- and post-fix points is mixing two implementations. But applied
+    as a hard filter it emptied the figure wherever the trusted snapshot had not
+    been run. Measured: only 8 runs on disk carry it, all at r=16, so
+    `precond_panel(256)` and `precond_panel(64)` dropped BOTH arms and rendered
+    with AdamW and product alone — two of four, with the omission reported only
+    in a line of console text above the plot.
+
+    A fallback is defensible here because the size of the staleness is measured,
+    not assumed: job 6951323 re-ran r=16 factorwise on the fixed code and got
+    0.4187 against the pre-fix 0.4193. A 0.0005 shift against a 0.00043 seed sd
+    is stale-by-a-little, not invalid, so showing it WITH its provenance beats
+    showing nothing. `_figure` prints the source mixing either way.
+
+    Pass `trusted_only=True` for the strict reading once every cell has been
+    re-run on one snapshot.
     """
+    allowed = None
+    if trusted_only or _has_trusted_precond_runs(cell(model, data_key, rank)):
+        allowed = {"factorwise: C_B=P_A, C_A=Q_B": {_TRUSTED_PRECOND_SOURCE},
+                   "one-sided: C_B=C_A=I": {_TRUSTED_PRECOND_SOURCE}}
     return _figure(_arms.PRECOND_ARMS, cell(model, data_key, rank),
                    "product: C_B=B^T P B, C_A=A Q A^T",
                    f"The r x r metric slot - {model_label} {data_key} r{rank}",
-                   allowed_sources_by_label={
-                       "factorwise: C_B=P_A, C_A=Q_B": {_TRUSTED_PRECOND_SOURCE},
-                       "one-sided: C_B=C_A=I": {_TRUSTED_PRECOND_SOURCE},
-                   })
+                   allowed_sources_by_label=allowed)
+
+
+def _has_trusted_precond_runs(common) -> bool:
+    """Does this cell have any factorwise/one-sided run on the trusted snapshot?
+
+    Cheap: `cell_runs` is memoized and `_figure` holds one logs signature for the
+    panel, so this costs a dict scan rather than a tree walk.
+    """
+    return any(cfg.get("execution_source_sha") == _TRUSTED_PRECOND_SOURCE
+               and cfg.get("precond") in ("factorwise", "one-sided")
+               for cfg, hist in cell_runs(common) if hist)
 
 
 def msign_panel(rank=256):

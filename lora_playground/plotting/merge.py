@@ -51,7 +51,15 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     # must not split on them. Otherwise a cross-hardware re-run (e.g. the same
     # lr-sweep on both `_blackwell` and `_gpuxl_h200`) trips the label-collision
     # guard despite being one algorithm.
-    "checkpoint_dir", "resume_from",
+    # `checkpoint_every` / `checkpoint_keep_last` belong here for the same
+    # reason as the paths: how OFTEN a run writes a checkpoint, and how many it
+    # retains, cannot change the loss it produces. Splitting on them made a
+    # re-run that merely added `CHECKPOINT_EVERY=1000` a distinct series from
+    # its predecessor, and `assert_label_discriminates` then failed the whole
+    # panel with `differing fields: checkpoint_every=[1000, None]` -- eight
+    # collisions across `factorwise, b2=0.999` and `one-sided, b2=0.999` at
+    # r=16, on runs that are otherwise the same configuration.
+    "checkpoint_dir", "resume_from", "checkpoint_every", "checkpoint_keep_last",
     # CLI override flags whose canonical resolved value is promoted by
     # `_enrich_cfg` to a top-level scalar (e.g. `effective_picard_iters`).
     "picard_iters_override",

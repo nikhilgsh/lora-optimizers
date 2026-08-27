@@ -379,9 +379,17 @@ PROTO_BETA2_ARMS = beta2_arms(PROTO, "curvature_beta", _BETA2_GRID, 0.99,
                               "Polar-LoRA (shipped, b2=0.99)")
 # The AdamW control sweeps `beta2` itself, so the grid cannot inherit ADAMW's
 # beta2 pin; `precond_method` still admits both values (see ADAMW).
+# `cw_nesterov=(False, True)` for the same reason `ADAMW` carries it:
+# `LoRAPlusAdamW` never reads that flag, and runs at this cell log it BOTH ways
+# depending on when they were launched, so pinning it to either value drops
+# half the arm. This base is built by its own `arm()` call rather than from
+# `ADAMW` (which pins `beta2=0.999`, the axis being swept), so the fix applied
+# to `ADAMW` did not reach here: measured, all five non-0.999 arms rendered
+# empty and `adamw_beta2_panel(256)` showed 1 of 6, with the grid runs present
+# on disk the whole time.
 ADAMW_BETA2_ARMS = beta2_arms(
-    arm("adamw", precond_method=(None, "higham")), "beta2",
-    _BETA2_GRID + [0.999], 0.999, "AdamW (shipped, b2=0.999)")
+    arm("adamw", precond_method=(None, "higham"), cw_nesterov=(False, True)),
+    "beta2", _BETA2_GRID + [0.999], 0.999, "AdamW (shipped, b2=0.999)")
 
 
 # Per-figure arm dicts (label -> predicate), in legend order.
