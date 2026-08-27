@@ -133,22 +133,13 @@ EXPECTED_IN_CLOSURE = frozenset({
     "lora_playground/_step_timer.py",
     "lora_playground/distributed.py",
     "lora_playground/mfu.py",
-    # execution_scope itself is in the training closure: train.py imports it
-    # at cfg-emit time to compute the provenance fields. Edits to
-    # execution_scope.py legitimately change the recorded source_tree_sha
-    # because they change what gets recorded.
-    "lora_playground/execution_scope.py",
 })
 
-# Files that MUST NOT be in train's closure (analysis / loader / exclusion only).
+# Files that MUST NOT be in train's closure (analysis / loader only).
 EXPECTED_OUT_OF_CLOSURE = frozenset({
     "lora_playground/loader.py",
     "lora_playground/plotting",   # analysis-side package — never in train.py closure
     "lora_playground/manifest.py",
-    "lora_playground/invariants.py",
-    "lora_playground/run_exclusions.py",
-    "lora_playground/commit_exclusions.py",
-    "lora_playground/dirty_attestations.py",
     "lora_playground/synth_logs.py",
 })
 
@@ -217,9 +208,8 @@ def test_no_dynamic_project_imports():
     # Exclude the analysis/loader side; they're not in the training closure.
     excluded_files = {
         root / "lora_playground" / name for name in (
-            "loader.py", "plot_utils.py", "manifest.py", "invariants.py",
-            "run_exclusions.py", "commit_exclusions.py",
-            "dirty_attestations.py", "synth_logs.py", "execution_scope.py",
+            "loader.py", "plot_utils.py", "manifest.py", "synth_logs.py",
+            "execution_scope.py",
         )
     }
     for p in scan_paths:

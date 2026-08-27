@@ -53,10 +53,10 @@ SNAPSHOT_EXCLUDED_DIRS = frozenset({
 
 # Load-bearing non-python files. The python closure walker only follows
 # imports, so shell wrappers used to launch / configure training are
-# invisible to it. The submission guard and the loader both treat these as
-# part of the run's execution scope so edits to them at submission time
-# show up as `execution_source_dirty=True`. Globs are project-root-relative
-# and expanded at provenance-compute time.
+# invisible to it. The submission guard includes these in the recorded run
+# provenance, so edits to them at submission time show up as
+# `execution_source_dirty=True`. Globs are project-root-relative and expanded
+# at provenance-compute time.
 DEFAULT_EXTRA_LOAD_BEARING_GLOBS: tuple[str, ...] = (
     "scripts/sweep/*.sh",
     "slurm_scripts/*.sh",
@@ -334,69 +334,6 @@ def source_tree_sha(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-# ─── auto-resolution (loader-side) ────────────────────────────────────────────
-
-# Cache: (base_commit, tuple(sorted(paths)), target_sha) -> resolved_commit | None.
-# Module-level so repeated load_runs() calls in a notebook share results.
-_AUTO_RESOLVE_CACHE: dict[tuple[str, tuple, str], str | None] = {}
-
-
-def auto_resolve_by_content(
-    base_commit: str,
-    paths: list[str],
-    target_source_sha: str,
-    project_root: Path,
-    max_commits: int = 100,
-    max_wall_seconds: float = 5.0,
-) -> str | None:
-    """Walk descendants of `base_commit` looking for a commit `C` whose
-    `source_tree_sha_at_commit(C, paths)` equals `target_source_sha`.
-
-    Used by the loader to resolve dirty runs to a real commit that
-    represents the same execution-relevant code state. If found, the run
-    is treated as at that commit for invariant evaluation — no manual
-    attestation needed.
-
-    Returns the matching commit hash, or None if no match within bounds.
-
-    Bounds:
-      - At most `max_commits` candidates inspected (newest first by
-        `git rev-list --reverse`).
-      - At most `max_wall_seconds` of wall time before giving up.
-    """
-    import time
-    paths_key = tuple(sorted(paths))
-    cache_key = (base_commit, paths_key, target_source_sha)
-    if cache_key in _AUTO_RESOLVE_CACHE:
-        return _AUTO_RESOLVE_CACHE[cache_key]
-
-    deadline = time.time() + max_wall_seconds
-    try:
-        result = subprocess.run(
-            ["git", "rev-list", "--reverse", f"{base_commit}..HEAD",
-             "-n", str(max_commits)],
-            cwd=str(project_root),
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            check=True, timeout=3.0,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError,
-            subprocess.TimeoutExpired):
-        _AUTO_RESOLVE_CACHE[cache_key] = None
-        return None
-
-    candidates = [c for c in result.stdout.decode().strip().split("\n") if c]
-    resolved: str | None = None
-    for c in candidates:
-        if time.time() > deadline:
-            break
-        sha_at_c = source_tree_sha_at_commit(c, list(paths), project_root)
-        if sha_at_c == target_source_sha:
-            resolved = c
-            break
-    _AUTO_RESOLVE_CACHE[cache_key] = resolved
-    return resolved
-
-
 # ─── external env capture ─────────────────────────────────────────────────────
 
 
@@ -603,13 +540,9 @@ def _check_clean_main(argv: list[str]) -> int:
       - `slurm_scripts/submit.sh` (via `scripts/check_clean_tree.sh`)
       - `~/bin/submit-pending` (same wrapper)
 
-    Both paths must agree with the loader's Phase-4 dirty resolution so
-    that "guard passed" implies "loader will accept the resulting run".
-
     Override: env var FORCE_DIRTY=1 short-circuits to exit 0 with a
-    warning. Use only when the dirt is provably non-load-bearing at
-    runtime AND the future loader exclusion will be resolved via a manual
-    dirty_attestation.
+    warning. The run records its dirty execution-source provenance; consumers
+    decide explicitly whether that provenance is suitable for a comparison.
     """
     import argparse
     import os
@@ -637,9 +570,8 @@ def _check_clean_main(argv: list[str]) -> int:
         sys.stderr.write(f"check-clean: entry file not found: {entry}\n")
         return 2
 
-    # Build a from-disk snapshot of the python source tree (the loader's
-    # rule: snapshot is what runs at training time; commit is what HEAD
-    # currently records).
+    # Build a from-disk snapshot of the python source tree. The snapshot is
+    # what runs at training time; the commit is what HEAD currently records.
     snapshot: dict[str, bytes] = {}
     snapshot_sha: dict[str, str] = {}
     for p in root.rglob("*.py"):
@@ -686,7 +618,7 @@ def _check_clean_main(argv: list[str]) -> int:
         sys.stderr.write(
             "\nRemediation: `git add` the missing file(s) and commit, "
             "or `git stash` if not ready. See `scripts/check_clean_tree.sh` "
-            "for the FORCE_DIRTY override and dirty_attestations flow.\n"
+            "for the FORCE_DIRTY override.\n"
         )
         return 1
 
@@ -713,9 +645,9 @@ def _check_clean_main(argv: list[str]) -> int:
         "╭─ DIRTY-TREE SUBMISSION BLOCKED ─────────────────────────────────────╮",
         "│ Working tree has uncommitted changes to LOAD-BEARING code (python",
         "│ import-closure from train_lora.py, plus sweep/sbatch shell scripts).",
-        "│ Submitting now will record execution_source_dirty=True in the cfg",
-        "│ event and the loader will EXCLUDE these runs until you either",
-        "│ commit the changes or write a dirty_attestation.",
+        "│ Submitting now would record execution_source_dirty=True in the cfg",
+        "│ event. Source paths and hashes remain available as provenance,",
+        "│ but analysis code does not silently admit or reject the run.",
         "│",
         f"│ HEAD: {head_commit}",
         "│",
@@ -729,11 +661,7 @@ def _check_clean_main(argv: list[str]) -> int:
         "│ Resolve by ONE of:",
         "│   1. COMMIT:  git add -p && git commit -m \"...\" && re-submit",
         "│   2. STASH:   git stash; submit; git stash pop",
-        "│   3. ATTEST (after the runs land, if dirt is non-load-bearing at",
-        "│      runtime): add an entry to",
-        "│      lora_playground/exclusions/dirty_attestations.json",
-        "│      keyed by (group, log_filename, git_diff_sha).",
-        "│   4. OVERRIDE: FORCE_DIRTY=1 ./scripts/check_clean_tree.sh",
+        "│   3. OVERRIDE: FORCE_DIRTY=1 ./scripts/check_clean_tree.sh",
         "│      (rare; document the reason in SWEEP_PURPOSE).",
         "╰─────────────────────────────────────────────────────────────────────╯",
         "",

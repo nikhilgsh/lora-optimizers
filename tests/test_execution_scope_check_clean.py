@@ -1,9 +1,8 @@
 """Tests for `python -m lora_playground.execution_scope check-clean`.
 
-The CLI is the submission-side guard that must agree with the loader's
-Phase-4 dirty-tree resolution: any working tree the CLI accepts must
-produce a cfg event with execution_source_dirty=False so the loader
-loads the resulting runs without an attestation.
+The CLI is the submission-side guard for recording a reproducible execution
+source. Analysis preserves the recorded provenance and does not reinterpret it
+through an attestation or exclusion registry.
 
 Six cases:
   A — clean working tree → exit 0.

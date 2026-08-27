@@ -53,15 +53,6 @@ from typing import Any, Mapping
 from .run_records import RUNTIME_FIELDS
 
 
-# Phase 3 deletion (2026-05-14): EXCLUDED_COMMITS, EXCLUDED_GROUPS,
-# BUGGY_EPS_REL_COMMITS, is_commit_excluded, is_group_excluded, and
-# is_buggy_eps_rel previously lived here. They have been migrated to:
-#   - lora_playground/exclusions/commit_exclusions.json
-#   - lora_playground/exclusions/eps_rel_buggy_commits.json
-#   - lora_playground/exclusions/run_exclusions.json
-# with thin JSON loaders in `commit_exclusions.py` and `run_exclusions.py`.
-# All call sites updated. Edit JSON, not Python, when adding entries.
-
 # Fields allowed to vary within a single analysis "series" (i.e. across
 # seeds / lr-grid points / horizon extensions of the same algorithm at the
 # same model config). Two runs whose cfgs disagree only on fields in this
