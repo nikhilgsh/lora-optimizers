@@ -1,5 +1,4 @@
-"""E2 derivation ablations scored the way the paper scores optimizers:
-steps-to-Adam speedup, not sigma-units of final loss.
+"""E2 derivation-ablation speed report from sealed publication evidence.
 
 A 0.003 loss gap is hard to interpret on its own. The question the paper asks is
 how many steps each arm needs to reach tuned Adam's FINAL loss, and the speedup is
@@ -10,82 +9,117 @@ Uses lora_playground.leaderboard.reach_fraction / speedup_from_frac -- the same
 crossing-interpolation the leaderboard and paper figures use -- rather than a
 hand-rolled crossing, which would round up to the eval grid and understate.
 
-One loader pass; arm predicates match scripts/ablation_table.py.
+The report selects one registered workload and stable publication variant IDs.
+Historical defaults are never reconstructed and live logs are never scanned.
 """
-import argparse
-import warnings
+from __future__ import annotations
 
-warnings.filterwarnings("ignore")
+import argparse
+from pathlib import Path
 
 from lora_playground.leaderboard import reach_fraction, speedup_from_frac
-from lora_playground.loader import load_runs
-from ablation_table import ARMS, CELL, matches  # single source of truth for the arms
+from lora_playground.publication_ablation import (
+    ABLATION_ARMS,
+    ABLATION_HORIZON,
+    ADAMW_ID,
+    DEFAULT_PUBLICATION_ARCHIVE,
+    PROTAGONIST_ID,
+    build_ablation_comparison,
+    eval_trajectory,
+    load_ablation_evidence,
+)
 
-HORIZON = 9000
+
+def _best_exact_step(comparison, variant_id: str, step: int):
+    """Lowest-loss completed LR carrying an eval at exactly ``step``."""
+    candidates = []
+    for lr, curve in comparison.completed.get(variant_id, {}).items():
+        trajectory = eval_trajectory(curve.history)
+        if step in trajectory:
+            candidates.append((trajectory[step], lr, curve))
+    if not candidates:
+        return None
+    final_loss, lr, curve = min(candidates, key=lambda item: (item[0], item[1]))
+    return lr, final_loss, curve
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--horizon", type=int, default=HORIZON)
-    a = ap.parse_args()
-
-    # arm -> lr -> history (list of eval events)
-    hist = {lab: {} for lab in ARMS}
-    for cfg, events in load_runs(where=CELL, warn_cross_commit=False):
-        evs = [e for e in events
-               if e.get("event") == "eval" and e.get("eval_loss") is not None]
-        if not evs:
-            continue
-        for lab, pred in ARMS.items():
-            if matches(cfg, pred):
-                hist[lab].setdefault(cfg["lr"], []).extend(evs)
-
-    def final(h):
-        fin = [e for e in h if e.get("step") == a.horizon]
-        return min((e["eval_loss"] for e in fin), default=None)
-
+def render_speedup(comparison, *, horizon: int) -> str:
+    """Render best-LR speed-to-Adam rows from a records-native comparison."""
     # Adam's tuned final loss is the target every arm is timed against.
-    adam = hist.get("AdamW", {})
-    adam_best = {lr: final(h) for lr, h in adam.items()}
-    adam_best = {lr: v for lr, v in adam_best.items() if v is not None}
+    adam_best = _best_exact_step(comparison, ADAMW_ID, horizon)
     if not adam_best:
-        print("no completed AdamW run at the horizon; nothing to time against")
-        return
-    target = min(adam_best.values())
-    print(f"target = tuned Adam final loss at step {a.horizon}: {target:.4f} "
-          f"(lr={min(adam_best, key=adam_best.get)})\n")
-
-    print(f"{'structure removed':28s} {'best lr':>8s} {'final':>7s} {'steps-to-Adam':>14s} "
-          f"{'speedup':>8s} {'% of PoLoRA gain':>17s}")
+        return "no completed AdamW run at the horizon; nothing to time against"
+    adam_lr, target, _adam_curve = adam_best
+    lines = [
+        f"target = tuned Adam final loss at step {horizon}: {target:.4f} "
+        f"(lr={adam_lr})",
+        "",
+        f"{'structure removed':28s} {'best lr':>8s} {'final':>7s} "
+        f"{'steps-to-Adam':>14s} {'speedup':>8s} "
+        f"{'% of PoLoRA gain':>17s}",
+    ]
     rows = []
-    for lab in ARMS:
-        best = None
-        for lr, h in hist[lab].items():
-            f = final(h)
-            if f is None:
-                continue
-            frac = reach_fraction(h, target, a.horizon)
-            if best is None or f < best[1]:
-                best = (lr, f, frac)
-        rows.append((lab, best))
-
-    proto = next((b for l, b in rows if l == "PoLoRA (protagonist)" and b), None)
-    proto_speed = speedup_from_frac(proto[2]) if proto else None
-    for lab, best in rows:
+    for arm in ABLATION_ARMS:
+        best = (
+            None
+            if arm.variant_id is None
+            else _best_exact_step(comparison, arm.variant_id, horizon)
+        )
         if best is None:
-            print(f"{lab:28s} {'-':>8s} {'-':>7s} {'-':>14s} {'-':>8s} {'-':>17s}")
+            rows.append((arm, None))
             continue
-        lr, f, frac = best
-        sp = speedup_from_frac(frac)
-        steps = frac * a.horizon
+        lr, final_loss, curve = best
+        fraction = reach_fraction(curve.history, target, horizon)
+        rows.append((arm, (lr, final_loss, fraction)))
+
+    proto = next(
+        (
+            best
+            for arm, best in rows
+            if arm.variant_id == PROTAGONIST_ID and best is not None
+        ),
+        None,
+    )
+    proto_speed = speedup_from_frac(proto[2]) if proto else None
+    for arm, best in rows:
+        if best is None:
+            lines.append(
+                f"{arm.label:28s} {'-':>8s} {'-':>7s} {'-':>14s} "
+                f"{'-':>8s} {'-':>17s}"
+            )
+            continue
+        lr, final_loss, fraction = best
+        speedup = speedup_from_frac(fraction)
+        steps = fraction * horizon
         # fraction of the protagonist's excess speedup over Adam (1.0x) retained
         if proto_speed and proto_speed > 1.0:
-            share = 100.0 * (sp - 1.0) / (proto_speed - 1.0)
+            share = 100.0 * (speedup - 1.0) / (proto_speed - 1.0)
             share_s = f"{share:.0f}%"
         else:
             share_s = "-"
-        print(f"{lab:28s} {float(lr):8g} {f:7.4f} {steps:14.0f} {sp:7.2f}x {share_s:>17s}")
+        lines.append(
+            f"{arm.label:28s} {float(lr):8g} {final_loss:7.4f} "
+            f"{steps:14.0f} {speedup:7.2f}x {share_s:>17s}"
+        )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--horizon", type=int, default=ABLATION_HORIZON)
+    parser.add_argument(
+        "--archive",
+        type=Path,
+        default=DEFAULT_PUBLICATION_ARCHIVE,
+        help="sealed publication archive to query",
+    )
+    args = parser.parse_args(argv)
+
+    evidence = load_ablation_evidence(args.archive)
+    comparison = build_ablation_comparison(evidence, horizon=args.horizon)
+    print(render_speedup(comparison, horizon=args.horizon))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
