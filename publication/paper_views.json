@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "archive_projection_id": "legacy_leaderboard_v1",
+  "horizon": 9000,
+  "workload_selector": {
+    "model_name": "meta-llama/Llama-3.2-1B",
+    "dataset_id": "openmath",
+    "lora_r": 256,
+    "data_pipeline_version": "packed_v1.1"
+  },
   "views": [
     {
       "id": "paper.hero.adamw_polora.v1",
       "title": "AdamW and PoLoRA on the primary paper workload",
-      "horizon": 9000,
-      "workload_selector": {
-        "model_name": "meta-llama/Llama-3.2-1B",
-        "dataset_id": "openmath",
-        "lora_r": 256,
-        "data_pipeline_version": "packed_v1.1"
-      },
       "arms": [
         {
           "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
@@ -24,6 +24,125 @@
           "label": "PoLoRA",
           "style_key": "PoLoRA",
           "roles": []
+        }
+      ]
+    },
+    {
+      "id": "paper.msign.v1",
+      "title": "Matrix-sign axis",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:d837ff8c700deedfe262d16f|lora_init_b=zero",
+          "label": "product, msign",
+          "roles": ["reference"]
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:1a77a097b55c57d36ab5b1b0|lora_init_b=zero",
+          "label": "product, diagonal msign",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:44210b57faa98f4abd91bd6f|lora_init_b=zero",
+          "label": "one-sided, msign",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:4b9f28aa8aae8795166a3b3e|lora_init_b=zero",
+          "label": "one-sided, diagonal msign",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
+          "label": "AdamW",
+          "roles": ["target"]
+        }
+      ]
+    },
+    {
+      "id": "paper.magnitude_rule.v1",
+      "title": "Magnitude rule",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:d837ff8c700deedfe262d16f|lora_init_b=zero",
+          "label": "PoLoRA: rho = eta/(smax A + smax B)",
+          "roles": ["reference"]
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:e4c2c75c268c43fd00736a8c|lora_init_b=zero",
+          "label": "naive: rho = eta",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
+          "label": "AdamW",
+          "roles": ["target"]
+        }
+      ]
+    },
+    {
+      "id": "paper.polora_beta2.v1",
+      "title": "PoLoRA curvature beta2 sweep",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:602416c16023343a5bb9569c|lora_init_b=zero",
+          "label": "curvature_beta=0.81",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:4875c1bebe8992e15dbc48ae|lora_init_b=zero",
+          "label": "curvature_beta=0.909",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:c6200ac88ff091c5b2fc7d62|lora_init_b=zero",
+          "label": "curvature_beta=0.9564",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:3c18f308d54bcf53f48e170d|lora_init_b=zero",
+          "label": "curvature_beta=0.9791",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:d837ff8c700deedfe262d16f|lora_init_b=zero",
+          "label": "Polar-LoRA (shipped, b2=0.99)",
+          "roles": ["reference"]
+        }
+      ]
+    },
+    {
+      "id": "paper.adamw_beta2.v1",
+      "title": "AdamW beta2 control",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:adamw:3eda1b05f851caad81fa6719|lora_init_b=zero",
+          "label": "beta2=0.81",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:e7a9d05dbdd4e9f136f84520|lora_init_b=zero",
+          "label": "beta2=0.909",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:dbf3a471c397209f39d405a0|lora_init_b=zero",
+          "label": "beta2=0.9564",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:4f129cdb332a3a676701f68d|lora_init_b=zero",
+          "label": "beta2=0.9791",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:451cedb5aad54bba80d63df8|lora_init_b=zero",
+          "label": "beta2=0.99",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
+          "label": "AdamW (shipped, b2=0.999)",
+          "roles": ["reference"]
         }
       ]
     }

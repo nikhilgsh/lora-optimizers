@@ -1,220 +1,83 @@
-"""Declarative publication views over a sealed publication archive.
-
-This module owns only the schema and its validation.  Workload selectors,
-ordered arm membership, editorial labels, styles, and reference/target roles
-live in a JSON document.  Variant identity always remains the archive's stable
-``PublicationVariant.view_key``; presentation text is never used for lookup.
-"""
+"""Load small, declarative publication views over a sealed archive."""
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from .comparison import VariantSpec
 from .leaderboard_variants import (
     PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD,
     PUBLICATION_VARIANT_ID_FIELD,
 )
-from .publication_archive import (
-    ArchivedPublicationRun,
-    PublicationArchive,
-    PublicationVariant,
-)
+from .publication_archive import ArchivedPublicationRun, PublicationArchive
 
 
 PUBLICATION_VIEWS_SCHEMA_VERSION = 1
-DATASET_ID_SELECTOR_FIELD = "dataset_id"
-_ROLES = frozenset({"reference", "target"})
-_SCALAR_TYPES = (str, int, float, bool, type(None))
+_ROOT_FIELDS = {
+    "schema_version", "archive_projection_id", "horizon",
+    "workload_selector", "views",
+}
+_VIEW_FIELDS = {"id", "title", "arms"}
+_ARM_FIELDS = {"variant_id", "label", "style_key", "roles"}
+_ROLES = {"reference", "target"}
 
 
 class PublicationViewError(ValueError):
-    """A publication-view document is malformed or cannot resolve exactly."""
+    """The view file is malformed or does not match its archive."""
 
 
-def _require_mapping(value: Any, context: str) -> Mapping[str, Any]:
+def _object(value: Any, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise PublicationViewError(f"{context} must be an object")
+        raise PublicationViewError(f"{name} must be an object")
     return value
 
 
-def _require_text(value: Any, context: str) -> str:
+def _text(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise PublicationViewError(f"{context} must be a non-empty string")
+        raise PublicationViewError(f"{name} must be a non-empty string")
     return value
 
 
-def _require_only(item: Mapping[str, Any], allowed: set[str], context: str) -> None:
-    unexpected = sorted(set(item) - allowed)
-    if unexpected:
-        raise PublicationViewError(
-            f"{context} has unsupported field(s) {unexpected!r}"
-        )
-
-
-def _optimizer_semantic_key(cfg: Mapping[str, Any]) -> str:
-    value = cfg.get(PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD)
-    if not isinstance(value, str) or not value:
-        raise PublicationViewError(
-            "publication run has no optimizer semantic key"
-        )
-    return value
+def _fields(item: Mapping[str, Any], allowed: set[str], name: str) -> None:
+    extra = sorted(set(item) - allowed)
+    if extra:
+        raise PublicationViewError(f"{name} has unsupported field(s) {extra!r}")
 
 
 @dataclass(frozen=True, slots=True)
 class PublicationViewArm:
-    """One ordered presentation of an archive-stable variant identity."""
-
     variant_id: str
     label: str
     roles: tuple[str, ...] = ()
     style_key: str | None = None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "roles", tuple(self.roles))
-        _require_text(self.variant_id, "arm.variant_id")
-        _require_text(self.label, "arm.label")
-        if self.style_key is not None:
-            _require_text(self.style_key, "arm.style_key")
-        if len(set(self.roles)) != len(self.roles):
-            raise PublicationViewError(
-                f"arm {self.variant_id!r} has duplicate roles {self.roles!r}"
-            )
-        unknown = sorted(set(self.roles) - _ROLES)
-        if unknown:
-            raise PublicationViewError(
-                f"arm {self.variant_id!r} has unsupported roles {unknown!r}"
-            )
-
 
 @dataclass(frozen=True, slots=True)
 class PublicationView:
-    """An ordered figure/report view, independent of archive display labels."""
-
     id: str
     arms: tuple[PublicationViewArm, ...]
-    horizon: int
     title: str | None = None
-    workload_selector: Mapping[str, Any] | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "arms", tuple(self.arms))
-        _require_text(self.id, "view.id")
-        if (
-            isinstance(self.horizon, bool)
-            or not isinstance(self.horizon, int)
-            or self.horizon <= 0
-        ):
-            raise PublicationViewError(
-                f"view {self.id!r}.horizon must be a positive integer"
-            )
-        if self.title is not None:
-            _require_text(self.title, f"view {self.id!r}.title")
-        if not self.arms:
-            raise PublicationViewError(f"view {self.id!r} must declare at least one arm")
-        ids = [arm.variant_id for arm in self.arms]
-        if len(set(ids)) != len(ids):
-            raise PublicationViewError(f"view {self.id!r} has duplicate variant IDs")
-        labels = [arm.label for arm in self.arms]
-        if len(set(labels)) != len(labels):
-            raise PublicationViewError(
-                f"view {self.id!r} has duplicate editorial labels"
-            )
-        references = [arm.variant_id for arm in self.arms if "reference" in arm.roles]
-        targets = [arm.variant_id for arm in self.arms if "target" in arm.roles]
-        if len(references) != 1:
-            raise PublicationViewError(
-                f"view {self.id!r} must declare exactly one reference role"
-            )
-        if len(targets) > 1:
-            raise PublicationViewError(
-                f"view {self.id!r} may declare at most one target role"
-            )
-        if self.workload_selector is not None:
-            selector = _require_mapping(
-                self.workload_selector, f"view {self.id!r}.workload_selector"
-            )
-            if not selector:
-                raise PublicationViewError(
-                    f"view {self.id!r}.workload_selector must not be empty"
-                )
-            if "data_dir" in selector:
-                raise PublicationViewError(
-                    f"view {self.id!r}.workload_selector must use stable "
-                    f"{DATASET_ID_SELECTOR_FIELD!r}, not physical 'data_dir'"
-                )
-            for field, value in selector.items():
-                _require_text(field, f"view {self.id!r} workload field")
-                if not isinstance(value, _SCALAR_TYPES):
-                    raise PublicationViewError(
-                        f"view {self.id!r}.workload_selector[{field!r}] "
-                        "must be a JSON scalar"
-                    )
-                if isinstance(value, float) and not math.isfinite(value):
-                    raise PublicationViewError(
-                        f"view {self.id!r}.workload_selector[{field!r}] "
-                        "must be finite"
-                    )
-                if (
-                    field == DATASET_ID_SELECTOR_FIELD
-                    and (not isinstance(value, str) or not value.strip())
-                ):
-                    raise PublicationViewError(
-                        f"view {self.id!r}.workload_selector["
-                        f"{DATASET_ID_SELECTOR_FIELD!r}] must be a non-empty string"
-                    )
-            object.__setattr__(
-                self,
-                "workload_selector",
-                MappingProxyType(dict(selector)),
-            )
 
     @property
     def reference_id(self) -> str:
-        return next(
-            arm.variant_id for arm in self.arms if "reference" in arm.roles
-        )
+        return next(arm.variant_id for arm in self.arms if "reference" in arm.roles)
 
     @property
     def target_id(self) -> str | None:
         return next(
-            (arm.variant_id for arm in self.arms if "target" in arm.roles),
-            None,
+            (arm.variant_id for arm in self.arms if "target" in arm.roles), None
         )
-
-    def matches_workload(self, run: ArchivedPublicationRun) -> bool:
-        selector = self.workload_selector
-        if selector is None:
-            return True
-        for field, value in selector.items():
-            if field == DATASET_ID_SELECTOR_FIELD:
-                # Historical archives predate an explicit dataset_id. Keep the
-                # data_dir/command compatibility translation at this archive
-                # query boundary; it never becomes a general loader inference.
-                from .workloads import resolve_record_dataset
-
-                if resolve_record_dataset(run) != value:
-                    return False
-                continue
-            if (
-                field not in run.effective_config
-                or run.effective_config[field] != value
-            ):
-                return False
-        return True
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedPublicationView:
-    """A validated view plus the exact archive records/specs it selected."""
-
     view: PublicationView
     runs: tuple[ArchivedPublicationRun, ...]
     variant_specs: tuple[VariantSpec, ...]
+    horizon: int
 
     @property
     def reference_id(self) -> str:
@@ -224,26 +87,13 @@ class ResolvedPublicationView:
     def target_id(self) -> str | None:
         return self.view.target_id
 
-    @property
-    def horizon(self) -> int:
-        return self.view.horizon
-
 
 @dataclass(frozen=True, slots=True)
 class PublicationViews:
-    """One immutable view document targeting one archive projection."""
-
     archive_projection_id: str
+    horizon: int
+    workload_selector: Mapping[str, Any]
     views: tuple[PublicationView, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "views", tuple(self.views))
-        _require_text(self.archive_projection_id, "archive_projection_id")
-        if not self.views:
-            raise PublicationViewError("publication view document must declare views")
-        ids = [view.id for view in self.views]
-        if len(set(ids)) != len(ids):
-            raise PublicationViewError("publication view document has duplicate view IDs")
 
     @property
     def views_by_id(self) -> Mapping[str, PublicationView]:
@@ -258,154 +108,149 @@ class PublicationViews:
                 f"known views are {list(self.views_by_id)!r}"
             ) from exc
 
+    def matches_workload(self, run: ArchivedPublicationRun) -> bool:
+        from .workloads import resolve_record_dataset
+
+        return all(
+            (resolve_record_dataset(run) if field == "dataset_id"
+             else run.effective_config.get(field)) == value
+            for field, value in self.workload_selector.items()
+        )
+
     def validate(self, archive: PublicationArchive) -> None:
-        """Fail unless every declared identity resolves in its selected workload."""
-        if not isinstance(archive, PublicationArchive):
-            raise TypeError("archive must be a PublicationArchive")
         if archive.projection_id != self.archive_projection_id:
             raise PublicationViewError(
                 f"view document targets archive {self.archive_projection_id!r}, "
                 f"but supplied archive is {archive.projection_id!r}"
             )
-        variants_by_view: dict[str, PublicationVariant] = {}
-        for variant in archive.variants:
-            if variant.view_key in variants_by_view:
-                raise PublicationViewError(
-                    f"archive has duplicate stable view ID {variant.view_key!r}"
-                )
-            variants_by_view[variant.view_key] = variant
-
+        known = {variant.view_key for variant in archive.variants}
+        present = {
+            run.effective_config.get(PUBLICATION_VARIANT_ID_FIELD)
+            for run in archive.runs if self.matches_workload(run)
+        }
         for view in self.views:
-            selected_runs = tuple(
-                run for run in archive.runs if view.matches_workload(run)
-            )
-            if not selected_runs:
-                raise PublicationViewError(
-                    f"view {view.id!r} workload selector matches no archived runs"
-                )
-            selected_ids = {
-                run.effective_config.get(PUBLICATION_VARIANT_ID_FIELD)
-                for run in selected_runs
-            }
             for arm in view.arms:
-                if arm.variant_id not in variants_by_view:
+                if arm.variant_id not in known:
                     raise PublicationViewError(
                         f"view {view.id!r} references unknown archive variant "
                         f"{arm.variant_id!r}"
                     )
-                if arm.variant_id not in selected_ids:
+                if arm.variant_id not in present:
                     raise PublicationViewError(
                         f"view {view.id!r} arm {arm.variant_id!r} has no archived "
                         "run matching its workload selector"
                     )
 
     def resolve(
-        self,
-        view_id: str,
-        archive: PublicationArchive,
+        self, view_id: str, archive: PublicationArchive
     ) -> ResolvedPublicationView:
-        """Return exact selected records and stable-ID specs for one view."""
         self.validate(archive)
         view = self.view(view_id)
-        variants_by_view = {
-            variant.view_key: variant for variant in archive.variants
-        }
         arm_ids = {arm.variant_id for arm in view.arms}
-        runs = tuple(
-            run
-            for run in archive.runs
-            if view.matches_workload(run)
-            and run.effective_config.get(PUBLICATION_VARIANT_ID_FIELD) in arm_ids
+        styles = {variant.view_key: variant.style_key for variant in archive.variants}
+
+        def semantic_key(cfg: Mapping[str, Any]) -> str:
+            value = cfg.get(PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD)
+            if not isinstance(value, str) or not value:
+                raise PublicationViewError("publication run has no optimizer semantic key")
+            return value
+
+        return ResolvedPublicationView(
+            view=view,
+            runs=tuple(
+                run for run in archive.runs
+                if self.matches_workload(run)
+                and run.effective_config.get(PUBLICATION_VARIANT_ID_FIELD) in arm_ids
+            ),
+            variant_specs=tuple(
+                VariantSpec(
+                    id=arm.variant_id,
+                    label=arm.label,
+                    predicate={PUBLICATION_VARIANT_ID_FIELD: arm.variant_id},
+                    style_key=arm.style_key or styles[arm.variant_id],
+                    optimizer_semantic_key=semantic_key,
+                )
+                for arm in view.arms
+            ),
+            horizon=self.horizon,
         )
-        specs = tuple(
-            VariantSpec(
-                id=arm.variant_id,
-                label=arm.label,
-                predicate={PUBLICATION_VARIANT_ID_FIELD: arm.variant_id},
-                style_key=(
-                    arm.style_key
-                    if arm.style_key is not None
-                    else variants_by_view[arm.variant_id].style_key
-                ),
-                optimizer_semantic_key=_optimizer_semantic_key,
-            )
-            for arm in view.arms
-        )
-        return ResolvedPublicationView(view=view, runs=runs, variant_specs=specs)
 
 
-def _parse_arm(payload: Any, context: str) -> PublicationViewArm:
-    item = _require_mapping(payload, context)
-    _require_only(item, {"variant_id", "label", "style_key", "roles"}, context)
-    raw_roles = item.get("roles", ())
-    if not isinstance(raw_roles, Sequence) or isinstance(raw_roles, (str, bytes)):
-        raise PublicationViewError(f"{context}.roles must be an array")
-    roles = tuple(_require_text(role, f"{context}.roles") for role in raw_roles)
-    style_key = item.get("style_key")
+def _arm(raw: Any, name: str) -> PublicationViewArm:
+    item = _object(raw, name)
+    _fields(item, _ARM_FIELDS, name)
+    roles = item.get("roles", [])
+    if not isinstance(roles, list) or any(role not in _ROLES for role in roles):
+        raise PublicationViewError(f"{name}.roles must contain only {sorted(_ROLES)!r}")
+    style = item.get("style_key")
     return PublicationViewArm(
-        variant_id=_require_text(item.get("variant_id"), f"{context}.variant_id"),
-        label=_require_text(item.get("label"), f"{context}.label"),
-        roles=roles,
-        style_key=(
-            None
-            if style_key is None
-            else _require_text(style_key, f"{context}.style_key")
-        ),
+        variant_id=_text(item.get("variant_id"), f"{name}.variant_id"),
+        label=_text(item.get("label"), f"{name}.label"),
+        roles=tuple(roles),
+        style_key=None if style is None else _text(style, f"{name}.style_key"),
     )
 
 
-def _parse_view(payload: Any, context: str) -> PublicationView:
-    item = _require_mapping(payload, context)
-    _require_only(
-        item,
-        {"id", "title", "horizon", "workload_selector", "arms"},
-        context,
+def _view(raw: Any, name: str) -> PublicationView:
+    item = _object(raw, name)
+    _fields(item, _VIEW_FIELDS, name)
+    arms_raw = item.get("arms")
+    if not isinstance(arms_raw, list) or not arms_raw:
+        raise PublicationViewError(f"{name}.arms must be a non-empty array")
+    arms = tuple(
+        _arm(raw_arm, f"{name}.arms[{i}]")
+        for i, raw_arm in enumerate(arms_raw)
     )
-    raw_arms = item.get("arms")
-    if not isinstance(raw_arms, Sequence) or isinstance(raw_arms, (str, bytes)):
-        raise PublicationViewError(f"{context}.arms must be an array")
+    ids, labels = [arm.variant_id for arm in arms], [arm.label for arm in arms]
+    references = sum("reference" in arm.roles for arm in arms)
+    targets = sum("target" in arm.roles for arm in arms)
+    if len(set(ids)) != len(ids) or len(set(labels)) != len(labels):
+        raise PublicationViewError(f"{name} has duplicate variant IDs or labels")
+    if references != 1 or targets > 1:
+        raise PublicationViewError(
+            f"{name} must declare exactly one reference and at most one target role"
+        )
     title = item.get("title")
     return PublicationView(
-        id=_require_text(item.get("id"), f"{context}.id"),
-        horizon=item.get("horizon"),
-        title=None if title is None else _require_text(title, f"{context}.title"),
-        workload_selector=item.get("workload_selector"),
-        arms=tuple(
-            _parse_arm(arm, f"{context}.arms[{index}]")
-            for index, arm in enumerate(raw_arms)
-        ),
+        id=_text(item.get("id"), f"{name}.id"),
+        title=None if title is None else _text(title, f"{name}.title"),
+        arms=arms,
     )
 
 
 def publication_views_from_payload(
-    payload: Mapping[str, Any],
-    *,
-    archive: PublicationArchive | None = None,
+    payload: Mapping[str, Any], *, archive: PublicationArchive | None = None
 ) -> PublicationViews:
-    """Validate decoded JSON, optionally resolving it against an archive."""
-    root = _require_mapping(payload, "publication views")
-    _require_only(
-        root,
-        {"schema_version", "archive_projection_id", "views"},
-        "publication views",
-    )
+    root = _object(payload, "publication views")
+    _fields(root, _ROOT_FIELDS, "publication views")
     if root.get("schema_version") != PUBLICATION_VIEWS_SCHEMA_VERSION:
+        raise PublicationViewError("unsupported publication views schema_version")
+    horizon = root.get("horizon")
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon <= 0:
+        raise PublicationViewError("horizon must be a positive integer")
+    selector = _object(root.get("workload_selector"), "workload_selector")
+    if not selector or "data_dir" in selector:
         raise PublicationViewError(
-            "unsupported publication views schema_version "
-            f"{root.get('schema_version')!r}; expected "
-            f"{PUBLICATION_VIEWS_SCHEMA_VERSION}"
+            "workload_selector must use stable 'dataset_id', not physical 'data_dir'"
         )
+    if any(
+        not isinstance(value, (str, int, float, bool, type(None)))
+        for value in selector.values()
+    ):
+        raise PublicationViewError("workload_selector values must be JSON scalar")
     raw_views = root.get("views")
-    if not isinstance(raw_views, Sequence) or isinstance(raw_views, (str, bytes)):
-        raise PublicationViewError("publication views.views must be an array")
+    if not isinstance(raw_views, list) or not raw_views:
+        raise PublicationViewError("publication views.views must be a non-empty array")
+    views = tuple(_view(raw, f"views[{i}]") for i, raw in enumerate(raw_views))
+    if len({view.id for view in views}) != len(views):
+        raise PublicationViewError("publication view document has duplicate view IDs")
     result = PublicationViews(
-        archive_projection_id=_require_text(
+        archive_projection_id=_text(
             root.get("archive_projection_id"), "archive_projection_id"
         ),
-        views=tuple(
-            _parse_view(view, f"views[{index}]")
-            for index, view in enumerate(raw_views)
-        ),
+        horizon=horizon,
+        workload_selector=MappingProxyType(dict(selector)),
+        views=views,
     )
     if archive is not None:
         result.validate(archive)
@@ -413,29 +258,10 @@ def publication_views_from_payload(
 
 
 def load_publication_views(
-    path: str | Path,
-    *,
-    archive: PublicationArchive | None = None,
+    path: str | Path, *, archive: PublicationArchive | None = None
 ) -> PublicationViews:
-    """Load a declarative publication-view document from JSON."""
-    view_path = Path(path)
     try:
-        payload = json.loads(view_path.read_text())
+        payload = json.loads(Path(path).read_text())
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise PublicationViewError(
-            f"could not read publication views {view_path}: {exc}"
-        ) from exc
+        raise PublicationViewError(f"could not read publication views {path}: {exc}") from exc
     return publication_views_from_payload(payload, archive=archive)
-
-
-__all__ = [
-    "DATASET_ID_SELECTOR_FIELD",
-    "PUBLICATION_VIEWS_SCHEMA_VERSION",
-    "PublicationView",
-    "PublicationViewArm",
-    "PublicationViewError",
-    "PublicationViews",
-    "ResolvedPublicationView",
-    "load_publication_views",
-    "publication_views_from_payload",
-]

@@ -11,18 +11,19 @@ the error it fixed.
 Import it as a MODULE and reach through it::
 
     %load_ext autoreload
-    %autoreload 2
+    %autoreload 1
+    %aimport lora_playground.plotting.paper_plots_lib
     import lora_playground.plotting.paper_plots_lib as P
 
     P.precond_panel(256)
 
-``import ... as P`` and not ``from ... import *``: autoreload re-executes this module on
-edit, so ``P.PROTO`` is always current, whereas a name star-imported into the notebook
-namespace stays bound to the old object and goes stale exactly the way the cells did.
+Mode 1 reloads this facade without rewriting dependency classes while cached
+instances of those classes are alive. Reach through ``P`` so facade reloads are
+visible; restart the kernel once after changing this policy.
 
-Reviewed publication panels resolve explicit sealed archive variants to stable IDs.
-Panels that still require external baselines absent from that archive retain the
-``arms.py`` compatibility path; see that module for its predicate semantics.
+Reviewed panels resolve checked-in stable-ID views. Panels whose historical
+semantics are not yet sealed retain the existing ``arms.py`` compatibility path;
+that path is isolated and does not manufacture publication identities.
 """
 from __future__ import annotations
 
@@ -36,17 +37,26 @@ from lora_playground.leaderboard import (
     labeled_completed_runs, leaderboard_rows, leaderboard_rows_from_comparison,
     speedup_from_frac,
 )
-from lora_playground.loader import load_runs, logs_signature
-from lora_playground.plotting import compare_variants_figure
-from lora_playground.publication_paper import (
-    LEGACY_ADAMW_VARIANT_LABEL,
-    LEGACY_POLORA_VARIANT_LABEL,
-    publication_panel,
+from lora_playground.comparison import VariantSpec, build_comparison
+from lora_playground.loader import (
+    load_runs,
+    logged_field_predicate,
+    logs_signature,
 )
+from lora_playground.plotting import compare_variants_figure
+from lora_playground.plotting.labels import canonical_label
+from lora_playground.plotting.render import render_comparison
 from lora_playground.plotting.dedup import (
     SourceCoherenceError,
     assert_curve_source_coherent,
 )
+from lora_playground.publication_paper import publication_view_panel
+from lora_playground.plotting.notebook_profile import profile_span
+from lora_playground.plotting.paper_view_semantics import project_paper_precond_cohort
+from lora_playground.run_catalog import RunCatalog
+from lora_playground.run_records import run_view, thaw_value
+from lora_playground.run_schema import MEASUREMENT_SEMANTICS_REVISION
+from lora_playground.workloads import resolve_dataset
 
 # File-relative, matching paper_figs.py:38 (same depth: plotting/ -> lora_playground/
 # -> repo root). This used to walk up from Path.cwd() with a bare `next()` and no
@@ -63,77 +73,6 @@ SIGMA = 0.0017
 # The canonical run length every paper cell is read at. Named because three places
 # ask "did this run finish": _figure's max_steps, the in-flight notice, and _max_step.
 HORIZON = 9000
-
-# Exact labels in the named, checked-in publication projection.  They are
-# deliberately not recomputed through today's optimizer defaults or canonical
-# labeler: the archive owns the reviewed historical meaning.  The dictionaries
-# below map the notebook's editorial wording onto those sealed cohorts.
-_ARCHIVE_POLORA = LEGACY_POLORA_VARIANT_LABEL
-_ARCHIVE_PRECOND = {
-    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
-    "product: C_B=B^T P B, C_A=A Q A^T": _ARCHIVE_POLORA,
-    "one-sided: C_B=C_A=I": (
-        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
-        "one-sided H=8 precond_method=gram_ns"
-    ),
-    "factorwise: C_B=P_A, C_A=Q_B": (
-        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
-        "factorwise H=8 precond_method=gram_ns"
-    ),
-}
-_ARCHIVE_MSIGN = {
-    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
-    "product, msign": _ARCHIVE_POLORA,
-    "product, diagonal msign": (
-        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
-        "msign-diag H=8 precond_method=gram_ns"
-    ),
-    "one-sided, msign": _ARCHIVE_PRECOND["one-sided: C_B=C_A=I"],
-    "one-sided, diagonal msign": (
-        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
-        "one-sided msign-diag H=8 precond_method=gram_ns"
-    ),
-}
-_ARCHIVE_MAGNITUDE = {
-    "PoLoRA: rho = eta/(smax A + smax B)": _ARCHIVE_POLORA,
-    "naive: rho = eta": (
-        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
-        "H=8 +cw_no_radius precond_method=gram_ns"
-    ),
-    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
-}
-_ARCHIVE_PROTO_BETA2 = {
-    **{
-        f"curvature_beta={beta:g}": (
-            f"KL-diag +polar PE=8 (f=10, β_c={beta:g}, δ=1e-4) "
-            "H=8 precond_method=gram_ns"
-        )
-        for beta in (0.81, 0.909, 0.9564, 0.9791)
-    },
-    "Polar-LoRA (shipped, b2=0.99)": _ARCHIVE_POLORA,
-}
-_ARCHIVE_PRECOND_BETA2 = {
-    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
-    "factorwise, b2=0.99": _ARCHIVE_PRECOND[
-        "factorwise: C_B=P_A, C_A=Q_B"
-    ],
-    "factorwise, b2=0.999": (
-        "KL-diag +polar PE=8 (f=10, β_c=0.999, δ=1e-4) "
-        "factorwise H=8 precond_method=gram_ns"
-    ),
-    "one-sided, b2=0.99": _ARCHIVE_PRECOND["one-sided: C_B=C_A=I"],
-    "one-sided, b2=0.999": (
-        "KL-diag +polar PE=8 (f=10, β_c=0.999, δ=1e-4) "
-        "one-sided H=8 precond_method=gram_ns"
-    ),
-}
-_ARCHIVE_ADAMW_BETA2 = {
-    **{
-        f"beta2={beta:g}": f"AdamW beta2={beta:g}"
-        for beta in (0.81, 0.909, 0.9564, 0.9791, 0.99)
-    },
-    "AdamW (shipped, b2=0.999)": LEGACY_ADAMW_VARIANT_LABEL,
-}
 
 # --------------------------------------------------------------------------------------
 # Arm predicates
@@ -236,6 +175,7 @@ CELLS = [_cell_from_registry(*key) for key in _CELLS_ORDER]
 # runs that cannot match. So a single up-front snapshot is the wrong trade -- it is fixed
 # at kernel start and cannot see a sweep that is still running.
 _RUNS_CACHE: dict[str, tuple] = {}   # where-fingerprint -> (logs signature, runs)
+_CATALOG_SNAPSHOT: tuple[str, RunCatalog] | None = None
 
 
 def _fingerprint(v):
@@ -248,6 +188,9 @@ def _fingerprint(v):
     closed-over variable), so include both.
     """
     if callable(v):
+        cache_key = getattr(v, "cache_key", None)
+        if cache_key is not None:
+            return ("logged-field-predicate", cache_key)
         return ("call", getattr(v, "__qualname__", ""),
                 repr(getattr(v, "__defaults__", None)),
                 repr(tuple(c.cell_contents for c in (getattr(v, "__closure__", None) or ()))))
@@ -279,23 +222,43 @@ def cell_runs(where, refresh=False):
     """
     if not (ROOT / "logs").is_dir():
         raise RuntimeError(
-            "this legacy paper panel needs the live logs/ tree; "
-            "archive-backed panels do not call cell_runs()"
+            "paper panels need the live logs/ tree"
         )
-    sig = _logs_signature_now()
-    key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
-    cached = _RUNS_CACHE.get(key)
-    if cached is not None and cached[0] == sig and not refresh:
-        return cached[1]
-    runs = load_runs(where=where, warn_cross_commit=False, quiet=True)
-    _RUNS_CACHE[key] = (sig, runs)
-    return runs
+    global _CATALOG_SNAPSHOT
+    with profile_span("cell_runs"):
+        sig = _logs_signature_now()
+        key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
+        cached = _RUNS_CACHE.get(key)
+        if cached is not None and cached[0] == sig and not refresh:
+            return cached[1]
+        catalog = _catalog_for_signature(sig)
+        with profile_span("load_runs"):
+            runs = load_runs(
+                where=where,
+                catalog=catalog,
+                warn_cross_commit=False,
+                quiet=True,
+            )
+        _RUNS_CACHE[key] = (sig, runs)
+        return runs
 
 
 def clear_runs_cache():
     """Drop the memo so the next panel re-reads from disk."""
+    global _CATALOG_SNAPSHOT
     _RUNS_CACHE.clear()
+    _CATALOG_SNAPSHOT = None
     _SIG_HOLD.clear()
+
+
+def _catalog_for_signature(signature: str) -> RunCatalog:
+    """Reuse one parsed catalog while the recorded log tree is unchanged."""
+    global _CATALOG_SNAPSHOT
+    if _CATALOG_SNAPSHOT is None or _CATALOG_SNAPSHOT[0] != signature:
+        with profile_span("catalog_discovery"):
+            catalog = RunCatalog.discover(ROOT / "logs")
+        _CATALOG_SNAPSHOT = (signature, catalog)
+    return _CATALOG_SNAPSHOT[1]
 
 
 # One `logs/` signature per panel, not one per `cell_runs` call.
@@ -318,7 +281,8 @@ _SIG_HOLD: dict[str, str] = {}
 
 def _logs_signature_now() -> str:
     if "sig" not in _SIG_HOLD:
-        return logs_signature(str(ROOT / "logs"))
+        with profile_span("logs_signature"):
+            return logs_signature(str(ROOT / "logs"))
     return _SIG_HOLD["sig"]
 
 
@@ -327,7 +291,8 @@ def _held_logs_signature():
     """Freeze the tree signature for the duration of one panel."""
     outer = "sig" in _SIG_HOLD
     if not outer:
-        _SIG_HOLD["sig"] = logs_signature(str(ROOT / "logs"))
+        with profile_span("logs_signature"):
+            _SIG_HOLD["sig"] = logs_signature(str(ROOT / "logs"))
     try:
         yield
     finally:
@@ -335,80 +300,258 @@ def _held_logs_signature():
             _SIG_HOLD.pop("sig", None)
 
 
+@contextmanager
+def paper_plot_snapshot():
+    """Reuse one log-tree signature across a batch of related paper panels.
+
+    Individual notebook calls retain live-refresh behavior by default. Batch
+    renderers and regression profilers use this context so an active sweep
+    cannot invalidate the catalog midway through one measured operation list.
+    """
+    with _held_logs_signature():
+        yield
+
+
+def _dataset_predicate(key):
+    return logged_field_predicate(
+        lambda data_dir, dataset=key: (
+            resolve_dataset({"data_dir": data_dir}) == dataset
+        ),
+        cache_key=f"dataset={key}",
+    )
+
+
 def om(rank):
     """common_where for Llama-3.2-1B / openmath at a rank -- the ablation cell."""
-    return dict(model_name="meta-llama/Llama-3.2-1B", lora_r=rank,
-                data_dir=(lambda d: "openmath" in str(d)))
+    return dict(
+        model_name="meta-llama/Llama-3.2-1B",
+        lora_r=rank,
+        data_dir=_dataset_predicate("openmath"),
+    )
 
 
 def cell(model, data_key, rank):
     """common_where for one (model, corpus, rank) cell."""
-    return dict(model_name=model, lora_r=rank,
-                data_dir=(lambda d, k=data_key: k in str(d)))
+    return dict(
+        model_name=model,
+        lora_r=rank,
+        data_dir=_dataset_predicate(data_key),
+    )
 
 
-def _archive_figure(variants, workload, ref_label, suptitle, *,
-                    target_label="AdamW"):
-    """Render one complete paper panel from the sealed publication archive.
+def _canonical_variant_key(common, arms):
+    """Map recorded configs to editorial labels through the canonical labeler.
 
-    Every declared arm must have archived evidence in this workload.  A missing
-    arm is an incomplete projection and raises, rather than falling through to
-    live logs or being rendered as an unexplained empty curve.
+    Historical logs legitimately omit flags added after they ran.  The old
+    arm predicates pin today's full CLI surface and therefore cannot classify
+    those records.  Canonical labels already define the repository-wide
+    compatibility semantics for absent default-valued fields; derive the
+    editorial lookup from the arm declarations once instead of reconstructing
+    config data.
     """
-    panel = publication_panel(workload, variants)
-    comparison = panel.comparison
-    missing = [
-        label for label, variant_id in panel.variant_ids.items()
-        if comparison.best_completed[variant_id] is None
-        and comparison.best_partial[variant_id] is None
-    ]
-    if missing:
-        raise ValueError(
-            f"sealed archive has no {workload.label} evidence for declared "
-            f"paper arm(s) {missing!r}"
+    by_canonical = {}
+    for editorial_label, predicate in arms.items():
+        optimizer = predicate["optimizer"]
+        optimizers = (
+            optimizer
+            if isinstance(optimizer, (list, set, tuple, frozenset))
+            else (optimizer,)
         )
+        for optimizer_name in optimizers:
+            label = canonical_label({**predicate, "optimizer": optimizer_name})
+            if label is None:
+                continue
+            previous = by_canonical.setdefault(label, editorial_label)
+            if previous != editorial_label:
+                raise ValueError(
+                    f"canonical variant {label!r} maps to both "
+                    f"{previous!r} and {editorial_label!r}"
+                )
 
-    target_id = (
-        panel.variant_id(target_label)
-        if target_label is not None else None
-    )
-    fig, _table, summary = compare_variants_figure(
-        comparison=comparison,
-        reference_id=panel.variant_id(ref_label),
-        target_id=target_id,
-        sigma_ref=SIGMA,
-        max_steps=workload.horizon,
-        allow_partial=True,
-        suptitle=suptitle,
-    )
-    plt.show()
-    if target_id is not None:
-        rows, target = leaderboard_rows_from_comparison(
+    def variant_key(cfg):
+        if not pred_matches(cfg, common):
+            return None
+        return by_canonical.get(canonical_label(cfg))
+
+    return variant_key
+
+
+_POST_E1_POLORA_FIELDS = (
+    "cw_metric_init",
+    "cw_no_rr_precond",
+    "cw_solved_rho",
+    "cw_unpinned",
+    "rdinv_variant",
+)
+
+
+def _in_reviewed_e1_polora_cohort(cfg):
+    """Keep the original E1 PoLoRA series, not later diagnostic reruns.
+
+    Later probes reused the same optimizer label and learning rate while
+    explicitly recording controls that the E1 producer did not have.  Those
+    records are distinct semantic series, not seeds of the paper baseline.
+    Non-PoLoRA arms pass through unchanged.
+    """
+    if canonical_label(cfg) != canonical_label({
+        **PROTO,
+        "optimizer": "kl-diag-polar-lora",
+    }):
+        return True
+    return all(cfg.get(field) is None for field in _POST_E1_POLORA_FIELDS)
+
+
+_UNPINNED_MEASUREMENT_REVISION = object()
+
+
+def _render_panel_comparison(
+    comparison,
+    *,
+    reference_id,
+    target_id,
+    target_label,
+    suptitle,
+    horizon,
+):
+    """Render an already-built comparison without crossing a loader adapter."""
+    with profile_span("render_figure"):
+        _fig, _table, summary = render_comparison(
             comparison,
-            horizon=workload.horizon,
-            baseline_id=target_id,
+            reference_id=reference_id,
+            target_id=target_id,
+            sigma_ref=SIGMA,
+            horizon=horizon,
+            show_partials=True,
+            suptitle=suptitle,
         )
-        for row in rows:
-            row["speedup"] = speedup_from_frac(row["frac_best_lr"])
-            row["speedup_lr_avg"] = speedup_from_frac(row["frac_lr_avg"])
-        rows.sort(
-            key=lambda row: (
-                math.inf if math.isnan(row["speedup"])
-                else -row["speedup"]
-            )
-        )
-        print(_speedup_text(rows, target, target_label, workload.horizon))
-    else:
-        print(
-            "no speedup table: this archive-backed panel declares no speed "
-            "target."
-        )
+    plt.show()
+
+    if target_id is None:
+        print("no speedup table: this panel declares no speed target.")
+        return summary
+
+    rows, target = leaderboard_rows_from_comparison(
+        comparison,
+        horizon=horizon,
+        baseline_id=target_id,
+    )
+    for row in rows:
+        row["speedup"] = speedup_from_frac(row["frac_best_lr"])
+        row["speedup_lr_avg"] = speedup_from_frac(row["frac_lr_avg"])
+    rows.sort(key=lambda row: (
+        math.inf if math.isnan(row["speedup"]) else -row["speedup"]
+    ))
+    print(_speedup_text(rows, target, target_label, horizon))
+    return summary
+
+
+def _archive_figure(view_id, suptitle=None):
+    """Render one reviewed stable-ID view from the sealed archive."""
+    panel = publication_view_panel(view_id)
+    comparison = panel.comparison
+    if panel.reference_id is None or panel.horizon is None:
+        raise ValueError(f"publication view {view_id!r} has no rendering roles")
+    labels_by_id = {spec.id: spec.label for spec in comparison.variants}
+    target_label = (
+        labels_by_id[panel.target_id] if panel.target_id is not None else None
+    )
+    summary = _render_panel_comparison(
+        comparison,
+        reference_id=panel.reference_id,
+        target_id=panel.target_id,
+        target_label=target_label,
+        suptitle=suptitle or panel.title,
+        horizon=panel.horizon,
+    )
     if comparison.unmatched_run_ids:
         print(
             f"{len(comparison.unmatched_run_ids)} archived runs in this cell "
             "belong to other sealed publication variants."
         )
     return summary
+
+
+def _records_figure(arms, workload, ref_label, suptitle, *,
+                    target_label="AdamW", semantic_view=None,
+                    reviewed_e1_polora=False,
+                    measurement_semantics_revision=(
+                        _UNPINNED_MEASUREMENT_REVISION
+                    )):
+    """Render one live workload without converting records back to tuples."""
+    with profile_span("records_panel"):
+        with _held_logs_signature():
+            from lora_playground.workloads import workload_records
+
+            records = workload_records(
+                workload,
+                catalog=_catalog_for_signature(_logs_signature_now()),
+            )
+            excluded = ()
+            if semantic_view is not None:
+                records, excluded = project_paper_precond_cohort(
+                    records,
+                    view_id=semantic_view,
+                )
+            if measurement_semantics_revision is not _UNPINNED_MEASUREMENT_REVISION:
+                records = tuple(
+                    record for index, record in enumerate(records)
+                    if run_view(record, index).semantic_config.get(
+                        "measurement_semantics_revision"
+                    ) == measurement_semantics_revision
+                )
+            if reviewed_e1_polora:
+                records = tuple(
+                    record for index, record in enumerate(records)
+                    if _in_reviewed_e1_polora_cohort(
+                        run_view(record, index).semantic_config
+                    )
+                )
+
+            variant_key = _canonical_variant_key({}, arms)
+            specs = tuple(
+                VariantSpec(
+                    id=label,
+                    label=label,
+                    style_key=label,
+                    predicate=(
+                        lambda cfg, expected=label:
+                        variant_key(cfg) == expected
+                    ),
+                )
+                for label in arms
+            )
+            comparison = build_comparison(
+                records,
+                specs,
+                horizon=workload.horizon,
+            )
+            missing = [
+                spec.label for spec in specs
+                if comparison.best_completed[spec.id] is None
+                and comparison.best_partial[spec.id] is None
+            ]
+            if missing:
+                print("no data yet (omitted):", ", ".join(missing))
+            if ref_label in missing:
+                raise ValueError(
+                    f"{workload.label} has no recorded reference arm "
+                    f"{ref_label!r}"
+                )
+            summary = _render_panel_comparison(
+                comparison,
+                reference_id=ref_label,
+                target_id=(target_label if target_label in arms else None),
+                target_label=target_label,
+                suptitle=suptitle,
+                horizon=workload.horizon,
+            )
+            if excluded:
+                reasons = sorted({decision.reason for _run, decision in excluded})
+                print(
+                    f"{len(excluded)} run(s) excluded by {semantic_view!r} "
+                    f"semantic cohort: {'; '.join(reasons)}"
+                )
+            return summary
 
 
 def has(where, common):
@@ -471,24 +614,24 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     guard inside compare_variants_figure -- the per-variant loading path does not run it,
     and that is how two arms silently merged for weeks. Do not add a panel that skips it.
     """
-    with _held_logs_signature():
-        return _figure_inner(arms, common, ref_label, suptitle, target_label,
-                             drop_empty, horizon, trajectory_only,
-                             left_exclude)
+    with profile_span("legacy_panel"):
+        with _held_logs_signature():
+            return _figure_inner(arms, common, ref_label, suptitle, target_label,
+                                 drop_empty, horizon, trajectory_only,
+                                 left_exclude)
 
 
 def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon,
-                  trajectory_only=False, left_exclude=()):
-    declared_arms = dict(arms)
-    panel_runs = cell_runs(common)
-    base_key = variant_key_fn(common, arms)
+                  trajectory_only=False, left_exclude=(), panel_runs=None):
+    panel_runs = cell_runs(common) if panel_runs is None else panel_runs
+    base_key = _canonical_variant_key(common, arms)
     if drop_empty:
         present = {base_key(cfg) for cfg, hist in panel_runs if hist}
         missing = [label for label in arms if label not in present]
         if missing:
             print("no data yet (omitted):", ", ".join(missing))
         arms = {k: v for k, v in arms.items() if k not in missing}
-        base_key = variant_key_fn(common, arms)
+        base_key = _canonical_variant_key(common, arms)
 
     # Explicitly rejected sources have been removed above. Every remaining arm
     # must be coherent; an unpinned mixed-source curve fails rather than being
@@ -549,12 +692,13 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
                   f"not step-matched to the other arms.")
         else:
             print(f"read at step {horizon} (every arm truncated).")
-    fig, _t, sdf = compare_variants_figure(
-        arms, common_where=common, ref_label=ref_label,
-        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
-        allow_partial=True, allow_custom_labels=True, target_label=target_label,
-        suptitle=suptitle,
-        prefetched_runs=runs, variant_key=base_key)
+    with profile_span("render_figure"):
+        fig, _t, sdf = compare_variants_figure(
+            arms, common_where=common, ref_label=ref_label,
+            logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
+            allow_partial=True, allow_custom_labels=True, target_label=target_label,
+            suptitle=suptitle,
+            prefetched_runs=runs, variant_key=base_key)
     plt.show()
     if target_label in arms:
         print(speedup_table(
@@ -564,12 +708,6 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
     else:
         print(f"no speedup table: '{target_label}' is not one of this panel's arms, "
               f"so there is no speed target. Pass target_label=<an arm> to get one.")
-    # Coverage is reported against the arms the CALLER declared, before
-    # `drop_empty` pruned the empty ones, so an arm that matched nothing is still
-    # a candidate for "closest arm" in the diagnosis.
-    cov = coverage_report(declared_arms, common)
-    if cov:
-        print(cov)
     return sdf
 
 
@@ -639,7 +777,14 @@ def _closest_arm(cfg, arms):
     return best if best else ("<no arms>", [])
 
 
-def coverage_report(arms, common, *, horizon=HORIZON, detail=False):
+def coverage_report(
+    arms,
+    common,
+    *,
+    horizon=HORIZON,
+    detail=False,
+    runs=None,
+):
     """Text naming the runs in this cell that no arm's predicate claimed.
 
     Returns "" when every run is claimed, so a clean cell prints nothing.
@@ -655,7 +800,7 @@ def coverage_report(arms, common, *, horizon=HORIZON, detail=False):
     `detail=True` restores the per-run diagnosis — the closest arm and the
     fields separating it — which is what to reach for once a count looks wrong.
     """
-    runs = cell_runs(common)
+    runs = cell_runs(common) if runs is None else runs
     unclaimed = [(cfg, hist) for cfg, hist in runs
                  if not any(pred_matches(cfg, {**common, **pred})
                             for pred in arms.values())]
@@ -752,11 +897,20 @@ def _speedup_text(rows, target, baseline_label, horizon=HORIZON):
 # --------------------------------------------------------------------------------------
 def panel(name, model, key, rank):
     """AdamW vs PoLoRA vs the baselines at one cell; Delta vs AdamW in sigma units."""
-    common = dict(model_name=model, lora_r=rank, data_dir=(lambda d, k=key: k in str(d)))
-    arms = {"AdamW": ADAMW, "Polar-LoRA (kl-diag)": PROTO, "iMuon": IMUON,
-            "Muon (naive)": MUON, "LoRA-RITE": LORARITE,
-            "w/o curvature+magnitude (LoRA-Muon step)": DOUBLE}
-    return _figure(arms, common, "AdamW", name, drop_empty=False)
+    from lora_playground.workloads import find_workload
+    workload = find_workload(model, key, rank)
+    return _records_figure(
+        _arms.PANEL_ARMS,
+        workload,
+        "AdamW",
+        name,
+        # The E1 grid predates producer-recorded measurement revisions. Later
+        # E2 reruns may share an optimizer label and LR but are not part of the
+        # E1 measurement cohort; leave them unmatched rather than splicing the
+        # two objectives into one curve.
+        measurement_semantics_revision=None,
+        reviewed_e1_polora=True,
+    )
 
 
 def panel_n(i):
@@ -764,30 +918,175 @@ def panel_n(i):
     return panel(*CELLS[i])
 
 
+def rank_lr_panel(
+    ranks=(16, 32, 64, 128, 256),
+    *,
+    model="meta-llama/Llama-3.2-1B",
+    data_key="openmath",
+    model_label="Llama-3.2-1B",
+):
+    """Final-loss LR curves across ranks for the E1 protagonist and AdamW.
+
+    This is the records-native implementation of the notebook's former
+    hand-written all-ranks cell. One held signature covers every rank, so the
+    five workloads share one catalog snapshot and cannot be invalidated by an
+    active sweep midway through the figure.
+    """
+    import numpy as np
+    import matplotlib.cm as cm
+    from matplotlib.lines import Line2D
+    from lora_playground.workloads import find_workload
+
+    ranks = tuple(ranks)
+    if not ranks:
+        raise ValueError("rank_lr_panel requires at least one rank")
+    arms = {
+        "Polar-LoRA (kl-diag)": PROTO,
+        "AdamW": ADAMW,
+    }
+    panel_data = {label: {} for label in arms}
+    empty = []
+
+    with profile_span("rank_lr_panel"):
+        with _held_logs_signature():
+            ladder_common = cell(model, data_key, ranks)
+            ladder_runs = [
+                (cfg, history)
+                for cfg, history in cell_runs(ladder_common)
+                if cfg.get("measurement_semantics_revision") is None
+            ]
+            for rank in ranks:
+                workload = find_workload(model, data_key, rank)
+                common = cell(workload.model_name, workload.dataset, rank)
+                runs = [
+                    (cfg, history)
+                    for cfg, history in ladder_runs
+                    if cfg.get("lora_r") == rank
+                ]
+                key = variant_key_fn(
+                    common,
+                    arms,
+                )
+                labeled = labeled_completed_runs(
+                    runs,
+                    key,
+                    horizon=workload.horizon,
+                )
+                for label in arms:
+                    values = {
+                        lr: final_and_history[0]
+                        for lr, final_and_history in sorted(
+                            labeled.get(label, {}).items()
+                        )
+                    }
+                    panel_data[label][rank] = values
+                    if not values:
+                        empty.append(f"{label} r{rank}")
+
+        all_values = [
+            value
+            for rank_data in panel_data.values()
+            for lr_data in rank_data.values()
+            for value in lr_data.values()
+        ]
+        if not all_values:
+            raise ValueError(
+                f"no completed E1 data for {model_label} {data_key} at "
+                f"ranks {ranks!r}"
+            )
+        median = float(np.median(all_values))
+        converged = [value for value in all_values if value < 3 * median]
+        lo, hi = min(all_values), max(converged)
+        value_range = hi - lo
+        ylo = lo - 0.10 * value_range
+        yhi = hi + 0.06 * value_range
+        colors = dict(zip(
+            ranks,
+            cm.viridis_r(np.linspace(0.12, 0.92, len(ranks))),
+        ))
+
+        with profile_span("render_figure"):
+            fig, axes = plt.subplots(
+                1, len(arms), figsize=(10.5, 4.4), sharey=True
+            )
+            for ax, (label, rank_data) in zip(axes, panel_data.items()):
+                for rank in ranks:
+                    values = rank_data[rank]
+                    if values:
+                        ax.plot(
+                            list(values),
+                            list(values.values()),
+                            "o-",
+                            color=colors[rank],
+                            label=f"r={rank}",
+                        )
+                ax.set_xscale("log")
+                ax.set_xlabel("lr")
+                ax.set_title(label)
+                ax.grid(alpha=0.3)
+                ax.set_ylim(ylo, yhi)
+            axes[0].set_ylabel(f"final eval loss ({HORIZON} steps)")
+            rank_handles = [
+                Line2D(
+                    [], [], color=colors[rank], marker="o", lw=2,
+                    label=f"r={rank}",
+                )
+                for rank in ranks
+            ]
+            axes[-1].legend(
+                handles=rank_handles,
+                title="rank",
+                loc="best",
+                fontsize=8,
+            )
+            fig.suptitle(
+                f"Final loss vs lr, all ranks ({model_label} {data_key}, "
+                f"{HORIZON} steps)"
+            )
+            plt.tight_layout()
+        clipped = sum(value > yhi for value in all_values)
+        if clipped:
+            print(
+                f"{clipped} high-lr point(s) above y-window (divergence), "
+                f"clipped at {yhi:.3f}"
+            )
+        if empty:
+            print("NO completed data (arm not run yet):", ", ".join(empty))
+        plt.show()
+        return panel_data
+
+
 def ablation_panel(rank=256):
     """E2 leave-one-out at one rank."""
-    arms = {"Polar-LoRA (kl-diag)": PROTO, "w/o curvature control": NOSHAMPOO,
-            "w/o magnitude control": NOMAG,
-            "w/o curvature+magnitude (LoRA-Muon step)": DOUBLE}
-    return _figure(arms, om(rank), "Polar-LoRA (kl-diag)",
-                   f"E2 ablation - Llama-3.2-1B openmath r{rank}", target_label=None)
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _records_figure(
+        _arms.ABLATION_ARMS,
+        workload,
+        "Polar-LoRA (kl-diag)",
+        f"E2 ablation - Llama-3.2-1B openmath r{rank}",
+        target_label=None,
+        reviewed_e1_polora=True,
+    )
 
 
 def derivation_ablation_panel(rank=256):
     """Which derivation premise carries the method: orthogonalization, or metric power."""
-    arms = {"AdamW": ADAMW,
-            "PoLoRA: rxr=B^T P B, shared P,Q": PROTO,
-            "no msign, metric^-1 (averaged loss)": AVGLOSS,
-            "no msign, metric^-1/2": HALFPOW,
-            "no outer un-whiten: msign only": FLATOUT}
-    return _figure(arms, om(rank), "PoLoRA: rxr=B^T P B, shared P,Q",
-                   f"Derivation: orthogonalization and metric power - "
-                   f"Llama-3.2-1B openmath r{rank}")
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _records_figure(
+        _arms.DERIVATION_ARMS,
+        workload,
+        "PoLoRA: rxr=B^T P B, shared P,Q",
+        f"Derivation: orthogonalization and metric power - "
+        f"Llama-3.2-1B openmath r{rank}",
+        reviewed_e1_polora=True,
+    )
 
 
 def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
                   data_key="openmath", model_label="Llama-3.2-1B",
-                  trusted_only=False):
+                  trusted_only=False, matched_revision=False):
     """The three `precond` branches: what fills (C_B, C_A). All three share one
     (P, Q), the same p, q updates and the same rho rule.
 
@@ -795,55 +1094,59 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
     (C_B and C_A are r x r, so the slot has less to offer as r falls) or on
     another architecture, without a second copy of the figure.
 
-    Cohort membership comes from the checked-in publication archive.  The
-    archive's reviewed view IDs replace the former live Git-ancestry and source
-    hash gate; an arm absent from that projection fails closed.
+    Cohort membership comes from recorded run semantics. The shared paper-view
+    projection excludes pre-fix or unknown factorwise-slot implementations.
     """
     from lora_playground.workloads import find_workload
     workload = find_workload(model, data_key, rank)
-    return _archive_figure(
-        _ARCHIVE_PRECOND,
+    return _records_figure(
+        {
+            label: predicate
+            for label, predicate in _arms.PRECOND_ARMS.items()
+            if not matched_revision or label != "AdamW"
+        },
         workload,
         "product: C_B=B^T P B, C_A=A Q A^T",
         f"The r x r metric slot - {model_label} {data_key} r{rank}",
+        target_label=(None if matched_revision else "AdamW"),
+        semantic_view=("precond_matched" if matched_revision else "precond"),
+        reviewed_e1_polora=(not matched_revision),
+        measurement_semantics_revision=(
+            MEASUREMENT_SEMANTICS_REVISION
+            if matched_revision
+            else _UNPINNED_MEASUREMENT_REVISION
+        ),
     )
 
 
 def msign_panel(rank=256):
     """The `msign` axis at both ends of `precond`: can the matrix sign be replaced
     by its diagonal (rownorm / colnorm) with the slot present, and with it gone?"""
-    from lora_playground.workloads import find_workload
-    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    if rank != 256:
+        raise ValueError("paper.msign.v1 is sealed only for rank 256")
     return _archive_figure(
-        _ARCHIVE_MSIGN,
-        workload,
-        "product, msign",
-        f"Diagonal msign - Llama-3.2-1B openmath r{rank}",
+        "paper.msign.v1",
+        "Diagonal msign - Llama-3.2-1B openmath r256",
     )
 
 
 def magnitude_rule_panel(rank=256):
     """Naive rho = eta against the PoLoRA rule rho = eta/(smax(A)+smax(B))."""
-    from lora_playground.workloads import find_workload
-    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    if rank != 256:
+        raise ValueError("paper.magnitude_rule.v1 is sealed only for rank 256")
     return _archive_figure(
-        _ARCHIVE_MAGNITUDE,
-        workload,
-        "PoLoRA: rho = eta/(smax A + smax B)",
-        f"Magnitude rule: naive vs PoLoRA - Llama-3.2-1B openmath r{rank}",
+        "paper.magnitude_rule.v1",
+        "Magnitude rule: naive vs PoLoRA - Llama-3.2-1B openmath r256",
     )
 
 
 def beta2_panel(rank=256):
     """Protagonist curvature_beta grid: the EMA horizon of the P, Q metric."""
-    from lora_playground.workloads import find_workload
-    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    if rank != 256:
+        raise ValueError("paper.polora_beta2.v1 is sealed only for rank 256")
     return _archive_figure(
-        _ARCHIVE_PROTO_BETA2,
-        workload,
-        "Polar-LoRA (shipped, b2=0.99)",
-        f"Protagonist beta2 sweep - Llama-3.2-1B openmath r{rank}",
-        target_label=None,
+        "paper.polora_beta2.v1",
+        "Protagonist beta2 sweep - Llama-3.2-1B openmath r256",
     )
 
 
@@ -884,24 +1187,22 @@ def precond_beta2_panel(rank=16):
     """
     from lora_playground.workloads import find_workload
     workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
-    return _archive_figure(
-        _ARCHIVE_PRECOND_BETA2,
+    return _records_figure(
+        _arms.PRECOND_BETA2_ARMS,
         workload,
         "one-sided, b2=0.99",
         f"Estimation noise in the r x r slot: curvature_beta x precond "
         f"- Llama-3.2-1B openmath r{rank}",
         target_label="AdamW",
+        semantic_view="precond_beta2",
     )
 
 
 def adamw_beta2_panel(rank=256):
     """AdamW beta2 control -- the negative control for the protagonist beta2 grid."""
-    from lora_playground.workloads import find_workload
-    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    if rank != 256:
+        raise ValueError("paper.adamw_beta2.v1 is sealed only for rank 256")
     return _archive_figure(
-        _ARCHIVE_ADAMW_BETA2,
-        workload,
-        "AdamW (shipped, b2=0.999)",
-        f"AdamW beta2 control - Llama-3.2-1B openmath r{rank}",
-        target_label=None,
+        "paper.adamw_beta2.v1",
+        "AdamW beta2 control - Llama-3.2-1B openmath r256",
     )

@@ -61,16 +61,16 @@ def _payload(*, ours_label: str = "Editorial ours") -> dict:
     return {
         "schema_version": 1,
         "archive_projection_id": "fixture-v1",
+        "horizon": 10,
+        "workload_selector": {
+            "model_name": "model-a",
+            "dataset_id": "openmath",
+            "lora_r": 16,
+            "data_pipeline_version": "pipeline-v1",
+        },
         "views": [{
             "id": "figure.main",
             "title": "Main figure",
-            "horizon": 10,
-            "workload_selector": {
-                "model_name": "model-a",
-                "dataset_id": "openmath",
-                "lora_r": 16,
-                "data_pipeline_version": "pipeline-v1",
-            },
             "arms": [
                 {
                     "variant_id": "view:adam",
@@ -137,7 +137,7 @@ def test_unknown_variant_id_fails_archive_resolution():
 
 def test_workload_selector_requires_evidence_for_every_arm():
     payload = _payload()
-    payload["views"][0]["workload_selector"]["model_name"] = "model-b"
+    payload["workload_selector"]["model_name"] = "model-b"
     with pytest.raises(PublicationViewError, match="has no archived run"):
         publication_views_from_payload(payload, archive=_archive())
 
@@ -154,7 +154,7 @@ def test_projection_and_role_ambiguity_fail_closed():
         publication_views_from_payload(payload)
 
     payload = _payload()
-    payload["views"][0]["horizon"] = 0
+    payload["horizon"] = 0
     with pytest.raises(PublicationViewError, match="positive integer"):
         publication_views_from_payload(payload)
 
@@ -166,12 +166,12 @@ def test_unknown_schema_fields_and_non_scalar_selectors_are_rejected():
         publication_views_from_payload(payload)
 
     payload = _payload()
-    payload["views"][0]["workload_selector"]["lora_r"] = [16, 64]
+    payload["workload_selector"]["lora_r"] = [16, 64]
     with pytest.raises(PublicationViewError, match="JSON scalar"):
         publication_views_from_payload(payload)
 
     payload = _payload()
-    payload["views"][0]["workload_selector"]["data_dir"] = "/physical/path"
+    payload["workload_selector"]["data_dir"] = "/physical/path"
     with pytest.raises(PublicationViewError, match="stable 'dataset_id'"):
         publication_views_from_payload(payload)
 
@@ -188,7 +188,7 @@ def test_checked_in_paper_view_resolves_against_checked_in_archive():
         archive=archive,
     )
     payload = json.loads((root / "publication" / "paper_views.json").read_text())
-    selector = payload["views"][0]["workload_selector"]
+    selector = payload["workload_selector"]
     assert selector["dataset_id"] == "openmath"
     assert "data_dir" not in selector
     assert "openmath_instruct_2_2m_packed_seq2048_llama32" not in json.dumps(payload)
@@ -196,3 +196,10 @@ def test_checked_in_paper_view_resolves_against_checked_in_archive():
     assert resolved.horizon == 9000
     assert len(resolved.runs) == 11
     assert resolved.reference_id == resolved.target_id
+    assert set(views.views_by_id) == {
+        "paper.hero.adamw_polora.v1",
+        "paper.msign.v1",
+        "paper.magnitude_rule.v1",
+        "paper.polora_beta2.v1",
+        "paper.adamw_beta2.v1",
+    }

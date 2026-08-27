@@ -42,7 +42,18 @@ def test_publication_panel_rejects_unknown_or_duplicate_sealed_views():
         publication_panel(workload, {"Adam": "AdamW", "baseline": "AdamW"})
 
 
-def test_archive_backed_notebook_panel_never_calls_live_loader(monkeypatch):
+@pytest.mark.parametrize(
+    ("panel", "has_target"),
+    (
+        (lambda plots: plots.msign_panel(256), True),
+        (lambda plots: plots.magnitude_rule_panel(256), True),
+        (lambda plots: plots.beta2_panel(256), False),
+        (lambda plots: plots.adamw_beta2_panel(256), False),
+    ),
+)
+def test_archive_backed_notebook_panels_never_call_live_loader(
+    monkeypatch, panel, has_target,
+):
     from lora_playground.plotting import paper_plots_lib as plots
 
     monkeypatch.setattr(
@@ -57,33 +68,26 @@ def test_archive_backed_notebook_panel_never_calls_live_loader(monkeypatch):
     )
     seen = {}
 
-    def render(*, comparison, reference_id, target_id, **kwargs):
+    def render(comparison, *, reference_id, target_id, **kwargs):
         seen["comparison"] = comparison
         seen["reference_id"] = reference_id
         seen["target_id"] = target_id
         return object(), object(), "summary"
 
-    monkeypatch.setattr(plots, "compare_variants_figure", render)
+    monkeypatch.setattr(plots, "render_comparison", render)
     monkeypatch.setattr(plots.plt, "show", lambda: None)
-    assert plots.beta2_panel(256) == "summary"
+    assert panel(plots) == "summary"
     assert seen["reference_id"] in {
         spec.id for spec in seen["comparison"].variants
     }
-    assert seen["target_id"] is None
+    assert (seen["target_id"] is not None) is has_target
 
 
-def test_archive_backed_panel_fails_closed_when_workload_lacks_arm():
+def test_archive_backed_panel_fails_closed_for_unknown_view():
     from lora_playground.plotting import paper_plots_lib as plots
 
-    workload = find_workload("allenai/OLMo-2-0425-1B", "opc", 64)
-    with pytest.raises(ValueError, match="no OLMo/opc/r64 evidence"):
-        plots._archive_figure(
-            {"PoLoRA": POLORA},
-            workload,
-            "PoLoRA",
-            "missing archive arm",
-            target_label=None,
-        )
+    with pytest.raises(KeyError, match="not declared"):
+        plots._archive_figure("paper.missing.v1")
 
 
 def test_archive_backed_paper_figs_pair_never_calls_workload_runs(monkeypatch):
