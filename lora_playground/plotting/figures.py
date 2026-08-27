@@ -417,29 +417,31 @@ def compare_variants_figure(
             horizon=max_steps,
             completion_slack=completion_slack,
         )
-        per_variant = {
-            label: {
-                lr: (
-                    curve.final_loss,
-                    dict(curve.cfg),
-                    [dict(event) for event in curve.history],
-                )
-                for lr, curve in comparison.completed[label].items()
+        if colors is None:
+            colors = canonical_colors(list(variants))
+        if markers is None:
+            marker_cycle = ["o", "s", "^", "D", "v", "P", "X"]
+            markers = {
+                label: marker_cycle[index % len(marker_cycle)]
+                for index, label in enumerate(variants)
             }
-            for label in variants
-        }
-        per_variant_partial = {
-            label: {
-                lr: (
-                    curve.final_loss,
-                    dict(curve.cfg),
-                    [dict(event) for event in curve.history],
-                    curve.last_step,
-                )
-                for lr, curve in comparison.partials[label].items()
-            } if allow_partial else {}
-            for label in variants
-        }
+        from .render import render_comparison
+        return render_comparison(
+            comparison,
+            reference_id=ref_label,
+            target_id=(target_label if target_label in variants else None),
+            horizon=max_steps,
+            sigma_ref=sigma_ref,
+            colors=colors,
+            markers=markers,
+            figsize=figsize,
+            suptitle=suptitle,
+            show_partials=allow_partial,
+            final_ylim=final_ylim,
+            traj_ylim=traj_ylim,
+            auto_ylim=auto_ylim,
+            divergent_ratio=divergent_ratio,
+        )
     else:
         # Compatibility shim for callers that still ask this plotting helper
         # to perform one loader query per variant.  New callers should prefetch

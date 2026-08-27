@@ -13,228 +13,235 @@ AlgoPerf-style performance profile across the 19 (model, dataset, rank) workload
 
 | canonical variant | coverage | robustness_score | mean ratio-to-best |
 |---|---|---|---|
+| `AdamW` | 19/19 | 0.821 | 1.516 |
+| `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns` | 13/19 | 0.987 | 1.023 |
+| `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95` | 7/19 | 0.993 | 1.008 |
+| `chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham` | 7/19 | 0.973 | 1.063 |
+| `chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham` | 7/19 | 0.940 | 1.169 |
+| `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns` | 6/19 | 0.953 | 1.121 |
+| `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns` | 5/19 | 0.966 | 1.088 |
 
-_Coverage-starved (<5/19, not ranked — see the per-section tables): `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns` (3/19); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) factorwise` (3/19); `AdamW` (3/19); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95` (2/19); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3) precond_method=higham` (2/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95` (1/19); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-3) factorwise β1=0.95` (1/19); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise β1=0.95` (1/19); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-3) β1=0.95` (1/19); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) factorwise` (1/19); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=3e-5) factorwise` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns` (1/19); `chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham` (1/19); `chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 precond_method=gram_ns` (1/19); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-2) factorwise` (1/19)._
+_Coverage-starved (<5/19, not ranked — see the per-section tables): `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) factorwise` (4/19); `chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham` (4/19); `chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham` (4/19); `chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham` (4/19); `chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham` (4/19); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4)` (3/19); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) factorwise` (3/19); `diag-Shampoo +polar ns=5 +nesterov (f=10, β_c=0.99, δ=1e-4)` (3/19); `chord-tight ns=8 k=1 (ε_rel=1e-2) precond_method=higham` (3/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4)` (2/19); `KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4)` (2/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95` (2/19); `KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (2/19); `chord-tight-clean ns=8 k=1 (ε_rel=1e-3) precond_method=higham` (2/19); `chord-tight-clean ns=10 k=1 (c=0.2) precond_method=higham` (2/19); `chord-tight-clean ns=10 k=1 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank` (2/19); `chord-tight PE=10 k=1 (abs=1e-6) precond_method=higham` (2/19); `chord-tight-clean ns=10 k=2 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank` (2/19); `chord-tight-clean PE=10 k=2 (abs=1e-6) precond_method=higham` (2/19); `chord-tight-clean ns=10 k=2 (c=0.2) precond_method=higham` (2/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 precond_method=gram_ns` (2/19); `KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4)` (2/19); `chord-tight-clean ns=5 k=2 (abs=1e-6) precond_method=higham` (2/19); `KL-diag +polar ns=5 (f=10, β_c=0.9, δ=1e-4)` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.81, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.909, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.9564, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.9791, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN rdδ=1e-6 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-3) β1=0.95` (1/19); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-3) factorwise β1=0.95` (1/19); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise β1=0.95` (1/19); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-3) β1=0.95` (1/19); `chord-tight-clean ns=8 k=1 (abs=1e-6) precond_method=higham` (1/19); `KL-diag +polar ns=5 (f=10, β_c=0.999, δ=1e-4)` (1/19); `SOAP-curv +polar ns=5 (f=10, β_c=0.99, δ=1e-3)` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN precond_method=gram_ns` (1/19); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=3e-5) factorwise` (1/19); `chord-tight-clean ns=8 k=1 (abs=1e-6) +curv precond_method=higham` (1/19); `KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=B precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 +cw_solved_rho precond_method=gram_ns` (1/19); `KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-4) precond_method=higham` (1/19); `KL-Shampoo (f=10, β_c=0.99, δ=1e-3) factorwise` (1/19); `SOAP-curv (f=10, β_c=0.99, δ=1e-3)` (1/19); `chord-tight ns=5 k=1 (ε_rel=1e-2) precond_method=higham` (1/19); `KL-diag-flatout +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-2) factorwise` (1/19); `KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-6) precond_method=higham` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 +cw_no_radius precond_method=gram_ns` (1/19); `diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) w/o-curv β1=0.95` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) msign-diag H=8 precond_method=gram_ns` (1/19); `KL-diag (f=10, β_c=0.909, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag (f=10, β_c=0.9564, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag (f=10, β_c=0.9791, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided msign-diag H=8 precond_method=gram_ns` (1/19); `KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv unpinned H=8 initB=symmetric precond_method=gram_ns` (1/19)._
 
 ### OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=64
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.7702**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7561 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7562 | — | 1.00× |
-| KL-diag +polar ns=5 (f=10, β_c=0.9, δ=1e-4) | 3e-02 | 0.7570 | — | 1.00× |
-| KL-diag +polar ns=5 (f=10, β_c=0.999, δ=1e-4) | 3e-02 | 0.7568 | — | 1.00× |
-| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.7631 | — | 1.00× |
-| diag-Shampoo +polar ns=5 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7570 | — | 1.00× |
-| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7557 | — | 1.00× |
-| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7568 | — | 1.00× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) factorwise | 3e-02 | 0.7566 | — | 1.00× |
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-02 | 0.7608 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 1e-02 | 0.7577 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 1e-02 | 0.7587 | — | 1.00× |
-| chord-tight-clean ns=10 k=1 (c=0.2) precond_method=higham | 1e-02 | 0.7574 | — | 1.00× |
-| chord-tight-clean ns=10 k=1 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-02 | 0.7569 | — | 1.00× |
-| chord-tight PE=10 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.7574 | — | 1.00× |
-| chord-tight-clean PE=10 k=2 (abs=1e-6) precond_method=higham | 3e-02 | 0.7571 | — | 1.00× |
-| chord-tight-clean ns=5 k=2 (abs=1e-6) precond_method=higham | 1e-01 | 0.7631 | — | 1.00× |
-| chord-tight-clean ns=10 k=2 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-01 | 0.7571 | — | 1.00× |
-| chord-tight-clean ns=10 k=2 (c=0.2) precond_method=higham | 1e-01 | 0.7575 | — | — |
-| AdamW precond_method=higham | 3e-04 | 0.7702 | — | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.7547 | — | 1.00× |
+| AdamW | 3e-04 | 0.7702 | 1.00× | 1.00× |
+| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7557 | 1.67× | 1.26× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7561 | 1.66× | 1.26× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7562 | 1.65× | 1.26× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) factorwise | 3e-02 | 0.7566 | 1.62× | 1.15× |
+| KL-diag +polar ns=5 (f=10, β_c=0.9, δ=1e-4) | 3e-02 | 0.7570 | 1.60× | 1.26× |
+| chord-tight-clean ns=10 k=2 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-01 | 0.7571 | 1.60× | 1.39× |
+| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7568 | 1.60× | 1.25× |
+| KL-diag +polar ns=5 (f=10, β_c=0.999, δ=1e-4) | 3e-02 | 0.7568 | 1.59× | 1.26× |
+| chord-tight-clean ns=10 k=2 (c=0.2) precond_method=higham | 1e-01 | 0.7575 | 1.59× | — |
+| diag-Shampoo +polar ns=5 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7570 | 1.59× | 1.26× |
+| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.7547 | 1.56× | 1.37× |
+| chord-tight PE=10 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.7574 | 1.50× | 1.19× |
+| chord-tight-clean ns=10 k=1 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-02 | 0.7569 | 1.50× | 1.20× |
+| chord-tight-clean PE=10 k=2 (abs=1e-6) precond_method=higham | 3e-02 | 0.7571 | 1.49× | 1.20× |
+| chord-tight-clean ns=10 k=1 (c=0.2) precond_method=higham | 1e-02 | 0.7574 | 1.49× | 1.16× |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 1e-02 | 0.7577 | 1.49× | 1.18× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 1e-02 | 0.7587 | 1.46× | 1.19× |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-02 | 0.7608 | 1.32× | 1.17× |
+| chord-tight-clean ns=5 k=2 (abs=1e-6) precond_method=higham | 1e-01 | 0.7631 | 1.31× | 1.19× |
+| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.7631 | 1.26× | 1.16× |
 
 ### OLMo-2-1B × opc-sft-stage2 (OpenCoder) × r=256
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.7524**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.7356 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-02 | 0.7363 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7360 | — | 1.00× |
-| diag-Shampoo +polar ns=5 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7374 | — | 1.00× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) factorwise | 1e-02 | 0.7383 | — | 1.00× |
-| KL-Shampoo (f=10, β_c=0.99, δ=1e-3) factorwise | 1e-02 | 0.7474 | — | 1.00× |
-| SOAP-curv (f=10, β_c=0.99, δ=1e-3) factorwise | 1e-02 | 0.7423 | — | 1.00× |
-| SOAP-curv +polar ns=5 (f=10, β_c=0.99, δ=1e-3) factorwise | 1e-02 | 0.7387 | — | 1.00× |
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-02 | 0.7430 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 1e-02 | 0.7386 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 3e-03 | 0.7432 | — | 1.00× |
-| chord-tight ns=5 k=1 (ε_rel=1e-2) precond_method=higham | 3e-02 | 0.7415 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-2) precond_method=higham | 1e-02 | 0.7399 | — | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.7388 | — | 1.00× |
-| chord-tight-clean ns=10 k=1 (c=0.2) precond_method=higham | 1e-02 | 0.7391 | — | 1.00× |
-| chord-tight-clean ns=10 k=1 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-02 | 0.7387 | — | 1.00× |
-| chord-tight PE=10 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.7414 | — | 1.00× |
-| chord-tight-clean PE=10 k=2 (abs=1e-6) precond_method=higham | 1e-01 | 0.7422 | — | 1.00× |
-| chord-tight-clean ns=5 k=2 (abs=1e-6) precond_method=higham | 1e-01 | 0.7511 | — | 1.00× |
-| chord-tight-clean ns=10 k=2 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-01 | 0.7437 | — | 1.00× |
-| chord-tight-clean ns=10 k=2 (c=0.2) precond_method=higham | 1e-01 | 0.7494 | — | — |
-| AdamW precond_method=higham | 1e-04 | 0.7524 | — | 1.00× |
-| chord-tight-clean ns=8 k=1 (abs=1e-6) +curv precond_method=higham | 3e-03 | 0.7394 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.7377 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7357 | — | 1.00× |
+| AdamW | 1e-04 | 0.7524 | 1.00× | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.7356 | 1.61× | 1.26× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7357 | 1.57× | 1.28× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7360 | 1.56× | 1.28× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-02 | 0.7363 | 1.55× | 1.27× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.7377 | 1.52× | 1.27× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-3) factorwise | 1e-02 | 0.7383 | 1.51× | 1.19× |
+| diag-Shampoo +polar ns=5 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.7374 | 1.50× | 1.26× |
+| SOAP-curv +polar ns=5 (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.7387 | 1.49× | 1.23× |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 1e-02 | 0.7386 | 1.44× | 1.20× |
+| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.7388 | 1.44× | 1.31× |
+| chord-tight-clean ns=8 k=1 (abs=1e-6) +curv precond_method=higham | 3e-03 | 0.7394 | 1.44× | 1.12× |
+| chord-tight-clean ns=10 k=1 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-02 | 0.7387 | 1.44× | 1.20× |
+| chord-tight-clean ns=10 k=1 (c=0.2) precond_method=higham | 1e-02 | 0.7391 | 1.43× | 1.22× |
+| chord-tight ns=8 k=1 (ε_rel=1e-2) precond_method=higham | 1e-02 | 0.7399 | 1.41× | 1.17× |
+| chord-tight PE=10 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.7414 | 1.37× | 1.20× |
+| chord-tight ns=5 k=1 (ε_rel=1e-2) precond_method=higham | 3e-02 | 0.7415 | 1.34× | 1.18× |
+| KL-Shampoo (f=10, β_c=0.99, δ=1e-3) factorwise | 1e-02 | 0.7474 | 1.33× | 1.09× |
+| chord-tight-clean PE=10 k=2 (abs=1e-6) precond_method=higham | 1e-01 | 0.7422 | 1.33× | 1.19× |
+| SOAP-curv (f=10, β_c=0.99, δ=1e-3) | 1e-02 | 0.7423 | 1.33× | 1.15× |
+| chord-tight-clean ns=10 k=2 (κ_sr=0.75) precond_method=higham ssc_kappa_solver=stable_rank | 1e-01 | 0.7437 | 1.31× | 1.16× |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-02 | 0.7430 | 1.29× | 1.16× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 3e-03 | 0.7432 | 1.29× | 1.13× |
+| chord-tight-clean ns=10 k=2 (c=0.2) precond_method=higham | 1e-01 | 0.7494 | 1.10× | — |
+| chord-tight-clean ns=5 k=2 (abs=1e-6) precond_method=higham | 1e-01 | 0.7511 | 1.04× | 1.01× |
 
 ### OLMo-2-1B × OpenMathInstruct-2 × r=64
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.4090**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW precond_method=higham | 3e-04 | 0.4090 | — | 1.00× |
-| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.3985 | — | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 1e-01 | 0.3961 | — | 1.00× |
+| AdamW | 3e-04 | 0.4090 | 1.00× | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 1e-01 | 0.3961 | 1.55× | 1.43× |
+| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.3985 | 1.44× | 1.17× |
 
 ### OLMo-2-1B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.3964**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3780 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3758 | — | 1.00× |
-| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.3844 | — | 1.00× |
-| diag-Shampoo +polar ns=5 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | — | 1.00× |
-| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3773 | — | 1.00× |
-| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3766 | — | 1.00× |
-| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) factorwise | 3e-02 | 0.3772 | — | 1.00× |
-| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.3788 | — | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.3820 | — | 1.00× |
-| AdamW precond_method=higham | 1e-04 | 0.3964 | — | 1.00× |
+| AdamW | 1e-04 | 0.3964 | 1.00× | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3758 | 1.86× | 1.39× |
+| KL-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) factorwise | 3e-02 | 0.3772 | 1.78× | 1.29× |
+| KL-diag +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3766 | 1.77× | 1.42× |
+| KL-diag +polar ns=5 k2 (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3773 | 1.76× | 1.41× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3780 | 1.74× | 1.50× |
+| diag-Shampoo +polar ns=5 +nesterov (f=10, β_c=0.99, δ=1e-4) | 3e-02 | 0.3772 | 1.73× | 1.37× |
+| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.3788 | 1.60× | 1.50× |
+| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.3820 | 1.55× | 1.40× |
+| KL-diag-flatout +polar ns=5 (f=10, β_c=0.99, δ=1e-4) | 3e-03 | 0.3844 | 1.41× | 1.20× |
 
 ### OLMo-2-1B × Tulu-3 SFT mixture × r=64
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.7926**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW precond_method=higham | 1e-04 | 0.7926 | — | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.7837 | — | 1.00× |
+| AdamW | 1e-04 | 0.7926 | 1.00× | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.7837 | 1.45× | 1.23× |
 
 ### OLMo-2-1B × Tulu-3 SFT mixture × r=256
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.7802**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.7704 | — | 1.00× |
-| AdamW precond_method=higham | 1e-04 | 0.7802 | — | 1.00× |
+| AdamW | 1e-04 | 0.7802 | 1.00× | 1.00× |
+| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-02 | 0.7704 | 1.35× | 1.22× |
 
 ### Llama-3.2-1B × opc-sft-stage2 (OpenCoder) × r=64
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.7003**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-03 | 0.6988 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 3e-03 | 0.6973 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-2) precond_method=higham | 3e-03 | 0.6973 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 3e-03 | 0.6978 | — | 1.00× |
-| chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham | 3e-03 | 0.6986 | — | 1.00× |
+| AdamW | 1e-04 | 0.7003 | 1.00× | 1.00× |
+| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.6972 | 1.14× | 1.04× |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 3e-03 | 0.6973 | 1.14× | 1.04× |
+| chord-tight ns=8 k=1 (ε_rel=1e-2) precond_method=higham | 3e-03 | 0.6973 | 1.14× | 1.04× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 3e-03 | 0.6978 | 1.11× | 1.03× |
+| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.6979 | 1.09× | 1.03× |
+| chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham | 3e-03 | 0.6986 | 1.08× | 1.03× |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-03 | 0.6988 | 1.07× | 1.02× |
 | chord-tight ns=3 k=1 (abs=1e-6) precond_method=higham | 1e-02 | 0.7003 | — | 1.00× |
-| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.6972 | — | 1.00× |
-| chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.6979 | — | 1.00× |
-| AdamW precond_method=higham | 1e-04 | 0.7003 | — | 1.00× |
 
 ### Llama-3.2-1B × opc-sft-stage2 (OpenCoder) × r=256
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.6948**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 3e-03 | 0.6867 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 1e-03 | 0.6874 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-03 | 0.6848 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-03 | 0.6849 | — | 1.00× |
-| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-03 | 0.6895 | — | — |
-| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 1e-03 | 0.6893 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-2) precond_method=higham | 1e-03 | 0.6891 | — | 1.00× |
-| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 1e-03 | 0.6886 | — | 1.00× |
-| AdamW precond_method=higham | 3e-05 | 0.6948 | — | 1.00× |
-| chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham | 3e-03 | 0.6880 | — | 1.00× |
-| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 1e-03 | 0.6894 | — | — |
+| AdamW | 3e-05 | 0.6948 | 1.00× | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 3e-03 | 0.6849 | 1.55× | 1.17× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-03 | 0.6848 | 1.55× | 1.24× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 3e-03 | 0.6867 | 1.43× | 1.18× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 1e-03 | 0.6874 | 1.35× | 1.16× |
+| chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham | 3e-03 | 0.6880 | 1.34× | 1.16× |
+| chord-tight ns=8 k=1 (ε_rel=1e-1) precond_method=higham | 1e-03 | 0.6886 | 1.32× | 1.09× |
+| chord-tight ns=8 k=1 (ε_rel=1e-2) precond_method=higham | 1e-03 | 0.6891 | 1.28× | 1.13× |
+| chord-tight ns=8 k=1 (ε_rel=1e-3) precond_method=higham | 1e-03 | 0.6893 | 1.27× | 1.13× |
+| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 1e-03 | 0.6894 | 1.26× | — |
+| chord-tight-clean ns=8 k=2 (ε_rel=1e-2) precond_method=higham | 3e-03 | 0.6895 | 1.25× | — |
 | chord-tight ns=5 k=1 (abs=1e-6) precond_method=higham | 1e-03 | 0.6976 | — | — |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=16
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.4218**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 3e-02 | 0.4187 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 1e-02 | 0.4158 | — | 1.00× |
-| AdamW -cw_nesterov | 3e-04 | 0.4218 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 2e-02 | 0.4152 | — | 1.00× |
+| AdamW | 3e-04 | 0.4218 | 1.00× | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 2e-02 | 0.4152 | 1.30× | 1.23× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 1e-02 | 0.4158 | 1.26× | 1.15× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 3e-02 | 0.4187 | 1.14× | 1.06× |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=32
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.4115**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.4000 | — | 1.00× |
-| AdamW -cw_nesterov | 3e-04 | 0.4115 | — | 1.00× |
+| AdamW | 3e-04 | 0.4115 | 1.00× | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.4000 | 1.48× | 1.23× |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=64
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.3991**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 3e-02 | 0.3900 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 1e-02 | 0.3886 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3853 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3847 | — | 1.00× |
-| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.3909 | — | 1.00× |
-| AdamW precond_method=higham | 1e-04 | 0.3991 | — | 1.00× |
+| AdamW | 1e-04 | 0.3991 | 1.00× | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3847 | 1.59× | 1.21× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3853 | 1.54× | 1.25× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 1e-02 | 0.3886 | 1.41× | 1.20× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 3e-02 | 0.3900 | 1.33× | 1.11× |
+| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.3909 | 1.26× | 1.16× |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=128
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.3890**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3743 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3733 | — | 1.00× |
-| AdamW -cw_nesterov | 1e-04 | 0.3890 | — | 1.00× |
+| AdamW | 1e-04 | 0.3890 | 1.00× | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3733 | 1.57× | 1.27× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3743 | 1.52× | 1.28× |
 
 ### Llama-3.2-1B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.3823**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) msign-diag H=8 precond_method=gram_ns | 3e-02 | 0.3726 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 3e-03 | 0.3673 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided msign-diag H=8 precond_method=gram_ns | 1e-02 | 0.3810 | — | 1.00× |
-| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 1e-02 | 0.3681 | — | 1.00× |
-| KL-diag (f=10, β_c=0.909, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3728 | — | — |
-| KL-diag (f=10, β_c=0.9564, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3730 | — | — |
-| KL-diag (f=10, β_c=0.9791, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3731 | — | — |
-| KL-diag (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3732 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 +cw_no_radius precond_method=gram_ns | 3e-03 | 0.3724 | — | 1.00× |
-| AdamW beta2=0.81 -cw_nesterov | 1e-04 | 0.3831 | — | — |
-| AdamW beta2=0.909 -cw_nesterov | 1e-04 | 0.3826 | — | — |
-| AdamW beta2=0.9564 -cw_nesterov | 1e-04 | 0.3825 | — | — |
-| AdamW beta2=0.9791 -cw_nesterov | 1e-04 | 0.3824 | — | — |
-| AdamW beta2=0.99 -cw_nesterov | 1e-04 | 0.3826 | — | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.81, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3644 | — | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.909, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3644 | — | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.9564, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3643 | — | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.9791, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3643 | — | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3650 | — | 1.00× |
-| KL-diag-flatout +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-03 | 0.3702 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 +cw_solved_rho precond_method=gram_ns | 3e-03 | 0.3692 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN rdδ=1e-6 precond_method=gram_ns | 1e-02 | 0.3643 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=B precond_method=gram_ns | 1e-02 | 0.3675 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN precond_method=gram_ns | 1e-02 | 0.3656 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv unpinned H=8 initB=symmetric precond_method=gram_ns | 1e-03 | 0.3815 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 precond_method=gram_ns | 3e-03 | 0.3724 | — | 1.00× |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) w/o-curv β1=0.95 | 3e-03 | 0.3723 | — | — |
-| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3644 | — | 1.00× |
-| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.3710 | — | 1.00× |
-| AdamW precond_method=higham | 1e-04 | 0.3823 | — | 1.00× |
+| AdamW | 1e-04 | 0.3823 | 1.00× | 1.00× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) β1=0.95 | 1e-02 | 0.3644 | 1.68× | 1.38× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3650 | 1.64× | 1.40× |
+| KL-diag +polar PE=8 (f=10, β_c=0.9791, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3643 | 1.63× | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.9564, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3643 | 1.63× | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.81, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3644 | 1.63× | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.909, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.3644 | 1.62× | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN rdδ=1e-6 precond_method=gram_ns | 1e-02 | 0.3643 | 1.62× | 1.41× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=VN precond_method=gram_ns | 1e-02 | 0.3656 | 1.58× | 1.34× |
+| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 1e-02 | 0.3681 | 1.52× | 1.29× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 3e-03 | 0.3673 | 1.49× | 1.20× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 rdinv=B precond_method=gram_ns | 1e-02 | 0.3675 | 1.47× | 1.22× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 +cw_solved_rho precond_method=gram_ns | 3e-03 | 0.3692 | 1.45× | 1.15× |
+| KL-diag-flatout +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-03 | 0.3702 | 1.40× | 1.18× |
+| chord-tight ns=8 k=1 (abs=1e-6) precond_method=higham | 3e-03 | 0.3710 | 1.36× | 1.20× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 +cw_no_radius precond_method=gram_ns | 3e-03 | 0.3724 | 1.32× | 1.09× |
+| diag-Shampoo +polar PE=8 +nesterov (f=10, β_c=0.99, δ=1e-4) w/o-curv β1=0.95 | 3e-03 | 0.3723 | 1.30× | — |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv H=8 precond_method=gram_ns | 3e-03 | 0.3724 | 1.29× | 1.10× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) msign-diag H=8 precond_method=gram_ns | 3e-02 | 0.3726 | 1.26× | 1.09× |
+| KL-diag (f=10, β_c=0.9564, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3730 | 1.25× | — |
+| KL-diag (f=10, β_c=0.909, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3728 | 1.24× | — |
+| KL-diag (f=10, β_c=0.9791, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3731 | 1.24× | — |
+| KL-diag (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-02 | 0.3732 | 1.24× | 1.07× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided msign-diag H=8 precond_method=gram_ns | 1e-02 | 0.3810 | 1.03× | 1.01× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) w/o-curv unpinned H=8 initB=symmetric precond_method=gram_ns | 1e-03 | 0.3815 | 1.01× | 1.00× |
+| AdamW beta2=0.81 | 1e-04 | 0.3831 | — | — |
+| AdamW beta2=0.909 | 1e-04 | 0.3826 | — | — |
+| AdamW beta2=0.9564 | 1e-04 | 0.3825 | — | — |
+| AdamW beta2=0.9791 | 1e-04 | 0.3824 | — | — |
+| AdamW beta2=0.99 | 1e-04 | 0.3826 | — | — |
 
 ### Qwen2.5-1.5B × opc-sft-stage2 (OpenCoder) × r=256
 
@@ -254,14 +261,14 @@ AdamW speed target (best-lr final loss): **0.6023**  ·  horizon 9000 steps
 
 ### Qwen2.5-1.5B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.2935**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 1e-02 | 0.2867 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 3e-03 | 0.2882 | — | 1.00× |
-| AdamW -cw_nesterov | 3e-05 | 0.2935 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.2877 | — | 1.00× |
+| AdamW | 3e-05 | 0.2935 | 1.00× | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 precond_method=gram_ns | 1e-02 | 0.2867 | 1.80× | 1.39× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 1e-02 | 0.2877 | 1.64× | 1.33× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 precond_method=gram_ns | 3e-03 | 0.2882 | 1.54× | 1.25× |
 
 ### Qwen2.5-1.5B × Aya-Bengali × r=256
 
@@ -298,22 +305,22 @@ AdamW speed target (best-lr final loss): **0.5553**  ·  horizon 9000 steps
 
 ### Meta-Llama-3-8B × OpenMathInstruct-2 × r=256
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **0.2866**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| AdamW -cw_nesterov | 3e-05 | 0.2866 | — | 1.00× |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-03 | 0.2773 | — | 1.00× |
+| AdamW | 3e-05 | 0.2866 | 1.00× | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 precond_method=gram_ns | 3e-03 | 0.2773 | 1.59× | 1.25× |
 
 ### Qwen3-0.6B × OpenWebMath × r=64
 
-AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
+AdamW speed target (best-lr final loss): **1.8460**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
-| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-6) precond_method=higham | 1e-03 | 1.8454 | — | 1.00× |
-| AdamW precond_method=higham | 1e-04 | 1.8460 | — | 1.00× |
-| chord-tight-clean ns=8 k=1 (abs=1e-6) precond_method=higham | 1e-03 | 1.8442 | — | 1.00× |
-| chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham | 1e-03 | 1.8442 | — | 1.00× |
-| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-4) precond_method=higham | 1e-03 | 1.8452 | — | 1.00× |
+| AdamW | 1e-04 | 1.8460 | 1.00× | 1.00× |
+| chord-tight-clean ns=8 k=2 (abs=1e-6) precond_method=higham | 1e-03 | 1.8442 | 1.34× | 1.10× |
+| chord-tight-clean ns=8 k=1 (abs=1e-6) precond_method=higham | 1e-03 | 1.8442 | 1.30× | 1.08× |
+| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-4) precond_method=higham | 1e-03 | 1.8452 | 1.16× | 1.06× |
+| KL-diag +polar ns=8 (f=10, β_c=0.99, δ=1e-6) precond_method=higham | 1e-03 | 1.8454 | 1.11× | 1.04× |
 
