@@ -328,6 +328,34 @@ def run_view(run: Any, index: int = 0) -> RunView:
             run_schema_version=run.raw_config.get("run_schema_version"),
         )
 
+    # Immutable projections (for example a sealed historical publication
+    # archive) use the same explicit record contract without pretending to be
+    # a physical catalog record.
+    if (
+        hasattr(run, "effective_config")
+        and hasattr(run, "raw_config")
+        and hasattr(run, "history")
+        and hasattr(run, "physical_id")
+    ):
+        raw = run.raw_config
+        if not isinstance(raw, Mapping):
+            raise TypeError("projected run raw_config must be a mapping")
+        group = getattr(run, "group", None)
+        filename = getattr(run, "log_filename", None)
+        return RunView(
+            semantic_config=freeze_value(dict(run.effective_config)),
+            audit_config=_audit_config(raw),
+            raw_config=freeze_value(dict(raw)),
+            history=tuple(freeze_value(dict(event)) for event in run.history),
+            physical_id=str(run.physical_id),
+            group=group,
+            log_filename=filename,
+            semantic_revisions=_view_revisions(
+                raw, getattr(run, "semantic_revisions", None)
+            ),
+            run_schema_version=raw.get("run_schema_version"),
+        )
+
     # Avoid importing run_lineage here: it already imports this module.  The
     # explicit attribute contract distinguishes a merged lineage from a raw
     # record and from a legacy tuple.

@@ -334,7 +334,7 @@ def workload_records(
     tuple-returning :func:`workload_runs` remains the legacy notebook facade
     until label/default parity has been audited cell by cell.
     """
-    from lora_playground.loader import load_records
+    from lora_playground.run_catalog import load_records
     from lora_playground.run_records import run_view
 
     records = load_records(

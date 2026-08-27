@@ -161,68 +161,31 @@ class _AssignedRun:
 def _comparison_input(run: RunInput, index: int) -> tuple[RunConfig, History]:
     """Normalize catalog records/lineages and legacy tuples at one boundary.
 
-    Catalog objects contribute only their logged effective configuration plus
-    the few physical/status fields comparison needs.  This deliberately avoids
-    reintroducing the raw config as a second source of semantic defaults.
+    Legacy tuples retain their exact compatibility config.  Structured inputs
+    go through the public run-view adapter so every records-native consumer
+    uses the same separation of semantic configuration and audit provenance.
     """
     if isinstance(run, tuple) and len(run) == 2:
         return run
 
-    if hasattr(run, "effective_config") and hasattr(run, "history"):
-        cfg = dict(run.effective_config)
-        raw = getattr(run, "raw_config", {})
-        revisions = raw.get("semantic_revisions", {}) if isinstance(
-            raw, Mapping
-        ) else {}
-        if isinstance(revisions, Mapping):
-            cfg.setdefault("optimizer_impl_revision",
-                           revisions.get("optimizer_impl"))
-            cfg.setdefault("measurement_semantics_revision",
-                           revisions.get("measurement"))
-            cfg.setdefault("data_pipeline_version",
-                           revisions.get("data_pipeline"))
-        cfg["run_id"] = str(getattr(run, "physical_id", f"run[{index}]"))
-        group = getattr(run, "group", None)
-        filename = getattr(run, "log_filename", None)
-        if group is not None:
-            cfg["log_group"] = group
-        if filename is not None:
-            cfg["_log_filename"] = filename
-        if isinstance(raw, Mapping) and raw.get("_aborted") is not None:
-            cfg["_aborted"] = raw["_aborted"]
-        return cfg, run.history
+    from .run_records import run_view
 
-    if (hasattr(run, "semantic_config") and hasattr(run, "cfg")
-            and hasattr(run, "history")):
-        cfg = dict(run.semantic_config)
-        raw = run.cfg
-        revisions = getattr(run, "semantic_revisions", {})
-        if isinstance(revisions, Mapping):
-            cfg.setdefault("optimizer_impl_revision",
-                           revisions.get("optimizer_impl"))
-            cfg.setdefault("measurement_semantics_revision",
-                           revisions.get("measurement"))
-            cfg.setdefault("data_pipeline_version",
-                           revisions.get("data_pipeline"))
-        cfg["run_id"] = str(
-            getattr(run, "terminal_attempt_id", f"run[{index}]")
-        )
-        group = getattr(run, "terminal_group", None)
-        filename = getattr(run, "terminal_log_filename", None)
-        if group is not None:
-            cfg["log_group"] = group
-        if filename is not None:
-            cfg["_log_filename"] = filename
-        if isinstance(raw, Mapping):
-            for field in ("log_group", "_log_filename", "_aborted"):
-                if raw.get(field) is not None:
-                    cfg[field] = raw[field]
-        return cfg, run.history
-
-    raise TypeError(
-        "runs must contain (cfg, history) tuples, RunRecord objects, or "
-        "MergedRunLineage objects"
+    view = run_view(run, index)
+    cfg = dict(view.semantic_config)
+    revisions = view.semantic_revisions
+    cfg.setdefault("optimizer_impl_revision", revisions.get("optimizer_impl"))
+    cfg.setdefault(
+        "measurement_semantics_revision", revisions.get("measurement")
     )
+    cfg.setdefault("data_pipeline_version", revisions.get("data_pipeline"))
+    cfg["run_id"] = view.physical_id
+    if view.group is not None:
+        cfg["log_group"] = view.group
+    if view.log_filename is not None:
+        cfg["_log_filename"] = view.log_filename
+    if view.raw_config.get("_aborted") is not None:
+        cfg["_aborted"] = view.raw_config["_aborted"]
+    return cfg, view.history
 
 
 def _run_id(cfg: RunConfig, index: int) -> str:

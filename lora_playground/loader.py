@@ -29,6 +29,7 @@ from .plotting import (
     DIVERGE_THRESHOLD, OPTIM_COLORS, RUNTIME_FIELDS, has_runs, load_sweep,
     max_loss, merge_runs, parse_flag, prescan_groups, scan_epoch, scan_group,
 )
+from .run_catalog import load_records
 
 
 class UncontrolledAxisError(RuntimeError):
@@ -43,37 +44,6 @@ class UncontrolledAxisError(RuntimeError):
 def _default_logs_root() -> str:
     """Repo-anchored ``logs/`` path, independent of caller cwd."""
     return str(Path(__file__).resolve().parent.parent / "logs")
-
-
-def load_records(
-    *,
-    equals: dict[str, Any] | None = None,
-    one_of: dict[str, Iterable[Any]] | None = None,
-    logs_root: str | None = None,
-    catalog=None,
-    resolve_lineages: bool = True,
-):
-    """Primary run-loading API: catalog query plus explicit lineage.
-
-    Predicates are intentionally limited to scalar equality and explicit
-    membership. The returned objects are immutable ``RunRecord`` instances or,
-    when enabled, validated ``MergedRunLineage`` objects. Historical logs stay
-    as independent records; only versioned attempts with an actual recorded
-    resume edge are merged.
-
-    ``load_runs`` below remains the mutable-tuple compatibility adapter for
-    existing notebooks while consumers migrate to this API.
-    """
-    from .run_catalog import RunCatalog
-
-    if catalog is not None and logs_root is not None:
-        raise ValueError("pass either catalog or logs_root, not both")
-    if catalog is None:
-        catalog = RunCatalog.discover(logs_root or _default_logs_root())
-    elif not isinstance(catalog, RunCatalog):
-        raise TypeError("catalog must be a RunCatalog")
-    records = catalog.query(equals=equals, one_of=one_of)
-    return catalog.resolve_lineages(records) if resolve_lineages else records
 
 
 def _repo_root() -> Path:

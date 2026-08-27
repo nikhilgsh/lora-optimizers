@@ -21,6 +21,9 @@ from .run_parsing import parse_run_file
 from .run_records import RunIssue, RunRecord, freeze_value
 
 
+__all__ = ["RunCatalog", "load_records"]
+
+
 _TASK_FILE_RE = re.compile(r"^log_(\d+)\.out(?:\.resume_\d+)?$")
 _SCALAR_TYPES = (str, int, float, bool, type(None))
 
@@ -441,3 +444,37 @@ class RunCatalog:
             cfg.setdefault("run_id", run.terminal_attempt_id)
             out.append((cfg, thaw_value(run.history)))
         return out
+
+
+def _default_logs_root() -> str:
+    """Repo-anchored ``logs/`` path, independent of caller cwd."""
+    return str(Path(__file__).resolve().parent.parent / "logs")
+
+
+def load_records(
+    *,
+    equals: dict[str, Any] | None = None,
+    one_of: dict[str, Iterable[Any]] | None = None,
+    logs_root: str | None = None,
+    catalog=None,
+    resolve_lineages: bool = True,
+):
+    """Load immutable run records without importing the legacy loader.
+
+    Predicates are intentionally limited to scalar equality and explicit
+    membership. The returned objects are immutable ``RunRecord`` instances or,
+    when enabled, validated ``MergedRunLineage`` objects. Historical logs stay
+    as independent records; only versioned attempts with an actual recorded
+    resume edge are merged.
+
+    ``lora_playground.loader.load_records`` is an exact compatibility re-export
+    of this function while tuple-based consumers migrate to records.
+    """
+    if catalog is not None and logs_root is not None:
+        raise ValueError("pass either catalog or logs_root, not both")
+    if catalog is None:
+        catalog = RunCatalog.discover(logs_root or _default_logs_root())
+    elif not isinstance(catalog, RunCatalog):
+        raise TypeError("catalog must be a RunCatalog")
+    records = catalog.query(equals=equals, one_of=one_of)
+    return catalog.resolve_lineages(records) if resolve_lineages else records
