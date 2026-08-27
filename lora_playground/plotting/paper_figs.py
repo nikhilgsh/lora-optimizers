@@ -19,8 +19,11 @@ Design (locked with the user, conventions from Mousse/SPlus/LoRA+ in docs/papers
                            minima alignment across rank is comparable; diverged points
                            exit the frame top (no arrows).
 
-All numbers flow through lora_playground.{workloads,leaderboard} — same source as
-docs/notes/leaderboard.md. PNG previews written next to each PDF.
+Reviewed AdamW/PoLoRA comparisons flow through the checked-in publication archive,
+the workload registry, and the records-native comparison core — the same sealed source
+as docs/notes/leaderboard.md. Figures requiring external baselines not represented by
+that archive retain their live-data compatibility path. PNG previews are written next
+to each PDF.
 """
 from __future__ import annotations
 
@@ -38,7 +41,14 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[2]
 
 from lora_playground.leaderboard import (
-    labeled_completed_runs, leaderboard_rows, reach_fraction, speedup_from_frac,
+    labeled_completed_runs, leaderboard_rows, leaderboard_rows_from_comparison,
+    reach_fraction, speedup_from_frac,
+)
+from lora_playground.publication_paper import (
+    LEGACY_ADAMW_VARIANT_LABEL,
+    LEGACY_POLORA_VARIANT_LABEL,
+    labeled_completed,
+    publication_panel,
 )
 from lora_playground.workloads import find_workload, iter_workloads, workload_runs
 from lora_playground.plotting import arms as _arms
@@ -146,6 +156,20 @@ ablation_variant_key = _arms.variant_key_fn({}, _ABLATION_ARMS)
 arm_key = _arms.variant_key_fn({}, _ARM_KEY_ARMS)
 
 
+# Archive-backed figures select the reviewed publication views explicitly.  The
+# paper keeps its short editorial names, while aggregation is keyed by the
+# archive's stable view IDs (see ``publication_paper.publication_panel``).
+_ARCHIVE_ADAM_POLORA = {
+    "Adam": LEGACY_ADAMW_VARIANT_LABEL,
+    "PoLoRA": LEGACY_POLORA_VARIANT_LABEL,
+}
+
+
+def _adam_polora_comparison(wl):
+    panel = publication_panel(wl, _ARCHIVE_ADAM_POLORA)
+    return panel, labeled_completed(panel)
+
+
 def _hist_xy(hist):
     ev = sorted((e for e in hist if "eval_loss" in e and "step" in e),
                 key=lambda e: e["step"])
@@ -164,9 +188,14 @@ def _paper_cells():
     """(workload, rows-by-variant, target) for every cell with PoLoRA + AdamW."""
     out = []
     for wl in iter_workloads():
-        labeled = labeled_completed_runs(
-            workload_runs(wl), paper_variant_key, horizon=wl.horizon)
-        rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
+        panel, labeled = _adam_polora_comparison(wl)
+        if panel.comparison.best_completed[panel.variant_id("PoLoRA")] is None:
+            continue
+        rows, target = leaderboard_rows_from_comparison(
+            panel.comparison,
+            horizon=wl.horizon,
+            baseline_id=panel.variant_id("Adam"),
+        )
         rows = {r["variant"]: r for r in rows}
         if "PoLoRA" in rows and "Adam" in rows:
             out.append((wl, labeled, rows, target))
@@ -390,9 +419,12 @@ def fig_ood(figsize=(6.5, 2.9)):
     print("── fig_ood (Qwen2.5-1.5B r256 task pair) ──")
     for ax, (model, data, rank, title) in zip(axes, specs):
         wl = find_workload(model, data, rank)
-        labeled = labeled_completed_runs(
-            workload_runs(wl), paper_variant_key, horizon=wl.horizon)
-        rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
+        panel, labeled = _adam_polora_comparison(wl)
+        rows, target = leaderboard_rows_from_comparison(
+            panel.comparison,
+            horizon=wl.horizon,
+            baseline_id=panel.variant_id("Adam"),
+        )
         rows = {r["variant"]: r for r in rows}
         finals = {}
         proto_xy = None
@@ -431,9 +463,12 @@ def _draw_loss_panel(ax, model, data, rank, title, xlabel=True, ylabel=False):
     dashed steps-saved span, and a small boxed 'N x fewer steps' callout. Returns
     (handles, labels) so the caller can build one shared legend."""
     wl = find_workload(model, data, rank)
-    labeled = labeled_completed_runs(
-        workload_runs(wl), paper_variant_key, horizon=wl.horizon)
-    rows, target = leaderboard_rows(labeled, horizon=wl.horizon, baseline_label="Adam")
+    panel, labeled = _adam_polora_comparison(wl)
+    rows, target = leaderboard_rows_from_comparison(
+        panel.comparison,
+        horizon=wl.horizon,
+        baseline_id=panel.variant_id("Adam"),
+    )
     rows = {r["variant"]: r for r in rows}
     finals = {}
     for v in ("Adam", "PoLoRA"):
@@ -615,7 +650,7 @@ def fig3(star_ms=11, figsize=(6.5, 2.6)):
     print("── fig3 lr transfer (openmath r>=32 ladder) ──")
     for rank in ranks:
         wl = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
-        lab = labeled_completed_runs(workload_runs(wl), paper_variant_key, horizon=wl.horizon)
+        _panel, lab = _adam_polora_comparison(wl)
         for a in arms:
             by_lr = lab.get(a, {})
             data[a][rank] = {lr: by_lr[lr][0] for lr in by_lr}

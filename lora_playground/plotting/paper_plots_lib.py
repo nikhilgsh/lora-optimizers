@@ -20,28 +20,32 @@ Import it as a MODULE and reach through it::
 edit, so ``P.PROTO`` is always current, whereas a name star-imported into the notebook
 namespace stays bound to the old object and goes stale exactly the way the cells did.
 
-Arm predicates and the per-figure arm dicts both come from ``arms.py``; nothing here is
-hand-typed. See that module for why an arm pins every ``OptimizerConfig`` field rather
-than a remembered subset.
+Reviewed publication panels resolve explicit sealed archive variants to stable IDs.
+Panels that still require external baselines absent from that archive retain the
+``arms.py`` compatibility path; see that module for its predicate semantics.
 """
 from __future__ import annotations
 
 import math
 from contextlib import contextmanager
-from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 from lora_playground.leaderboard import (
-    labeled_completed_runs, leaderboard_rows, speedup_from_frac,
+    labeled_completed_runs, leaderboard_rows, leaderboard_rows_from_comparison,
+    speedup_from_frac,
 )
 from lora_playground.loader import load_runs, logs_signature
 from lora_playground.plotting import compare_variants_figure
+from lora_playground.publication_paper import (
+    LEGACY_ADAMW_VARIANT_LABEL,
+    LEGACY_POLORA_VARIANT_LABEL,
+    publication_panel,
+)
 from lora_playground.plotting.dedup import (
     SourceCoherenceError,
     assert_curve_source_coherent,
-    filter_curve_sources,
 )
 
 # File-relative, matching paper_figs.py:38 (same depth: plotting/ -> lora_playground/
@@ -60,61 +64,76 @@ SIGMA = 0.0017
 # ask "did this run finish": _figure's max_steps, the in-flight notice, and _max_step.
 HORIZON = 9000
 
-# The factorwise arm changed at this commit: it initializes the r x r free
-# Kronecker slots at RR_FREE_INIT_EPS*I instead of zeros. A run launched before
-# it is a DIFFERENT implementation of factorwise, so its losses must not be
-# joined to post-fix ones in a curve or averaged into a cell.
-#
-# Membership is decided by GIT ANCESTRY, not by a pinned `execution_source_sha`.
-# The source sha changes on every commit, including plotting-only ones -- three
-# of today's post-fix commits (02112c2, 5ff2b5a, 9e7f43c) carry three different
-# shas and only two distinct optim.py blobs -- so pinning one sha would discard
-# valid data every time anybody commits anything, and would need re-pinning by
-# hand forever. Ancestry answers the question actually being asked: was this run
-# produced by code that already had the fix?
-_PRECOND_FIX_COMMIT = "7792797"
-
-
-@lru_cache(maxsize=1)
-def _post_fix_sources() -> frozenset:
-    """`execution_source_sha` values whose run was launched from code that
-    already had the factorwise fix.
-
-    Built by asking git whether each run's recorded `git_commit` descends from
-    `_PRECOND_FIX_COMMIT`. Cached: it shells out once per session, over the
-    handful of distinct commits present in `logs/`, not per run.
-
-    A run whose commit git cannot resolve (a branch since deleted, a shallow
-    clone) is EXCLUDED. Unknown provenance is not evidence of correctness, and
-    the alternative -- admitting it -- is how superseded data gets plotted.
-    """
-    import subprocess
-    commits = {cfg.get("git_commit") for cfg, hist in
-               load_runs(warn_cross_commit=False, quiet=True) if hist}
-    commits.discard(None)
-    ok = set()
-    for c in commits:
-        r = subprocess.run(["git", "-C", str(ROOT), "merge-base",
-                            "--is-ancestor", _PRECOND_FIX_COMMIT, c],
-                           capture_output=True)
-        if r.returncode == 0:
-            ok.add(c)
-    return frozenset(
-        cfg.get("execution_source_sha")
-        for cfg, hist in load_runs(warn_cross_commit=False, quiet=True)
-        if hist and cfg.get("git_commit") in ok
-        and cfg.get("execution_source_sha")
-    )
-
-# ROOT must be the checkout, not wherever the package happens to be installed. Under a
-# non-editable `pip install` __file__ lands in site-packages and this would silently
-# resolve to <site-packages>/logs -- load_runs would then return nothing and EVERY
-# panel would render empty with no exception raised. Fail at import instead: this
-# module is only meaningful against a working tree.
-assert (ROOT / "logs").is_dir(), (
-    f"paper_plots_lib: ROOT={ROOT} has no logs/ -- this module needs the repo "
-    f"checkout (an editable install), not an installed copy."
-)
+# Exact labels in the named, checked-in publication projection.  They are
+# deliberately not recomputed through today's optimizer defaults or canonical
+# labeler: the archive owns the reviewed historical meaning.  The dictionaries
+# below map the notebook's editorial wording onto those sealed cohorts.
+_ARCHIVE_POLORA = LEGACY_POLORA_VARIANT_LABEL
+_ARCHIVE_PRECOND = {
+    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
+    "product: C_B=B^T P B, C_A=A Q A^T": _ARCHIVE_POLORA,
+    "one-sided: C_B=C_A=I": (
+        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
+        "one-sided H=8 precond_method=gram_ns"
+    ),
+    "factorwise: C_B=P_A, C_A=Q_B": (
+        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
+        "factorwise H=8 precond_method=gram_ns"
+    ),
+}
+_ARCHIVE_MSIGN = {
+    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
+    "product, msign": _ARCHIVE_POLORA,
+    "product, diagonal msign": (
+        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
+        "msign-diag H=8 precond_method=gram_ns"
+    ),
+    "one-sided, msign": _ARCHIVE_PRECOND["one-sided: C_B=C_A=I"],
+    "one-sided, diagonal msign": (
+        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
+        "one-sided msign-diag H=8 precond_method=gram_ns"
+    ),
+}
+_ARCHIVE_MAGNITUDE = {
+    "PoLoRA: rho = eta/(smax A + smax B)": _ARCHIVE_POLORA,
+    "naive: rho = eta": (
+        "KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) "
+        "H=8 +cw_no_radius precond_method=gram_ns"
+    ),
+    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
+}
+_ARCHIVE_PROTO_BETA2 = {
+    **{
+        f"curvature_beta={beta:g}": (
+            f"KL-diag +polar PE=8 (f=10, β_c={beta:g}, δ=1e-4) "
+            "H=8 precond_method=gram_ns"
+        )
+        for beta in (0.81, 0.909, 0.9564, 0.9791)
+    },
+    "Polar-LoRA (shipped, b2=0.99)": _ARCHIVE_POLORA,
+}
+_ARCHIVE_PRECOND_BETA2 = {
+    "AdamW": LEGACY_ADAMW_VARIANT_LABEL,
+    "factorwise, b2=0.99": _ARCHIVE_PRECOND[
+        "factorwise: C_B=P_A, C_A=Q_B"
+    ],
+    "factorwise, b2=0.999": (
+        "KL-diag +polar PE=8 (f=10, β_c=0.999, δ=1e-4) "
+        "factorwise H=8 precond_method=gram_ns"
+    ),
+    "one-sided, b2=0.99": _ARCHIVE_PRECOND["one-sided: C_B=C_A=I"],
+    "one-sided, b2=0.999": (
+        "KL-diag +polar PE=8 (f=10, β_c=0.999, δ=1e-4) "
+        "one-sided H=8 precond_method=gram_ns"
+    ),
+}
+_ARCHIVE_ADAMW_BETA2 = {
+    **{
+        f"beta2={beta:g}": f"AdamW beta2={beta:g}"
+        for beta in (0.81, 0.909, 0.9564, 0.9791, 0.99)
+    },
+    "AdamW (shipped, b2=0.999)": LEGACY_ADAMW_VARIANT_LABEL,
+}
 
 # --------------------------------------------------------------------------------------
 # Arm predicates
@@ -258,6 +277,11 @@ def cell_runs(where, refresh=False):
     `refresh=True` forces a re-read regardless; `clear_runs_cache()` drops the
     memo entirely. Neither should now be needed in normal use.
     """
+    if not (ROOT / "logs").is_dir():
+        raise RuntimeError(
+            "this legacy paper panel needs the live logs/ tree; "
+            "archive-backed panels do not call cell_runs()"
+        )
     sig = _logs_signature_now()
     key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
     cached = _RUNS_CACHE.get(key)
@@ -323,6 +347,70 @@ def cell(model, data_key, rank):
                 data_dir=(lambda d, k=data_key: k in str(d)))
 
 
+def _archive_figure(variants, workload, ref_label, suptitle, *,
+                    target_label="AdamW"):
+    """Render one complete paper panel from the sealed publication archive.
+
+    Every declared arm must have archived evidence in this workload.  A missing
+    arm is an incomplete projection and raises, rather than falling through to
+    live logs or being rendered as an unexplained empty curve.
+    """
+    panel = publication_panel(workload, variants)
+    comparison = panel.comparison
+    missing = [
+        label for label, variant_id in panel.variant_ids.items()
+        if comparison.best_completed[variant_id] is None
+        and comparison.best_partial[variant_id] is None
+    ]
+    if missing:
+        raise ValueError(
+            f"sealed archive has no {workload.label} evidence for declared "
+            f"paper arm(s) {missing!r}"
+        )
+
+    target_id = (
+        panel.variant_id(target_label)
+        if target_label is not None else None
+    )
+    fig, _table, summary = compare_variants_figure(
+        comparison=comparison,
+        reference_id=panel.variant_id(ref_label),
+        target_id=target_id,
+        sigma_ref=SIGMA,
+        max_steps=workload.horizon,
+        allow_partial=True,
+        suptitle=suptitle,
+    )
+    plt.show()
+    if target_id is not None:
+        rows, target = leaderboard_rows_from_comparison(
+            comparison,
+            horizon=workload.horizon,
+            baseline_id=target_id,
+        )
+        for row in rows:
+            row["speedup"] = speedup_from_frac(row["frac_best_lr"])
+            row["speedup_lr_avg"] = speedup_from_frac(row["frac_lr_avg"])
+        rows.sort(
+            key=lambda row: (
+                math.inf if math.isnan(row["speedup"])
+                else -row["speedup"]
+            )
+        )
+        print(_speedup_text(rows, target, target_label, workload.horizon))
+    else:
+        print(
+            "no speedup table: this archive-backed panel declares no speed "
+            "target."
+        )
+    if comparison.unmatched_run_ids:
+        print(
+            f"{len(comparison.unmatched_run_ids)} archived runs in this cell "
+            "belong to other sealed publication variants."
+        )
+    return summary
+
+
 def has(where, common):
     """Is there any run for this arm in this cell? Used to drop empty arms."""
     pred = {**where, **common}
@@ -376,8 +464,7 @@ def _truncate(runs, horizon, keep_full=None):
 
 
 def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True,
-            horizon=None, trajectory_only=False, left_exclude=(),
-            allowed_sources_by_label=None, strict_sources=False):
+            horizon=None, trajectory_only=False, left_exclude=()):
     """Every panel in this module funnels through here.
 
     Passing prefetched_runs AND variant_key is what arms the ``assert_label_discriminates``
@@ -387,30 +474,14 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     with _held_logs_signature():
         return _figure_inner(arms, common, ref_label, suptitle, target_label,
                              drop_empty, horizon, trajectory_only,
-                             left_exclude, allowed_sources_by_label,
-                             strict_sources)
+                             left_exclude)
 
 
 def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon,
-                  trajectory_only=False, left_exclude=(),
-                  allowed_sources_by_label=None, strict_sources=False):
+                  trajectory_only=False, left_exclude=()):
     declared_arms = dict(arms)
     panel_runs = cell_runs(common)
     base_key = variant_key_fn(common, arms)
-    if allowed_sources_by_label:
-        panel_runs, excluded, base_key = filter_curve_sources(
-            panel_runs, base_key, allowed_sources_by_label,
-        )
-        if excluded:
-            by_cohort = {}
-            for (cfg, _hist), _reason in excluded:
-                label = variant_key_fn(common, arms)(cfg)
-                cohort = (label, str(cfg["execution_source_sha"])[:7])
-                by_cohort.setdefault(cohort, []).append(float(cfg["lr"]))
-            print("excluded by execution-source policy: " + "; ".join(
-                f"{label} [source {source}] lr={sorted(lrs)}"
-                for (label, source), lrs in by_cohort.items()
-            ))
     if drop_empty:
         present = {base_key(cfg) for cfg, hist in panel_runs if hist}
         missing = [label for label in arms if label not in present]
@@ -433,17 +504,14 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
     # good from bad; it stops the notebook.
     #
     # So the mixing is printed with the offending label and its source hashes,
-    # and the figure still renders. Pass `strict_sources=True` to get the raise
-    # back for a panel whose provenance genuinely has to be single-snapshot --
-    # `precond_panel` does that for factorwise/one-sided via
-    # `_post_fix_sources()`, which is the case the guard was written for.
+    # and the figure still renders. Archive-backed panels do not pass through
+    # this compatibility path; their named projection already owns cohort
+    # membership and stable optimizer identities.
     try:
         assert_curve_source_coherent(
             panel_runs, base_key, bucket_keys=("lora_r",),
         )
     except SourceCoherenceError as exc:
-        if strict_sources:
-            raise
         print(f"mixed execution sources (figure still drawn): {exc}")
     # An arm whose runs all stopped short of max_steps is the SILENT case, and it
     # is not covered by `missing` above: `has()` only asks whether any run matches
@@ -727,81 +795,56 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
     (C_B and C_A are r x r, so the slot has less to offer as r falls) or on
     another architecture, without a second copy of the figure.
 
-    Factorwise and one-sided are admitted ONLY from the trusted execution
-    snapshot. There is no fallback: `7792797` changed the factorwise arm, so a
-    pre-fix run is a different implementation, and a cell with no trusted run
-    renders that arm EMPTY rather than filling it with superseded data.
-
-    That is a deliberate cost. Measured: only 8 runs on disk carry the trusted
-    sha and all are at r=16, so `precond_panel(256)` and `precond_panel(64)`
-    show AdamW and product only until those cells are re-run. An empty arm with
-    `_missing_trusted_note` naming what has to be re-run is the honest state;
-    a filled one is a figure that says something the current code did not
-    produce.
-
-    A fallback was tried and removed. It rested on the pre-fix/post-fix gap
-    being small (0.4193 -> 0.4187 at r=16, against a 0.00043 seed sd), but "the
-    difference happens to be small at the one cell where we can measure it" is
-    not a licence to plot the other cells, where it has not been measured at
-    all.
+    Cohort membership comes from the checked-in publication archive.  The
+    archive's reviewed view IDs replace the former live Git-ancestry and source
+    hash gate; an arm absent from that projection fails closed.
     """
-    common = cell(model, data_key, rank)
-    fig = _figure(_arms.PRECOND_ARMS, common,
-                  "product: C_B=B^T P B, C_A=A Q A^T",
-                  f"The r x r metric slot - {model_label} {data_key} r{rank}",
-                  allowed_sources_by_label={
-                      "factorwise: C_B=P_A, C_A=Q_B": _post_fix_sources(),
-                      "one-sided: C_B=C_A=I": _post_fix_sources(),
-                  })
-    _missing_trusted_note(common, f"{model_label} {data_key} r{rank}")
-    return fig
-
-
-def _missing_trusted_note(common, cell_name) -> None:
-    """Say which arms are empty for want of a trusted-snapshot run, and why.
-
-    Without this the omission reads as "that arm was never run here", which is
-    false — the runs exist, on superseded code. The distinction decides whether
-    the fix is a re-run or nothing at all, so the panel states it.
-    """
-    have = {cfg.get("precond") for cfg, hist in cell_runs(common) if hist
-            and cfg.get("execution_source_sha") in _post_fix_sources()}
-    stale = {cfg.get("precond") for cfg, hist in cell_runs(common) if hist
-             and cfg.get("precond") in ("factorwise", "one-sided")
-             and cfg.get("execution_source_sha") not in _post_fix_sources()}
-    missing = sorted(stale - have)
-    if missing:
-        print(f"{cell_name}: {', '.join(missing)} EMPTY — runs exist but predate "
-              f"7792797, which changed the factorwise arm. Re-run this cell on "
-              f"the current source to populate it; the older logs stay on disk "
-              f"and are deliberately not plotted.")
+    from lora_playground.workloads import find_workload
+    workload = find_workload(model, data_key, rank)
+    return _archive_figure(
+        _ARCHIVE_PRECOND,
+        workload,
+        "product: C_B=B^T P B, C_A=A Q A^T",
+        f"The r x r metric slot - {model_label} {data_key} r{rank}",
+    )
 
 
 def msign_panel(rank=256):
     """The `msign` axis at both ends of `precond`: can the matrix sign be replaced
     by its diagonal (rownorm / colnorm) with the slot present, and with it gone?"""
-    arms = {"AdamW": ADAMW,
-            "product, msign": PROTO,
-            "product, diagonal msign": PROTO_DIAG,
-            "one-sided, msign": ONESIDED,
-            "one-sided, diagonal msign": ONESIDED_DIAG}
-    return _figure(arms, om(rank), "product, msign",
-                   f"Diagonal msign - Llama-3.2-1B openmath r{rank}")
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _archive_figure(
+        _ARCHIVE_MSIGN,
+        workload,
+        "product, msign",
+        f"Diagonal msign - Llama-3.2-1B openmath r{rank}",
+    )
 
 
 def magnitude_rule_panel(rank=256):
     """Naive rho = eta against the PoLoRA rule rho = eta/(smax(A)+smax(B))."""
-    return _figure(_arms.MAGNITUDE_RULE_ARMS, om(rank),
-                   "PoLoRA: rho = eta/(smax A + smax B)",
-                   f"Magnitude rule: naive vs PoLoRA - Llama-3.2-1B openmath r{rank}")
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _archive_figure(
+        _ARCHIVE_MAGNITUDE,
+        workload,
+        "PoLoRA: rho = eta/(smax A + smax B)",
+        f"Magnitude rule: naive vs PoLoRA - Llama-3.2-1B openmath r{rank}",
+    )
 
 
 def beta2_panel(rank=256):
     """Protagonist curvature_beta grid: the EMA horizon of the P, Q metric."""
-    return _figure(_arms.PROTO_BETA2_ARMS, om(rank),
-                   "Polar-LoRA (shipped, b2=0.99)",
-                   f"Protagonist beta2 sweep - Llama-3.2-1B openmath r{rank}",
-                   target_label=None)
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _archive_figure(
+        _ARCHIVE_PROTO_BETA2,
+        workload,
+        "Polar-LoRA (shipped, b2=0.99)",
+        f"Protagonist beta2 sweep - Llama-3.2-1B openmath r{rank}",
+        target_label=None,
+    )
 
 
 def precond_beta2_panel(rank=16):
@@ -839,22 +882,26 @@ def precond_beta2_panel(rank=16):
     everything, so only a gap that shrinks MORE than the one-sided control moves
     isolates the r x r slot.
     """
-    common = om(rank)
-    fig = _figure(_arms.PRECOND_BETA2_ARMS, common, "one-sided, b2=0.99",
-                  f"Estimation noise in the r x r slot: curvature_beta x precond "
-                  f"- Llama-3.2-1B openmath r{rank}",
-                  target_label="AdamW",
-                  allowed_sources_by_label={
-                      lbl: _post_fix_sources() for lbl in _arms.PRECOND_BETA2_ARMS
-                      if lbl != "AdamW"
-                  })
-    _missing_trusted_note(common, f"Llama-3.2-1B openmath r{rank} (beta2 panel)")
-    return fig
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _archive_figure(
+        _ARCHIVE_PRECOND_BETA2,
+        workload,
+        "one-sided, b2=0.99",
+        f"Estimation noise in the r x r slot: curvature_beta x precond "
+        f"- Llama-3.2-1B openmath r{rank}",
+        target_label="AdamW",
+    )
 
 
 def adamw_beta2_panel(rank=256):
     """AdamW beta2 control -- the negative control for the protagonist beta2 grid."""
-    return _figure(_arms.ADAMW_BETA2_ARMS, om(rank),
-                   "AdamW (shipped, b2=0.999)",
-                   f"AdamW beta2 control - Llama-3.2-1B openmath r{rank}",
-                   target_label=None)
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _archive_figure(
+        _ARCHIVE_ADAMW_BETA2,
+        workload,
+        "AdamW (shipped, b2=0.999)",
+        f"AdamW beta2 control - Llama-3.2-1B openmath r{rank}",
+        target_label=None,
+    )
