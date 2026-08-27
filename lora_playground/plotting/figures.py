@@ -385,30 +385,66 @@ def compare_variants_figure(
     per_variant_partial = {}
 
     if prefetched_runs is not None:
-        # Single-load mode: caller provides all runs + a variant_key function.
-        # Avoids the 8x-load_runs penalty when many small variants share
-        # filesystem scans. variant_key returns None to skip a run, else
-        # the variant label that run belongs to.
-        runs_by_variant: dict = {label: [] for label in variants}
-        for c, h in prefetched_runs:
-            label = variant_key(c)
-            if label is not None and label in runs_by_variant:
-                runs_by_variant[label].append((c, h))
+        # Single-load mode: the pure comparison core owns assignment,
+        # completed-vs-partial classification, replicate averaging, and
+        # best-LR selection.  This adapter keeps the established plotting
+        # dictionaries intact so table construction and rendering below do
+        # not acquire a second comparison implementation.
+        from lora_playground.comparison import VariantSpec, build_comparison
+
+        known_labels = set(variants)
         # GUARD: a (label, lora_r, lr) bucket holding >1 distinct series_id means
         # the label silently merges distinct configs (the eps_rel ns5/ns8 bug).
         # Raise instead of keeping min-loss; opt out only with allow_label_collision.
         if not allow_label_collision:
             guarded = [(c, h) for c, h in prefetched_runs
-                       if variant_key(c) in runs_by_variant]
+                       if variant_key(c) in known_labels]
             assert_label_discriminates(guarded, variant_key,
                                        bucket_keys=("lora_r", "lr"))
-    else:
-        runs_by_variant = None
 
-    for label, extra in variants.items():
-        if runs_by_variant is not None:
-            runs = runs_by_variant[label]
-        else:
+        specs = tuple(
+            VariantSpec(
+                id=label,
+                label=label,
+                style_key=label,
+                predicate=lambda cfg, expected=label: variant_key(cfg) == expected,
+            )
+            for label in variants
+        )
+        comparison = build_comparison(
+            prefetched_runs,
+            specs,
+            horizon=max_steps,
+            completion_slack=completion_slack,
+        )
+        per_variant = {
+            label: {
+                lr: (
+                    curve.final_loss,
+                    dict(curve.cfg),
+                    [dict(event) for event in curve.history],
+                )
+                for lr, curve in comparison.completed[label].items()
+            }
+            for label in variants
+        }
+        per_variant_partial = {
+            label: {
+                lr: (
+                    curve.final_loss,
+                    dict(curve.cfg),
+                    [dict(event) for event in curve.history],
+                    curve.last_step,
+                )
+                for lr, curve in comparison.partials[label].items()
+            } if allow_partial else {}
+            for label in variants
+        }
+    else:
+        # Compatibility shim for callers that still ask this plotting helper
+        # to perform one loader query per variant.  New callers should prefetch
+        # once and use the comparison core above.
+        for label, extra in variants.items():
             runs = load_runs(
                 where={**common_where, **extra},
                 logs_root=logs_root,
@@ -433,54 +469,32 @@ def compare_variants_figure(
                         f"Use the canonical label as the dict key (or pass "
                         f"allow_custom_labels=True for an intentional grouping)."
                     )
-        # Seed repeats are COLLECTED per lr and averaged below, not reduced
-        # pairwise as they arrive. The previous rule kept the minimum-loss run
-        # (`last_loss < d[lr][0]`), which is not merely an arbitrary tiebreak but
-        # a BIASED one: min-of-n falls as n grows, so an arm with four seeds was
-        # scored on its luckiest run while a single-seed arm was scored on its
-        # only one. Measured on Llama-3.2-1B/openmath/r256 factorwise lr=1e-2,
-        # whose four seeds are 0.3676/0.3678/0.3684/0.3685: the panel reported
-        # 0.3676 against a true mean of 0.3681 -- a 0.0005 flattering shift, set
-        # against a 0.00043 seed sd and arm-to-arm deltas of about 0.0008.
-        by_lr: dict[float, list] = {}
-        d, d_partial = {}, {}
-        for c, h in runs:
-            if not h:
-                continue
-            lr = float(c["lr"])
-            last_step = h[-1].get("step")
-            last_loss = h[-1]["eval_loss"]
-            # An aborted run (loaded with cfg["_aborted"] set by load_run) is
-            # treated as completed-but-diverged: its last eval is the "final"
-            # so it surfaces in the leaderboard table at its diverged value
-            # instead of vanishing as a partial run.
-            is_aborted = c.get("_aborted") is not None
-            # "Final" = reached the horizon within completion_slack (so ~8970-step
-            # one-epoch runs count) OR aborted. In-flight runs (last_step far below
-            # the horizon) fall through to the partial branch — they must NOT be
-            # treated as completed-at-step-N (that put step-250 evals on the
-            # final-vs-lr panel and mislabelled high-lr partials as "diverged").
-            # Shared rule with the loader (lora_playground.leaderboard.is_final).
-            if is_final(last_step, max_steps, completion_slack) or is_aborted:
-                by_lr.setdefault(lr, []).append((c, h, last_step))
-            elif allow_partial:
-                # Track the most-progressed partial run per lr (so trajectory
-                # panel shows the longest in-progress curve).
-                if lr not in d_partial or last_step > d_partial[lr][3]:
-                    d_partial[lr] = (last_loss, c, h, last_step)
-        for lr, members in by_lr.items():
-            # A resub continuation genuinely supersedes its shorter predecessor;
-            # runs that reached the same horizon are seed repeats. Same rule as
-            # `leaderboard.labeled_completed_runs`, and the same helper does the
-            # averaging, so the plotted curve and the speedup table can never
-            # disagree about what a cell's number is.
-            longest = max(m[2] for m in members)
-            finished = [m for m in members if m[2] == longest]
-            mean_final, merged = mean_over_seeds(
-                [(h, h[-1], ls) for _c, h, ls in finished])
-            d[lr] = (mean_final, finished[0][0], merged)
-        per_variant[label] = d
-        per_variant_partial[label] = d_partial
+            # Seed repeats are COLLECTED per lr and averaged below, not reduced
+            # pairwise as they arrive. This block remains only for the legacy
+            # per-variant loader path; the prefetched path delegates the same
+            # semantics to build_comparison above.
+            by_lr: dict[float, list] = {}
+            d, d_partial = {}, {}
+            for c, h in runs:
+                if not h:
+                    continue
+                lr = float(c["lr"])
+                last_step = h[-1].get("step")
+                last_loss = h[-1]["eval_loss"]
+                is_aborted = c.get("_aborted") is not None
+                if is_final(last_step, max_steps, completion_slack) or is_aborted:
+                    by_lr.setdefault(lr, []).append((c, h, last_step))
+                elif allow_partial:
+                    if lr not in d_partial or last_step > d_partial[lr][3]:
+                        d_partial[lr] = (last_loss, c, h, last_step)
+            for lr, members in by_lr.items():
+                longest = max(m[2] for m in members)
+                finished = [m for m in members if m[2] == longest]
+                mean_final, merged = mean_over_seeds(
+                    [(h, h[-1], ls) for _c, h, ls in finished])
+                d[lr] = (mean_final, finished[0][0], merged)
+            per_variant[label] = d
+            per_variant_partial[label] = d_partial
 
     # Final-loss table (rows = lr, columns = variant).
     all_lr = sorted({lr for v in per_variant.values() for lr in v})

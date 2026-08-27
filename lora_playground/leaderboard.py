@@ -29,7 +29,10 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from statistics import fmean, stdev
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from lora_playground.comparison import ComparisonResult
 
 # eval cadence varies (250) and some sweeps stopped at 8970 instead of 9000;
 # treat a run as completed if its last eval is within this many steps of the
@@ -308,6 +311,86 @@ def _adjacent(sorted_lrs: list[float], lr: float) -> tuple[float | None, float |
     return low, high
 
 
+def _leaderboard_row(
+    variant: str,
+    by_lr,
+    *,
+    best_lr: float,
+    final_at_best: float,
+    history_at: Callable[[float], list[dict]],
+    target: float,
+    horizon: int,
+    unreached_avg_value: float,
+) -> dict:
+    """Build one legacy-shaped row from an already-selected best LR."""
+    frac_best = reach_fraction(history_at(best_lr), target, horizon)
+
+    lrs_sorted = sorted(by_lr)
+    low, high = _adjacent(lrs_sorted, best_lr)
+    if low is None or high is None:
+        frac_avg = math.nan
+        comps = None
+    else:
+        comps = [(lr, reach_fraction(history_at(lr), target, horizon))
+                 for lr in (low, best_lr, high)]
+        clamped = [unreached_avg_value if math.isnan(frac) else frac
+                   for _, frac in comps]
+        frac_avg = sum(clamped) / len(clamped)
+
+    return dict(
+        variant=variant,
+        best_lr=best_lr,
+        final_at_best=final_at_best,
+        frac_best_lr=frac_best,
+        frac_lr_avg=frac_avg,
+        lr_avg_components=comps,
+        n_lrs=len(by_lr),
+    )
+
+
+def leaderboard_rows_from_comparison(
+    comparison: "ComparisonResult",
+    *,
+    horizon: int,
+    baseline_id: str,
+    unreached_avg_value: float = 1.0,
+) -> tuple[list[dict], float]:
+    """Compute legacy leaderboard rows from a structured comparison result.
+
+    ``baseline_id`` and every lookup use :class:`VariantSpec.id`, never the
+    mutable display label.  Returned rows retain the established public shape:
+    their ``variant`` value is the corresponding display label and the return
+    value remains ``(list[dict], target_float)``.
+
+    The comparison core already selected ``best_completed`` from
+    replicate-averaged curves.  This adapter deliberately consumes that choice
+    instead of selecting an LR again, so plotting and leaderboard summaries can
+    share one aggregation result.  The import is type-checking-only because
+    ``comparison`` imports :func:`is_final` and :func:`mean_over_seeds` from
+    this module; a runtime import here would create a module cycle.
+    """
+    baseline = comparison.best_completed.get(baseline_id)
+    target = math.nan if baseline is None else baseline.final_loss
+
+    rows: list[dict] = []
+    for spec in comparison.variants:
+        by_lr = comparison.completed.get(spec.id, {})
+        best = comparison.best_completed.get(spec.id)
+        if not by_lr or best is None:
+            continue
+        rows.append(_leaderboard_row(
+            spec.label,
+            by_lr,
+            best_lr=best.lr,
+            final_at_best=best.final_loss,
+            history_at=lambda lr, curves=by_lr: curves[lr].history,
+            target=target,
+            horizon=horizon,
+            unreached_avg_value=unreached_avg_value,
+        ))
+    return rows, target
+
+
 def leaderboard_rows(
     labeled: dict[str, dict[float, tuple[float, list[dict]]]],
     *,
@@ -343,26 +426,14 @@ def leaderboard_rows(
             continue
         best_lr = min(by_lr, key=lambda lr: by_lr[lr][0])
         final_at_best = by_lr[best_lr][0]
-        frac_best = reach_fraction(by_lr[best_lr][1], target, horizon)
-
-        lrs_sorted = sorted(by_lr)
-        low, high = _adjacent(lrs_sorted, best_lr)
-        if low is None or high is None:
-            frac_avg = math.nan
-            comps = None
-        else:
-            comps = [(x, reach_fraction(by_lr[x][1], target, horizon))
-                     for x in (low, best_lr, high)]
-            clamped = [unreached_avg_value if math.isnan(f) else f for _, f in comps]
-            frac_avg = sum(clamped) / len(clamped)
-
-        rows.append(dict(
-            variant=variant,
+        rows.append(_leaderboard_row(
+            variant,
+            by_lr,
             best_lr=best_lr,
             final_at_best=final_at_best,
-            frac_best_lr=frac_best,
-            frac_lr_avg=frac_avg,
-            lr_avg_components=comps,
-            n_lrs=len(by_lr),
+            history_at=lambda lr, curves=by_lr: curves[lr][1],
+            target=target,
+            horizon=horizon,
+            unreached_avg_value=unreached_avg_value,
         ))
     return rows, target
