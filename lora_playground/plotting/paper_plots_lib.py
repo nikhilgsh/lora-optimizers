@@ -105,7 +105,7 @@ CELLS = [
 # load_runs(where=<one cell>) is far cheaper because the narrow `where` skips parsing the
 # runs that cannot match. So a single up-front snapshot is the wrong trade -- it is fixed
 # at kernel start and cannot see a sweep that is still running.
-_RUNS_CACHE: dict[tuple, list] = {}
+_RUNS_CACHE: dict[str, tuple] = {}   # where-fingerprint -> (logs signature, runs)
 
 
 def _fingerprint(v):
@@ -148,13 +148,13 @@ def cell_runs(where, refresh=False):
     memo entirely. Neither should now be needed in normal use.
     """
     sig = logs_signature(str(ROOT / "logs"))
-    key = (sig, repr(sorted((k, _fingerprint(v)) for k, v in where.items())))
-    if refresh or key not in _RUNS_CACHE:
-        _RUNS_CACHE[key] = load_runs(where=where, warn_cross_commit=False, quiet=True)
-        # Entries keyed on a superseded signature can never be hit again.
-        for stale in [k for k in _RUNS_CACHE if k[0] != sig]:
-            del _RUNS_CACHE[stale]
-    return _RUNS_CACHE[key]
+    key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
+    cached = _RUNS_CACHE.get(key)
+    if cached is not None and cached[0] == sig and not refresh:
+        return cached[1]
+    runs = load_runs(where=where, warn_cross_commit=False, quiet=True)
+    _RUNS_CACHE[key] = (sig, runs)
+    return runs
 
 
 def clear_runs_cache():

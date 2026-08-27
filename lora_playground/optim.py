@@ -653,6 +653,15 @@ PRECOND_CHOICES = {"product", "one-sided", "factorwise"}
 # precond="one-sided" the whole direction is O(rd) rather than O(r^2 d).
 MSIGN_CHOICES = {"full", "diag"}
 
+# Algorithm 1 line 436's epsilon: dX = -rho * D / max(||D||_2, eps). Fixed by the
+# manuscript at 1e-12 (main.tex:684, app:init) and not tunable, so it is a module
+# constant like _POLAR_EXPRESS_SAFETY rather than a constructor knob. Distinct
+# from CurvatureWhitenLoRA.eps (1e-8), which is the SOAP Adam denominator,
+# _direction_op's relative floor and cw_solved_rho's quadratic clamp. Also
+# distinct from spectral.py's `sigma_floor`, a data-dependent degenerate-vector
+# guard that shares only the name.
+_ALG1_SIGMA_FLOOR = 1e-12
+
 OPTIMIZER_CHOICES = {
     "adamw",
     "adafactor",
@@ -1186,7 +1195,7 @@ class CurvatureWhitenLoRA(Optimizer):
         # 1e-8 and is ALSO the SOAP Adam denominator, _direction_op's relative
         # floor and cw_solved_rho's quadratic clamp, where 1e-8 is right. One
         # name cannot carry both values, so the magnitude clamp gets its own.
-        self.sigma_floor = 1e-12
+        self.sigma_floor = _ALG1_SIGMA_FLOOR
         self.delta = float(delta)            # relative damping for the inverse-sqrts
         self.beta1, self.beta2 = betas
         self.curvature_beta = float(curvature_beta)
@@ -1365,15 +1374,12 @@ class CurvatureWhitenLoRA(Optimizer):
         # (that branch has no closed-form Shampoo core to feed). An EXPLICIT True
         # alongside soap_v is still a caller error and still raises -- silently
         # ignoring it would hide a real misconfiguration.
-        if cw_nesterov is None:
-            self.cw_nesterov = not self.soap_v
-        else:
-            self.cw_nesterov = bool(cw_nesterov)
-            if self.cw_nesterov and self.soap_v:
-                raise ValueError(
-                    "cw_nesterov=True is only defined for the soap_v=False "
-                    "(closed-form Shampoo) path; pass cw_nesterov=False or leave "
-                    "it unset.")
+        self.cw_nesterov = (not self.soap_v) if cw_nesterov is None else bool(cw_nesterov)
+        if self.cw_nesterov and self.soap_v:
+            raise ValueError(
+                "cw_nesterov=True is only defined for the soap_v=False "
+                "(closed-form Shampoo) path; pass cw_nesterov=False or leave it "
+                "unset.")
         # LEGACY ABLATION (−adaptive-radius): ρ=lr (flat) instead of the adaptive
         # ρ=lr/(σmax(A)+σmax(B)). IMPORTANT: the σ_max(W) pin is KEPT, so this does NOT
         # remove magnitude control — the magnitude-rule ablation is `cw_unpinned` (true-scale
@@ -1498,9 +1504,6 @@ class CurvatureWhitenLoRA(Optimizer):
                 # checkpoint.py persists every pair_state key, and on a soap_v=False
                 # run they are provably all-zero -- 45.1 MB of a 94.1 MB checkpoint
                 # measured on a live r=16 job.
-                **({'v_A': torch.zeros_like(A, dtype=torch.float32),
-                    'v_B': torch.zeros_like(B, dtype=torch.float32)}
-                   if self.soap_v else {}),
                 # small (r) side: full r×r curvature, whitened via its eigenbasis.
                 'L_A': torch.zeros((r, r), dtype=torch.float32, device=A.device),
                 'R_B': torch.zeros((r, r), dtype=torch.float32, device=A.device),
@@ -1512,6 +1515,10 @@ class CurvatureWhitenLoRA(Optimizer):
                 'Q_B': eye.clone(),
                 'step': 0,
             }
+            if self.soap_v:
+                st_i = self.pair_state[i]
+                st_i['v_A'] = torch.zeros_like(A, dtype=torch.float32)
+                st_i['v_B'] = torch.zeros_like(B, dtype=torch.float32)
 
         # ── Pre-polar (H) dump: OFF unless dump_pre_polar_every > 0. ─────────
         # Writes the matrices handed to msign — zA/zB at the _polar_ns_guarded
