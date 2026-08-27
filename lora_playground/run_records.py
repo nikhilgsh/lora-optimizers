@@ -120,7 +120,7 @@ def physical_run_id(
     return f"{group}/run[{fallback_index}]"
 
 
-def _logged_effective_config(
+def logged_effective_config(
     raw_config: Mapping[str, Any],
     *,
     source: str,
@@ -228,7 +228,7 @@ class RunRecord:
                 source=source,
             ))
 
-        effective, config_issues = _logged_effective_config(
+        effective, config_issues = logged_effective_config(
             raw_copy, source=source
         )
         record_issues.extend(config_issues)
@@ -416,7 +416,7 @@ def run_view(run: Any, index: int = 0) -> RunView:
         filename_value = raw.get("_log_filename")
         filename = str(filename_value) if filename_value is not None else None
         source = filename or f"legacy run[{index}]"
-        semantic, _issues = _logged_effective_config(raw, source=source)
+        semantic, _issues = logged_effective_config(raw, source=source)
         fallback_group = group or "legacy"
         return RunView(
             semantic_config=semantic,
@@ -496,6 +496,7 @@ __all__ = [
     "SemanticRunProjection",
     "RunView",
     "freeze_value",
+    "logged_effective_config",
     "physical_run_id",
     "project_run_semantics",
     "run_view",

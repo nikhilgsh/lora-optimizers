@@ -6,6 +6,7 @@ import json
 import pytest
 
 from lora_playground.run_catalog import RunCatalog
+from lora_playground.run_parsing import parse_run_file
 
 
 _MISSING = object()
@@ -91,9 +92,9 @@ def test_catalog_is_lazy_and_stable_ids_are_physical(tmp_path, monkeypatch):
     original = run_catalog_module.parse_run_file
     calls = []
 
-    def counted(path):
+    def counted(path, **kwargs):
         calls.append(path.parent.parent.parent.name)
-        return original(path)
+        return original(path, **kwargs)
 
     monkeypatch.setattr(run_catalog_module, "parse_run_file", counted)
     catalog = RunCatalog(tmp_path)
@@ -130,6 +131,74 @@ def test_catalog_is_lazy_and_stable_ids_are_physical(tmp_path, monkeypatch):
     legacy_history[0]["eval_loss"] = 0.0
     assert by_group["fallback"].raw_config["optimizer"] == "adamw"
     assert by_group["fallback"].history[0]["eval_loss"] == 0.8
+
+
+def test_semantic_query_header_rejects_without_full_history_parse(
+    tmp_path, monkeypatch,
+):
+    _write_group(tmp_path, "group", filename="log_0.out", config={
+        "optimizer": "adamw",
+        "_cli_args": {"lora_r": 16},
+    })
+    _write_group(tmp_path, "group", filename="log_1.out", config={
+        "optimizer": "muon",
+        "_cli_args": {"lora_r": 64},
+    })
+
+    import lora_playground.run_catalog as run_catalog_module
+
+    original = run_catalog_module.parse_run_file
+    calls = []
+
+    def counted(path, **kwargs):
+        calls.append(path.name)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(run_catalog_module, "parse_run_file", counted)
+    catalog = RunCatalog(tmp_path)
+
+    records = catalog.query(equals={"optimizer": "adamw", "lora_r": 16})
+
+    assert [record.log_filename for record in records] == ["log_0.out"]
+    assert calls == ["log_0.out"]
+
+
+def test_catalog_fast_parse_omits_diagnostics_but_preserves_config_and_evals(
+    tmp_path,
+):
+    path = tmp_path / "group" / "run_info" / "logs" / "log_0.out"
+    path.parent.mkdir(parents=True)
+    events = [
+        {"event": "config", "optimizer": "adamw", "lr": 1e-3},
+        {"event": "optim_step", "step": 1, "large_probe": list(range(100))},
+        {"event": "eval", "step": 10, "eval_loss": 0.8, "lr": 1e-3},
+    ]
+    path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+    diagnostic_parse = parse_run_file(path)
+    record = RunCatalog(tmp_path).records[0]
+
+    assert len(diagnostic_parse.optim_steps) == 1
+    assert diagnostic_parse.raw_config()["_optim_steps"][0]["step"] == 1
+    assert "_optim_steps" not in record.raw_config
+    assert record.semantic_config["optimizer"] == "adamw"
+    assert record.history == diagnostic_parse.evals
+
+
+def test_header_and_full_parser_share_first_config_authority(tmp_path):
+    path = tmp_path / "group" / "run_info" / "logs" / "log_0.out"
+    path.parent.mkdir(parents=True)
+    events = [
+        {"event": "config", "optimizer": "adamw", "lr": 1e-3},
+        {"event": "config", "optimizer": "muon", "lr": 2e-3},
+        {"event": "eval", "step": 10, "eval_loss": 0.8, "lr": 1e-3},
+    ]
+    path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+    catalog = RunCatalog(tmp_path)
+
+    assert len(catalog.query(equals={"optimizer": "adamw"})) == 1
+    assert catalog.query(equals={"optimizer": "muon"}) == ()
 
 
 def test_catalog_does_not_implicitly_stitch_resume_segments(tmp_path):
@@ -219,6 +288,80 @@ def test_catalog_resolves_only_explicit_versioned_lineage(tmp_path):
     assert resolved[0].attempt_ids == ("attempt-a", "attempt-b")
     assert [event["step"] for event in resolved[0].history] == [100, 200]
     assert [event["step"] for event in legacy[0][1]] == [100, 200]
+
+
+def test_query_lineage_closure_does_not_parse_unrelated_versioned_logs(
+    tmp_path, monkeypatch,
+):
+    common = {
+        "event": "config",
+        "run_schema_version": 1,
+        "checkpoint_identity": "logical/task_0",
+        "semantic_revisions": {
+            "optimizer_impl": 1,
+            "data_pipeline": "packed_v1.1",
+            "measurement": 1,
+        },
+        "optimizer": "muon",
+        "lr": 2e-3,
+        "data_pipeline_version": "packed_v1.1",
+    }
+
+    def write(group, events):
+        path = tmp_path / group / "run_info" / "logs" / "log_0.out"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "\n".join(json.dumps(event) for event in events) + "\n"
+        )
+
+    write("root", [
+        {**common, "attempt_id": "attempt-a"},
+        {"event": "eval", "step": 10, "eval_loss": 0.8, "lr": 2e-3},
+    ])
+    write("child", [
+        {**common, "attempt_id": "attempt-b"},
+        {
+            "event": "resume",
+            "resume_parent_attempt_id": "attempt-a",
+            "checkpoint_identity": "logical/task_0",
+        },
+        {"event": "eval", "step": 20, "eval_loss": 0.7, "lr": 2e-3},
+    ])
+    # This independent root deliberately shares the checkpoint identity. A
+    # checkpoint-bucket implementation would parse it even though no resume
+    # edge connects it to the selected chain.
+    write("unrelated-same-checkpoint", [
+        {**common, "attempt_id": "attempt-z"},
+        {"event": "eval", "step": 30, "eval_loss": 0.6, "lr": 2e-3},
+    ])
+    write("unrelated-other-checkpoint", [
+        {
+            **common,
+            "attempt_id": "attempt-y",
+            "checkpoint_identity": "logical/task_9",
+        },
+        {"event": "eval", "step": 40, "eval_loss": 0.5, "lr": 2e-3},
+    ])
+
+    import lora_playground.run_catalog as run_catalog_module
+
+    original = run_catalog_module.parse_run_file
+    full_parses = []
+
+    def counted(path, **kwargs):
+        full_parses.append(path.parent.parent.parent.name)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(run_catalog_module, "parse_run_file", counted)
+    catalog = RunCatalog(tmp_path)
+
+    selected = catalog.query(equals={"group": "child"})
+    resolved = catalog.resolve_lineages(selected)
+
+    assert len(resolved) == 1
+    assert resolved[0].attempt_ids == ("attempt-a", "attempt-b")
+    assert [event["step"] for event in resolved[0].history] == [10, 20]
+    assert full_parses == ["child", "root"]
 
 
 def test_logged_schema_drives_effective_config_and_explicit_queries(

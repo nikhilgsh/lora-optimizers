@@ -325,6 +325,7 @@ def test_inventory_detects_orphaned_group(tmp_path: Path):
     inv = inventory_runs(str(logs))
     assert "g_orphan" in inv.groups_orphaned
     assert "g_tagged" not in inv.groups_orphaned
+    assert "g_orphan" in inv.groups_loaded
 
 
 def test_inventory_detects_unknown_optimizer(tmp_path: Path):
@@ -388,8 +389,62 @@ def test_render_inventory_smoke(tmp_path: Path):
     ])
     inv = inventory_runs(str(logs))
     text = render_inventory(inv)
-    assert "Loaded" in text
+    assert "Cataloged" in text
     assert "Coverage" in text
+
+
+def test_inventory_uses_logged_effective_config_without_defaults(tmp_path: Path):
+    logs = tmp_path / "logs"
+    cfg = {
+        "command": "python train_lora.py --optimizer ignored-command-value",
+        "_cli_args": {
+            "optimizer": "adamw",
+            "lr": 3e-4,
+            "lora_r": 128,
+            "lora_plus_multiplier": 2.0,
+        },
+    }
+    _write_group(logs, "g", {"scope": ["all_optimizers"]}, [
+        (cfg, _evs((2000, 0.76))),
+    ])
+
+    inv = inventory_runs(str(logs))
+
+    assert len(inv.coverage) == 1
+    row = inv.coverage[0]
+    assert (row.optimizer, row.lora_r, row.lora_plus_multiplier) == (
+        "adamw", 128, 2.0,
+    )
+    assert not inv.records_incomplete
+
+
+def test_inventory_keeps_missing_logged_axes_missing(tmp_path: Path):
+    logs = tmp_path / "logs"
+    _write_group(logs, "g", {"scope": ["all_optimizers"]}, [
+        ({"optimizer": "adamw", "lr": 3e-4}, _evs((2000, 0.76))),
+    ])
+
+    inv = inventory_runs(str(logs))
+
+    assert len(inv.coverage) == 1
+    assert inv.coverage[0].lora_r is None
+    assert inv.coverage[0].lora_plus_multiplier is None
+    assert inv.records_incomplete == ((
+        "g/log_0.out", ("lora_r", "lora_plus_multiplier"),
+    ),)
+
+
+def test_inventory_surfaces_physical_group_without_usable_record(tmp_path: Path):
+    logs = tmp_path / "logs"
+    _write_group(logs, "g_empty", {"scope": ["all_optimizers"]}, [
+        (_cfg("adamw", 3e-4), []),
+    ])
+
+    inv = inventory_runs(str(logs))
+
+    assert inv.groups_on_disk == ("g_empty",)
+    assert inv.groups_loaded == ()
+    assert inv.groups_without_records == ("g_empty",)
 
 
 # ─── enrichment: effective_inner_polar ────────────────────────────────────────
@@ -693,22 +748,12 @@ def test_load_runs_does_not_reconstruct_command_flags_or_defaults(tmp_path: Path
 
 # ─── exclusion observability: per-group surfacing ─────────────────────────────
 #
-# Regression for the Phase L silent-drop: runs at a blanket-excluded commit
-# were dropped with no per-group indication. inventory_runs.groups_all_excluded
-# must name the group + dominant reason; the load_runs summary print must
-# include a per-reason example list.
+# Inventory is a record audit, so legacy admission/exclusion policy must not
+# change its filesystem, optimizer, or coverage report.
 
-def test_inventory_surfaces_blanket_excluded_group(tmp_path: Path, monkeypatch):
-    """A group whose every run is on a blanket-excluded commit shows up in
-    groups_all_excluded with the dominant exclusion reason."""
+def test_inventory_treats_recorded_commits_as_audit_only(tmp_path: Path):
+    """Recorded commit values do not change physical inventory coverage."""
     logs = tmp_path / "logs"
-    # Inject a synthetic blanket exclusion at runtime so the test doesn't
-    # depend on the real commit_exclusions.json contents.
-    from lora_playground import commit_exclusions as cx_mod
-    monkeypatch.setattr(
-        cx_mod, "COMMIT_EXCLUSIONS",
-        [("badcom1", "synthetic test exclusion")],
-    )
 
     cfg = _cfg("adamw", 3e-4)
     cfg["git_commit"] = "badcom1abc"
@@ -720,29 +765,18 @@ def test_inventory_surfaces_blanket_excluded_group(tmp_path: Path, monkeypatch):
                  [(cfg_ok, _evs((2000, 0.76)))])
 
     inv = inventory_runs(str(logs))
-    # The blanket-excluded group surfaces with reason.
-    excluded_dict = dict(inv.groups_all_excluded)
-    assert "g_blanket_excluded" in excluded_dict, (
-        f"expected g_blanket_excluded in inventory.groups_all_excluded; "
-        f"got {inv.groups_all_excluded}"
-    )
-    assert "synthetic test exclusion" in excluded_dict["g_blanket_excluded"]
-    # The OK group must NOT appear in groups_all_excluded.
-    assert "g_ok" not in excluded_dict
-    # render_inventory output mentions the group name and reason.
+    assert inv.groups_loaded == ("g_blanket_excluded", "g_ok")
+    assert {row.source_groups for row in inv.coverage} == {
+        ("g_blanket_excluded", "g_ok"),
+    }
+    assert not hasattr(inv, "groups_all_excluded")
     text = render_inventory(inv)
-    assert "g_blanket_excluded" in text
-    assert "ALL RUNS EXCLUDED" in text
+    assert "ALL RUNS EXCLUDED" not in text
 
 
-def test_load_runs_does_not_apply_commit_exclusions(tmp_path: Path, monkeypatch, capsys):
-    """Commit registries are audit inputs, not ordinary discovery gates."""
+def test_load_runs_treats_recorded_commits_as_audit_only(tmp_path: Path, capsys):
+    """Commit values remain visible provenance and never gate discovery."""
     logs = tmp_path / "logs"
-    from lora_playground import commit_exclusions as cx_mod
-    monkeypatch.setattr(
-        cx_mod, "COMMIT_EXCLUSIONS",
-        [("badcom1", "synthetic blanket exclusion")],
-    )
     cfg = _cfg("adamw", 3e-4)
     cfg["git_commit"] = "badcom1abc"
     _write_group(logs, "phase_L_test", {"scope": ["all_optimizers"]},
@@ -753,6 +787,7 @@ def test_load_runs_does_not_apply_commit_exclusions(tmp_path: Path, monkeypatch,
     assert out == ""
     assert len(runs) == 1
     assert runs[0][0]["log_group"] == "phase_L_test"
+    assert runs[0][0]["git_commit"] == "badcom1abc"
 
 
 def test_load_runs_warns_on_unknown_where_key(tmp_path: Path):

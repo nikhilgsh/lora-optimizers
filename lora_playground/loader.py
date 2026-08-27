@@ -1,15 +1,13 @@
-"""Predicate-based sweep loader and inventory.
+"""Records-native run discovery with a deprecated mutable-tuple adapter.
 
-``load_runs(where=...)`` selects runs whose cfg matches a per-field predicate;
-``inventory_runs(logs_root)`` returns a structural audit (orphans, unknown
-optimizers, lr-pinning) for a notebook audit cell.
+New consumers use :func:`load_records` and :class:`RunCatalog`.  The
+``load_runs(where=...)`` compatibility facade exposes mutable ``(cfg, history)``
+copies containing only producer-recorded values; it does not reconstruct
+missing defaults or silently apply admission policy.  ``inventory_runs``
+reports the same neutral physical catalog.
 
-Scope tags on manifests are metadata only — they don't drive loading. To
-remove an old sweep, delete its log dir.
-
-Enrichment: every run returned by ``load_runs`` carries a ``cfg["_derived"]``
-namespace with fields answering "what optimizer math actually ran", regardless
-of how old the run is or how complete its raw cfg was. See ``_enrich_cfg``.
+Manifest scope tags are annotations, not discovery inputs. To remove an old
+sweep from the physical catalog, delete its log directory.
 """
 from __future__ import annotations
 
@@ -17,7 +15,6 @@ import hashlib
 import json
 import subprocess
 import warnings
-from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -30,6 +27,17 @@ from .plotting import (
     max_loss, merge_runs, parse_flag, prescan_groups, scan_epoch, scan_group,
 )
 from .run_catalog import RunCatalog, load_records
+from .run_inventory import (
+    CoverageRow,
+    PINNING_ALL_DIVERGED,
+    PINNING_HIGH,
+    PINNING_INTERIOR,
+    PINNING_LOW,
+    PINNING_SINGLE,
+    RunInventory,
+    audit_run_catalog,
+    render_inventory as _render_inventory,
+)
 from .run_records import RunRecord, thaw_value
 
 
@@ -427,8 +435,7 @@ def _argparse_defaults() -> dict[str, Any]:
     imports torch + transformers (~17 s cold). Building the parser to read
     defaults is reproducible from the codebase, so we snapshot the result
     to JSON and consult that first. The JSON is rebuilt automatically
-    whenever the loader runs in a fresh process and the file is missing;
-    `scripts/build_logs_cache.py` rebuilds it as part of its workflow.
+    whenever the loader runs in a fresh process and the file is missing.
 
     Caveat: this assumes the flag's default has never changed. When it has,
     register the history in `HARDCODED_DEFAULT_HISTORY` and resolve via
@@ -632,9 +639,8 @@ def _enrich_cfg(cfg: dict) -> dict:
     """
     # Loader-assigned run_id: (log_group, log_filename) tuple. `log_group` is
     # mutated onto cfg by merge_runs; `_log_filename` is set by load_run. The
-    # cfg event itself never carries run_id — it's derived from disk path so
-    # the registry keys for RUN_EXCLUSIONS / DIRTY_ATTESTATIONS are stable
-    # against any future field-name renaming in the cfg event.
+    # cfg event itself never carries run_id — it is derived from the physical
+    # disk path so provenance remains stable across cfg field-name changes.
     group = cfg.get("log_group")
     fname = cfg.get("_log_filename")
     if group is not None and fname is not None:
@@ -847,14 +853,6 @@ def _check_unique_on(
         )
 
 
-# Pinning categories returned in CoverageRow.pinning.
-PINNING_INTERIOR = "interior"
-PINNING_LOW = "pinned_low"
-PINNING_HIGH = "pinned_high"
-PINNING_SINGLE = "single_lr"
-PINNING_ALL_DIVERGED = "all_diverged"
-
-
 def _matches(spec: Any, value: Any) -> bool:
     """Predicate matcher for a single field.
 
@@ -894,7 +892,37 @@ _WHERE_FIELD_ALIASES: dict[str, str] = {
 }
 
 
-_MISSING = object()
+class LoggedFieldPredicate:
+    """Callable explicitly safe to evaluate from a logged config header.
+
+    Ordinary ``where`` callables stay residual filters because callers may
+    depend on postprocessing or on fields unavailable until a full parse. This
+    wrapper is for pure value predicates over fields recorded in the config
+    event, allowing the catalog to reject nonmatches before reading histories.
+    """
+
+    __slots__ = ("predicate", "cache_key")
+
+    def __init__(self, predicate: Callable[[Any], Any], *, cache_key: str):
+        if not callable(predicate):
+            raise TypeError("predicate must be callable")
+        if not isinstance(cache_key, str) or not cache_key:
+            raise ValueError("cache_key must be a non-empty string")
+        self.predicate = predicate
+        self.cache_key = cache_key
+
+    def __call__(self, value: Any) -> bool:
+        return bool(self.predicate(value))
+
+    def __repr__(self) -> str:
+        return f"LoggedFieldPredicate({self.cache_key!r})"
+
+
+def logged_field_predicate(
+    predicate: Callable[[Any], Any], *, cache_key: str
+) -> LoggedFieldPredicate:
+    """Mark a pure logged-field predicate as safe for header pushdown."""
+    return LoggedFieldPredicate(predicate, cache_key=cache_key)
 
 
 def _resolve_where(where: dict[str, Any]) -> dict[str, Any]:
@@ -917,110 +945,6 @@ def _build_filter(where: dict[str, Any] | None) -> Callable[[dict], bool] | None
 
     return predicate
 
-
-# ─── where-filter pushdown ────────────────────────────────────────────────────
-#
-# `load_runs` used to postprocess EVERY run in `logs/` and only then apply
-# `where`: 2311 runs enriched to return 131. The postprocess (argparse-default
-# backfill + `_enrich_cfg`) is the single most expensive per-run step, so the
-# filter is now pushed in front of it — but only on the fields where doing so is
-# provably the same answer.
-#
-# What `_wrapped_postprocess` does to a cfg, exhaustively:
-#   1. argparse-default backfill — writes `cfg[k]` only when `cfg.get(k) is None`
-#   2. `_enrich_cfg`             — writes `run_id`, `_derived`,
-#      `effective_picard_iters` unconditionally; `effective_polar_iters` /
-#      `effective_inner_polar` / `effective_polar_pre_norm` whenever their
-#      derivation is non-None; `optimizer_config` and the three diagnostics
-#      fields only when already None; then the same argparse backfill again
-#   3. the caller's own `cfg_postprocess` — arbitrary
-#
-# So a raw cfg value is guaranteed to survive postprocess unchanged exactly when
-# it is non-None and its field is not in `_ENRICHMENT_WRITTEN_FIELDS`. On those
-# fields the pre-filter may reject; on every other field it must abstain and let
-# the run take the full path. A caller-supplied `cfg_postprocess` disables the
-# pushdown altogether, since it can rewrite anything.
-#
-# `cw_no_rr_precond` is here because `_backfill_precond` DELETES it: a raw cfg
-# carrying `False` would pass a pre-filter pinning False and then be rejected by
-# the full filter, which reads a cfg the key is gone from. `precond` needs no
-# entry — enrichment writes it only when the raw value is None, and the
-# pre-filter already abstains on None.
-_ENRICHMENT_WRITTEN_FIELDS: frozenset[str] = frozenset({
-    "run_id", "_derived", "optimizer_config",
-    "effective_picard_iters", "effective_polar_iters",
-    "effective_inner_polar", "effective_polar_pre_norm",
-    "log_basic_diagnostics", "log_heavy_diagnostics", "optim_diagnostics_every",
-    "cw_no_rr_precond",
-})
-
-# Cfg keys that appear only after `merge_runs` has processed a run — `log_group`
-# plus what `_wrapped_postprocess` writes — and so are absent from the raw cfg
-# the pre-filter sees. Folded into the where-key-existence pool
-# (`_seen_cfg_keys`) so the typo warning keeps recognising them as real fields
-# without postprocessing the runs the pre-filter rejected. The three
-# `effective_polar*` / `effective_inner_polar` entries are added only when their
-# derivation is non-None, so listing them here is a deliberate
-# over-approximation: it costs a typo warning we would otherwise have raised for
-# a `where` on one of them in a pool with no polar runs at all, and buys back a
-# spurious warning in every pool that does have them.
-_ALWAYS_ADDED_BY_POSTPROCESS: frozenset[str] = frozenset({
-    "log_group", "run_id", "_derived", "optimizer_config",
-    "effective_picard_iters",
-    "effective_inner_polar", "effective_polar_pre_norm", "effective_polar_iters",
-    "log_basic_diagnostics", "log_heavy_diagnostics", "optim_diagnostics_every",
-})
-
-
-def _build_pushdown(
-    where: dict[str, Any] | None,
-    cfg_postprocess: Callable[[dict, str], None] | None,
-) -> tuple[Callable[[dict, str], bool] | None, Callable[[str], bool] | None]:
-    """Return ``(pre_filter, group_filter)`` for :func:`merge_runs`.
-
-    ``pre_filter(raw_cfg, group)`` returns False only when some ``where`` field
-    is decidable from the raw cfg and rejects it — in which case the full
-    filter would have rejected the postprocessed cfg too, because postprocess
-    provably leaves that field alone. Otherwise it returns True and the run
-    takes the original path (postprocess, then the full filter).
-
-    ``group_filter(group)`` handles a ``where`` on ``log_group`` / ``_group``:
-    ``merge_runs`` assigns ``cfg["log_group"] = group`` before postprocess, so
-    the predicate is decidable from the group name and a non-matching group can
-    be skipped without reading its logs at all.
-    """
-    if not where or cfg_postprocess is not None:
-        return None, None
-
-    resolved = _resolve_where(where)
-
-    group_spec = resolved.get("log_group", _MISSING)
-    group_filter = (
-        None if group_spec is _MISSING
-        else (lambda group, _spec=group_spec: _matches(_spec, group))
-    )
-
-    decidable = {
-        k: v for k, v in resolved.items()
-        if k != "log_group" and k not in _ENRICHMENT_WRITTEN_FIELDS
-    }
-    if not decidable:
-        return None, group_filter
-
-    def pre_filter(cfg: dict, group: str) -> bool:
-        for field_name, spec in decidable.items():
-            value = cfg.get(field_name)
-            if value is None:
-                # Absent, or logged as an explicit None: postprocess may fill
-                # it with the argparse default, so the raw cfg cannot decide.
-                continue
-            if not _matches(spec, value):
-                return False
-        return True
-
-    return pre_filter, group_filter
-
-
 def load_runs(
     where: dict[str, Any] | None = None,
     *,
@@ -1028,6 +952,7 @@ def load_runs(
     runtime_fields: frozenset[str] = RUNTIME_FIELDS,
     cfg_postprocess: Callable[[dict, str], None] | None = None,
     logs_root: str | None = None,
+    catalog: RunCatalog | None = None,
     warn_cross_commit: bool = True,
     unique_on: tuple[str, ...] | None = None,
     allow_axes: tuple[str, ...] = (),
@@ -1082,8 +1007,7 @@ def load_runs(
         DeprecationWarning,
         stacklevel=2,
     )
-    return _load_runs_compatibility(
-        where,
+    kwargs = dict(
         key_axes=key_axes,
         runtime_fields=runtime_fields,
         cfg_postprocess=cfg_postprocess,
@@ -1093,6 +1017,9 @@ def load_runs(
         allow_axes=allow_axes,
         quiet=quiet,
     )
+    if catalog is not None:
+        kwargs["catalog"] = catalog
+    return _load_runs_compatibility(where, **kwargs)
 
 
 def _compat_record_key(record: RunRecord) -> tuple[str, str | None, str]:
@@ -1115,6 +1042,57 @@ def _compat_record_cfg(record: RunRecord) -> dict:
         cfg.setdefault("_log_filename", record.log_filename)
     cfg.setdefault("run_id", record.physical_id)
     return cfg
+
+
+def _compat_pushdown_plan(
+    where: dict[str, Any] | None,
+    *,
+    cfg_postprocess: Callable[[dict, str], None] | None,
+    runtime_fields: frozenset[str],
+) -> tuple[
+    dict[str, Any],
+    dict[str, tuple[Any, ...]],
+    dict[str, LoggedFieldPredicate],
+]:
+    """Extract only header-decidable scalar compatibility predicates.
+
+    The full historical matcher still runs after records are parsed. This plan
+    is only a conservative rejection stage. A caller postprocessor disables
+    it because the callback may rewrite any queried field.
+    """
+    if not where or cfg_postprocess is not None:
+        return {}, {}, {}
+
+    physical_aliases = {
+        "log_group": "group",
+        "_log_filename": "log_filename",
+        "run_id": "physical_id",
+    }
+    scalar_types = (str, int, float, bool, type(None))
+    equals: dict[str, Any] = {}
+    one_of: dict[str, tuple[Any, ...]] = {}
+    predicates: dict[str, LoggedFieldPredicate] = {}
+    for field, spec in _resolve_where(where).items():
+        catalog_field = physical_aliases.get(field, field)
+        if field not in physical_aliases and (
+            field in runtime_fields
+            or field in {"event", "semantic_revisions"}
+            or field.startswith("_")
+        ):
+            continue
+        if isinstance(spec, LoggedFieldPredicate):
+            predicates[catalog_field] = spec
+            continue
+        if callable(spec):
+            continue
+        if isinstance(spec, (list, set, tuple, frozenset)):
+            candidates = tuple(spec)
+            if all(isinstance(value, scalar_types) for value in candidates):
+                one_of[catalog_field] = candidates
+            continue
+        if isinstance(spec, scalar_types):
+            equals[catalog_field] = spec
+    return equals, one_of, predicates
 
 
 def _warn_cross_commit_runs(runs: list[tuple[dict, list[dict]]]) -> None:
@@ -1146,14 +1124,19 @@ def _load_runs_compatibility(
     runtime_fields: frozenset[str] = RUNTIME_FIELDS,
     cfg_postprocess: Callable[[dict, str], None] | None = None,
     logs_root: str | None = None,
+    catalog: RunCatalog | None = None,
     warn_cross_commit: bool = True,
     unique_on: tuple[str, ...] | None = None,
     allow_axes: tuple[str, ...] = (),
     quiet: bool = True,
 ) -> list[tuple[dict, list[dict]]]:
     """Thin mutable-tuple adapter over the neutral physical run catalog."""
-    if logs_root is None:
-        logs_root = _default_logs_root()
+    if catalog is not None and logs_root is not None:
+        raise ValueError("pass either catalog or logs_root, not both")
+    if catalog is None:
+        catalog = RunCatalog.discover(logs_root or _default_logs_root())
+    elif not isinstance(catalog, RunCatalog):
+        raise TypeError("catalog must be a RunCatalog")
     if key_axes is not None:
         raise NotImplementedError(
             "load_runs(key_axes=...) no longer performs implicit physical-run "
@@ -1164,32 +1147,51 @@ def _load_runs_compatibility(
     # physical discovery has no implicit exclusion summary to silence.
     _ = quiet
 
-    catalog = RunCatalog.discover(logs_root)
     filter_fn = _build_filter(where)
+    pushdown_equals, pushdown_one_of, pushdown_predicates = _compat_pushdown_plan(
+        where,
+        cfg_postprocess=cfg_postprocess,
+        runtime_fields=runtime_fields,
+    )
+    if pushdown_equals or pushdown_one_of or pushdown_predicates:
+        candidates = catalog.prefilter(
+            equals=pushdown_equals,
+            one_of=pushdown_one_of,
+            predicates=pushdown_predicates,
+        )
+    else:
+        candidates = catalog.records
     processed: dict[tuple[str, str | None, str], dict] = {}
     selected: list[RunRecord] = []
-    seen_fields: set[str] = set()
 
-    for record in catalog.records:
+    for record in candidates:
         cfg = _compat_record_cfg(record)
         if cfg_postprocess is not None:
             cfg_postprocess(cfg, record.group)
         processed[_compat_record_key(record)] = cfg
-        seen_fields.update(cfg)
         if filter_fn is None or filter_fn(cfg):
             selected.append(record)
 
-    # Preserve the useful typo warning without treating current argparse
-    # defaults or loader-written fields as evidence that a cfg key exists.
-    if where and processed:
+    # Preserve the typo warning from header fields across the whole physical
+    # pool. This does not parse nonmatching histories or treat current defaults
+    # as evidence that a key exists.
+    if where and catalog.groups:
         resolved_where = _resolve_where(where)
-        unknown = sorted(field for field in resolved_where if field not in seen_fields)
+        if pushdown_equals or pushdown_one_of or pushdown_predicates:
+            known_fields = set(catalog.logged_field_names)
+        else:
+            known_fields: set[str] = set()
+            for cfg in processed.values():
+                known_fields.update(cfg)
+        unknown = sorted(
+            field for field in resolved_where if field not in known_fields
+        )
         if unknown:
             warnings.warn(
                 f"load_runs: where-key(s) {unknown!r} do not appear in any "
-                f"logged cfg in the candidate pool ({len(processed)} runs "
-                "examined). Possible typo or filtering on an unrecorded field. "
-                f"Known cfg keys (sample): {sorted(seen_fields)[:20]}...",
+                "logged config header in the physical candidate pool. Possible "
+                "typo or filtering on an unrecorded field. Known cfg keys "
+                f"(sample): {sorted(known_fields)[:20]}...",
                 stacklevel=3,
             )
 
@@ -1209,7 +1211,10 @@ def _load_runs_compatibility(
                 terminal.log_filename,
                 terminal.physical_id,
             )
-            cfg = processed[terminal_key]
+            cfg = processed.get(terminal_key)
+            if cfg is None:
+                cfg = _compat_record_cfg(terminal)
+                processed[terminal_key] = cfg
             if "run_id" not in terminal.cfg:
                 cfg["run_id"] = resolved.terminal_attempt_id
             history = thaw_value(resolved.history)
@@ -1219,247 +1224,6 @@ def _load_runs_compatibility(
         _check_unique_on(runs, unique_on, runtime_fields, allow_axes)
     if warn_cross_commit and runs:
         _warn_cross_commit_runs(runs)
-    return runs
-
-
-def _load_runs_inner(
-    where: dict[str, Any] | None,
-    *,
-    key_axes: tuple[str, ...] | None,
-    runtime_fields: frozenset[str],
-    cfg_postprocess: Callable[[dict, str], None] | None,
-    logs_root: str,
-    warn_cross_commit: bool,
-    unique_on: tuple[str, ...] | None,
-    allow_axes: tuple[str, ...],
-    quiet: bool,
-) -> list[tuple[dict, list[dict]]]:
-    """Body of :func:`load_runs`, run inside a `scan_epoch`."""
-    manifests = load_manifests(logs_root, strict=False)
-    # Ordering remains a legacy newest-wins tiebreak. Manifest health is audit
-    # metadata and never filters the physical populated groups returned here.
-    groups = [m["group"] for m in live_manifests_newest_first(manifests)]
-    filter_fn = _build_filter(where)
-    pre_filter, group_filter = _build_pushdown(where, cfg_postprocess)
-
-    if key_axes is None:
-        def key_fn(cfg: dict) -> frozenset:
-            return _denylist_key(cfg, runtime_fields)
-    else:
-        def key_fn(cfg: dict) -> tuple:
-            return tuple(cfg.get(a) for a in key_axes)
-
-    # Apply argparse-default backfill BEFORE merge_runs' dedup. Otherwise
-    # two cfgs of the same algorithm at the same seed — one from an older
-    # commit where a flag didn't exist, one from a newer commit logging
-    # the same default explicitly — get different _denylist_key hashes
-    # and both survive dedup. They then aggregate as two distinct "seed=N"
-    # rows at the plot layer and inflate the seed-σ band. Backfilling
-    # here makes the keys agree so the dedup tiebreak (newest group,
-    # longest trajectory) picks one canonical run per seed.
-    from .invariants import evaluate_invariants
-    from .run_exclusions import is_run_excluded
-    from .commit_exclusions import (
-        is_commit_excluded as _new_is_commit_excluded,
-        is_buggy_eps_rel as _new_is_buggy_eps_rel,
-    )
-    _excluded_counts: dict[str, int] = {}
-    # Per-reason example list: (group, log_filename) pairs, capped per reason.
-    # Surfaces "which sweep got hit" in the loader summary; a user
-    # investigating "why is my group empty?" can grep the summary print
-    # for the group name instead of enumerating registries by hand.
-    _excluded_examples: dict[str, list[tuple[str, str]]] = {}
-    _EXAMPLES_PER_REASON = 3
-
-    def _evaluate_new_layer(cfg: dict) -> tuple[bool, str | None]:
-        """Apply explicit known-bad run/code exclusions only.
-
-        Commit, dirty-tree, source-hash, environment, and host values remain
-        available as recorded audit provenance. Loading does not attest them or
-        search Git history for a matching tree. New runs use explicit semantic
-        revisions; narrow historical correctness exclusions remain below.
-        """
-        # Per-run quality exclusion always takes precedence.
-        log_group = cfg.get("log_group")
-        log_filename = cfg.get("_log_filename")
-        excluded, reason = is_run_excluded(log_group, log_filename)
-        if excluded:
-            return True, reason
-        # Blanket-commit exclusion (JSON-backed commit_exclusions.json).
-        excluded, reason = _new_is_commit_excluded(cfg.get("git_commit"))
-        if excluded:
-            return True, reason
-        # ε_rel-specific buggy commits (eps_rel_buggy_commits.json).
-        excluded, reason = _new_is_buggy_eps_rel(cfg)
-        if excluded:
-            return True, reason
-
-        # Code-correctness invariants.
-        excluded, name, inv_reason = evaluate_invariants(
-            cfg, cfg.get("git_commit"), _is_ancestor,
-        )
-        if excluded:
-            return True, f"invariant {name}: {inv_reason}"
-        return False, None
-
-    # Apply explicit run/commit exclusions and historical correctness
-    # invariants. Provenance is reported separately and never gates loading.
-    _user_filter = filter_fn
-    # Evidence for the where-key validation below: which of the caller's
-    # where-keys exist on SOME candidate cfg ("does this field exist at all, or
-    # is it a typo?"). Only the where-keys are tracked, not every cfg key —
-    # unioning ~350 keys per candidate over the whole tree cost more than the
-    # postprocess this function's pre-filter was added to avoid, and the answer
-    # never depended on the other 345. `_sample_cfg_keys` keeps one cfg's key
-    # list purely so the warning can show the reader what real keys look like.
-    _where_keys_present: set[str] = set()
-    _sample_cfg_keys: set[str] = set()
-    _resolved_where_keys = (
-        {_WHERE_FIELD_ALIASES.get(k, k) for k in where} if where else set()
-    )
-    _n_candidates = 0
-    def _wrapped_filter(cfg: dict) -> bool:
-        # Cheap user predicate first so explicit historical-invariant checks run
-        # only on the query's candidate population.
-        if _user_filter is not None and not _user_filter(cfg):
-            return False
-        excluded, reason = _evaluate_new_layer(cfg)
-        if excluded:
-            _excluded_counts[reason] = _excluded_counts.get(reason, 0) + 1
-            ex = _excluded_examples.setdefault(reason, [])
-            if len(ex) < _EXAMPLES_PER_REASON:
-                ex.append((cfg.get("log_group") or "?",
-                           cfg.get("_log_filename") or "?"))
-            return False
-        return True
-    filter_fn = _wrapped_filter
-
-    _defaults = _argparse_defaults()
-    def _wrapped_postprocess(cfg: dict, group: str) -> None:
-        # Backfill argparse defaults. Treat explicit None and absent
-        # identically: a newer schema may LOG `field: None` for a
-        # not-provided flag while an older schema omitted the key
-        # entirely; both indicate "ran with argparse default at runtime,"
-        # so both should land at the default for dedup-key purposes.
-        # `setdefault` alone would leave the explicit-None case in place
-        # and the cfgs would still dedup to different keys.
-        #
-        # HISTORICAL_DEFAULTS_WHEN_MISSING overrides the argparse default
-        # for fields whose default has changed over time — using the
-        # current default for missing-field old runs would mislabel them
-        # (the historical default is the value those runs actually ran with).
-        for k, v in _defaults.items():
-            if cfg.get(k) is None:
-                cfg[k] = HISTORICAL_DEFAULTS_WHEN_MISSING.get(k, v)
-        # Enrich BEFORE dedup so derived canonical fields
-        # (`effective_picard_iters`, `effective_inner_polar`) are present
-        # in the dedup key. Without this, two cfgs with the same
-        # effective k but different raw `picard_iters_override` get
-        # different dedup keys and both survive.
-        _enrich_cfg(cfg)
-        if cfg_postprocess is not None:
-            cfg_postprocess(cfg, group)
-
-    def _wrapped_pre_filter(cfg: dict, group: str) -> bool:
-        # Key-existence evidence for the where-key typo warning below, gathered
-        # from EVERY candidate cfg independent of either filter, so a where-key
-        # that legitimately narrows the pool to nothing still validates as a
-        # real field.
-        nonlocal _n_candidates
-        _n_candidates += 1
-        if not _sample_cfg_keys:
-            _sample_cfg_keys.update(cfg.keys())
-        for k in _resolved_where_keys:
-            if k not in _where_keys_present and k in cfg:
-                _where_keys_present.add(k)
-        return pre_filter is None or pre_filter(cfg, group)
-
-    runs = merge_runs(
-        groups,
-        key_fn=key_fn,
-        filter_fn=filter_fn,
-        cfg_postprocess=_wrapped_postprocess,
-        logs_root=logs_root,
-        pre_filter=_wrapped_pre_filter if where else None,
-        group_filter=group_filter,
-    )
-
-    # Enrichment: every cfg gains a `_derived` namespace and (if missing) a
-    # backfilled `optimizer_config`. Done after merge_runs so dedup operates
-    # on raw cfg fields (no risk of `_derived` differences hiding a
-    # collision); analysis code reads enriched cfgs.
-    for cfg, _ in runs:
-        _enrich_cfg(cfg)
-
-    if _excluded_counts:
-        total = sum(_excluded_counts.values())
-        parts: list[str] = []
-        for reason, n in sorted(_excluded_counts.items()):
-            ex = _excluded_examples.get(reason, [])
-            ex_str = ", ".join(f"{g}/{lf}" for g, lf in ex)
-            more = max(0, n - len(ex))
-            tail = f" (e.g. {ex_str}" + (f", +{more} more" if more else "") + ")" if ex else ""
-            parts.append(f"{n} for {reason!r}{tail}")
-        if not quiet:
-            print(f"  [loader] excluded {total} run(s): " + "; ".join(parts))
-
-    # where-key validation: if the user filtered on a field that doesn't
-    # appear in ANY non-excluded cfg in the loaded pool, the result is
-    # silently empty. Warn so typos ('datset' for 'dataset_name') surface
-    # loudly. We check against `_seen_cfg_keys` (collected pre-user-filter)
-    # so legitimate value-misses don't fire the warning.
-    #
-    # The evidence is gathered from RAW cfgs; the pool the check wants is the
-    # postprocessed one, so a key that postprocess adds to every cfg
-    # (argparse-flag backfill + the enrichment namespace) also counts as known.
-    # Filtering on `log_group` narrows the candidate pool to the selected
-    # groups, which is what the check then reports against.
-    if where and _n_candidates:
-        known = _where_keys_present | set(_defaults) | _ALWAYS_ADDED_BY_POSTPROCESS
-        unknown = sorted(k for k in _resolved_where_keys if k not in known)
-        if unknown:
-            sample = sorted(_sample_cfg_keys | set(_defaults))
-            warnings.warn(
-                f"load_runs: where-key(s) {unknown!r} do not appear in any "
-                f"cfg in the candidate pool ({_n_candidates} runs examined). "
-                f"Possible typo or filtering on a field that "
-                f"doesn't exist for this dataset. Known cfg keys (sample): "
-                f"{sample[:20]}...",
-                stacklevel=2,
-            )
-
-
-    if unique_on is not None and runs:
-        _check_unique_on(runs, unique_on, runtime_fields, allow_axes)
-
-    if warn_cross_commit and runs:
-        commits: dict[str, int] = {}
-        for cfg, _ in runs:
-            c = cfg.get("git_commit") or "<missing>"
-            commits[c] = commits.get(c, 0) + 1
-        if len(commits) > 1:
-            summary = ", ".join(
-                f"{c[:7]} ({n} run{'s' if n != 1 else ''})"
-                for c, n in sorted(commits.items(), key=lambda kv: -kv[1])
-            )
-            warnings.warn(
-                f"load_runs returned runs from {len(commits)} commits: "
-                f"{summary}. Behavior at default settings can differ across "
-                f"commits; if comparing absolute losses, verify the relevant "
-                f"defaults in HARDCODED_DEFAULT_HISTORY or pin the comparison "
-                f"to a single commit. Pass warn_cross_commit=False to silence.",
-                UserWarning,
-                stacklevel=2,
-            )
-
-    # Persist any newly-parsed groups to the cross-session pickle cache.
-    # Cheap when nothing changed (early-return on `not _DIRTY`).
-    try:
-        from . import run_cache as _run_cache
-        _run_cache.flush(logs_root)
-    except Exception:
-        pass
-
     return runs
 
 
@@ -1512,204 +1276,26 @@ def logs_signature(logs_root: str | None = None,
 
 # ─── inventory ────────────────────────────────────────────────────────────────
 
-@dataclass(frozen=True)
-class CoverageRow:
-    """One row per (optimizer, lora_r, lora_plus_multiplier) cell."""
-    optimizer: str
-    lora_r: int
-    lora_plus_multiplier: float
-    lrs_swept: tuple[float, ...]
-    best_lr: float | None              # None when all runs diverged
-    final_loss_at_best: float | None
-    pinning: str
-    source_groups: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class RunInventory:
-    groups_on_disk: tuple[str, ...]            # populated logs/<group>/run_info dirs
-    groups_loaded: tuple[str, ...]             # subset that contributes runs
-    groups_orphaned: tuple[str, ...]           # populated, no manifest or empty scope
-    groups_no_run_info: tuple[str, ...]        # logs/<group>/ exists with files but no run_info/ — invisible to load_manifests
-    groups_all_excluded: tuple[tuple[str, str], ...]  # (group, dominant_reason) — manifested + populated, but every run is exclusion-dropped
-    optimizers_unknown: tuple[str, ...]        # in logs but not in OPTIM_COLORS
-    coverage: tuple[CoverageRow, ...]
-
-    @property
-    def pinned(self) -> tuple[CoverageRow, ...]:
-        """Subset of coverage with pinning ∈ {pinned_low, pinned_high}."""
-        return tuple(r for r in self.coverage
-                     if r.pinning in (PINNING_LOW, PINNING_HIGH))
-
-
-def _classify_pinning(lrs_swept: tuple[float, ...], best_lr: float | None) -> str:
-    if best_lr is None:
-        return PINNING_ALL_DIVERGED
-    if len(lrs_swept) <= 1:
-        return PINNING_SINGLE
-    if best_lr == min(lrs_swept):
-        return PINNING_LOW
-    if best_lr == max(lrs_swept):
-        return PINNING_HIGH
-    return PINNING_INTERIOR
-
-
 def inventory_runs(logs_root: str | None = None) -> RunInventory:
-    """Walk all manifests + runs, return a structural audit.
+    """Return a catalog-backed audit of physical logs and recorded semantics.
 
-    Each problem reported is a fact, not a threshold judgment:
-      - groups_orphaned: populated dir without a valid scope-tagged manifest.
-      - optimizers_unknown: optimizer present in some run's cfg but absent
-        from ``OPTIM_COLORS`` — silently dropped from any cell that filters
-        on color-map membership.
-      - coverage: per (optimizer, lora_r, lora_plus_multiplier), the swept
-        lrs, the best lr (lowest non-diverged final loss), and a pinning
-        classification.
+    The inventory consumes the same immutable :class:`RunCatalog` records as
+    new analysis code.  It does not apply exclusions, reconstruct defaults,
+    infer resume relationships, query Git ancestry, or touch the legacy
+    persistent cache.  Coverage is computed only from values present in each
+    record's logged effective config.
     """
     if logs_root is None:
         logs_root = _default_logs_root()
-    with scan_epoch():
-        return _inventory_runs_inner(logs_root)
+    return _inventory_runs_inner(logs_root)
 
 
 def _inventory_runs_inner(logs_root: str) -> RunInventory:
-    """Body of :func:`inventory_runs`, run inside a `scan_epoch`."""
-    manifests = load_manifests(logs_root, strict=False)
-    on_disk = sorted(m["group"] for m in manifests)
-    orphaned = sorted(warn_untagged(manifests))
-    live = live_manifests_newest_first(manifests)
-    live_groups = [m["group"] for m in live]
-    prescan_groups(live_groups, logs_root)
-
-    # Single pass over all runs in live groups. We do NOT dedup here — the
-    # inventory wants raw coverage across groups; downstream load_runs() does
-    # the dedup for plotting.
-    rows: dict[tuple[str, int, float], dict] = {}
-    seen_optimizers: set[str] = set()
-    contributing_groups: set[str] = set()
-    # Per-group exclusion audit: re-run the exclusion chain on every
-    # (group, run) and flag groups where ALL runs are exclusion-dropped.
-    # This catches the "valid manifest + populated .out + every run on a
-    # blanket-excluded commit" failure mode that's invisible to the
-    # orphan / no_run_info / unknown-optimizer audits.
-    from .invariants import evaluate_invariants
-    from .run_exclusions import is_run_excluded
-    from .commit_exclusions import (
-        is_commit_excluded as _ic_excluded,
-        is_buggy_eps_rel as _ic_buggy_eps_rel,
-    )
-    def _group_dominant_exclusion(cfgs: list[dict]) -> str | None:
-        """Returns the most common exclusion reason if EVERY cfg is
-        excluded, else None. Defensive against per-cfg variation: we want
-        to surface a single representative reason in the inventory output.
-        """
-        reasons: list[str] = []
-        for cfg in cfgs:
-            ex, r = is_run_excluded(cfg.get("log_group"), cfg.get("_log_filename"))
-            if ex:
-                reasons.append(r); continue
-            ex, r = _ic_excluded(cfg.get("git_commit"))
-            if ex:
-                reasons.append(r); continue
-            ex, r = _ic_buggy_eps_rel(cfg)
-            if ex:
-                reasons.append(r); continue
-            ex, name, inv_reason = evaluate_invariants(
-                cfg, cfg.get("git_commit"), _is_ancestor)
-            if ex:
-                reasons.append(f"invariant {name}: {inv_reason}"); continue
-            return None  # at least one run admitted — group is fine
-        if not reasons:
-            return None
-        # Most-common reason (Counter would import, just use dict count).
-        counts: dict[str, int] = {}
-        for r in reasons:
-            counts[r] = counts.get(r, 0) + 1
-        return max(counts.items(), key=lambda kv: kv[1])[0]
-
-    groups_all_excluded: list[tuple[str, str]] = []
-
-    for group in live_groups:
-        if not has_runs(group, logs_root):
-            continue
-        # Capture the raw cfg list once so we can both feed the coverage
-        # loop AND run the all-excluded audit without re-parsing.
-        group_runs = load_sweep(group, logs_root)
-        group_cfgs = [cfg for cfg, evs in group_runs if evs]
-        if group_cfgs:
-            dom = _group_dominant_exclusion(group_cfgs)
-            if dom is not None:
-                groups_all_excluded.append((group, dom))
-        for cfg, evs in group_runs:
-            if not evs:
-                continue
-            optimizer = cfg.get("optimizer", "?")
-            lora_r = int(cfg.get("lora_r", 16))
-            mult = float(cfg.get("lora_plus_multiplier", 1.0))
-            try:
-                lr = float(cfg["lr"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            seen_optimizers.add(optimizer)
-            contributing_groups.add(group)
-            key = (optimizer, lora_r, mult)
-            row = rows.setdefault(key, {"lrs": {}, "groups": set()})
-            row["groups"].add(group)
-            final = evs[-1]["eval_loss"]
-            diverged = max_loss(evs) >= DIVERGE_THRESHOLD
-            existing = row["lrs"].get(lr)
-            if existing is None or (not diverged and (existing[1] or final < existing[0])):
-                row["lrs"][lr] = (final, diverged)
-
-    coverage: list[CoverageRow] = []
-    for (optimizer, lora_r, mult), info in sorted(rows.items()):
-        lrs = tuple(sorted(info["lrs"].keys()))
-        non_diverged = [(lr, fl) for lr, (fl, div) in info["lrs"].items() if not div]
-        if non_diverged:
-            best_lr, best_loss = min(non_diverged, key=lambda x: x[1])
-        else:
-            best_lr, best_loss = None, None
-        coverage.append(CoverageRow(
-            optimizer=optimizer,
-            lora_r=lora_r,
-            lora_plus_multiplier=mult,
-            lrs_swept=lrs,
-            best_lr=best_lr,
-            final_loss_at_best=best_loss,
-            pinning=_classify_pinning(lrs, best_lr),
-            source_groups=tuple(sorted(info["groups"])),
-        ))
-
-    optimizers_unknown = tuple(sorted(o for o in seen_optimizers if o not in OPTIM_COLORS))
-
-    # Groups on disk with files but no run_info/ subdir are invisible to
-    # load_manifests (and therefore to load_runs). Surface them so they
-    # don't silently disappear from analyses.
-    manifest_groups = set(on_disk)
-    no_run_info: list[str] = []
-    root = Path(logs_root)
-    if root.is_dir():
-        for child in sorted(root.iterdir()):
-            if not child.is_dir() or child.name in manifest_groups:
-                continue
-            if not (child / "run_info").exists() and any(child.iterdir()):
-                no_run_info.append(child.name)
-
-    # `inventory_runs` also touches load_sweep — flush any newly parsed
-    # groups so the persistent pickle stays in sync.
-    try:
-        from . import run_cache as _run_cache
-        _run_cache.flush(logs_root)
-    except Exception:
-        pass
-    return RunInventory(
-        groups_on_disk=tuple(on_disk),
-        groups_loaded=tuple(sorted(contributing_groups)),
-        groups_orphaned=tuple(orphaned),
-        groups_no_run_info=tuple(no_run_info),
-        groups_all_excluded=tuple(sorted(groups_all_excluded)),
-        optimizers_unknown=optimizers_unknown,
-        coverage=tuple(coverage),
+    """Compatibility wrapper around the neutral catalog audit."""
+    return audit_run_catalog(
+        logs_root,
+        known_optimizers=OPTIM_COLORS,
+        diverge_threshold=DIVERGE_THRESHOLD,
     )
 
 
@@ -1778,47 +1364,5 @@ def aggregate_by(
 
 
 def render_inventory(inv: RunInventory) -> str:
-    """Plain-text report for the notebook audit cell."""
-    lines: list[str] = []
-    lines.append(f"Loaded {len(inv.groups_loaded)} of {len(inv.groups_on_disk)} groups on disk.")
-
-    if inv.groups_orphaned:
-        lines.append("")
-        lines.append(f"ORPHANED ({len(inv.groups_orphaned)}) — populated but no valid manifest, will not load:")
-        for g in inv.groups_orphaned:
-            lines.append(f"  {g}")
-
-    if inv.groups_no_run_info:
-        lines.append("")
-        lines.append(f"NO run_info/ ({len(inv.groups_no_run_info)}) — files present but missing run_info/ dir, invisible to load_runs:")
-        for g in inv.groups_no_run_info:
-            lines.append(f"  {g}")
-
-    if inv.groups_all_excluded:
-        lines.append("")
-        lines.append(f"ALL RUNS EXCLUDED ({len(inv.groups_all_excluded)}) — valid manifest + .out files, but every run dropped by exclusion chain:")
-        for g, reason in inv.groups_all_excluded:
-            lines.append(f"  {g}: {reason}")
-
-    if inv.optimizers_unknown:
-        lines.append("")
-        lines.append(f"UNKNOWN OPTIMIZERS ({len(inv.optimizers_unknown)}) — in logs but missing from OPTIM_COLORS, "
-                     f"will be dropped by any cell that filters on it:")
-        for o in inv.optimizers_unknown:
-            lines.append(f"  {o}")
-
-    lines.append("")
-    lines.append(f"Coverage: {len(inv.coverage)} (optimizer, rank, mult) cells")
-    if inv.pinned:
-        lines.append(f"PINNED at lr-range boundary ({len(inv.pinned)}) — extension sweep recommended:")
-        for r in inv.pinned:
-            mult = f" m={r.lora_plus_multiplier:g}" if r.lora_plus_multiplier != 1.0 else ""
-            lines.append(
-                f"  {r.optimizer:<32}  r={r.lora_r:<4}{mult:<6}  "
-                f"best_lr={r.best_lr:.0e} (final={r.final_loss_at_best:.4f}) "
-                f"  swept={[f'{x:.0e}' for x in r.lrs_swept]} → {r.pinning}"
-            )
-    else:
-        lines.append("No (optimizer, rank, mult) cells pinned at lr-range boundary.")
-
-    return "\n".join(lines)
+    """Compatibility re-export of the neutral catalog report renderer."""
+    return _render_inventory(inv)

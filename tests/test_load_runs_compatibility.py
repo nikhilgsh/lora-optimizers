@@ -119,7 +119,6 @@ def test_facade_is_filesystem_led_logged_only_and_does_not_call_legacy_path(
     def forbidden(*_args, **_kwargs):
         raise AssertionError("legacy reconstruction/admission path was called")
 
-    monkeypatch.setattr(loader, "_load_runs_inner", forbidden)
     monkeypatch.setattr(loader, "_argparse_defaults", forbidden)
     monkeypatch.setattr(loader, "_precond_by_optimizer", forbidden)
 
@@ -182,6 +181,131 @@ def test_facade_preserves_literal_list_callable_and_postprocess_where(tmp_path):
         ("muon", "group"),
         ("other", "group"),
     ]
+
+
+def test_facade_pushes_scalar_header_filter_before_callable_residual(
+    tmp_path, monkeypatch,
+):
+    logs = tmp_path / "logs"
+    configs = (
+        ("adamw", "/data/keep", "log_0.out"),
+        ("adamw", "/data/drop", "log_1.out"),
+        ("muon", "/data/keep", "log_2.out"),
+    )
+    for optimizer, data_dir, filename in configs:
+        _write_log(
+            logs / "group" / "run_info" / "logs" / filename,
+            [
+                _config(
+                    optimizer=optimizer,
+                    lr=1e-3,
+                    data_dir=data_dir,
+                ),
+                _eval(10, 0.9),
+            ],
+        )
+
+    import lora_playground.run_catalog as run_catalog_module
+
+    original = run_catalog_module.parse_run_file
+    full_parses = []
+
+    def counted(path, **kwargs):
+        full_parses.append(path.name)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(run_catalog_module, "parse_run_file", counted)
+    with pytest.warns(DeprecationWarning):
+        runs = loader.load_runs(
+            where={
+                "optimizer": "adamw",
+                "data_dir": lambda value: value.endswith("/keep"),
+            },
+            logs_root=str(logs),
+            warn_cross_commit=False,
+        )
+
+    pushed_parses = list(full_parses)
+    full_parses.clear()
+    with pytest.warns(DeprecationWarning):
+        unpushed_runs = loader.load_runs(
+            where={
+                "optimizer": "adamw",
+                "data_dir": lambda value: value.endswith("/keep"),
+            },
+            logs_root=str(logs),
+            cfg_postprocess=lambda _cfg, _group: None,
+            warn_cross_commit=False,
+        )
+
+    assert [cfg["data_dir"] for cfg, _history in runs] == ["/data/keep"]
+    assert runs == unpushed_runs
+    # Both scalar-matching AdamW histories are parsed for the callable residual;
+    # the scalar-nonmatching Muon history is rejected from its config header.
+    assert pushed_parses == ["log_0.out", "log_1.out"]
+    assert full_parses == ["log_0.out", "log_1.out", "log_2.out"]
+
+
+def test_facade_pushes_marked_logged_field_predicate_before_history_parse(
+    tmp_path, monkeypatch,
+):
+    logs = tmp_path / "logs"
+    for index, data_dir in enumerate(("/data/opc", "/data/openmath")):
+        _write_log(
+            logs / "group" / "run_info" / "logs" / f"log_{index}.out",
+            [
+                _config(optimizer="adamw", lr=1e-3, data_dir=data_dir),
+                _eval(10, 0.9),
+            ],
+        )
+
+    import lora_playground.run_catalog as run_catalog_module
+
+    original = run_catalog_module.parse_run_file
+    full_parses = []
+
+    def counted(path, **kwargs):
+        full_parses.append(path.name)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(run_catalog_module, "parse_run_file", counted)
+    data_is_opc = loader.logged_field_predicate(
+        lambda value: value.endswith("/opc"), cache_key="dataset=opc"
+    )
+    with pytest.warns(DeprecationWarning):
+        runs = loader.load_runs(
+            where={"optimizer": "adamw", "data_dir": data_is_opc},
+            logs_root=str(logs),
+            warn_cross_commit=False,
+        )
+
+    assert [cfg["data_dir"] for cfg, _history in runs] == ["/data/opc"]
+    assert full_parses == ["log_0.out"]
+
+
+def test_facade_collection_valued_literal_remains_exact_under_pushdown(tmp_path):
+    logs = tmp_path / "logs"
+    _write_log(
+        logs / "group" / "run_info" / "logs" / "log_0.out",
+        [
+            _config(
+                optimizer="adamw",
+                lr=1e-3,
+                target_module_names=["q_proj", "v_proj"],
+            ),
+            _eval(10, 0.9),
+        ],
+    )
+
+    with pytest.warns(DeprecationWarning):
+        runs = loader.load_runs(
+            where={"target_module_names": ["q_proj", "v_proj"]},
+            logs_root=str(logs),
+            warn_cross_commit=False,
+        )
+
+    assert len(runs) == 1
+    assert runs[0][0]["target_module_names"] == ["q_proj", "v_proj"]
 
 
 def test_facade_keeps_legacy_siblings_physical_and_resolves_explicit_lineage(

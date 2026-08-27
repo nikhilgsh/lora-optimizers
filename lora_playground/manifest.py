@@ -70,12 +70,6 @@ SERIES_AXIS_FIELDS: frozenset[str] = frozenset({
     # as members of one series (seeds, lr-sweep points, horizon extensions).
     "seed", "lr", "lora_r", "lora_alpha",
     "max_steps", "eval_every",
-    # CLI override flags whose canonical post-resolution value is
-    # promoted by `_enrich_cfg` to a top-level scalar (e.g.
-    # `effective_picard_iters`). The raw override is then redundant.
-    # Series identity uses the effective value; the raw override is not
-    # series-defining.
-    "picard_iters_override",
 }) | RUNTIME_FIELDS
 
 # NOTE on what is intentionally NOT in SERIES_AXIS_FIELDS:
