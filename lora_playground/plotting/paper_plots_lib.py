@@ -324,7 +324,7 @@ def _truncate(runs, horizon, keep_full=None):
 
 
 def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True,
-            horizon=None):
+            horizon=None, trajectory_only=False):
     """Every panel in this module funnels through here.
 
     Passing prefetched_runs AND variant_key is what arms the ``assert_label_discriminates``
@@ -333,10 +333,11 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     """
     with _held_logs_signature():
         return _figure_inner(arms, common, ref_label, suptitle, target_label,
-                             drop_empty, horizon)
+                             drop_empty, horizon, trajectory_only)
 
 
-def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon):
+def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon,
+                  trajectory_only=False):
     declared_arms = dict(arms)
     if drop_empty:
         missing = [k for k, v in arms.items() if not has(v, common)]
@@ -381,7 +382,8 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
         logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
         allow_partial=True, allow_custom_labels=True, target_label=target_label,
         suptitle=suptitle,
-        prefetched_runs=runs, variant_key=variant_key_fn(common, arms))
+        prefetched_runs=runs, variant_key=variant_key_fn(common, arms),
+        trajectory_only=trajectory_only)
     plt.show()
     if target_label in arms:
         print(speedup_table(arms, common, baseline_label=target_label, horizon=h)[0])
@@ -648,31 +650,43 @@ def beta2_panel(rank=256):
                    target_label=None)
 
 
-def precond_beta2_panel(rank=16, horizon=2000):
+def precond_beta2_panel(rank=16):
     """Is factorwise's deficit at small r the cost of whitening by a NOISY estimate?
 
-    `P_A` is a finite EMA, so it is anisotropic even when the true curvature is
-    not; one-sided's C_B = I has zero estimation variance and cannot make that
-    error. Measured noise floor, feeding the EMA gradients whose true second
-    moment is exactly I at beta2=0.99 (n_eff = 100): injected anisotropy
-    0.098 / 0.126 / 0.125 at r = 16 / 64 / 256 -- flat in rank -- against a real
-    anisotropy of 0.195 / 0.338 / 0.447, which grows. So SNR is 2.0 at r=16
-    against 3.6 at r=256. beta2 = 0.999 takes n_eff to 1000 and should drop the
-    floor with the signal untouched.
+    `factorwise` fills the r x r slot with `P_A`, an EMA of the factor's own
+    gradients; `one-sided` fills it with `I_r`. An EMA over
+    n_eff = 1/(1-curvature_beta) samples is anisotropic EVEN WHEN THE TRUE
+    CURVATURE IS ISOTROPIC, so whitening by it perturbs the update along
+    directions the problem does not have. `I_r` has zero estimation variance and
+    cannot make that error; it only forgoes whatever real anisotropy exists.
 
-    The one-sided arms are the CONTROL, not padding: `curvature_beta` drives
-    four EMAs, not one -- P_A/Q_B (factorwise only) at optim.py:2184-2186 and
-    2200-2201, and D_in/D_out (BOTH arms) at 2191-2195 and 2202-2203. Without
-    them a shrinking gap cannot be told from beta2 helping everything.
+    Anisotropy here means 1 - stable_rank(M)/r, where stable_rank = sum(lambda) /
+    max(lambda) of the r x r Gram: 0 is perfectly isotropic. Feeding the EMA
+    gradients whose TRUE second moment is exactly I measures the noise floor --
+    0.098 / 0.126 / 0.125 at r = 16 / 64 / 256, flat in rank because the EMA
+    window does not depend on r -- against the real anisotropy of the factor's
+    own Gram, 0.195 / 0.338 / 0.447, which grows. At r=16 there is only 2.0x as
+    much real structure as the estimator manufactures from noise, against 3.6x at
+    r=256.
 
-    `horizon=2000` because the beta2=0.999 cells (job 6952576) ran 2000 steps
-    against 9000-step comparands; reading both at step 2000 is exact, not a
-    truncation artifact, since the schedule is constant with no warmup.
+    TRAJECTORY ONLY, and NOT truncated. The beta2=0.999 arms ran 2000 steps
+    against 9000-step beta2=0.99 comparands, so the two are on different grids.
+    The final-loss-vs-lr panel is dropped rather than shown, because its job is
+    to display each arm's minimum sitting INSIDE its lr grid, and a 2-point arm
+    drawn beside a 7-point one invites reading a line segment as a resolved
+    curve. The trajectory panel is honest about the mismatch by construction: a
+    curve that stops at 2000 visibly stops at 2000.
+
+    The one-sided arms are the CONTROL, not padding: `curvature_beta` drives four
+    EMAs, not one -- P_A/Q_B (factorwise only) at optim.py:2184-2186, 2200-2201,
+    and D_in/D_out (BOTH arms) at 2191-2195, 2202-2203. Raising it helps
+    everything, so only a gap that shrinks MORE than the one-sided control moves
+    isolates the r x r slot.
     """
     return _figure(_arms.PRECOND_BETA2_ARMS, om(rank), "one-sided, b2=0.99",
                    f"Estimation noise in the r x r slot: curvature_beta x precond "
-                   f"- Llama-3.2-1B openmath r{rank} @{horizon} steps",
-                   target_label="AdamW", horizon=horizon)
+                   f"- Llama-3.2-1B openmath r{rank}",
+                   target_label="AdamW", trajectory_only=True)
 
 
 def adamw_beta2_panel(rank=256):

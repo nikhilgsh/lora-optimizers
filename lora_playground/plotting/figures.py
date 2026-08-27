@@ -321,6 +321,7 @@ def compare_variants_figure(
     *,
     common_where: dict,
     ref_label: str,
+    trajectory_only: bool = False,
     logs_root: str = "../logs",
     sigma_ref: float = 0.0007,
     suptitle: str | None = None,
@@ -527,8 +528,19 @@ def compare_variants_figure(
 
     from .panels import clamp_for_hollow, draw_lr_series
 
-    fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize,
-                                         constrained_layout=True)
+    # `trajectory_only` drops the final-loss-vs-lr panel. It is the right panel
+    # to drop when the arms have not all been swept over the same lr grid: the
+    # left panel's job is to show each arm's minimum sitting inside its grid, and
+    # a two-point arm plotted beside a seven-point one invites reading a line
+    # segment as a resolved curve. The trajectory panel stays honest about that,
+    # because a curve that stops early visibly stops early.
+    if trajectory_only:
+        fig, ax_traj = plt.subplots(figsize=(figsize[0] * 0.6, figsize[1]),
+                                    constrained_layout=True)
+        ax_lr = None
+    else:
+        fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize,
+                                             constrained_layout=True)
     # Compute the y-bound BEFORE plotting so diverged / NaN-aborted lr points
     # can be clamped just inside the top and drawn as HOLLOW markers connected
     # to the rest of the lr curve (the canonical convention — see
@@ -546,24 +558,25 @@ def compare_variants_figure(
     # above this deliberately-tight top are left at their true height and exit
     # the top of the box — they are NOT clamped/hollowed (see clamp_for_hollow).
     top = final_ylim[1] if final_ylim is not None else None
-    for label, d in per_variant.items():
-        if not d:
-            continue
-        lrs = sorted(d)
-        finals = [d[lr][0] for lr in lrs]
-        ys_clamped, is_oor = clamp_for_hollow(finals, top)
-        draw_lr_series(ax_lr, lrs, ys_clamped, is_oor, color=colors[label],
-                       marker=markers[label], label=label, lw=1.4, ms=6,
-                       zorder=4)
-    ax_lr.set_xscale("log")
-    ax_lr.set_xlabel("lr")
-    ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
-    ax_lr.set_title("final loss vs lr")
-    ax_lr.grid(True, alpha=0.3)
-    # No per-panel legend; one shared figure-level legend is added below after
-    # the trajectory panel (both panels share the same variant→color mapping).
-    if final_ylim is not None:
-        ax_lr.set_ylim(*final_ylim)
+    if ax_lr is not None:
+        for label, d in per_variant.items():
+            if not d:
+                continue
+            lrs = sorted(d)
+            finals = [d[lr][0] for lr in lrs]
+            ys_clamped, is_oor = clamp_for_hollow(finals, top)
+            draw_lr_series(ax_lr, lrs, ys_clamped, is_oor, color=colors[label],
+                           marker=markers[label], label=label, lw=1.4, ms=6,
+                           zorder=4)
+        ax_lr.set_xscale("log")
+        ax_lr.set_xlabel("lr")
+        ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
+        ax_lr.set_title("final loss vs lr")
+        ax_lr.grid(True, alpha=0.3)
+        # No per-panel legend; one shared figure-level legend is added below
+        # after the trajectory panel (both share the variant→color mapping).
+        if final_ylim is not None:
+            ax_lr.set_ylim(*final_ylim)
 
     def _pick_traj(d, d_partial):
         """Best trajectory for a variant, preferring a FINITE curve.
@@ -656,7 +669,12 @@ def compare_variants_figure(
     # only the first eval has landed). Completed runs already span this range.
     # Small right margin so a final marker at exactly `max_steps` isn't clipped
     # in half by the right spine (completed runs end on the horizon).
-    ax_traj.set_xlim(0, max_steps * 1.015)
+    # x-limit follows the longest curve actually drawn, not `max_steps`. When a
+    # reference arm keeps its full history while the compared arms are truncated,
+    # pinning to max_steps would cut the reference off mid-curve.
+    _drawn = [max(x) for ln in ax_traj.get_lines()
+              if len(x := ln.get_xdata()) and not str(ln.get_label()).startswith("_")]
+    ax_traj.set_xlim(0, max(max_steps, max(_drawn, default=0)) * 1.015)
     ax_traj.grid(True, alpha=0.3)
     # Single figure-level legend below both panels (full width → long entries
     # fit across columns without colliding; never covers the data).
