@@ -36,6 +36,7 @@ from .distributed import (
     init_distributed,
     is_main,
 )
+from .manifest import build_manifest
 from .mfu import (
     compute_mfu,
     count_total_params,
@@ -400,23 +401,18 @@ def ensure_group_manifest(checkpoint_dir, commit, data_pipeline_version):
     meta = run_info / "meta.json"
     if meta.exists():
         return ""
-    stub = {
-        "group": parts[i + 1],
-        "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "slurm_job_id": os.environ.get("SLURM_JOB_ID", "unknown"),
-        "n_gpus": None,
-        "params_file": None,
-        "sweep_script": None,
-        "sbatch_script": None,
-        "git_commit": commit,
-        "git_dirty": None,
-        "scope": [],
-        "purpose": ("STUB written by train.py: this group had no meta.json, so it "
-                    "was launched outside slurm_scripts/submit.sh. Add a scope tag "
-                    "to make these runs visible to load_runs."),
-        "data_pipeline_version": data_pipeline_version,
-        "_stub": True,
-    }
+    stub = build_manifest(
+        group=parts[i + 1],
+        submitted_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        slurm_job_id=os.environ.get("SLURM_JOB_ID", "unknown"),
+        git_commit=commit,
+        scope=[],                     # empty on purpose — see the docstring above
+        purpose=("STUB written by train.py: this group had no meta.json, so it "
+                 "was launched outside slurm_scripts/submit.sh. Add a scope tag "
+                 "to make these runs visible to load_runs."),
+        data_pipeline_version=data_pipeline_version,
+        _stub=True,
+    )
     try:
         run_info.mkdir(parents=True, exist_ok=True)
         meta.write_text(json.dumps(stub, indent=2) + "\n")

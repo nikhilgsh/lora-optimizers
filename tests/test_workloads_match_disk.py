@@ -17,6 +17,7 @@ Skips when logs/ has no completed runs, so a fresh clone is not red.
 """
 import pytest
 
+import lora_playground.plotting.paper_plots_lib as P
 from lora_playground.workloads import (
     LEADERBOARD_CORPORA,
     discover_cells,
@@ -85,16 +86,17 @@ def test_legacy_corpora_are_never_discovered(discovered):
         f"discovery returned a legacy corpus: {sorted({d for _m, d, _r in discovered})}"
 
 
-def test_discovery_finds_the_cells_the_panels_use():
+def test_discovery_finds_the_cells_the_panels_use(discovered):
     """Cross-check against the panel list: every panelled cell must have runs, or
     the figure renders empty. Catches a panel pointing at a cell that was
-    declared but never actually run."""
-    import lora_playground.plotting.paper_plots_lib as P
+    declared but never actually run.
 
-    found = discover_cells()
-    if not found:
-        pytest.skip("no completed long-horizon runs in logs/")
-    by_key = {(m, ds, r) for m, ds, r in found}
+    Takes the module-scoped `discovered` fixture rather than calling
+    `discover_cells()` again: the first call in a process is ~12 s (a full
+    load_runs scan) and a second is still ~0.37 s, since the loader's caches
+    absorb the subprocess calls but every log file is re-read and re-parsed.
+    """
+    by_key = set(discovered)
     missing = [c for c in P.CELLS if (c[1], c[2], c[3]) not in by_key]
     assert not missing, (
         f"{len(missing)} panelled cell(s) have no completed runs on disk:\n"

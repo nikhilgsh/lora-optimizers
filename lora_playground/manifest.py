@@ -105,6 +105,42 @@ class UntaggedSweepError(RuntimeError):
     """
 
 
+# The manifest field set, in the module that READS manifests. It was written out
+# twice -- once in `slurm_scripts/submit.sh`'s inline python and once in
+# `train.py`'s stub writer -- with identical keys, so this module owned the
+# schema for reading and neither writer for writing. A field added to one writer
+# and not the other produces manifests that differ by provenance, which is
+# exactly the drift `load_manifests` cannot see.
+MANIFEST_FIELDS: tuple[str, ...] = (
+    "group", "submitted_at", "slurm_job_id", "n_gpus", "params_file",
+    "sweep_script", "sbatch_script", "git_commit", "git_dirty", "scope",
+    "purpose", "data_pipeline_version",
+)
+
+
+def build_manifest(**fields) -> dict:
+    """A manifest dict with every `MANIFEST_FIELDS` key present.
+
+    Unsupplied fields land as None, so a writer that does not know a value
+    records it as unknown rather than omitting the key -- `load_manifests` and
+    `live_manifests_newest_first` read `submitted_at` and `scope` off every
+    manifest, and an absent key and a null one are not the same thing to them.
+    Extra keys (e.g. `_stub`) pass through: writers may annotate.
+
+    Raises on a field name that is not in the schema, because a typo'd key is
+    invisible -- it writes fine and reads as a missing field forever.
+    """
+    unknown = sorted(set(fields) - set(MANIFEST_FIELDS) - {"_stub"})
+    if unknown:
+        raise ValueError(
+            f"unknown manifest field(s) {unknown}; known fields are "
+            f"{list(MANIFEST_FIELDS)}. Add to MANIFEST_FIELDS if genuinely new.")
+    out = {k: fields.get(k) for k in MANIFEST_FIELDS}
+    if "_stub" in fields:
+        out["_stub"] = fields["_stub"]
+    return out
+
+
 _LOAD_MANIFESTS_CACHE: dict[tuple[str, bool], tuple[tuple, list[dict]]] = {}
 
 

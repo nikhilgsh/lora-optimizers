@@ -48,6 +48,13 @@ _DATASET_SUBSTRINGS: tuple[tuple[str, str], ...] = (  # ordered; first match win
 # or a new rank on an existing corpus then needs no edit at all.
 _LEGACY_DATASETS = frozenset({"magicoder"})
 
+# The long-horizon floor, in one place. It separates the 9000-step phase-L /
+# robustness runs from the 4k/2k regimes, and it is BOTH the `Workload`
+# field default and the bound `discover_cells` scans at -- those were the same
+# literal 8000 written twice, so a change to one would have silently made the
+# declared set and the discovered set answer different questions.
+MIN_COMPLETED_STEPS = 8000
+
 # Corpora a declared cell may use, derived from the substring table rather than
 # retyped -- adding a corpus to `_DATASET_SUBSTRINGS` admits it automatically.
 LEADERBOARD_CORPORA = frozenset(d for _, d in _DATASET_SUBSTRINGS) - _LEGACY_DATASETS
@@ -116,7 +123,7 @@ class Workload:
     horizon: int             # speed-to-target horizon (9000; slack absorbs tulu3's 8970)
     sigma_ref: float         # AdamW noise-floor proxy for Δ/σ reporting
     sigma_is_proxy: bool     # True unless a same-cell multiseed σ at this horizon exists
-    min_completed_steps: int = 8000  # max_steps discovery floor
+    min_completed_steps: int = MIN_COMPLETED_STEPS  # max_steps discovery floor
 
     @property
     def label(self) -> str:
@@ -197,7 +204,8 @@ def discover_cells(logs_root: str | None = None) -> dict[tuple[str, str, int], i
     from lora_playground.loader import load_runs  # lazy: avoid import cycle
     found: dict[tuple[str, str, int], int] = {}
     runs = load_runs(
-        where={"max_steps": lambda s: isinstance(s, int) and s >= 8000},
+        where={"max_steps":
+               lambda s: isinstance(s, int) and s >= MIN_COMPLETED_STEPS},
         logs_root=logs_root or DEFAULT_LOGS_ROOT,
         warn_cross_commit=False,
         quiet=True,
@@ -208,7 +216,7 @@ def discover_cells(logs_root: str | None = None) -> dict[tuple[str, str, int], i
         dataset = resolve_dataset(cfg)
         if dataset is None or dataset in _LEGACY_DATASETS:
             continue
-        if not hist or max(e.get("step", 0) for e in hist) < 8000:
+        if not hist or max(e.get("step", 0) for e in hist) < MIN_COMPLETED_STEPS:
             continue
         key = (cfg.get("model_name"), dataset, cfg.get("lora_r"))
         found[key] = found.get(key, 0) + 1

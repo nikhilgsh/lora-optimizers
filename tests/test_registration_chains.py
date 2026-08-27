@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import glob
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,14 @@ _ADD_ARG = re.compile(r'add_argument\(\s*"--([a-z0-9][a-z0-9_\-]*)"(.*?)\)\n', r
 _FLAG_IN_SH = re.compile(r"--([a-z0-9][a-z0-9_\-]*)")
 
 
+@lru_cache(maxsize=1)
 def _train_flags() -> dict[str, str]:
-    """``{flag: the add_argument(...) body}`` for every train.py CLI flag."""
+    """``{flag: the add_argument(...) body}`` for every train.py CLI flag.
+
+    Cached: called 6 times across this module (3 directly and 3 via
+    `_default_true_booleans`), each re-reading and re-regexing train.py, which
+    cannot change mid-run.
+    """
     return {m.group(1): m.group(2) for m in _ADD_ARG.finditer(TRAIN_PY.read_text())}
 
 
@@ -51,11 +58,20 @@ def _default_true_booleans() -> list[str]:
     )
 
 
-def _wrapper_lines():
-    for path in WRAPPERS:
-        for i, line in enumerate(Path(path).read_text().split("\n"), 1):
-            if not line.strip().startswith("#"):
-                yield Path(path).name, i, line
+@lru_cache(maxsize=1)
+def _wrapper_lines() -> tuple[tuple[str, int, str], ...]:
+    """``(wrapper name, line number, line)`` for every non-comment line.
+
+    Cached and materialized rather than a generator: two tests iterate it, and
+    re-reading all ~120 scripts/sweep/*.sh costs ~135 ms per pass over files
+    that are static for the duration of the run.
+    """
+    return tuple(
+        (Path(path).name, i, line)
+        for path in WRAPPERS
+        for i, line in enumerate(Path(path).read_text().split("\n"), 1)
+        if not line.strip().startswith("#")
+    )
 
 
 # ── the OPTIM_FAMILIES link, previously a warning only ──────────────────────
@@ -168,4 +184,40 @@ def test_known_default_true_booleans_are_still_default_true(flag):
     assert flag in _default_true_booleans(), (
         f"--{flag} is no longer a default-True boolean in train.py; revisit "
         f"test_default_true_booleans_are_never_appended_conditionally."
+    )
+
+
+# ── the manifest schema, written in two places ──────────────────────────────
+
+
+def test_submit_sh_writes_every_manifest_field():
+    """`slurm_scripts/submit.sh` builds the manifest dict in inline python, and
+    `train.py`'s stub writer builds it via `manifest.build_manifest`. The field
+    set therefore lives in two places, and a field added to `MANIFEST_FIELDS`
+    without touching submit.sh would make every real sweep's manifest silently
+    lack it while the stub writer has it.
+
+    Asserted rather than refactored: submit.sh runs before the conda env is
+    necessarily active, and rewiring the production submission path to import
+    lora_playground is a bigger risk than a drift guard. (Verified importable
+    under system python3 with no torch, so the refactor is possible later.)
+    """
+    from lora_playground.manifest import MANIFEST_FIELDS
+
+    submit = (ROOT / "slurm_scripts" / "submit.sh").read_text()
+    # The manifest literal, bounded so an unrelated dict elsewhere cannot match.
+    start = submit.index("manifest = {")
+    body = submit[start:submit.index("out = Path(", start)]
+    written = set(re.findall(r'^\s*"([a-z_]+)":', body, re.M))
+    missing = sorted(set(MANIFEST_FIELDS) - written)
+    assert not missing, (
+        f"slurm_scripts/submit.sh does not write manifest field(s) {missing}; "
+        f"every real sweep's meta.json would lack them while train.py's stub has "
+        f"them. Add them to the dict in submit.sh's manifest block."
+    )
+    extra = sorted(written - set(MANIFEST_FIELDS))
+    assert not extra, (
+        f"slurm_scripts/submit.sh writes field(s) {extra} that "
+        f"lora_playground.manifest.MANIFEST_FIELDS does not declare, so nothing "
+        f"reading manifests knows about them. Add to MANIFEST_FIELDS or drop them."
     )
