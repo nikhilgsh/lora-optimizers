@@ -7,10 +7,9 @@
 #
 # Regenerates docs/notes/leaderboard.md from the sealed publication archive. Handles conda
 # env activation for you (the underlying python script needs the `lora_playground`
-# package importable). The pre-commit-only `--from-hook` mode renders from the
-# staged index into a temporary file, then stages that deterministic output. It
-# never runs for unrelated commits and never overwrites a conflicting unstaged
-# leaderboard edit.
+# package importable). ``--stage`` renders to a temporary file, protects a
+# conflicting unstaged document edit, and stages only the reviewed generated
+# output.
 set -eo pipefail  # NOT -u: conda activate scripts abort under set -u
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
@@ -23,10 +22,6 @@ MODE="write"
 case "${1:-}" in
   --stage)
     MODE="stage"
-    shift
-    ;;
-  --from-hook)
-    MODE="hook"
     shift
     ;;
 esac
@@ -53,29 +48,6 @@ apply_and_stage() {
   fi
   git -C "$ROOT" add -- "$DOC_REL"
 }
-
-if [[ "$MODE" == "hook" ]]; then
-  TMP_DIR="$(mktemp -d)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
-  INDEX_TREE="${TMP_DIR}/index"
-  FRESH="${TMP_DIR}/leaderboard.md"
-  mkdir -p "$INDEX_TREE" "${TMP_DIR}/mpl" "${TMP_DIR}/cache"
-
-  # Execute exactly the staged generator and staged Python package, not an
-  # unstaged worktree that happens to share the same checkout.
-  git -C "$ROOT" checkout-index --all --prefix="${INDEX_TREE}/"
-  if [[ ! -f "${INDEX_TREE}/${GENERATOR_REL}" ]]; then
-    echo "pre-commit: staged tree has no ${GENERATOR_REL}; cannot verify generated leaderboard" >&2
-    exit 1
-  fi
-  MPLCONFIGDIR="${TMP_DIR}/mpl" XDG_CACHE_HOME="${TMP_DIR}/cache" \
-  PYTHONPATH="$INDEX_TREE" python "${INDEX_TREE}/${GENERATOR_REL}" \
-    --archive "${INDEX_TREE}/${ARCHIVE_REL}" \
-    --output "$FRESH" --require-archive "$@"
-  apply_and_stage "$FRESH"
-  echo "pre-commit: regenerated and staged ${DOC_REL} from staged leaderboard inputs"
-  exit 0
-fi
 
 if [[ "$MODE" == "stage" ]]; then
   TMP_DIR="$(mktemp -d)"

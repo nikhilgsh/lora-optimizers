@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Keep the generated leaderboard synchronized with staged source inputs.
+# Remind when generated-leaderboard inputs change; never mutate the index.
 #
 # Enable once per clone (tracked hooks aren't active by default):
 #     git config core.hooksPath githooks
 #
-# Unrelated commits remain a fast no-op. When a generator input or the generated
-# output itself is staged, update_leaderboard.sh renders from an index checkout
-# (not unstaged source), protects conflicting unstaged doc edits, and stages only
-# the deterministic generated output.
+# The leaderboard is data-derived publication material. Its documented workflow
+# requires a fresh canonical load, review of the concrete diff, and user
+# confirmation. A commit hook cannot perform that review. Explicit regeneration
+# remains available through scripts/analysis/update_leaderboard.sh.
 set -eo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
 RELEVANT=0
+DOC_STAGED=0
 
 while IFS= read -r -d '' path; do
+  if [[ "$path" == "docs/notes/leaderboard.md" ]]; then
+    DOC_STAGED=1
+  fi
   case "$path" in
     docs/notes/leaderboard.md|\
     publication/legacy_leaderboard_v1.json|\
@@ -36,4 +39,7 @@ if [[ "$RELEVANT" == 0 ]]; then
   exit 0
 fi
 
-exec "$ROOT/scripts/analysis/update_leaderboard.sh" --from-hook
+if [[ "$DOC_STAGED" == 0 ]]; then
+  echo "pre-commit: leaderboard inputs changed; regenerate and review docs/notes/leaderboard.md explicitly if this change affects published values" >&2
+fi
+exit 0

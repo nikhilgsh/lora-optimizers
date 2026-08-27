@@ -1,4 +1,4 @@
-"""Focused checks for staged, generated leaderboard updates."""
+"""The leaderboard hook reminds; explicit commands generate and stage."""
 from __future__ import annotations
 
 import os
@@ -44,10 +44,9 @@ def _commit_all(repo: Path) -> None:
     [
         "publication/legacy_leaderboard_v1.json",
         "lora_playground/leaderboard_variants.py",
-        "docs/notes/leaderboard.md",
     ],
 )
-def test_hook_invokes_generator_only_for_relevant_staged_paths(
+def test_hook_warns_without_invoking_generator_for_relevant_staged_paths(
     tmp_path: Path, staged_path: str,
 ):
     repo = tmp_path / "repo"
@@ -70,9 +69,10 @@ def test_hook_invokes_generator_only_for_relevant_staged_paths(
     _run(repo, "git", "add", staged_path)
     marker = repo / "hook-called"
     env = {**os.environ, "LEADERBOARD_HOOK_MARKER": str(marker)}
-    _run(repo, "bash", "pre-commit", env=env)
-
-    assert marker.read_text().strip() == "--from-hook"
+    result = _run(repo, "bash", "pre-commit", env=env)
+    assert not marker.exists()
+    assert "leaderboard inputs changed" in result.stderr
+    assert "regenerate and review" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -101,6 +101,29 @@ def test_hook_is_noop_for_unrelated_staged_path(
     _run(repo, "bash", "pre-commit", env=env)
 
     assert not marker.exists()
+
+
+def test_hook_is_silent_when_reviewed_doc_is_staged_with_inputs(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    shutil.copy2(ROOT / "githooks" / "pre-commit", repo / "pre-commit")
+    _write(repo / "lora_playground/leaderboard.py", "base\n")
+    _write(repo / "docs/notes/leaderboard.md", "base\n")
+    _commit_all(repo)
+
+    _write(repo / "lora_playground/leaderboard.py", "changed\n")
+    _write(repo / "docs/notes/leaderboard.md", "reviewed\n")
+    _run(
+        repo,
+        "git",
+        "add",
+        "lora_playground/leaderboard.py",
+        "docs/notes/leaderboard.md",
+    )
+
+    result = _run(repo, "bash", "pre-commit")
+    assert result.stderr == ""
 
 
 def _workflow_repo(tmp_path: Path) -> Path:
@@ -142,28 +165,22 @@ Path(args.output).write_text((root / "lora_playground/leaderboard.py").read_text
     return repo
 
 
-def test_hook_generates_from_staged_tree_and_stages_output(tmp_path: Path):
+def test_explicit_stage_command_generates_and_stages_output(tmp_path: Path):
     repo = _workflow_repo(tmp_path)
     source = repo / "lora_playground/leaderboard.py"
-    source.write_text("staged-source\n")
-    _run(repo, "git", "add", "lora_playground/leaderboard.py")
-    # The hook must not let this unstaged source contaminate staged output.
-    source.write_text("unstaged-source\n")
+    source.write_text("updated-source\n")
 
-    _run(repo, "bash", "githooks/pre-commit")
+    _run(repo, "bash", "scripts/analysis/update_leaderboard.sh", "--stage")
 
     doc = repo / "docs/notes/leaderboard.md"
-    assert doc.read_text() == "staged-source\n"
+    assert doc.read_text() == "updated-source\n"
     assert _run(repo, "git", "show", ":docs/notes/leaderboard.md").stdout == (
-        "staged-source\n"
+        "updated-source\n"
     )
-    assert source.read_text() == "unstaged-source\n"
-    assert _run(repo, "git", "show", ":lora_playground/leaderboard.py").stdout == (
-        "staged-source\n"
-    )
+    assert source.read_text() == "updated-source\n"
 
 
-def test_hook_refuses_to_overwrite_conflicting_unstaged_doc(tmp_path: Path):
+def test_explicit_stage_refuses_to_overwrite_conflicting_unstaged_doc(tmp_path: Path):
     repo = _workflow_repo(tmp_path)
     source = repo / "lora_playground/leaderboard.py"
     source.write_text("staged-source\n")
@@ -171,7 +188,13 @@ def test_hook_refuses_to_overwrite_conflicting_unstaged_doc(tmp_path: Path):
     doc = repo / "docs/notes/leaderboard.md"
     doc.write_text("user-uncommitted-doc\n")
 
-    result = _run(repo, "bash", "githooks/pre-commit", check=False)
+    result = _run(
+        repo,
+        "bash",
+        "scripts/analysis/update_leaderboard.sh",
+        "--stage",
+        check=False,
+    )
 
     assert result.returncode != 0
     assert "refusing to overwrite unstaged" in result.stderr
