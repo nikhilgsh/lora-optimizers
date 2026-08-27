@@ -1476,9 +1476,14 @@ class CurvatureWhitenLoRA(Optimizer):
                 'm_A': torch.zeros_like(A, dtype=torch.float32),   # momentum
                 'm_B': torch.zeros_like(B, dtype=torch.float32),
                 # SOAP second moments in the S⊗D eigenbasis. The D side is
-                # diagonal, so its eigenbasis is the coordinate basis.
-                'v_A': torch.zeros_like(A, dtype=torch.float32),
-                'v_B': torch.zeros_like(B, dtype=torch.float32),
+                # diagonal, so its eigenbasis is the coordinate basis. Allocated
+                # ONLY on the soap_v branch that writes them: they are model-sized,
+                # checkpoint.py persists every pair_state key, and on a soap_v=False
+                # run they are provably all-zero -- 45.1 MB of a 94.1 MB checkpoint
+                # measured on a live r=16 job.
+                **({'v_A': torch.zeros_like(A, dtype=torch.float32),
+                    'v_B': torch.zeros_like(B, dtype=torch.float32)}
+                   if self.soap_v else {}),
                 # small (r) side: full r×r curvature, whitened via its eigenbasis.
                 'L_A': torch.zeros((r, r), dtype=torch.float32, device=A.device),
                 'R_B': torch.zeros((r, r), dtype=torch.float32, device=A.device),
@@ -1488,11 +1493,6 @@ class CurvatureWhitenLoRA(Optimizer):
                 'D_out': torch.full((d_out,), _minit_val, dtype=torch.float32, device=B.device),
                 'Q_A': eye.clone(),
                 'Q_B': eye.clone(),
-                # exact eigenvalues of L_A / R_B from the last eigh refresh
-                # (zero until the first refresh → _rdinv → identity → plain
-                # momentum on step 1).
-                'lam_A': torch.zeros(r, dtype=torch.float32, device=A.device),
-                'lam_B': torch.zeros(r, dtype=torch.float32, device=A.device),
                 'step': 0,
             }
 
@@ -2126,8 +2126,9 @@ class CurvatureWhitenLoRA(Optimizer):
             mB = torch.stack([S[i]['m_B'] for i in idxs]).mul_(b1).add_(gB, alpha=1.0 - b1)
             LA = torch.stack([S[i]['L_A'] for i in idxs])
             RB = torch.stack([S[i]['R_B'] for i in idxs])
-            vA = torch.stack([S[i]['v_A'] for i in idxs])
-            vB = torch.stack([S[i]['v_B'] for i in idxs])
+            if self.soap_v:
+                vA = torch.stack([S[i]['v_A'] for i in idxs])
+                vB = torch.stack([S[i]['v_B'] for i in idxs])
             # ── D_in / D_out ARE STALE BY ONE STEP. ──────────────────────────
             # These two diagonals are the metric (P, Q) that builds the ENTIRE
             # update below: dinA/doutB -> Din_m/Dout_m -> the small-side Grams
@@ -2438,7 +2439,8 @@ class CurvatureWhitenLoRA(Optimizer):
                         sigma_WB=sWB[j],
                     ))
                 S[i]['m_A'].copy_(mA[j]); S[i]['m_B'].copy_(mB[j])
-                S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])
+                if self.soap_v:
+                    S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])
                 S[i]['L_A'].copy_(LA[j]); S[i]['R_B'].copy_(RB[j])
                 S[i]['D_in'].copy_(Din[j]); S[i]['D_out'].copy_(Dout[j])
                 A_.grad.zero_(); B_.grad.zero_()
