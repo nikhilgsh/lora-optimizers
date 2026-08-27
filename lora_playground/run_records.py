@@ -262,3 +262,145 @@ class RunRecord:
             cfg.setdefault("_log_filename", self.log_filename)
         cfg.setdefault("run_id", self.physical_id)
         return cfg, thaw_value(self.history)
+
+
+@dataclass(frozen=True, slots=True)
+class RunView:
+    """Public, read-only view over every supported run representation.
+
+    Semantic inputs, recorded audit metadata, and the raw config deliberately
+    remain separate.  Consumers must choose the surface appropriate to their
+    decision instead of merging provenance fields into optimizer identity.
+    """
+
+    semantic_config: Mapping[str, Any]
+    audit_config: Mapping[str, Any]
+    raw_config: Mapping[str, Any]
+    history: tuple[Mapping[str, Any], ...]
+    physical_id: str
+    group: str | None
+    log_filename: str | None
+    semantic_revisions: Mapping[str, Any]
+    run_schema_version: Any = None
+
+    @property
+    def is_versioned(self) -> bool:
+        """Whether the producer recorded an explicit run schema version."""
+        return self.run_schema_version is not None
+
+
+def _audit_config(raw_config: Mapping[str, Any]) -> Mapping[str, Any]:
+    return freeze_value({
+        key: value for key, value in raw_config.items() if key in _AUDIT_FIELDS
+    })
+
+
+def _view_revisions(
+    raw_config: Mapping[str, Any],
+    explicit: Any = None,
+) -> Mapping[str, Any]:
+    value = explicit if isinstance(explicit, Mapping) else raw_config.get(
+        "semantic_revisions", {}
+    )
+    return freeze_value(value) if isinstance(value, Mapping) else freeze_value({})
+
+
+def run_view(run: Any, index: int = 0) -> RunView:
+    """Adapt a record, merged lineage, or legacy tuple without conflation.
+
+    New consumers should use this boundary instead of private plotting
+    normalizers.  Legacy tuples are interpreted only from values already in
+    their config; this function never imports current defaults or registries.
+    """
+    if isinstance(run, RunView):
+        return run
+
+    if isinstance(run, RunRecord):
+        return RunView(
+            semantic_config=run.semantic_config,
+            audit_config=run.audit_provenance.config,
+            raw_config=run.raw_config,
+            history=run.history,
+            physical_id=run.physical_id,
+            group=run.group,
+            log_filename=run.log_filename,
+            semantic_revisions=_view_revisions(run.raw_config),
+            run_schema_version=run.raw_config.get("run_schema_version"),
+        )
+
+    # Avoid importing run_lineage here: it already imports this module.  The
+    # explicit attribute contract distinguishes a merged lineage from a raw
+    # record and from a legacy tuple.
+    if (
+        hasattr(run, "semantic_config")
+        and hasattr(run, "semantic_revisions")
+        and hasattr(run, "cfg")
+        and hasattr(run, "history")
+        and hasattr(run, "terminal_attempt_id")
+    ):
+        raw = run.cfg
+        if not isinstance(raw, Mapping):
+            raise TypeError("merged lineage cfg must be a mapping")
+        group = getattr(run, "terminal_group", None)
+        filename = getattr(run, "terminal_log_filename", None)
+        return RunView(
+            semantic_config=freeze_value(dict(run.semantic_config)),
+            audit_config=_audit_config(raw),
+            raw_config=freeze_value(dict(raw)),
+            history=tuple(freeze_value(dict(event)) for event in run.history),
+            physical_id=str(run.terminal_attempt_id),
+            group=group,
+            log_filename=filename,
+            semantic_revisions=_view_revisions(
+                raw, getattr(run, "semantic_revisions", None)
+            ),
+            run_schema_version=raw.get("run_schema_version"),
+        )
+
+    if isinstance(run, tuple) and len(run) == 2:
+        raw, history = run
+        if not isinstance(raw, Mapping):
+            raise TypeError("legacy run config must be a mapping")
+        if not isinstance(history, Sequence):
+            raise TypeError("legacy run history must be a sequence")
+        group_value = raw.get("log_group")
+        group = str(group_value) if group_value is not None else None
+        filename_value = raw.get("_log_filename")
+        filename = str(filename_value) if filename_value is not None else None
+        source = filename or f"legacy run[{index}]"
+        semantic, _issues = _logged_effective_config(raw, source=source)
+        fallback_group = group or "legacy"
+        return RunView(
+            semantic_config=semantic,
+            audit_config=_audit_config(raw),
+            raw_config=freeze_value(dict(raw)),
+            history=tuple(freeze_value(dict(event)) for event in history),
+            physical_id=physical_run_id(
+                raw,
+                group=fallback_group,
+                log_filename=filename,
+                fallback_index=index,
+            ),
+            group=group,
+            log_filename=filename,
+            semantic_revisions=_view_revisions(raw),
+            run_schema_version=raw.get("run_schema_version"),
+        )
+
+    raise TypeError(
+        "run must be a RunRecord, MergedRunLineage, RunView, or "
+        "(cfg, history) tuple"
+    )
+
+
+__all__ = [
+    "AuditProvenance",
+    "RUNTIME_FIELDS",
+    "RunIssue",
+    "RunRecord",
+    "RunView",
+    "freeze_value",
+    "physical_run_id",
+    "run_view",
+    "thaw_value",
+]

@@ -272,6 +272,127 @@ def test_one_variant_cannot_splice_semantic_revisions_across_lrs():
         )
 
 
+def _factorwise_view_key(cfg):
+    return cfg.get("_factorwise_slot_revision", cfg.get("optimizer_impl_revision"))
+
+
+def _factorwise_spec():
+    return VariantSpec(
+        "factorwise",
+        "factorwise",
+        {"optimizer": "factorwise"},
+        optimizer_semantic_key=_factorwise_view_key,
+    )
+
+
+def test_view_semantic_key_aligns_historical_post_fix_with_recorded_revision():
+    runs = [
+        _run(
+            "factorwise", 1e-2, [(1000, 0.8)], run_id="historical", seed=0,
+            _factorwise_slot_revision=2,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+        _run(
+            "factorwise", 1e-2, [(1000, 0.7)], run_id="recorded", seed=1,
+            optimizer_impl_revision=2,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+    ]
+
+    result = build_comparison(
+        runs, [_factorwise_spec()], horizon=1000, completion_slack=0
+    )
+
+    curve = result.completed["factorwise"][1e-2]
+    assert curve.n_replicates == 2
+    assert curve.final_loss == pytest.approx(0.75)
+    assert curve.run_ids == ("historical", "recorded")
+
+
+def test_view_semantic_key_rejects_historical_pre_fix_cohort():
+    runs = [
+        _run(
+            "factorwise", 1e-2, [(1000, 0.8)], run_id="pre-fix", seed=0,
+            _factorwise_slot_revision=1,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+        _run(
+            "factorwise", 1e-2, [(1000, 0.7)], run_id="recorded", seed=1,
+            optimizer_impl_revision=2,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+    ]
+
+    with pytest.raises(SemanticRevisionConflictError) as exc_info:
+        build_comparison(
+            runs, [_factorwise_spec()], horizon=1000, completion_slack=0
+        )
+
+    assert set(exc_info.value.signatures) == {
+        (1, 1, "packed_v1.1"),
+        (2, 1, "packed_v1.1"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("changed_field", "changed_value"),
+    [
+        ("measurement_semantics_revision", 2),
+        ("data_pipeline_version", "packed_v2"),
+    ],
+)
+def test_view_semantic_key_keeps_measurement_and_pipeline_strict(
+    changed_field, changed_value,
+):
+    common = {
+        "_factorwise_slot_revision": 2,
+        "measurement_semantics_revision": 1,
+        "data_pipeline_version": "packed_v1.1",
+    }
+    changed = {**common, changed_field: changed_value}
+    runs = [
+        _run(
+            "factorwise", 1e-2, [(1000, 0.8)], run_id="historical", seed=0,
+            **common,
+        ),
+        _run(
+            "factorwise", 1e-2, [(1000, 0.7)], run_id="changed", seed=1,
+            **changed,
+        ),
+    ]
+
+    with pytest.raises(SemanticRevisionConflictError):
+        build_comparison(
+            runs, [_factorwise_spec()], horizon=1000, completion_slack=0
+        )
+
+
+def test_view_semantic_key_cannot_splice_cohorts_across_lrs():
+    runs = [
+        _run(
+            "factorwise", 1e-2, [(1000, 0.8)], run_id="pre-fix",
+            _factorwise_slot_revision=1,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+        _run(
+            "factorwise", 3e-2, [(1000, 0.7)], run_id="recorded",
+            optimizer_impl_revision=2,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+    ]
+
+    with pytest.raises(SemanticRevisionConflictError, match="selected LRs"):
+        build_comparison(
+            runs, [_factorwise_spec()], horizon=1000, completion_slack=0
+        )
+
+
 def test_build_comparison_accepts_catalog_records_and_explicit_lineages():
     from lora_playground.run_lineage import build_run_lineages
     from lora_playground.run_records import RunRecord

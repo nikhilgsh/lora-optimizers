@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Hashable, Mapping, Sequence
 
 from .leaderboard import is_final, mean_over_seeds
 
@@ -30,6 +30,7 @@ History = Sequence[Mapping[str, Any]]
 Run = tuple[RunConfig, History]
 RunInput = Run | Any
 VariantPredicate = Mapping[str, Any] | Callable[[RunConfig], bool]
+OptimizerSemanticKey = Callable[[RunConfig], Hashable]
 
 
 @dataclass(frozen=True)
@@ -44,18 +45,32 @@ class VariantSpec:
 
     ``id`` alone defines identity.  Changing ``label`` or ``style_key`` cannot
     change assignment, aggregation, or best-LR selection.
+
+    ``optimizer_semantic_key`` is an optional view-specific replacement for the
+    recorded optimizer implementation revision.  It does not replace the
+    measurement-semantics or data-pipeline components, which remain strict.
     """
 
     id: str
     label: str = field(compare=False)
     predicate: VariantPredicate = field(compare=False, repr=False)
     style_key: str | None = field(default=None, compare=False)
+    optimizer_semantic_key: OptimizerSemanticKey | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not self.id:
             raise ValueError("VariantSpec.id must be non-empty")
         if not callable(self.predicate) and not isinstance(self.predicate, Mapping):
             raise TypeError("VariantSpec.predicate must be a mapping or callable")
+        if (self.optimizer_semantic_key is not None
+                and not callable(self.optimizer_semantic_key)):
+            raise TypeError(
+                "VariantSpec.optimizer_semantic_key must be callable or None"
+            )
         if isinstance(self.predicate, Mapping):
             # A frozen dataclass should not change because its caller later
             # mutates the dict used to construct it.
@@ -294,28 +309,49 @@ def _aggregate_completed(
     )
 
 
-def _semantic_signature(cfg: Mapping[str, Any]) -> tuple[Any, Any, Any]:
-    """Scalar revision identity visible to both new and compatibility paths."""
+def _semantic_signature(
+    spec: VariantSpec,
+    cfg: Mapping[str, Any],
+) -> tuple[Any, Any, Any]:
+    """View-aware optimizer identity plus globally required run semantics.
+
+    A variant may replace only the optimizer-implementation component with a
+    view-specific key.  Measurement semantics and data-pipeline identity remain
+    strict for every view.  With no callback, the existing recorded optimizer
+    revision remains the key.
+    """
+    optimizer_key = (
+        spec.optimizer_semantic_key(cfg)
+        if spec.optimizer_semantic_key is not None
+        else cfg.get("optimizer_impl_revision")
+    )
+    try:
+        hash(optimizer_key)
+    except TypeError as exc:
+        raise TypeError(
+            f"VariantSpec.optimizer_semantic_key for {spec.id!r} must return "
+            f"a hashable value, got {optimizer_key!r}"
+        ) from exc
     return (
-        cfg.get("optimizer_impl_revision"),
+        optimizer_key,
         cfg.get("measurement_semantics_revision"),
         cfg.get("data_pipeline_version"),
     )
 
 
 def _require_one_semantic_signature(
-    variant_id: str,
+    spec: VariantSpec,
     members: Sequence[_AssignedRun],
     lr: float | None = None,
 ) -> None:
     signatures: dict[tuple[Any, Any, Any], list[str]] = {}
     for member in members:
-        signatures.setdefault(_semantic_signature(member.cfg), []).append(
+        signatures.setdefault(_semantic_signature(spec, member.cfg), []).append(
             member.run_id
         )
     if len(signatures) > 1:
         raise SemanticRevisionConflictError(
-            variant_id,
+            spec.id,
             {signature: tuple(run_ids)
              for signature, run_ids in signatures.items()},
             lr=lr,
@@ -358,6 +394,10 @@ def build_comparison(
     run carrying ``cfg['_aborted']`` is completed-but-diverged, matching the
     current prefetched plotting path.  In-flight runs remain available in
     ``partials``; per (variant, LR), the first most-progressed run is retained.
+    By default, every variant also requires one exact recorded optimizer,
+    measurement, and data-pipeline semantic signature across all selected LRs.
+    A variant's ``optimizer_semantic_key`` may replace only the first component
+    for a view with an explicit historical-semantic adapter.
     """
     if horizon <= 0:
         raise ValueError(f"horizon must be positive, got {horizon}")
@@ -427,6 +467,7 @@ def build_comparison(
     # measurement semantics across learning rates. This is deliberately wider
     # than per-(variant, LR) replicate validation: best-LR selection itself is
     # a cross-LR comparison.
+    specs_by_id = {spec.id: spec for spec in specs}
     for variant_id in ids:
         semantic_members = [
             member
@@ -436,7 +477,7 @@ def build_comparison(
             if member_variant == variant_id
             for member in members
         ]
-        _require_one_semantic_signature(variant_id, semantic_members)
+        _require_one_semantic_signature(specs_by_id[variant_id], semantic_members)
 
     completed: dict[str, dict[float, AggregatedCurve]] = {
         spec.id: {} for spec in specs

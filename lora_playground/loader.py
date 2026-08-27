@@ -1115,6 +1115,38 @@ def load_runs(
     and issued concurrently; ``logs_signature`` exposes just that half, for
     callers that want to skip a re-query when the tree has not moved.
     """
+    warnings.warn(
+        "load_runs() is deprecated; use load_records() for immutable catalog "
+        "records and explicit lineage resolution",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _load_runs_compatibility(
+        where,
+        key_axes=key_axes,
+        runtime_fields=runtime_fields,
+        cfg_postprocess=cfg_postprocess,
+        logs_root=logs_root,
+        warn_cross_commit=warn_cross_commit,
+        unique_on=unique_on,
+        allow_axes=allow_axes,
+        quiet=quiet,
+    )
+
+
+def _load_runs_compatibility(
+    where: dict[str, Any] | None = None,
+    *,
+    key_axes: tuple[str, ...] | None = None,
+    runtime_fields: frozenset[str] = RUNTIME_FIELDS,
+    cfg_postprocess: Callable[[dict, str], None] | None = None,
+    logs_root: str | None = None,
+    warn_cross_commit: bool = True,
+    unique_on: tuple[str, ...] | None = None,
+    allow_axes: tuple[str, ...] = (),
+    quiet: bool = True,
+) -> list[tuple[dict, list[dict]]]:
+    """Execute the legacy mutable-tuple loading implementation."""
     if logs_root is None:
         logs_root = _default_logs_root()
     # One scan epoch for the whole call: `load_manifests`' has_runs check,

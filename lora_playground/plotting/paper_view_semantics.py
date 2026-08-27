@@ -144,16 +144,27 @@ def filter_paper_precond_cohort(
             f"{sorted(FACTORWISE_SLOT_VIEWS)!r}"
         )
 
-    from lora_playground.comparison import _comparison_input
+    from lora_playground.run_records import run_view
 
     kept = []
     excluded = []
     for index, run in enumerate(runs):
-        cfg, _history = _comparison_input(run, index)
-        if cfg.get("precond") not in FACTORWISE_SLOT_PRECONDS:
+        view = run_view(run, index)
+        if view.semantic_config.get("precond") not in FACTORWISE_SLOT_PRECONDS:
             kept.append(run)
             continue
-        decision = factorwise_slot_decision(cfg, is_ancestor=is_ancestor)
+        # The policy needs optimizer semantics and one audit fact.  Construct a
+        # transient decision input without merging provenance into the run's
+        # semantic identity or exposing source hashes to the policy.
+        decision_input = dict(view.semantic_config)
+        if view.semantic_revisions:
+            decision_input["semantic_revisions"] = view.semantic_revisions
+        git_commit = view.audit_config.get("git_commit")
+        if git_commit is not None:
+            decision_input["git_commit"] = git_commit
+        decision = factorwise_slot_decision(
+            decision_input, is_ancestor=is_ancestor
+        )
         if decision.eligible:
             kept.append(run)
         else:

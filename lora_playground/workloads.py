@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOGS_ROOT = str(_REPO_ROOT / "logs")
@@ -60,7 +61,27 @@ MIN_COMPLETED_STEPS = 8000
 LEADERBOARD_CORPORA = frozenset(d for _, d in _DATASET_SUBSTRINGS) - _LEGACY_DATASETS
 
 
-def resolve_dataset(cfg: dict) -> str | None:
+class DatasetProvenanceConflict(ValueError):
+    """Legacy semantic and command provenance identify different datasets."""
+
+
+def _dataset_from_data_dir(data_dir: Any) -> str | None:
+    if not isinstance(data_dir, str) or not data_dir:
+        return None
+    for sub, name in _DATASET_SUBSTRINGS:
+        if sub in data_dir:
+            return name
+    return None
+
+
+def _command_data_dir(command: Any) -> str | None:
+    if not isinstance(command, str):
+        return None
+    match = _DATA_DIR_RE.search(command)
+    return match.group(1) if match else None
+
+
+def resolve_dataset(cfg: Mapping[str, Any]) -> str | None:
     """Dataset id from a logged ``data_dir`` value or launcher command.
 
     New schema records expose the executed ``data_dir`` as a semantic field.
@@ -69,16 +90,40 @@ def resolve_dataset(cfg: dict) -> str | None:
     None when neither form is present. Never consults ``dataset_name`` (the
     stale Magicoder default).
     """
-    dd = cfg.get("data_dir")
-    if not isinstance(dd, str) or not dd:
-        match = _DATA_DIR_RE.search(cfg.get("command") or "")
-        if not match:
-            return None
-        dd = match.group(1)
-    for sub, name in _DATASET_SUBSTRINGS:
-        if sub in dd:
-            return name
-    return None
+    data_dir = cfg.get("data_dir")
+    if not isinstance(data_dir, str) or not data_dir:
+        data_dir = _command_data_dir(cfg.get("command"))
+    return _dataset_from_data_dir(data_dir)
+
+
+def resolve_record_dataset(run: Any, index: int = 0) -> str | None:
+    """Resolve dataset provenance from the appropriate side of a run view.
+
+    Versioned runs make the semantic ``data_dir`` authoritative.  Unversioned
+    historical runs may fall back to their recorded launcher command, but a
+    disagreement between two present sources fails closed.  ``dataset_name``
+    is intentionally never consulted because it is stale in packed-data runs.
+    """
+    from lora_playground.run_records import run_view
+
+    view = run_view(run, index)
+    typed_data_dir = view.semantic_config.get("data_dir")
+    typed_present = isinstance(typed_data_dir, str) and bool(typed_data_dir)
+    typed_dataset = _dataset_from_data_dir(typed_data_dir)
+
+    if view.is_versioned:
+        return typed_dataset
+
+    command_data_dir = _command_data_dir(view.raw_config.get("command"))
+    command_present = isinstance(command_data_dir, str) and bool(command_data_dir)
+    command_dataset = _dataset_from_data_dir(command_data_dir)
+    if typed_present and command_present and typed_dataset != command_dataset:
+        raise DatasetProvenanceConflict(
+            f"legacy run {view.physical_id!r} records conflicting datasets: "
+            f"semantic data_dir={typed_data_dir!r} -> {typed_dataset!r}, "
+            f"command data_dir={command_data_dir!r} -> {command_dataset!r}"
+        )
+    return typed_dataset if typed_present else command_dataset
 
 
 # ── deny-list: probe / intervention / snapshot / smoke groups ────────────────
@@ -289,8 +334,8 @@ def workload_records(
     tuple-returning :func:`workload_runs` remains the legacy notebook facade
     until label/default parity has been audited cell by cell.
     """
-    from lora_playground.comparison import _comparison_input
     from lora_playground.loader import load_records
+    from lora_playground.run_records import run_view
 
     records = load_records(
         equals={"model_name": wl.model_name, "lora_r": wl.rank},
@@ -299,13 +344,13 @@ def workload_records(
     )
     selected = []
     for index, record in enumerate(records):
-        cfg, _history = _comparison_input(record, index)
-        max_steps = cfg.get("max_steps")
+        view = run_view(record, index)
+        max_steps = view.semantic_config.get("max_steps")
         if not isinstance(max_steps, int) or max_steps < wl.min_completed_steps:
             continue
-        if resolve_dataset(cfg) != wl.dataset:
+        if resolve_record_dataset(view, index) != wl.dataset:
             continue
-        if _denied(cfg.get("log_group")):
+        if _denied(view.group):
             continue
         selected.append(record)
     return tuple(selected)
