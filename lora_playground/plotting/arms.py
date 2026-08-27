@@ -265,8 +265,17 @@ FLATOUT = arm("kl-diag-polar-flatout-lora", **CW_PRODUCTION,  # -outer un-whiten
 # slots. `kl-shampoo-polar-lora` IS the factorwise branch (its spec pins
 # diag_metric=False), so its existing runs need no re-run to serve as that arm.
 ONESIDED = {**PROTO, "precond": "one-sided"}     # C_B = C_A = I everywhere
-NOPRODUCT = arm("kl-shampoo-polar-lora", **CW_PRODUCTION,  # C_B = P_A, C_A = Q_B
-                precond="factorwise")
+# C_B = P_A, C_A = Q_B. TWO optimizer names produce this branch and they are the
+# same computation: `kl-shampoo-polar-lora` pins diag_metric=False, which IS
+# factorwise, and `kl-diag-polar-lora --precond factorwise` resolves to the same
+# thing -- test_explicit_precond_reproduces_the_legacy_path_bitwise asserts the
+# two are bit-identical. The older runs carry the first name and the newer sweeps
+# the second, so pinning one name would drop half the arm: measured, the r16
+# factorwise cells (5 runs, all at 9000) matched NOTHING while the figure showed
+# the arm as absent. `precond` is what identifies the branch; the optimizer name
+# is provenance.
+NOPRODUCT = {**arm("kl-diag-polar-lora", **CW_PRODUCTION, precond="factorwise"),
+             "optimizer": ("kl-diag-polar-lora", "kl-shampoo-polar-lora")}
 
 # ─── the `msign` axis: how accurately the matrix sign is applied ─────────────
 # Orthogonal to `precond`. "diag" approximates the Gram inside the matrix sign by
