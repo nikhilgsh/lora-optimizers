@@ -149,20 +149,26 @@ def om(rank):
                 data_dir=(lambda d: "openmath" in str(d)))
 
 
-def has(where, rank):
-    """Is there any run for this arm at this rank? Used to drop empty arms."""
-    pred = {**where, **om(rank)}
-    return any(pred_matches(cfg, pred) for cfg, _h in cell_runs(om(rank)))
+def cell(model, data_key, rank):
+    """common_where for one (model, corpus, rank) cell."""
+    return dict(model_name=model, lora_r=rank,
+                data_dir=(lambda d, k=data_key: k in str(d)))
 
 
-def _max_step(where, rank):
+def has(where, common):
+    """Is there any run for this arm in this cell? Used to drop empty arms."""
+    pred = {**where, **common}
+    return any(pred_matches(cfg, pred) for cfg, _h in cell_runs(common))
+
+
+def _max_step(where, common):
     """Furthest step any run of this arm reached, or None if the arm has no runs.
 
     `has()` answers "does a run match"; this answers "did one FINISH", which is
     the question the loss-vs-lr panel and the summary table actually ask.
     """
-    pred = {**where, **om(rank)}
-    steps = [h[-1]["step"] for cfg, h in cell_runs(om(rank))
+    pred = {**where, **common}
+    steps = [h[-1]["step"] for cfg, h in cell_runs(common)
              if h and pred_matches(cfg, pred)]
     return max(steps) if steps else None
 
@@ -174,9 +180,8 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     guard inside compare_variants_figure -- the per-variant loading path does not run it,
     and that is how two arms silently merged for weeks. Do not add a panel that skips it.
     """
-    rank = common.get("lora_r")
     if drop_empty:
-        missing = [k for k, v in arms.items() if not has(v, rank)]
+        missing = [k for k, v in arms.items() if not has(v, common)]
         if missing:
             print("no data yet (omitted):", ", ".join(missing))
         arms = {k: v for k, v in arms.items() if k not in missing}
@@ -190,7 +195,7 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     # and returned 3 rows, msign_panel declared 5 and returned 2, with no output at
     # all. A reader could not tell "not run here" from "still running".
     in_flight = {k: n for k, v in arms.items()
-                 if (n := _max_step(v, rank)) is not None and n < HORIZON}
+                 if (n := _max_step(v, common)) is not None and n < HORIZON}
     if in_flight:
         print(f"in flight (trajectory panel only, absent from the loss-vs-lr panel "
               f"and the summary table until {HORIZON} steps): "
@@ -243,15 +248,18 @@ def derivation_ablation_panel(rank=256):
                    f"Llama-3.2-1B openmath r{rank}")
 
 
-def precond_panel(rank=256):
+def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
+                  data_key="openmath", model_label="Llama-3.2-1B"):
     """The three `precond` branches: what fills (C_B, C_A). All three share one
-    (P, Q), the same p, q updates and the same rho rule."""
-    arms = {"AdamW": ADAMW,
-            "product: C_B=B^T P B, C_A=A Q A^T": PROTO,
-            "one-sided: C_B=C_A=I": ONESIDED,
-            "factorwise: C_B=P_A, C_A=Q_B": NOPRODUCT}
-    return _figure(arms, om(rank), "product: C_B=B^T P B, C_A=A Q A^T",
-                   f"The r x r metric slot - Llama-3.2-1B openmath r{rank}")
+    (P, Q), the same p, q updates and the same rho rule.
+
+    Parameterized by cell so the same comparison can be read at another rank
+    (C_B and C_A are r x r, so the slot has less to offer as r falls) or on
+    another architecture, without a second copy of the figure.
+    """
+    return _figure(_arms.PRECOND_ARMS, cell(model, data_key, rank),
+                   "product: C_B=B^T P B, C_A=A Q A^T",
+                   f"The r x r metric slot - {model_label} {data_key} r{rank}")
 
 
 def msign_panel(rank=256):
