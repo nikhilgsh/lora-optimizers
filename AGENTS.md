@@ -24,6 +24,32 @@ or documentation that reveal or depend on this repository, including
 `~/lora`, absolute paths to it, and the `lora_playground` package. Before
 calling `~/polora` release-ready, scan its tracked files for these references.
 
+## Do not propose more seeds
+
+Seed variance on this project is small, measured, and does not change
+conclusions. The clean multi-seed cell -- `kl-shampoo-polar-lora`,
+Llama-3.2-1B openmath r256, lr=1e-2, four seeds -- has a final-eval-loss spread
+of 0.0009 and sd 0.0004, about a quarter of the 0.0017 AdamW noise floor the
+sigma-unit deltas are quoted in. An effect worth reporting here is 1-10 sigma;
+seed noise is 0.24 sigma.
+
+So: do not end an analysis by offering to run more seeds, do not caveat a
+result as "single seed" as though that were a defect, and do not size a sweep
+with a seed axis unless the user asks for one. A comparison at one seed is the
+project's normal evidentiary standard, not a provisional version of a real one.
+
+What to do instead when a result looks marginal, in order:
+1. Read it at MATCHED STEP across the whole trajectory rather than at the final
+   eval alone. A gap that holds its sign over every eval of a run is stronger
+   evidence than one final number, and costs nothing -- both curves are already
+   on disk.
+2. Say the effect is smaller than the quantities being compared, and name the
+   size. "-0.5 sigma, sign stable across 12 consecutive evals" is a finding;
+   "single seed, would need more" is not.
+3. If the cell genuinely cannot settle it, propose a DIFFERENT CELL -- another
+   rank, another architecture -- which tests whether the conclusion generalizes.
+   That buys information a repeat seed does not.
+
 ## Commands
 
 ```bash
