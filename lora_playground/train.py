@@ -104,6 +104,62 @@ def _resume_restores_rng_state(args) -> bool:
     return bool(getattr(args, "resume_debug_replay", False))
 
 
+def _resume_lineage_event(
+    attempt: dict,
+    resume_state: dict,
+    *,
+    allow_checkpoint_fork: bool = False,
+) -> dict:
+    """Describe an ordinary resume or an explicitly allowed checkpoint fork.
+
+    A frozen-slot ablation starts from a dynamic run's checkpoint but has a
+    different semantic configuration and destination identity. It is a new
+    lineage root with recorded source provenance, not a mergeable child of the
+    dynamic run. Later resumes from its own destination remain ordinary
+    parent-linked continuations.
+    """
+    source_identity = resume_state.get("checkpoint_identity")
+    destination_identity = attempt["checkpoint_identity"]
+    is_fork = (
+        source_identity is not None
+        and source_identity != destination_identity
+    )
+    if is_fork and not allow_checkpoint_fork:
+        raise ValueError(
+            "checkpoint lineage mismatch: current attempt declares "
+            f"{destination_identity!r}, but loaded checkpoint declares "
+            f"{source_identity!r}"
+        )
+
+    source_attempt = resume_state.get("attempt_id")
+    if not is_fork and source_attempt == attempt["attempt_id"]:
+        raise ValueError(
+            "checkpoint attempt metadata would create a self-parent "
+            f"lineage for {attempt['attempt_id']!r}"
+        )
+
+    event = {
+        "event": "resume",
+        "attempt_id": attempt["attempt_id"],
+        "resume_parent_attempt_id": None if is_fork else source_attempt,
+        "checkpoint_identity": destination_identity,
+        "checkpoint_metadata_explicit": bool(
+            source_attempt is not None and source_identity is not None
+        ),
+        "resumed_from_step": resume_state["step"],
+        "resumed_from_total_tokens": resume_state["total_tokens"],
+        "resume_segment": resume_state["resume_segment"] + 1,
+        "ckpt_path": resume_state["ckpt_path"],
+    }
+    if is_fork:
+        event.update({
+            "resume_kind": "checkpoint_fork",
+            "fork_parent_attempt_id": source_attempt,
+            "source_checkpoint_identity": source_identity,
+        })
+    return event
+
+
 def format_example_with_boundary(example):
     """Return (prompt_text, response_text). Mirrors `format_example` but
     keeps the prompt/response boundary explicit so the tokenizer can
@@ -1604,35 +1660,13 @@ def main():
             scheduler=scheduler,
         )
         if resume_state is not None:
-            loaded_checkpoint_identity = resume_state.get("checkpoint_identity")
-            if (loaded_checkpoint_identity is not None
-                    and loaded_checkpoint_identity != _attempt["checkpoint_identity"]):
-                raise ValueError(
-                    "checkpoint lineage mismatch: current attempt declares "
-                    f"{_attempt['checkpoint_identity']!r}, but loaded checkpoint "
-                    f"declares {loaded_checkpoint_identity!r}"
-                )
-            resume_parent_attempt_id = resume_state.get("attempt_id")
-            if resume_parent_attempt_id == _attempt["attempt_id"]:
-                raise ValueError(
-                    "checkpoint attempt metadata would create a self-parent "
-                    f"lineage for {_attempt['attempt_id']!r}"
-                )
-            resume_segment = resume_state["resume_segment"] + 1
-            log_event({
-                "event": "resume",
-                "attempt_id": _attempt["attempt_id"],
-                "resume_parent_attempt_id": resume_parent_attempt_id,
-                "checkpoint_identity": _attempt["checkpoint_identity"],
-                "checkpoint_metadata_explicit": bool(
-                    resume_parent_attempt_id is not None
-                    and loaded_checkpoint_identity is not None
-                ),
-                "resumed_from_step": resume_state["step"],
-                "resumed_from_total_tokens": resume_state["total_tokens"],
-                "resume_segment": resume_segment,
-                "ckpt_path": resume_state["ckpt_path"],
-            })
+            resume_event = _resume_lineage_event(
+                _attempt,
+                resume_state,
+                allow_checkpoint_fork=args.freeze_factorwise_slots,
+            )
+            resume_segment = resume_event["resume_segment"]
+            log_event(resume_event)
             if resume_restore_rng_state:
                 log_event({
                     "event": "resume_debug_replay",
