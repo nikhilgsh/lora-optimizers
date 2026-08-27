@@ -478,10 +478,8 @@ def test_prune_keep_last(tmp_path):
     assert survived == [4, 5]
 
 
-def test_loader_merges_resume_segments(tmp_path):
-    """`load_sweep` merges `log_NN.out` and `log_NN.out.resume_K` siblings
-    into one (cfg, evs) per task index. Step-union semantics: each step
-    appears once; segments are step-disjoint by design."""
+def test_loader_does_not_merge_unversioned_resume_siblings(tmp_path):
+    """Filename-related physical logs do not imply a resume lineage."""
     import json as _json
     from lora_playground.plotting import load_sweep
 
@@ -518,12 +516,11 @@ def test_loader_merges_resume_segments(tmp_path):
 
     runs = load_sweep("tg", logs_root=str(tmp_path))
     assert len(runs) == 1
-    _, evs = runs[0]
+    loaded_cfg, evs = runs[0]
     steps = [e["step"] for e in evs]
-    assert steps == [200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000]
-    # Resume segment value preserved on the segment-1 entries.
+    assert steps == [1200, 1400, 1600, 1800, 2000]
+    assert loaded_cfg["_log_filename"] == "log_00.out"
     assert evs[-1].get("resume_segment") == 1
-    assert evs[0].get("resume_segment") is None
 
 
 def test_atomic_write_on_overwrite(tmp_path):

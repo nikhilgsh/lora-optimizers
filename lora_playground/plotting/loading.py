@@ -1,5 +1,5 @@
 """Per-task log loading: parse JSONL `.out` files into (cfg, evs) tuples,
-merge resume segments, and cache the result in-process.
+select one physical segment per task, and cache the result in-process.
 
 The two top-level entry points are `load_run(path)` (single file) and
 `load_sweep(group, logs_root)` (all tasks in one group). `has_runs(group)` is
@@ -97,7 +97,7 @@ def parse_cli_command(command: str) -> dict:
 
 
 def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
-    """Parse a single task .out file → (config dict, list of eval dicts).
+    """Parse one physical task log without reconstructing configuration.
 
     optim_step diagnostic events (emitted by polar/lin/scaled-LoRA optimizers
     when --log_basic_diagnostics is on) are attached to the config dict as
@@ -105,41 +105,12 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
     ``RUNTIME_FIELDS`` re-exported from this package list it, so dedup
     ignores it.
 
-    Neutral parsing is cached by (path, mtime, size); this wrapper then applies
-    the historical reconstruction required by compatibility consumers.
+    Neutral parsing is cached by (path, mtime, size). Missing producer fields
+    remain missing: command strings and current defaults are not evidence about
+    what the run executed.
     """
     parsed = parse_run_file(log_path)
-    config = parsed.raw_config()
-    evals = parsed.mutable_evals()
-    if config is not None and evals:
-        config.setdefault("lr", evals[0]["lr"])
-        cmd = config.get("command", "")
-        lp = parse_flag(cmd, "--lora_plus_multiplier")
-        config.setdefault("lora_plus_multiplier", float(lp) if lp else 1.0)
-        rk = parse_flag(cmd, "--precond_refresh_every")
-        config.setdefault("precond_refresh_every", int(rk) if rk else 1)
-        config.setdefault("precond_method", parse_flag(cmd, "--precond_method"))
-        if config.get("lora_init_b") is None:
-            cli_init = parse_flag(cmd, "--lora_init_b")
-            init_override = parsed.init_override_event
-            init_override_mode = (
-                init_override.get("mode") if init_override is not None else None
-            )
-            config["lora_init_b"] = cli_init or init_override_mode or "zero"
-
-        # Generic CLI backfill — every flag in the launched command line
-        # becomes a first-class cfg field via setdefault. Source order:
-        #   1. explicit cfg event keys (newest, typed correctly by train.py)
-        #   2. `_cli_args` blanket dump in the config event (typed)
-        #   3. parsed `command` string (string-coerced fallback)
-        cli_blob = config.get("_cli_args")
-        if isinstance(cli_blob, dict):
-            for k, v in cli_blob.items():
-                config.setdefault(k, v)
-        if cmd:
-            for k, v in parse_cli_command(cmd).items():
-                config.setdefault(k, v)
-    return config, evals
+    return parsed.raw_config(), parsed.mutable_evals()
 
 
 _LOAD_SWEEP_CACHE: dict[tuple[str, str], tuple[tuple, list[tuple[dict, list[dict]]]]] = {}
@@ -327,22 +298,33 @@ def _load_sweep_cached(group: str, logs_root: str) -> list[tuple[dict, list[dict
     log_dir = Path(logs_root) / group / "run_info" / "logs"
     runs = []
     for task_idx in sorted(scan.tasks):
-        # Merge per-file (cfg, evs) into a single (cfg, evs) for this task.
-        # cfg: take first non-None (resumes re-emit the same config event).
-        # evs: union sorted by step, deduping by step (latest segment wins).
+        # Filename adjacency is not lineage evidence.  Keep this compatibility
+        # API at one result per task, but select one physical file rather than
+        # concatenating ``.resume_K`` siblings.  Explicit, versioned attempts
+        # are the sole province of ``RunCatalog.resolve_lineages``.
         names = scan.tasks[task_idx]
-        segments = [load_run(log_dir / name) for name in names]
-        cfg = next((c for c, _ in segments if c is not None), None)
-        by_step: dict[int, dict] = {}
-        for _, evs in segments:
-            for ev in evs:
-                by_step[int(ev["step"])] = ev
-        merged = [by_step[s] for s in sorted(by_step)]
-        if cfg is not None and merged:
-            # Surface the canonical filename (newest segment) so the
-            # exclusion / attestation layers find this task by its current name.
-            cfg["_log_filename"] = names[-1]
-            runs.append((cfg, merged))
+        physical = []
+        for name in names:
+            cfg, evs = load_run(log_dir / name)
+            if cfg is None or not evs:
+                continue
+            steps = [
+                event.get("step")
+                for event in evs
+                if isinstance(event.get("step"), (int, float))
+                and not isinstance(event.get("step"), bool)
+            ]
+            final_step = max(steps, default=-1)
+            score = (
+                final_step,
+                len(evs),
+                name.endswith(".out"),
+                name,
+            )
+            physical.append((score, cfg, evs))
+        if physical:
+            _score, cfg, evs = max(physical, key=lambda item: item[0])
+            runs.append((cfg, evs))
     _LOAD_SWEEP_CACHE[cache_key] = (sig, runs)
     return runs
 
@@ -350,17 +332,18 @@ def _load_sweep_cached(group: str, logs_root: str) -> list[tuple[dict, list[dict
 def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[dict]]]:
     """Load all runs for a sweep group. Returns list of (cfg, evs).
 
-    A "run" is one disBatch task index. Per task, events are merged across
-    `log_NN.out` and any sibling `log_NN.out.resume_K` files written by
-    submit.sh's pre-submit log rotation when a wall-killed run is resubmitted
-    with checkpoint resume.
+    A "run" is one disBatch task index. When a task has `log_NN.out` and
+    `log_NN.out.resume_K` siblings, exactly one physical file is selected by
+    final eval step, eval count, canonical `.out` preference, then filename.
+    Histories are never concatenated from filename proximity. Consumers that
+    need a multi-attempt history must use explicit, versioned lineage through
+    :class:`lora_playground.run_catalog.RunCatalog`.
 
     Cached in the in-process module dict (`_LOAD_SWEEP_CACHE`), invalidated by
     the per-file (name, mtime, size) signature of the group's log files.
 
-    Returned cfgs are shallow copies: `merge_runs` writes `cfg["log_group"]`
-    and the loader's enrichment writes `cfg["_derived"]`, so the cached dicts
-    must stay clean.
+    Returned cfgs are shallow copies because compatibility consumers such as
+    `merge_runs` attach view-local fields; the cached dicts must stay clean.
     """
     return [(dict(cfg), evs) for cfg, evs in _load_sweep_cached(group, logs_root)]
 

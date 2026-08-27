@@ -2,6 +2,7 @@
 
 import json
 
+from lora_playground.plotting import load_sweep
 from lora_playground.plotting.merge import _select_run, merge_runs
 
 
@@ -104,3 +105,86 @@ def test_merge_runs_does_not_stitch_a_recorded_cross_group_resume(tmp_path):
     cfg, evs = runs[0]
     assert cfg["log_group"] == "continuation"
     assert [event["step"] for event in evs] == [8250, 9000]
+
+
+def _write_physical_segment(path, steps, source):
+    rows = [
+        {
+            "event": "config",
+            "optimizer": "adamw",
+            "lr": 1e-3,
+            "source": source,
+        },
+        *[
+            {
+                "event": "eval",
+                "step": step,
+                "eval_loss": 1.0 / step,
+                "lr": 1e-3,
+                "source": source,
+            }
+            for step in steps
+        ],
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+def test_load_sweep_uses_canonical_file_as_a_late_tiebreak(tmp_path):
+    log_dir = tmp_path / "group" / "run_info" / "logs"
+    log_dir.mkdir(parents=True)
+    _write_physical_segment(
+        log_dir / "log_0.out.resume_0", [250, 1000], "rotated"
+    )
+    _write_physical_segment(
+        log_dir / "log_0.out", [500, 1000], "canonical"
+    )
+
+    runs = load_sweep("group", logs_root=str(tmp_path))
+
+    assert len(runs) == 1
+    cfg, events = runs[0]
+    assert cfg["source"] == "canonical"
+    assert [event["step"] for event in events] == [500, 1000]
+
+
+def test_load_sweep_prefers_eval_count_before_canonical_filename(tmp_path):
+    log_dir = tmp_path / "group" / "run_info" / "logs"
+    log_dir.mkdir(parents=True)
+    _write_physical_segment(
+        log_dir / "log_0.out.resume_0", [250, 750, 1000], "longer"
+    )
+    _write_physical_segment(
+        log_dir / "log_0.out", [500, 1000], "canonical"
+    )
+
+    runs = load_sweep("group", logs_root=str(tmp_path))
+
+    assert len(runs) == 1
+    cfg, events = runs[0]
+    assert cfg["source"] == "longer"
+    assert [event["step"] for event in events] == [250, 750, 1000]
+
+
+def test_load_sweep_does_not_reconstruct_fields_from_command(tmp_path):
+    log_dir = tmp_path / "group" / "run_info" / "logs"
+    log_dir.mkdir(parents=True)
+    rows = [
+        {
+            "event": "config",
+            "optimizer": "adamw",
+            "command": (
+                "train_lora.py --optimizer adamw "
+                "--lora_plus_multiplier 4 --precond_refresh_every 7"
+            ),
+        },
+        {"event": "eval", "step": 100, "eval_loss": 0.8, "lr": 1e-3},
+    ]
+    (log_dir / "log_0.out").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+
+    [(cfg, _events)] = load_sweep("group", logs_root=str(tmp_path))
+
+    assert "lr" not in cfg
+    assert "lora_plus_multiplier" not in cfg
+    assert "precond_refresh_every" not in cfg

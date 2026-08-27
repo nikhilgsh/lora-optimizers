@@ -34,12 +34,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lora_playground.loader import RUNTIME_FIELDS as LOADER_RUNTIME_FIELDS, _denylist_key
-from lora_playground.manifest import (
-    live_manifests_newest_first,
-    load_manifests,
-)
-from lora_playground.plotting import RUNTIME_FIELDS as PLOTTING_RUNTIME_FIELDS, has_runs, load_sweep
+from lora_playground.plotting import RUNTIME_FIELDS as PLOTTING_RUNTIME_FIELDS
 from lora_playground.plotting.merge import _hidden_axis_diffs
+from lora_playground.run_catalog import RunCatalog
+from lora_playground.run_records import run_view
 
 
 _LOGS_ROOT = ROOT / "logs"
@@ -67,28 +65,26 @@ def test_runtime_field_lists_match_across_modules():
 )
 def test_logs_have_no_silent_collisions():
     """No two runs in logs/ share a deny-list key while differing on cfg."""
-    manifests = load_manifests(str(_LOGS_ROOT), strict=False)
-    groups = [m["group"] for m in live_manifests_newest_first(manifests)]
+    catalog = RunCatalog.discover(_LOGS_ROOT)
 
     # key → (cfg, group) of the first run we saw with this key
     seen: dict = {}
     collisions: list[tuple] = []
 
-    for group in groups:
-        if not has_runs(group, str(_LOGS_ROOT)):
+    for index, record in enumerate(catalog.records):
+        view = run_view(record, index)
+        cfg = dict(view.semantic_config)
+        cfg["log_group"] = view.group
+        cfg["_log_filename"] = view.log_filename
+        k = _denylist_key(cfg, LOADER_RUNTIME_FIELDS)
+        existing = seen.get(k)
+        if existing is None:
+            seen[k] = (cfg, view.group)
             continue
-        for cfg, evs in load_sweep(group, str(_LOGS_ROOT)):
-            cfg = dict(cfg)
-            cfg["log_group"] = group
-            k = _denylist_key(cfg, LOADER_RUNTIME_FIELDS)
-            existing = seen.get(k)
-            if existing is None:
-                seen[k] = (cfg, group)
-                continue
-            ex_cfg, ex_group = existing
-            diffs = _hidden_axis_diffs(ex_cfg, cfg)
-            if diffs:
-                collisions.append((ex_group, group, diffs[:5]))
+        ex_cfg, ex_group = existing
+        diffs = _hidden_axis_diffs(ex_cfg, cfg)
+        if diffs:
+            collisions.append((ex_group, view.group, diffs[:5]))
 
     if collisions:
         msgs = []
