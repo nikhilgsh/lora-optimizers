@@ -111,6 +111,9 @@ class OptimizerConfig:
     # spec's pinned diag_metric (product where it is True, factorwise where False)
     # so the default changes no existing arm.
     precond: str | None = None
+    # Resume-only diagnostic: consume checkpointed factorwise P_A/Q_B but stop
+    # their EMA writes. P,Q, moments, factors, and all other state remain live.
+    freeze_factorwise_slots: bool = False
     # How accurately the matrix sign is applied to the whitened momenta — ORTHOGONAL
     # to `precond`. "full" = msign; "diag" approximates the Gram inside it by its
     # diagonal, giving rownorm(Z_A) / colnorm(Z_B) with no r x r inverse sqrt.

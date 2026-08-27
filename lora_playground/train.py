@@ -741,6 +741,14 @@ def make_parser():
                              "rho=eta/(smax(A)+smax(B)) rule. Default None = inherit the "
                              "optimizer's own setting (product for kl-diag*, factorwise for "
                              "kl-shampoo*).")
+    parser.add_argument(
+        "--freeze_factorwise_slots", action="store_true",
+        help="Resume-only diagnostic for --precond factorwise: load P_A and Q_B "
+             "from the checkpoint and keep those two small matrices fixed for "
+             "the continuation. P, Q, moments, LoRA factors, and all other "
+             "optimizer state continue updating. Requires a successfully loaded "
+             "--resume_from checkpoint; false by default.",
+    )
     parser.add_argument("--msign", choices=sorted(MSIGN_CHOICES),
                         default="full",
                         help="How accurately the matrix sign is applied to the whitened "
@@ -1005,6 +1013,8 @@ def make_parser():
 
 def main():
     args = make_parser().parse_args()
+    if args.freeze_factorwise_slots and args.resume_from is None:
+        raise ValueError("--freeze_factorwise_slots requires --resume_from.")
     resume_replay_original_dataloader = _resume_replays_original_dataloader(args)
     resume_restore_rng_state = _resume_restores_rng_state(args)
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -1336,6 +1346,7 @@ def main():
         cw_no_radius=args.cw_no_radius,
         cw_no_diag_curv=args.cw_no_diag_curv,
         precond=args.precond,
+        freeze_factorwise_slots=args.freeze_factorwise_slots,
         msign=args.msign,
         cw_unpinned=args.cw_unpinned,
         cw_solved_rho=args.cw_solved_rho,
@@ -1477,6 +1488,8 @@ def main():
             # "inherit the optimizer spec", so args.precond alone would log None
             # for every default run and lose which of the three actually ran.
             "precond": getattr(optimizer, "precond", args.precond),
+            "freeze_factorwise_slots": getattr(
+                optimizer, "freeze_factorwise_slots", args.freeze_factorwise_slots),
             "msign": getattr(optimizer, "msign", args.msign),
             "cw_unpinned": getattr(optimizer, "cw_unpinned", args.cw_unpinned),
             "cw_solved_rho": getattr(optimizer, "cw_solved_rho", args.cw_solved_rho),
@@ -1641,6 +1654,10 @@ def main():
                 # Reseed so the post-resume sampler advances to a new
                 # deterministic position. Continuous in expectation, not bitwise.
                 set_seed(args.seed + resume_state["step"])
+    if args.freeze_factorwise_slots and resume_state is None:
+        raise ValueError(
+            "--freeze_factorwise_slots requires --resume_from to resolve to "
+            "a usable checkpoint; no checkpoint was loaded.")
     start_step = (resume_state["step"] + 1) if resume_state else 1
 
     # Under DDP, set_epoch on the DistributedSampler ensures different shuffle

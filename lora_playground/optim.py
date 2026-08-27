@@ -1214,7 +1214,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
                  cw_nesterov=None, cw_no_radius=False, cw_no_diag_curv=False,
                  cw_unpinned=False, cw_solved_rho=False,
-                 precond=None, msign="full",
+                 precond=None, freeze_factorwise_slots=False, msign="full",
                  cw_factor_a=0.0, cw_factor_b=0.0,
                  rdinv_variant="A", rdinv_delta=None, cw_metric_init="1e-12",
                  dump_pre_polar_dir=None, dump_pre_polar_every=0,
@@ -1323,6 +1323,11 @@ class CurvatureWhitenLoRA(Optimizer):
         # record which of the three actually ran rather than a None. `rr_identity`
         # is a read-only property off this, not a second stored copy.
         self.precond = precond or ("product" if self.diag_metric else "factorwise")
+        self.freeze_factorwise_slots = bool(freeze_factorwise_slots)
+        if self.freeze_factorwise_slots and self.precond != "factorwise":
+            raise ValueError(
+                "freeze_factorwise_slots requires precond='factorwise'; "
+                f"resolved precond={self.precond!r}.")
         # ORTHOGONAL to `precond` (see MSIGN_CHOICES and `_direction_op`): how
         # accurately the matrix sign is applied, not what curvature is applied.
         if msign not in MSIGN_CHOICES:
@@ -2212,7 +2217,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 Dout_inv = doutB * doutB
                 PAinv = UA @ ((lamA * lamA).unsqueeze(-1) * UAt)
                 QBinv = UB @ ((lamB * lamB).unsqueeze(-1) * UBt)
-                if self.precond == "factorwise":
+                if self.precond == "factorwise" and not self.freeze_factorwise_slots:
                     st['P_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
                                             alpha=(1.0 - cb) / d_in)
                     st['Q_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
@@ -2228,7 +2233,7 @@ class CurvatureWhitenLoRA(Optimizer):
             else:
                 # diag_metric recomputes P_A/Q_B from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
-                if self.precond == "factorwise":
+                if self.precond == "factorwise" and not self.freeze_factorwise_slots:
                     st['P_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
                     st['Q_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
@@ -2565,7 +2570,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 Dout_inv = doutB * doutB
                 PAinv = PAinv_full
                 QBinv = QBinv_full
-                if self.precond == "factorwise":
+                if self.precond == "factorwise" and not self.freeze_factorwise_slots:
                     PA_raw.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
                                      alpha=(1.0 - cb) / d_in)
                     QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
@@ -2585,7 +2590,7 @@ class CurvatureWhitenLoRA(Optimizer):
             else:
                 # diag_metric recomputes PA/QB from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
-                if self.precond == "factorwise":
+                if self.precond == "factorwise" and not self.freeze_factorwise_slots:
                     PA_raw.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
                     QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
@@ -12220,6 +12225,7 @@ def build_optimizer(
     # What fills (C_B, C_A); None = inherit the optimizer spec's diag_metric. See
     # PRECOND_CHOICES and CurvatureWhitenLoRA.__init__.
     precond: str | None = None,
+    freeze_factorwise_slots: bool = False,
     # How accurately the matrix sign is applied. Orthogonal to `precond`.
     msign: str = "full",
     cw_unpinned: bool = False,
@@ -12280,4 +12286,10 @@ def build_optimizer(
     config = OptimizerConfig(**{k: _loc[k] for k in CONFIG_FIELDS if k in _loc})
     spec = optim_specs.REGISTRY[optimizer_type]
     target = targets if spec.takes_targets else model
-    return optim_specs.build_from_spec(target, optimizer_type, config)
+    optimizer = optim_specs.build_from_spec(target, optimizer_type, config)
+    if freeze_factorwise_slots and not (
+            getattr(optimizer, "precond", None) == "factorwise"
+            and getattr(optimizer, "freeze_factorwise_slots", False)):
+        raise ValueError(
+            "freeze_factorwise_slots requires a factorwise CurvatureWhitenLoRA optimizer.")
+    return optimizer
