@@ -30,7 +30,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from lora_playground.loader import load_runs
+from lora_playground.loader import load_runs, logs_signature
 from lora_playground.plotting import compare_variants_figure
 
 # File-relative, matching paper_figs.py:38 (same depth: plotting/ -> lora_playground/
@@ -105,7 +105,7 @@ CELLS = [
 # load_runs(where=<one cell>) is far cheaper because the narrow `where` skips parsing the
 # runs that cannot match. So a single up-front snapshot is the wrong trade -- it is fixed
 # at kernel start and cannot see a sweep that is still running.
-_RUNS_CACHE: dict[str, list] = {}
+_RUNS_CACHE: dict[tuple, list] = {}
 
 
 def _fingerprint(v):
@@ -125,16 +125,35 @@ def _fingerprint(v):
 
 
 def cell_runs(where, refresh=False):
-    """Runs for one cell, memoised per distinct `where` within a kernel.
+    """Runs for one cell, memoised per distinct `where` AND per logs/ signature.
 
-    `refresh=True` forces a re-read. Do NOT wire it on by default for live sweeps: an
-    unconditional refresh makes every panel pay the full query again, which is what made
-    the live-tracking figures the slowest cells in the notebook. Call
-    ``clear_runs_cache()`` once when a sweep has advanced and you want fresh numbers.
+    The memo self-invalidates: `loader.logs_signature` fingerprints every
+    manifest and log file's (mtime, size), so a sweep that has advanced since
+    the last call produces a different key and the cell re-reads. Nothing has to
+    be remembered by the reader.
+
+    This was previously memoised on `where` alone, for the kernel's life. That is
+    correct for a finished tree and silently wrong for a live one: a panel run
+    while a sweep was at step 8750 kept reporting 8750 after the sweep hit 9000,
+    so a completed arm went on being announced as in flight and stayed out of the
+    loss-vs-lr panel and the summary table.
+
+    The reason it was not wired this way -- "an unconditional refresh makes every
+    panel pay the full query again" -- does not apply to a signature check.
+    Measured on this tree: logs_signature 0.21 s warm (0.86 s cold) against
+    5.26 s for one cell's load_runs, i.e. 4%. The full query is still paid only
+    when the tree has actually moved.
+
+    `refresh=True` forces a re-read regardless; `clear_runs_cache()` drops the
+    memo entirely. Neither should now be needed in normal use.
     """
-    key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
+    sig = logs_signature(str(ROOT / "logs"))
+    key = (sig, repr(sorted((k, _fingerprint(v)) for k, v in where.items())))
     if refresh or key not in _RUNS_CACHE:
         _RUNS_CACHE[key] = load_runs(where=where, warn_cross_commit=False, quiet=True)
+        # Entries keyed on a superseded signature can never be hit again.
+        for stale in [k for k in _RUNS_CACHE if k[0] != sig]:
+            del _RUNS_CACHE[stale]
     return _RUNS_CACHE[key]
 
 
