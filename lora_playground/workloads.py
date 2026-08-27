@@ -259,7 +259,8 @@ def discover_cells(logs_root: str | None = None) -> dict[tuple[str, str, int], i
     `scripts/analysis/build_leaderboard_doc.py` publishes the moment a new sweep
     lands, and what goes in the paper's leaderboard is a decision, not a scan.
 
-    Not called at import: it runs a full `load_runs`, seconds not milliseconds.
+    Not called at import: it resolves a full physical catalog, seconds not
+    milliseconds.
 
     The post-load filter here is deliberately STRICTER than `workload_runs`', and
     the two must not be merged into one shared predicate. Both apply `_denied`
@@ -270,17 +271,20 @@ def discover_cells(logs_root: str | None = None) -> dict[tuple[str, str, int], i
     EXISTS once a run has finished there, while a cell's RUN LIST wants the
     in-flight ones too so a panel can draw them.
     """
-    from lora_playground.loader import load_runs  # lazy: avoid import cycle
+    from lora_playground.run_catalog import RunCatalog
+    from lora_playground.run_records import run_view
+
     found: dict[tuple[str, str, int], int] = {}
-    runs = load_runs(
-        where={"max_steps":
-               lambda s: isinstance(s, int) and s >= MIN_COMPLETED_STEPS},
-        logs_root=logs_root or DEFAULT_LOGS_ROOT,
-        warn_cross_commit=False,
-        quiet=True,
-    )
-    for cfg, hist in runs:
-        if _denied(cfg.get("log_group")):
+    catalog = RunCatalog.discover(logs_root or DEFAULT_LOGS_ROOT)
+    runs = catalog.resolve_lineages()
+    for index, record in enumerate(runs):
+        view = run_view(record, index)
+        cfg = view.semantic_config
+        hist = view.history
+        max_steps = cfg.get("max_steps")
+        if not isinstance(max_steps, int) or max_steps < MIN_COMPLETED_STEPS:
+            continue
+        if _denied(view.group):
             continue
         dataset = resolve_dataset(cfg)
         if dataset is None or dataset in _LEGACY_DATASETS:
