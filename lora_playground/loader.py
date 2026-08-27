@@ -88,13 +88,16 @@ HARDCODED_DEFAULT_HISTORY: dict[tuple[str, str], list[tuple[str, Any, str]]] = {
 # backfill — NOT a per-flag one-off. The ``-polar`` variants are the ones
 # that actually run a polar step; the non-polar variants carry the fields
 # harmlessly (use_polar=False, so the tag is irrelevant for them).
-_CURVATURE_WHITEN_OPTIMIZERS = frozenset({
-    "curvature-whiten-lora", "curvature-whiten-polar-lora",
-    "kl-shampoo-lora", "kl-shampoo-polar-lora",
-    "kl-diag-lora", "kl-diag-polar-lora",
-    "kl-diag-polar-flatout-lora",
-    "diag-shampoo-lora", "diag-shampoo-polar-lora",
-})
+# DERIVED, not listed. `_precond_by_optimizer()` already enumerates exactly the
+# `optim_specs.REGISTRY` specs whose class is `CurvatureWhitenLoRA`, behind the
+# same JSON snapshot, so reading its keys costs no extra import and cannot go
+# stale. The hardcoded nine-name frozenset this replaces had already gone
+# stale: it omitted `kl-diag-flatout-lora`, so that optimizer's runs skipped
+# the backfill below. Inert in practice — all 5 such runs on disk log
+# `ns_steps`/`polar_method` explicitly, so the backfill had nothing to do — but
+# a future non-logging run would have hit it silently.
+def _curvature_whiten_optimizers() -> frozenset[str]:
+    return frozenset(_precond_by_optimizer())
 # The train.py CLI defaults the CurvatureWhitenLoRA constructor read at the
 # time these runs launched (train.py: --muon_ns_steps default=5,
 # --polar_method default="ns"). The constructor stores the step count under
@@ -120,7 +123,7 @@ def _derive_effective_polar_iters(cfg: dict, opt_cfg: dict) -> int | None:
          the runs that logged neither, since the class read ns_steps=
          muon_ns_steps and muon_ns_steps defaulted to 5.
     """
-    if cfg.get("optimizer") not in _CURVATURE_WHITEN_OPTIMIZERS:
+    if cfg.get("optimizer") not in _curvature_whiten_optimizers():
         return None
     for src in (opt_cfg.get("ns_steps"), opt_cfg.get("muon_ns_steps"),
                 cfg.get("muon_ns_steps")):
@@ -225,7 +228,7 @@ def _backfill_optimizer_config(cfg: dict) -> dict:
     # step count when present is the constructor kwarg ``ns_steps`` (handled by
     # ``_derive_effective_polar_iters``); this block only matters for the
     # rare cfgs lacking an optimizer_config block entirely.
-    if cfg.get("optimizer") in _CURVATURE_WHITEN_OPTIMIZERS:
+    if cfg.get("optimizer") in _curvature_whiten_optimizers():
         if backfilled.get("muon_ns_steps") is None and cfg.get("muon_ns_steps") is None:
             backfilled["muon_ns_steps"] = _CURVATURE_WHITEN_POLAR_NS_DEFAULT
         if backfilled.get("polar_method") is None and cfg.get("polar_method") is None:
