@@ -27,6 +27,7 @@ than a remembered subset.
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -80,7 +81,7 @@ assert (ROOT / "logs").is_dir(), (
 # re-exported so every caller and notebook cell keeps working unchanged.
 from . import arms as _arms  # noqa: E402
 from .arms import (  # noqa: F401,E402
-    pred_matches, variant_key_fn,
+    field_matches, pred_matches, variant_key_fn,
     ADAMW, AVGLOSS, DOUBLE, FLATOUT, HALFPOW, IMUON, LORARITE, MUON, NAIVEMAG,
     NOMAG, NOPRODUCT, NOSHAMPOO, ONESIDED, ONESIDED_DIAG, PROTO, PROTO_DIAG,
 )
@@ -201,7 +202,7 @@ def cell_runs(where, refresh=False):
     `refresh=True` forces a re-read regardless; `clear_runs_cache()` drops the
     memo entirely. Neither should now be needed in normal use.
     """
-    sig = logs_signature(str(ROOT / "logs"))
+    sig = _logs_signature_now()
     key = repr(sorted((k, _fingerprint(v)) for k, v in where.items()))
     cached = _RUNS_CACHE.get(key)
     if cached is not None and cached[0] == sig and not refresh:
@@ -214,6 +215,44 @@ def cell_runs(where, refresh=False):
 def clear_runs_cache():
     """Drop the memo so the next panel re-reads from disk."""
     _RUNS_CACHE.clear()
+    _SIG_HOLD.clear()
+
+
+# One `logs/` signature per panel, not one per `cell_runs` call.
+#
+# `cell_runs` stats the whole tree BEFORE its memo lookup, so even a memo HIT
+# paid a full scan -- measured 197.8 ms warm over 2497 log files, and ~4x that
+# cold. `_figure` calls `cell_runs` 9-11 times (once per arm in `has`, again per
+# arm in `_max_step`, plus `prefetched_runs`, `speedup_table` and
+# `coverage_report`), so the same unchanged tree was rescanned ten times per
+# figure: `precond_panel(256)` measured 2.274 s, of which 0.046 s was the work.
+# Across the notebook's 23 `_figure` calls that is seconds of pure stat().
+#
+# Nine snapshots inside one figure buy no freshness either -- if the tree really
+# did move mid-panel, mixing snapshots across arms is WORSE than holding one,
+# because the loss-vs-lr panel and the speedup table would then disagree about
+# which runs exist. So the hold is a correctness improvement as well as a speed
+# one. It lasts exactly one `_figure`; anything outside that scope re-stats.
+_SIG_HOLD: dict[str, str] = {}
+
+
+def _logs_signature_now() -> str:
+    if "sig" not in _SIG_HOLD:
+        return logs_signature(str(ROOT / "logs"))
+    return _SIG_HOLD["sig"]
+
+
+@contextmanager
+def _held_logs_signature():
+    """Freeze the tree signature for the duration of one panel."""
+    outer = "sig" in _SIG_HOLD
+    if not outer:
+        _SIG_HOLD["sig"] = logs_signature(str(ROOT / "logs"))
+    try:
+        yield
+    finally:
+        if not outer:
+            _SIG_HOLD.pop("sig", None)
 
 
 def om(rank):
@@ -246,13 +285,39 @@ def _max_step(where, common):
     return max(steps) if steps else None
 
 
-def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True):
+def _truncate(runs, horizon):
+    """Cut every history at `horizon` steps, dropping runs that never reach it.
+
+    A panel comparing arms run to DIFFERENT horizons has to read them at a
+    matched step or it compares one arm's step-9000 loss against another's
+    step-2000 loss and calls the difference an effect. `train.py` defaults to
+    `lr_scheduler_type=constant` with `warmup_steps=0` (`train.py:452-453`) and
+    the sweep wrappers override neither, so the first N steps of a longer run
+    ARE an N-step run and this truncation is exact rather than approximate.
+    Re-check that if a schedule is ever introduced.
+    """
+    out = []
+    for cfg, hist in runs:
+        cut = [e for e in hist if e.get("step") is not None and e["step"] <= horizon]
+        if cut and max(e["step"] for e in cut) >= horizon:
+            out.append((cfg, cut))
+    return out
+
+
+def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True,
+            horizon=None):
     """Every panel in this module funnels through here.
 
     Passing prefetched_runs AND variant_key is what arms the ``assert_label_discriminates``
     guard inside compare_variants_figure -- the per-variant loading path does not run it,
     and that is how two arms silently merged for weeks. Do not add a panel that skips it.
     """
+    with _held_logs_signature():
+        return _figure_inner(arms, common, ref_label, suptitle, target_label,
+                             drop_empty, horizon)
+
+
+def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon):
     declared_arms = dict(arms)
     if drop_empty:
         missing = [k for k, v in arms.items() if not has(v, common)]
@@ -268,21 +333,25 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     # runs alone. Measured before this print existed: precond_panel declared 4 arms
     # and returned 3 rows, msign_panel declared 5 and returned 2, with no output at
     # all. A reader could not tell "not run here" from "still running".
+    h = HORIZON if horizon is None else horizon
     in_flight = {k: n for k, v in arms.items()
-                 if (n := _max_step(v, common)) is not None and n < HORIZON}
+                 if (n := _max_step(v, common)) is not None and n < h}
     if in_flight:
         print(f"in flight (trajectory panel only, absent from the loss-vs-lr panel "
-              f"and the summary table until {HORIZON} steps): "
+              f"and the summary table until {h} steps): "
               + ", ".join(f"{k} @{n}" for k, n in in_flight.items()))
+    runs = cell_runs(common)
+    if horizon is not None:
+        runs = _truncate(runs, horizon)
     fig, _t, sdf = compare_variants_figure(
         arms, common_where=common, ref_label=ref_label,
-        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=HORIZON,
+        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
         allow_partial=True, allow_custom_labels=True, target_label=target_label,
         suptitle=suptitle,
-        prefetched_runs=cell_runs(common), variant_key=variant_key_fn(common, arms))
+        prefetched_runs=runs, variant_key=variant_key_fn(common, arms))
     plt.show()
     if target_label in arms:
-        print(speedup_table(arms, common, baseline_label=target_label)[0])
+        print(speedup_table(arms, common, baseline_label=target_label, horizon=h)[0])
     else:
         print(f"no speedup table: '{target_label}' is not one of this panel's arms, "
               f"so there is no speed target. Pass target_label=<an arm> to get one.")
@@ -336,24 +405,46 @@ def _closest_arm(cfg, arms):
     for label, pred in arms.items():
         diffs = []
         for k, want in pred.items():
-            got = cfg.get(k, "<absent>")
-            ok = (got in want) if isinstance(want, (tuple, list, set)) else (got == want)
+            # `arms.field_matches` is THE definition of what a pin means. This
+            # used to re-implement the three branches, and the two drifted: a
+            # list-vs-list equality branch was added to the matcher and not to
+            # the copy here, so this reported `arm wants [], run has []` as a
+            # mismatch on a field that matches -- a diagnostic contradicting the
+            # predicate it exists to explain.
+            # No blanket try/except here. A bare `except Exception: ok = False`
+            # turned a NameError on `field_matches` into "every pinned field
+            # mismatches", i.e. the diagnostic blamed all ~130 pins instead of
+            # failing. Only a CALLABLE pin can legitimately raise on a value it
+            # was not written for; everything else must surface.
             if callable(want):
                 try:
-                    ok = bool(want(cfg.get(k)))
+                    ok = field_matches(cfg, k, want)
                 except Exception:
                     ok = False
+            else:
+                ok = field_matches(cfg, k, want)
             if not ok:
-                diffs.append(f"{k}: arm wants {want!r}, run has {got!r}")
+                diffs.append(f"{k}: arm wants {want!r}, run has {cfg.get(k, '<absent>')!r}")
         if best is None or len(diffs) < len(best[1]):
             best = (label, diffs)
     return best if best else ("<no arms>", [])
 
 
-def coverage_report(arms, common, *, horizon=HORIZON):
-    """Text naming every run in this cell that no arm's predicate claimed.
+def coverage_report(arms, common, *, horizon=HORIZON, detail=False):
+    """Text naming the runs in this cell that no arm's predicate claimed.
 
     Returns "" when every run is claimed, so a clean cell prints nothing.
+
+    TERSE BY DEFAULT — one line — because most unclaimed runs are not a bug.
+    A paper panel is SELECTIVE: `Llama-3.2-1B/openmath/r256` holds 139 completed
+    runs spanning about 35 distinct configurations (every ablation ever run at
+    that rank), and `PANEL_ARMS` deliberately plots four of them. Printing ten
+    rows plus "and 114 more" under every such panel buries the cells where the
+    omission IS a bug, which is the whole point of the check: the signal is a
+    cell whose count jumps after a sweep lands, not a cell with a large count.
+
+    `detail=True` restores the per-run diagnosis — the closest arm and the
+    fields separating it — which is what to reach for once a count looks wrong.
     """
     runs = cell_runs(common)
     unclaimed = [(cfg, hist) for cfg, hist in runs
@@ -361,8 +452,12 @@ def coverage_report(arms, common, *, horizon=HORIZON):
                             for pred in arms.values())]
     if not unclaimed:
         return ""
-    lines = [f"UNCLAIMED: {len(unclaimed)} of {len(runs)} runs in this cell match no "
-             f"arm predicate. Each is absent from the figure and the table above."]
+    head = (f"{len(unclaimed)} of {len(runs)} runs in this cell are outside the "
+            f"{len(arms)} plotted arm(s)")
+    if not detail:
+        return (f"{head} — `coverage_report(arms, common, detail=True)` names them "
+                f"and the field that excluded each.")
+    lines = [f"UNCLAIMED: {head}. Each is absent from the figure and the table above."]
     for cfg, hist in unclaimed[:_COVERAGE_MAX_ROWS]:
         ident = " ".join(f"{k}={cfg.get(k)!r}" for k in _COVERAGE_IDENT if k in cfg)
         last = max(hist, key=lambda e: e.get("step", 0)).get("step", 0) if hist else 0
@@ -403,8 +498,14 @@ def speedup_table(arms, common, *, baseline_label="AdamW", horizon=HORIZON):
             f"baseline_label={baseline_label!r} is not in arms {sorted(arms)}; "
             f"the speed target is the baseline arm's best final loss, so the "
             f"baseline has to be one of the arms being loaded.")
+    # Truncated to `horizon` for the same reason `_figure` truncates: a table
+    # comparing arms run to different lengths must read them at a matched step,
+    # or it quotes one arm's step-9000 loss beside another's step-2000 loss.
+    runs = cell_runs(common)
+    if horizon != HORIZON:
+        runs = _truncate(runs, horizon)
     labeled = labeled_completed_runs(
-        cell_runs(common), variant_key_fn(common, arms), horizon=horizon)
+        runs, variant_key_fn(common, arms), horizon=horizon)
     rows, target = leaderboard_rows(
         labeled, horizon=horizon, baseline_label=baseline_label)
     for r in rows:
@@ -412,21 +513,21 @@ def speedup_table(arms, common, *, baseline_label="AdamW", horizon=HORIZON):
         r["speedup_lr_avg"] = speedup_from_frac(r["frac_lr_avg"])
     # NaN speedup means "never reached the target", which sorts last, not first.
     rows.sort(key=lambda r: math.inf if math.isnan(r["speedup"]) else -r["speedup"])
-    return _speedup_text(rows, target, baseline_label), rows, target
+    return _speedup_text(rows, target, baseline_label, horizon), rows, target
 
 
 def _fmt_x(v):
     return "—" if v is None or math.isnan(v) else f"{v:.2f}x"
 
 
-def _speedup_text(rows, target, baseline_label):
+def _speedup_text(rows, target, baseline_label, horizon=HORIZON):
     if math.isnan(target):
         return (f"speed target is NaN: no completed {baseline_label} run in this "
                 f"cell. Check that the {baseline_label} arm's pinned fields admit "
                 f"the runs that exist (`arms.ADAMW` pinning `cw_nesterov=True` "
                 f"left 5 of the 13 CELLS with no baseline at all).")
     w = max(len(r["variant"]) for r in rows)
-    head = (f"speedup vs {baseline_label} (target {target:.4f}, horizon {HORIZON})\n"
+    head = (f"speedup vs {baseline_label} (target {target:.4f}, horizon {horizon})\n"
             f"  {'arm':<{w}}  {'best eta':>9}  {'final':>7}  {'speedup':>8}"
             f"  {'lr-avg':>7}  n_lr")
     body = [f"  {r['variant']:<{w}}  {r['best_lr']:>9g}  {r['final_at_best']:>7.4f}"
@@ -512,6 +613,33 @@ def beta2_panel(rank=256):
                    "Polar-LoRA (shipped, b2=0.99)",
                    f"Protagonist beta2 sweep - Llama-3.2-1B openmath r{rank}",
                    target_label=None)
+
+
+def precond_beta2_panel(rank=16, horizon=2000):
+    """Is factorwise's deficit at small r the cost of whitening by a NOISY estimate?
+
+    `P_A` is a finite EMA, so it is anisotropic even when the true curvature is
+    not; one-sided's C_B = I has zero estimation variance and cannot make that
+    error. Measured noise floor, feeding the EMA gradients whose true second
+    moment is exactly I at beta2=0.99 (n_eff = 100): injected anisotropy
+    0.098 / 0.126 / 0.125 at r = 16 / 64 / 256 -- flat in rank -- against a real
+    anisotropy of 0.195 / 0.338 / 0.447, which grows. So SNR is 2.0 at r=16
+    against 3.6 at r=256. beta2 = 0.999 takes n_eff to 1000 and should drop the
+    floor with the signal untouched.
+
+    The one-sided arms are the CONTROL, not padding: `curvature_beta` drives
+    four EMAs, not one -- P_A/Q_B (factorwise only) at optim.py:2184-2186 and
+    2200-2201, and D_in/D_out (BOTH arms) at 2191-2195 and 2202-2203. Without
+    them a shrinking gap cannot be told from beta2 helping everything.
+
+    `horizon=2000` because the beta2=0.999 cells (job 6952576) ran 2000 steps
+    against 9000-step comparands; reading both at step 2000 is exact, not a
+    truncation artifact, since the schedule is constant with no warmup.
+    """
+    return _figure(_arms.PRECOND_BETA2_ARMS, om(rank), "one-sided, b2=0.99",
+                   f"Estimation noise in the r x r slot: curvature_beta x precond "
+                   f"- Llama-3.2-1B openmath r{rank} @{horizon} steps",
+                   target_label="AdamW", horizon=horizon)
 
 
 def adamw_beta2_panel(rank=256):

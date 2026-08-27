@@ -134,19 +134,89 @@ def pred_matches(cfg: dict, pred: dict) -> bool:
     same matcher without importing the notebook-support module. Pure dict logic —
     it adds no import to this leaf module.
     """
-    for k, v in pred.items():
-        if k not in cfg:
-            return False
-        c = cfg[k]
-        if callable(v):
-            if not v(c):
-                return False
-        elif isinstance(v, (list, set, tuple, frozenset)):
-            if c not in v:
-                return False
-        elif c != v:
-            return False
-    return True
+    return all(field_matches(cfg, k, v) for k, v in pred.items())
+
+
+def field_matches(cfg: dict, field: str, want) -> bool:
+    """Does ONE pinned field match? The single definition of a pin's semantics.
+
+    Factored out because `paper_plots_lib._closest_arm` needs per-field verdicts
+    to say WHICH pin excluded a run, and hand-rolling that comparison there gave
+    two matchers that drifted: adding the list-vs-list branch below to
+    `pred_matches` and not to the copy made the coverage diagnostic report
+    `target_module_names: arm wants [], run has []` as a mismatch on a field
+    that matches. Anything needing per-field detail calls this, so the diagnostic
+    can never disagree with the predicate it explains.
+    """
+    if field not in cfg:
+        return False
+    c = cfg[field]
+    if callable(want):
+        return bool(want(c))
+    if isinstance(want, (list, set, tuple, frozenset)):
+        # Membership is for a SCALAR cfg value against a set of allowed ones
+        # (`ADAMW`'s `precond_method=(None, "higham")`). When the cfg value is
+        # itself list-like the pin cannot mean membership -- a list can only
+        # equal a list -- so compare directly. Without this branch a field that
+        # genuinely holds a list is unpinnable: `target_module_names=[]` was read
+        # as "match nothing", silently rejecting every run, which is how a
+        # group-derived predicate matched 0 of its own 4 runs.
+        if isinstance(c, (list, set, tuple, frozenset)):
+            return list(c) == list(want)
+        return c in want
+    return c == want
+
+
+def arm_from_runs(cfgs: list[dict]) -> dict:
+    """Derive an arm predicate from the runs that ACTUALLY RAN.
+
+    Why this exists
+    ---------------
+    `arm()` fails closed field by field, but nothing made the READ path track
+    the WRITE path: `scripts/sweep/*.sh` says what ran and `arms.py` separately
+    re-declares what to look for, so a sweep nobody remembered to declare an arm
+    for renders as absent rather than erroring. Measured on this repo: 361 of
+    453 manifested groups in `logs/` are claimed by no arm in `ALL_ARM_DICTS`.
+
+    The derivation removes the declaration. An arm is the fields CONSTANT across
+    a set of runs, minus `manifest.SERIES_AXIS_FIELDS` (`lr`/`seed`/`max_steps`
+    — the axes a series is allowed to vary on, and pinning them would split a
+    series that should be averaged). Verified across every multi-run group on
+    disk: the derived predicate matches all of its own runs in 409 of 409.
+
+    LIMIT, and it is why this is not yet wired into any panel. A field is
+    pinned only when it happens to AGREE across the set, so the derivation
+    cannot tell a deliberate axis from an accident: pooling the small-batch
+    sweep with the protagonist drops `global_batch_size` from the predicate
+    precisely because they disagree on it, which is the first of the three
+    incidents this module's header cites. Counting pins (131 against `arm()`'s
+    ~70) measures the wrong thing -- fail-closed is about which fields are
+    pinned when they DISAGREE. The honest source for "which fields did this
+    sweep mean to vary" is the sweep's own `params_file` and `sweep_script`,
+    recorded in `logs/<group>/run_info/meta.json`.
+
+    A derived predicate deliberately also matches runs in OTHER groups that
+    share the configuration. That is the point: one arm should span the sweeps
+    that ran the same thing, which is what `NOPRODUCT` was hand-written to do
+    when it had to admit both `kl-diag-polar-lora --precond factorwise` and the
+    older `kl-shampoo-polar-lora`.
+    """
+    if not cfgs:
+        raise ValueError("cannot derive an arm from zero runs")
+    from ..manifest import SERIES_AXIS_FIELDS
+    shared = set(cfgs[0])
+    for c in cfgs[1:]:
+        shared &= set(c)
+    pred = {}
+    for k in sorted(shared):
+        if k in SERIES_AXIS_FIELDS or k.startswith("_"):
+            continue
+        v = cfgs[0][k]
+        if isinstance(v, dict):
+            continue          # unhashable and never a discriminator
+        if len({repr(c.get(k)) for c in cfgs}) == 1:
+            pred[k] = v
+    return pred
 
 
 def variant_key_fn(common: dict, arms: dict):
@@ -364,6 +434,7 @@ PRECOND_ARMS = {
 # step 750: beta2=0.999 moved factorwise -0.0006 and one-sided -0.0003, i.e.
 # most of the effect is the shared diagonal metric.
 PRECOND_BETA2_ARMS = {
+    "AdamW": ADAMW,
     "factorwise, b2=0.99": {**NOPRODUCT, "curvature_beta": 0.99},
     "factorwise, b2=0.999": {**NOPRODUCT, "curvature_beta": 0.999},
     "one-sided, b2=0.99": {**ONESIDED, "curvature_beta": 0.99},

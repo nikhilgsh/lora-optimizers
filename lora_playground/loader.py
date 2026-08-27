@@ -856,13 +856,30 @@ PINNING_ALL_DIVERGED = "all_diverged"
 def _matches(spec: Any, value: Any) -> bool:
     """Predicate matcher for a single field.
 
-    - callable                  → ``spec(value)`` truthy
-    - list / set / tuple        → ``value in spec``
-    - anything else (literal)   → ``value == spec``
+    - callable                        → ``spec(value)`` truthy
+    - list / set / tuple, scalar value → ``value in spec``   (membership)
+    - list / set / tuple, list value   → ``value == spec``   (equality)
+    - anything else (literal)         → ``value == spec``
+
+    The two list branches exist because a Python list means two different things
+    here: a SET OF ALLOWED VALUES for a scalar field (`ADAMW`'s
+    ``precond_method=(None, "higham")``), and a LITERAL for a field that itself
+    holds a list. Unconditional membership makes the second unpinnable —
+    ``target_module_names=[]`` reads as "match nothing".
+
+    `plotting.arms.field_matches` implements the same rule and
+    `tests/test_matcher_agreement.py` pins that they agree. They must: a `where=`
+    query goes through here while an arm predicate goes through `arms`, so a
+    divergence means the SAME arm dict selects different runs depending on which
+    loading path the caller took. Measured when they last diverged: a derived
+    132-pin predicate matched 4 of its own 4 runs through `arms.pred_matches`
+    and 0 of 4 through this function.
     """
     if callable(spec):
         return bool(spec(value))
     if isinstance(spec, (list, set, tuple, frozenset)):
+        if isinstance(value, (list, set, tuple, frozenset)):
+            return list(value) == list(spec)
         return value in spec
     return value == spec
 

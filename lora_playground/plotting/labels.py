@@ -101,29 +101,54 @@ def _shared_knobs(cfg: dict) -> str:
         s += " msign-diag"
     if cfg.get("cw_unpinned"):
         s += " unpinned"
-    hi = cfg.get("higham_iters")
-    if hi not in (None, 10):
+    # Each of these appends a suffix only when the run is OFF the default, so
+    # the default run keeps a bare label. The default is DERIVED, never typed
+    # here: a literal copy goes stale the moment the real default moves, and
+    # then every run looks off-default and gets a suffix. That happened —
+    # `cw_metric_init`'s default became "1e-12" (`optim_config.py:101`,
+    # `train.py:790`) while this file still said "zero", so `canonical_label`
+    # appended ` minit=1e-12` to EVERY run, bare "AdamW" resolved in 0 of 19
+    # workload cells, and `docs/notes/leaderboard.md` regenerated with 168 "—"
+    # cells that the doc's own header explains as "never reached the target".
+    # `_residual_knobs` below already derives from `_config_defaults()`; this
+    # hand-written block now does too.
+    if (hi := _off_default(cfg, "higham_iters")) is not None:
         s += f" H={hi}"
-    b1 = cfg.get("beta1")
-    if b1 not in (None, 0.9):
+    if (b1 := _off_default(cfg, "beta1")) is not None:
         s += f" β1={b1:g}"
-    ib = cfg.get("lora_init_b")
-    if ib not in (None, "zero"):
+    if (ib := _off_default(cfg, "lora_init_b")) is not None:
         s += f" initB={ib}"
-    # Curvature-metric init + rdinv investigation knobs: default runs (metric
-    # init 'zero', rdinv variant 'A', no rdinv-delta) keep the bare label;
-    # the e2 metric-init and rdinv B/VN/delta sweeps get a suffix so they no
-    # longer collapse onto the protagonist's label.
-    cm = cfg.get("cw_metric_init")
-    if cm not in (None, "zero"):
+    if (cm := _off_default(cfg, "cw_metric_init")) is not None:
         s += f" minit={cm}"
-    rv = cfg.get("rdinv_variant")
-    if rv not in (None, "A"):
+    if (rv := _off_default(cfg, "rdinv_variant")) is not None:
         s += f" rdinv={rv}"
     rd = cfg.get("rdinv_delta")
     if rd is not None:
         s += f" rdδ={_eps(rd)}"
     return s + _residual_knobs(cfg)
+
+
+def _off_default(cfg: dict, field: str):
+    """`cfg[field]` when it differs from the SHIPPED default, else None.
+
+    The default comes from `OptimizerConfig` / the train.py CLI rather than a
+    literal in this file, so a default that moves cannot silently turn every run
+    into an off-default one. An absent field reads as on-default: a run logged
+    before the flag existed ran the default by definition.
+
+    Raises on an unknown field name, matching `arms.arm()` — a typo here would
+    otherwise mean "never off default", i.e. a knob that stops appearing in
+    labels and starts collapsing distinct sweeps onto one.
+    """
+    from .arms import _cli_defaults, _config_defaults
+    defaults = {**_config_defaults(), **_cli_defaults()}
+    if field not in defaults:
+        raise KeyError(
+            f"{field!r} is not an OptimizerConfig field or a train.py CLI flag, "
+            f"so it has no default to compare against. Fix the name — a typo "
+            f"here silently stops the knob from appearing in any label.")
+    v = cfg.get(field)
+    return None if v is None or v == defaults[field] else v
 
 
 # Fields the per-optimizer templates and the hand-written suffix above already put

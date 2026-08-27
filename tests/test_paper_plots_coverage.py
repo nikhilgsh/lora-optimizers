@@ -47,7 +47,7 @@ def test_names_the_pinned_field_that_excluded_the_run(monkeypatch):
     """
     _patch_runs(monkeypatch, [(_cfg(), _hist())])
     arms = {"AdamW": {"optimizer": "adamw", "cw_nesterov": True}}
-    out = P.coverage_report(arms, {})
+    out = P.coverage_report(arms, {}, detail=True)
     assert "UNCLAIMED: 1 of 1" in out
     assert "cw_nesterov" in out
     assert "arm wants True" in out and "run has False" in out
@@ -74,7 +74,7 @@ def test_absent_field_is_reported_as_absent(monkeypatch):
     del cfg["curvature_beta"]
     _patch_runs(monkeypatch, [(cfg, _hist())])
     arms = {"AdamW": {"optimizer": "adamw", "curvature_beta": 0.99}}
-    out = P.coverage_report(arms, {})
+    out = P.coverage_report(arms, {}, detail=True)
     assert "curvature_beta" in out and "<absent>" in out
 
 
@@ -88,7 +88,7 @@ def test_closest_arm_is_the_one_with_fewest_mismatches(monkeypatch):
         "near": {"optimizer": "kl-diag-polar-lora", "precond": "factorwise",
                  "curvature_beta": 0.999},
     }
-    out = P.coverage_report(arms, {})
+    out = P.coverage_report(arms, {}, detail=True)
     assert "'near'" in out and "'far'" not in out
     assert "curvature_beta" in out
 
@@ -99,7 +99,7 @@ def test_row_cap_is_disclosed_not_silent(monkeypatch):
     n = P._COVERAGE_MAX_ROWS + 3
     _patch_runs(monkeypatch, [(_cfg(lr=1e-4 * (i + 1)), _hist()) for i in range(n)])
     arms = {"AdamW": {"optimizer": "adamw", "cw_nesterov": True}}
-    out = P.coverage_report(arms, {})
+    out = P.coverage_report(arms, {}, detail=True)
     assert f"UNCLAIMED: {n} of {n}" in out
     assert f"and {n - P._COVERAGE_MAX_ROWS} more unclaimed runs" in out
 
@@ -110,5 +110,5 @@ def test_in_flight_run_shows_its_step(monkeypatch):
     _patch_runs(monkeypatch, [(_cfg(max_steps=2000, curvature_beta=0.999),
                                _hist(step=750))])
     arms = {"AdamW": {"optimizer": "adamw", "curvature_beta": 0.99}}
-    out = P.coverage_report(arms, {})
+    out = P.coverage_report(arms, {}, detail=True)
     assert "step 750" in out and "max_steps=2000" in out
