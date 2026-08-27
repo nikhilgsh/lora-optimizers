@@ -249,3 +249,30 @@ def test_curvature_whiten_does_not_apply_nesterov_and_logs_effective():
     opt = build_optimizer(m, "curvature-whiten-polar-lora", lr=1e-2, curvature_beta=0.99,
                           muon_ns_steps=5, precond_delta=1e-4, cw_nesterov=True)
     assert opt.cw_nesterov is False  # silently not applied; the config logs this False
+
+
+def test_the_per_pair_path_refuses_cw_unpinned():
+    """Known-positive for the second branch of the `_batched_step` dispatch guard.
+
+    `_cw_apply_per_pair` never reads `cw_unpinned` (verified by grep over both
+    function bodies), so it neither flattens rho nor skips the sigma_max(W)
+    rescale — it silently runs the PINNED step while the config says unpinned.
+    The guard refuses instead. Its sibling branch (a non-eigh precond_method)
+    has `test_the_per_pair_oracle_refuses_a_production_precond_method` in
+    tests/test_precond_msign_branches.py; this one had only a docstring, so half
+    the guard was an unverified detector.
+
+    Note cw_unpinned REQUIRES precond_method="gram_ns"
+    (`test_unpinned_requires_gram_ns`), so the precond_method branch would fire
+    on this config first. The guard checks precond_method before cw_unpinned, so
+    this test pins the ordering too: if they were swapped, the cw_unpinned
+    message would never be reachable.
+    """
+    m, _, _ = _make(seed=5)
+    opt = _build_kl_gramns(m, cw_unpinned=True, cw_no_diag_curv=True)
+    opt._batched_step = False
+    for A, B in opt.pairs:
+        A.grad = torch.zeros_like(A)
+        B.grad = torch.zeros_like(B)
+    with pytest.raises(NotImplementedError, match="precond_method|cw_unpinned"):
+        opt.step()
