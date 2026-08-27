@@ -203,6 +203,7 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     guard inside compare_variants_figure -- the per-variant loading path does not run it,
     and that is how two arms silently merged for weeks. Do not add a panel that skips it.
     """
+    declared_arms = dict(arms)
     if drop_empty:
         missing = [k for k, v in arms.items() if not has(v, common)]
         if missing:
@@ -235,7 +236,95 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     else:
         print(f"no speedup table: '{target_label}' is not one of this panel's arms, "
               f"so there is no speed target. Pass target_label=<an arm> to get one.")
+    # Coverage is reported against the arms the CALLER declared, before
+    # `drop_empty` pruned the empty ones, so an arm that matched nothing is still
+    # a candidate for "closest arm" in the diagnosis.
+    cov = coverage_report(declared_arms, common)
+    if cov:
+        print(cov)
     return sdf
+
+
+# --------------------------------------------------------------------------------------
+# Coverage: runs that exist in a cell but that no arm claimed
+# --------------------------------------------------------------------------------------
+# Every arm predicate fails the same way -- by matching FEWER runs, silently. An
+# arm that pins a field the runs disagree on is indistinguishable, in a rendered
+# panel, from an arm that legitimately has no data yet. Three instances of that
+# in one session:
+#
+#   arms.ADAMW pinned `cw_nesterov=True`, a flag LoRAPlusAdamW never reads, and
+#   every adamw run at 5 of the 13 CELLS logs False -- so those cells rendered
+#   with NO baseline and leaderboard_rows returned a NaN speed target.
+#
+#   arms.NOPRODUCT has to admit two optimizer names for one branch
+#   (kl-diag-polar-lora and kl-shampoo-polar-lora); pinning one dropped half the
+#   arm, and the r16 factorwise cells matched nothing while the figure showed the
+#   arm as absent.
+#
+#   logs/e2_precond_r16_postfix_xl had no run_info/meta.json, so its 4 completed
+#   runs were dropped by load_manifests(strict=False) before any predicate ran.
+#
+# The first two are invisible to a manifest check and the third is invisible to a
+# predicate check, so the panel reports both: what exists in this cell, and which
+# pinned field kept each unclaimed run out.
+_COVERAGE_MAX_ROWS = 10
+# Fields worth naming in the report. A run differs from an arm on dozens of
+# fields it was never meant to match, so the diagnostic is only useful if it
+# names the arm that is CLOSEST and only the fields that separate them.
+_COVERAGE_IDENT = ("optimizer", "precond", "msign", "lr", "lora_r", "max_steps")
+
+
+def _closest_arm(cfg, arms):
+    """``(arm_label, [mismatching field descriptions])`` for the nearest arm.
+
+    "Nearest" is fewest mismatching pinned fields. That is what turns "this run
+    matched nothing" into "this run matched nothing because ADAMW pins
+    cw_nesterov=True and the run logs False", which is the actionable form.
+    """
+    best = None
+    for label, pred in arms.items():
+        diffs = []
+        for k, want in pred.items():
+            got = cfg.get(k, "<absent>")
+            ok = (got in want) if isinstance(want, (tuple, list, set)) else (got == want)
+            if callable(want):
+                try:
+                    ok = bool(want(cfg.get(k)))
+                except Exception:
+                    ok = False
+            if not ok:
+                diffs.append(f"{k}: arm wants {want!r}, run has {got!r}")
+        if best is None or len(diffs) < len(best[1]):
+            best = (label, diffs)
+    return best if best else ("<no arms>", [])
+
+
+def coverage_report(arms, common, *, horizon=HORIZON):
+    """Text naming every run in this cell that no arm's predicate claimed.
+
+    Returns "" when every run is claimed, so a clean cell prints nothing.
+    """
+    runs = cell_runs(common)
+    unclaimed = [(cfg, hist) for cfg, hist in runs
+                 if not any(pred_matches(cfg, {**common, **pred})
+                            for pred in arms.values())]
+    if not unclaimed:
+        return ""
+    lines = [f"UNCLAIMED: {len(unclaimed)} of {len(runs)} runs in this cell match no "
+             f"arm predicate. Each is absent from the figure and the table above."]
+    for cfg, hist in unclaimed[:_COVERAGE_MAX_ROWS]:
+        ident = " ".join(f"{k}={cfg.get(k)!r}" for k in _COVERAGE_IDENT if k in cfg)
+        last = max(hist, key=lambda e: e.get("step", 0)).get("step", 0) if hist else 0
+        label, diffs = _closest_arm(cfg, arms)
+        why = ("; ".join(diffs[:3]) + (f"; +{len(diffs) - 3} more" if len(diffs) > 3 else "")
+               if diffs else "no field mismatch -- check the dedup, not the predicate")
+        lines.append(f"  step {last}  {ident}")
+        lines.append(f"     closest arm {label!r}: {why}")
+    if len(unclaimed) > _COVERAGE_MAX_ROWS:
+        lines.append(f"  ... and {len(unclaimed) - _COVERAGE_MAX_ROWS} more unclaimed runs "
+                     f"(raise _COVERAGE_MAX_ROWS to see them)")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------------------

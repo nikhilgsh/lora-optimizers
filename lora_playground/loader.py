@@ -1091,6 +1091,39 @@ def _load_runs_inner(
 ) -> list[tuple[dict, list[dict]]]:
     """Body of :func:`load_runs`, run inside a `scan_epoch`."""
     manifests = load_manifests(logs_root, strict=False)
+    # `strict=False` is right here -- one untagged sweep must not make every
+    # analysis call raise -- but it used to be SILENT, and that silence cost a
+    # wrong reading. `live_manifests_newest_first` drops groups that are corrupt
+    # or untagged, so a completed sweep whose `run_info/meta.json` was never
+    # written (a job launched outside slurm_scripts/submit.sh, which is what
+    # writes it) disappears from `groups` before any `where` predicate runs. Its
+    # runs are then absent from every panel and every leaderboard row, and the
+    # figure looks exactly like one where the arm has no data yet. Measured: the
+    # 4 completed runs of logs/e2_precond_r16_postfix_xl were invisible this way,
+    # and restoring them moved the r16 factorwise arm from 1.10x to 1.14x.
+    #
+    # So warn, naming the groups. `tests/test_manifests.py` already asserts this
+    # condition, but nothing runs it -- there is no CI, no pre-commit config, and
+    # no hook that invokes pytest -- so the test cannot be the only line of
+    # defence.
+    #
+    # NOT gated on `quiet`, which suppresses the chatty per-call "excluded N
+    # run(s)" print at line 1359. This is a correctness signal, in the same class
+    # as the cross-commit warning below, and it fires only when a group really is
+    # being dropped. `warnings.warn` under the default filter shows an identical
+    # message once per session rather than once per cell, so it does not spam a
+    # notebook that calls load_runs from every panel.
+    untagged = warn_untagged(manifests)
+    if untagged:
+        warnings.warn(
+            f"load_runs is ignoring {len(untagged)} populated log group(s) with no "
+            f"manifest or an empty scope, so their runs are absent from every "
+            f"result: {', '.join(sorted(untagged))}. Write "
+            f"logs/<group>/run_info/meta.json (schema in lora_playground/"
+            f"manifest.py) or re-submit via slurm_scripts/submit.sh with "
+            f"SWEEP_SCOPE set.",
+            stacklevel=3,
+        )
     groups = [m["group"] for m in live_manifests_newest_first(manifests)]
     filter_fn = _build_filter(where)
     pre_filter, group_filter = _build_pushdown(where, cfg_postprocess)
