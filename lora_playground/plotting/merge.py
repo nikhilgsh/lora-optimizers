@@ -9,6 +9,7 @@ in the dedup key.
 """
 from __future__ import annotations
 
+from pathlib import PurePath
 from typing import Callable, Iterable
 
 from ..run_records import RUNTIME_FIELDS
@@ -61,6 +62,33 @@ def _hidden_axis_diffs(cfg_a: dict, cfg_b: dict) -> list[tuple]:
     return diffs
 
 
+def _resume_points_into_group_checkpoints(
+    resume_from: object,
+    prior_group: object,
+) -> bool:
+    """Whether a recorded checkpoint path belongs to ``prior_group``.
+
+    This is a lexical provenance check, not filesystem validation: historical
+    logs may have moved, but the producer-recorded path must still contain the
+    exact ``<group>/run_info/checkpoints`` component sequence.
+    """
+    if not isinstance(resume_from, str) or not resume_from.strip():
+        return False
+    if not isinstance(prior_group, str) or not prior_group.strip():
+        return False
+    path_parts = PurePath(resume_from).parts
+    checkpoint_parts = (
+        *PurePath(prior_group).parts,
+        "run_info",
+        "checkpoints",
+    )
+    width = len(checkpoint_parts)
+    return any(
+        path_parts[start:start + width] == checkpoint_parts
+        for start in range(len(path_parts) - width + 1)
+    )
+
+
 def _stitch_runs(runs: list[tuple[int, int, dict, list[dict]]]
                  ) -> tuple[dict, list[dict]]:
     """Stitch all same-key colliding runs into one step-monotonic trajectory.
@@ -73,7 +101,8 @@ def _stitch_runs(runs: list[tuple[int, int, dict, list[dict]]]
     - **Resume continuation** (the case this fixes): an original partial run
       (e.g. steps 250→8000) and its ``--resume_from`` continuation (8250→9000)
       collide on the same key. Stitching yields the full 250→9000 trajectory
-      instead of dropping the pre-resume segment.
+      only when the continuation records a checkpoint path under the original
+      source group's ``run_info/checkpoints`` tree.
     - **Overlapping rerun** (e.g. in-flight 0→3000 vs completed 0→9000, or two
       identical 0→9000 reruns): same first step → ordered longest-first, so the
       longer run populates fully and the shorter contributes nothing new. The
@@ -92,12 +121,64 @@ def _stitch_runs(runs: list[tuple[int, int, dict, list[dict]]]
     # higher group priority (lower idx) — so reruns reduce to longest-wins.
     ordered = sorted(runs, key=lambda r: (_first_step(r[3]), -r[0], r[1]))
     stitched: list[dict] = []
+    contributing_sources: list[str] = []
+    contributing_segments: list[dict] = []
+    contributing_groups: list[str | None] = []
     max_step: int | None = None
-    for _final, _idx, _cfg, evs in ordered:
+    for _final, _idx, source_cfg, evs in ordered:
+        contributed_events: list[dict] = []
+        candidate_max = max_step
         for e in evs:
-            if max_step is None or e["step"] > max_step:
-                stitched.append(e)
-                max_step = e["step"]
+            if candidate_max is None or e["step"] > candidate_max:
+                contributed_events.append(e)
+                candidate_max = e["step"]
+        if not contributed_events:
+            continue
+
+        group = source_cfg.get("log_group")
+        filename = source_cfg.get("_log_filename")
+        source_id = (
+            f"{group}/{filename}"
+            if group is not None and filename is not None
+            else None
+        )
+        if contributing_groups:
+            prior_group = contributing_groups[-1]
+            if not _resume_points_into_group_checkpoints(
+                source_cfg.get("resume_from"), prior_group
+            ):
+                prior_source = (
+                    contributing_sources[-1]
+                    if contributing_sources
+                    else repr(prior_group)
+                )
+                current_source = source_id or repr(group)
+                raise ValueError(
+                    "_stitch_runs: refusing disjoint same-key segment "
+                    f"{current_source!r} after {prior_source!r}: recorded "
+                    f"resume_from={source_cfg.get('resume_from')!r} does not "
+                    "point into the immediately prior source group's "
+                    f"checkpoint tree {prior_group!r}/run_info/checkpoints"
+                )
+
+        stitched.extend(contributed_events)
+        max_step = candidate_max
+        contributing_groups.append(group if isinstance(group, str) else None)
+        if source_id is not None:
+            contributing_sources.append(source_id)
+            contributing_segments.append({
+                "physical_id": source_id,
+                "contributed_start_step": contributed_events[0]["step"],
+                "contributed_end_step": contributed_events[-1]["step"],
+            })
+
+    # Transitional audit metadata for the one-time sealed legacy publication
+    # export. Runtime records never consume this as lineage evidence; explicit
+    # attempt/checkpoint links remain the only live lineage mechanism.
+    rep_cfg = dict(rep_cfg)
+    if contributing_sources:
+        rep_cfg["_legacy_source_physical_ids"] = tuple(contributing_sources)
+        rep_cfg["_legacy_source_segments"] = tuple(contributing_segments)
     return rep_cfg, stitched
 
 
@@ -114,8 +195,9 @@ def merge_runs(group_priority: Iterable[str],
 
     Dedup rule: **same-key runs are stitched into one step-monotonic
     trajectory** (see :func:`_stitch_runs`). For runs covering disjoint step
-    ranges — an original run and its ``--resume_from`` continuation — this
-    concatenates the segments into the full trajectory. For overlapping ranges
+    ranges — an original run and its verified ``--resume_from`` continuation —
+    this concatenates the segments into the full trajectory. A disjoint source
+    without that recorded checkpoint link is rejected. For overlapping ranges
     (an in-flight rerun vs a completed older run, or duplicate reruns) it
     reduces to the prior behavior: **longest trajectory wins**, ties broken by
     group priority order (earlier group in ``group_priority`` wins).

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from lora_playground.comparison import VariantSpec, build_comparison
+from lora_playground.comparison import build_comparison
+from lora_playground.leaderboard_variants import publication_variant_specs
 from lora_playground.leaderboard import leaderboard_rows_from_comparison
 from lora_playground.publication_archive import (
     PublicationArchiveError,
@@ -25,15 +26,36 @@ def _payload():
         "schema_version": 1,
         "projection_id": "legacy_publication_v1",
         "variants": [
-            {"id": "baseline.adamw.v1", "label": "AdamW"},
-            {"id": "candidate.method.v1", "label": "Method"},
+            {
+                "view_key": "baseline.adamw.v1",
+                "label": "AdamW",
+                "style_key": "AdamW",
+                "optimizer_semantic_key": "baseline.adamw.v1",
+                "exact_ids": ["exact.adamw.v1"],
+            },
+            {
+                "view_key": "candidate.method.v1",
+                "label": "Method",
+                "style_key": "Method",
+                "optimizer_semantic_key": "candidate.method.v1",
+                "exact_ids": ["exact.method.v1"],
+            },
         ],
         "runs": [
             {
                 "logical_id": "adamw-lr1",
-                "variant_id": "baseline.adamw.v1",
-                "source_physical_ids": ["old/log_0.out"],
-                "config": {**common, "optimizer": "adamw", "lr": 1e-3},
+                "exact_id": "exact.adamw.v1",
+                "source_segments": [{
+                    "physical_id": "old/log_0.out",
+                    "contributed_start_step": 500,
+                    "contributed_end_step": 1000,
+                }],
+                "config": {
+                    **common,
+                    "optimizer": "adamw",
+                    "lr": 1e-3,
+                    "measurement_semantics_revision": "measurement.v1",
+                },
                 "history": [
                     {"step": 500, "eval_loss": 0.9},
                     {"step": 1000, "eval_loss": 0.8},
@@ -41,11 +63,24 @@ def _payload():
             },
             {
                 "logical_id": "method-lr1",
-                "variant_id": "candidate.method.v1",
-                "source_physical_ids": [
-                    "old/log_1.out", "old/log_1.out.resume_1",
+                "exact_id": "exact.method.v1",
+                "source_segments": [
+                    {
+                        "physical_id": "old/log_1.out",
+                        "contributed_start_step": 500,
+                        "contributed_end_step": 500,
+                    },
+                    {
+                        "physical_id": "old/log_1.out.resume_1",
+                        "contributed_start_step": 1000,
+                        "contributed_end_step": 1000,
+                    },
                 ],
-                "config": {**common, "lr": 1e-3},
+                "config": {
+                    **common,
+                    "lr": 1e-3,
+                    "measurement_semantics_revision": "measurement.v1",
+                },
                 "history": [
                     {"step": 500, "eval_loss": 0.8},
                     {"step": 1000, "eval_loss": 0.7},
@@ -57,14 +92,7 @@ def _payload():
 
 def test_archive_runs_feed_comparison_without_legacy_loader_or_defaults():
     archive = publication_archive_from_payload(_payload())
-    specs = tuple(
-        VariantSpec(
-            variant.id,
-            variant.label,
-            {"_publication_variant_id": variant.id},
-        )
-        for variant in archive.variants
-    )
+    specs = publication_variant_specs(archive.runs)
 
     result = build_comparison(archive.runs, specs, horizon=1000)
     rows, target = leaderboard_rows_from_comparison(
@@ -104,19 +132,29 @@ def test_archive_is_immutable_and_orders_runs_by_logical_identity():
     [
         (
             lambda payload: payload["variants"].append(
-                {"id": "baseline.adamw.v1", "label": "duplicate"}
+                {
+                    "view_key": "duplicate.view",
+                    "label": "duplicate",
+                    "style_key": "duplicate",
+                    "optimizer_semantic_key": "duplicate.view",
+                    "exact_ids": ["exact.adamw.v1"],
+                }
             ),
-            "duplicate publication variant id",
+            "duplicate publication exact id",
         ),
         (
             lambda payload: payload["runs"][0].update(
-                variant_id="not-declared"
+                exact_id="not-declared"
             ),
-            "unknown variant",
+            "unknown exact id",
         ),
         (
             lambda payload: payload["runs"][1].update(
-                source_physical_ids=["old/log_0.out"]
+                source_segments=[{
+                    "physical_id": "old/log_0.out",
+                    "contributed_start_step": 500,
+                    "contributed_end_step": 1000,
+                }]
             ),
             "multiple archived logical runs",
         ),

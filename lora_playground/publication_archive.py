@@ -6,8 +6,10 @@ when unrelated code moves.  A publication archive instead stores the reviewed
 logical trajectory, stable variant identity, and minimal executed workload
 fields once.  New versioned runs continue to come from :mod:`run_catalog`.
 
-This module only defines and validates that immutable boundary.  It does not
-contain a live-data exporter and never imports the legacy loader.
+Archive labels and styles are sealed presentation facts for this named
+projection. A later publication view may build a new projection; it does not
+silently relabel an existing archive. This module never imports the legacy
+loader.
 """
 from __future__ import annotations
 
@@ -29,6 +31,7 @@ _REQUIRED_CONFIG_FIELDS = {
     "lora_r",
     "lr",
     "max_steps",
+    "measurement_semantics_revision",
 }
 
 
@@ -38,11 +41,13 @@ class PublicationArchiveError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class PublicationVariant:
-    """Stable comparison identity plus mutable presentation metadata."""
+    """One reviewed view cohort and its exact producer identities."""
 
-    id: str
+    view_key: str
     label: str
-    style_key: str | None = None
+    optimizer_semantic_key: str
+    exact_ids: tuple[str, ...]
+    style_key: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,12 +58,16 @@ class ArchivedPublicationRun:
     effective_config: Mapping[str, Any]
     history: tuple[Mapping[str, Any], ...]
     raw_config: Mapping[str, Any]
-    source_physical_ids: tuple[str, ...]
+    source_segments: tuple[Mapping[str, Any], ...]
     group: str
     log_filename: None = None
     semantic_revisions: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
     )
+
+    @property
+    def source_physical_ids(self) -> tuple[str, ...]:
+        return tuple(str(segment["physical_id"]) for segment in self.source_segments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +80,11 @@ class PublicationArchive:
 
     @property
     def variants_by_id(self) -> Mapping[str, PublicationVariant]:
-        return MappingProxyType({variant.id: variant for variant in self.variants})
+        return MappingProxyType({
+            exact_id: variant
+            for variant in self.variants
+            for exact_id in variant.exact_ids
+        })
 
 
 def _require_mapping(value: Any, context: str) -> Mapping[str, Any]:
@@ -90,32 +103,66 @@ def _parse_variants(payload: Any) -> tuple[PublicationVariant, ...]:
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
         raise PublicationArchiveError("variants must be an array")
     variants: list[PublicationVariant] = []
-    ids: set[str] = set()
+    exact_ids: set[str] = set()
+    view_keys: set[str] = set()
     labels: set[str] = set()
     for index, raw_variant in enumerate(payload):
         item = _require_mapping(raw_variant, f"variants[{index}]")
-        variant_id = _require_nonempty_string(
-            item.get("id"), f"variants[{index}].id"
+        view_key = _require_nonempty_string(
+            item.get("view_key"), f"variants[{index}].view_key"
         )
         label = _require_nonempty_string(
             item.get("label"), f"variants[{index}].label"
         )
-        style_key = item.get("style_key")
-        if style_key is not None:
-            style_key = _require_nonempty_string(
-                style_key, f"variants[{index}].style_key"
-            )
-        if variant_id in ids:
+        optimizer_semantic_key = _require_nonempty_string(
+            item.get("optimizer_semantic_key"),
+            f"variants[{index}].optimizer_semantic_key",
+        )
+        style_key = _require_nonempty_string(
+            item.get("style_key"), f"variants[{index}].style_key"
+        )
+        raw_exact_ids = item.get("exact_ids")
+        if not isinstance(raw_exact_ids, Sequence) or isinstance(
+            raw_exact_ids, (str, bytes)
+        ):
             raise PublicationArchiveError(
-                f"duplicate publication variant id {variant_id!r}"
+                f"variants[{index}].exact_ids must be an array"
+            )
+        cohort_exact_ids = tuple(
+            _require_nonempty_string(
+                exact_id, f"variants[{index}].exact_ids"
+            )
+            for exact_id in raw_exact_ids
+        )
+        if not cohort_exact_ids or len(set(cohort_exact_ids)) != len(
+            cohort_exact_ids
+        ):
+            raise PublicationArchiveError(
+                f"variants[{index}].exact_ids must be non-empty and unique"
+            )
+        overlap = exact_ids.intersection(cohort_exact_ids)
+        if overlap:
+            raise PublicationArchiveError(
+                f"duplicate publication exact id {sorted(overlap)!r}"
+            )
+        if view_key in view_keys:
+            raise PublicationArchiveError(
+                f"duplicate publication view key {view_key!r}"
             )
         if label in labels:
             raise PublicationArchiveError(
                 f"duplicate publication variant label {label!r}"
             )
-        ids.add(variant_id)
+        exact_ids.update(cohort_exact_ids)
+        view_keys.add(view_key)
         labels.add(label)
-        variants.append(PublicationVariant(variant_id, label, style_key))
+        variants.append(PublicationVariant(
+            view_key=view_key,
+            label=label,
+            optimizer_semantic_key=optimizer_semantic_key,
+            exact_ids=cohort_exact_ids,
+            style_key=style_key,
+        ))
     if not variants:
         raise PublicationArchiveError("archive must declare at least one variant")
     return tuple(variants)
@@ -165,7 +212,11 @@ def publication_archive_from_payload(payload: Mapping[str, Any]) -> PublicationA
         root.get("projection_id"), "projection_id"
     )
     variants = _parse_variants(root.get("variants"))
-    variants_by_id = {variant.id: variant for variant in variants}
+    variants_by_id = {
+        exact_id: variant
+        for variant in variants
+        for exact_id in variant.exact_ids
+    }
     variant_ids = set(variants_by_id)
 
     raw_runs = root.get("runs")
@@ -186,28 +237,58 @@ def publication_archive_from_payload(payload: Mapping[str, Any]) -> PublicationA
             )
         logical_ids.add(logical_id)
 
-        variant_id = _require_nonempty_string(
-            item.get("variant_id"), f"runs[{index}].variant_id"
+        exact_id = _require_nonempty_string(
+            item.get("exact_id"), f"runs[{index}].exact_id"
         )
-        if variant_id not in variant_ids:
+        if exact_id not in variant_ids:
             raise PublicationArchiveError(
-                f"runs[{index}] references unknown variant {variant_id!r}"
+                f"runs[{index}] references unknown exact id {exact_id!r}"
             )
 
-        raw_sources = item.get("source_physical_ids")
-        if not isinstance(raw_sources, Sequence) or isinstance(
-            raw_sources, (str, bytes)
+        raw_segments = item.get("source_segments")
+        if not isinstance(raw_segments, Sequence) or isinstance(
+            raw_segments, (str, bytes)
         ):
             raise PublicationArchiveError(
-                f"runs[{index}].source_physical_ids must be an array"
+                f"runs[{index}].source_segments must be an array"
             )
-        sources = tuple(
-            _require_nonempty_string(source, f"runs[{index}].source_physical_ids")
-            for source in raw_sources
-        )
+        segments: list[Mapping[str, Any]] = []
+        for segment_index, raw_segment in enumerate(raw_segments):
+            segment = _require_mapping(
+                raw_segment,
+                f"runs[{index}].source_segments[{segment_index}]",
+            )
+            physical_source = _require_nonempty_string(
+                segment.get("physical_id"),
+                f"runs[{index}].source_segments[{segment_index}].physical_id",
+            )
+            start = segment.get("contributed_start_step")
+            end = segment.get("contributed_end_step")
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+                for value in (start, end)
+            ) or start > end:
+                raise PublicationArchiveError(
+                    f"runs[{index}].source_segments[{segment_index}] must "
+                    "have finite non-negative start/end with start <= end"
+                )
+            if segments and start <= segments[-1]["contributed_end_step"]:
+                raise PublicationArchiveError(
+                    f"runs[{index}].source_segments must be strictly ordered "
+                    "and non-overlapping"
+                )
+            segments.append(freeze_value({
+                "physical_id": physical_source,
+                "contributed_start_step": start,
+                "contributed_end_step": end,
+            }))
+        sources = tuple(str(segment["physical_id"]) for segment in segments)
         if not sources or len(set(sources)) != len(sources):
             raise PublicationArchiveError(
-                f"runs[{index}].source_physical_ids must be non-empty and unique"
+                f"runs[{index}].source_segments must name unique physical sources"
             )
         overlap = used_sources.intersection(sources)
         if overlap:
@@ -239,18 +320,50 @@ def publication_archive_from_payload(payload: Mapping[str, Any]) -> PublicationA
             raise PublicationArchiveError(
                 f"runs[{index}].config.lr must be finite and positive"
             )
-        config["_publication_variant_id"] = variant_id
-        config["_publication_variant_label"] = variants_by_id[variant_id].label
+        variant = variants_by_id[exact_id]
+        config["_publication_exact_id"] = exact_id
+        config["_publication_variant_id"] = variant.view_key
+        config["_publication_variant_label"] = variant.label
+        config["_publication_optimizer_semantic_key"] = (
+            variant.optimizer_semantic_key
+        )
+        config["_publication_style_key"] = variant.style_key
         config["publication_projection_id"] = projection_id
         effective_config = freeze_value(config)
         history = _parse_history(item.get("history"), f"runs[{index}].history")
+        coverage = [0] * len(segments)
+        for event in history:
+            matches = [
+                segment_index
+                for segment_index, segment in enumerate(segments)
+                if segment["contributed_start_step"]
+                <= event["step"]
+                <= segment["contributed_end_step"]
+            ]
+            if len(matches) != 1:
+                raise PublicationArchiveError(
+                    f"runs[{index}] history step {event['step']!r} is not "
+                    "covered by exactly one source segment"
+                )
+            coverage[matches[0]] += 1
+        if any(count == 0 for count in coverage):
+            raise PublicationArchiveError(
+                f"runs[{index}] has a source segment with no contributed history"
+            )
 
         physical_id = f"{projection_id}/{logical_id}"
+        semantic_revisions = freeze_value({
+            "optimizer_impl": variant.optimizer_semantic_key,
+            "measurement": config["measurement_semantics_revision"],
+            "data_pipeline": config.get("data_pipeline_version"),
+        })
         raw_config = freeze_value({
             "run_id": physical_id,
             "log_group": f"archive:{projection_id}",
             "source_physical_ids": list(sources),
+            "source_segments": [dict(segment) for segment in segments],
             "publication_projection_id": projection_id,
+            "semantic_revisions": semantic_revisions,
             **({"_aborted": item["aborted"]} if "aborted" in item else {}),
         })
         runs.append(ArchivedPublicationRun(
@@ -258,8 +371,9 @@ def publication_archive_from_payload(payload: Mapping[str, Any]) -> PublicationA
             effective_config=effective_config,
             history=history,
             raw_config=raw_config,
-            source_physical_ids=sources,
+            source_segments=tuple(segments),
             group=f"archive:{projection_id}",
+            semantic_revisions=semantic_revisions,
         ))
 
     return PublicationArchive(
