@@ -82,7 +82,11 @@ def main() -> int:
     args = parser.parse_args()
 
     import matplotlib.pyplot as plt
+    import lora_playground.plotting.paper_figs as paper_figs
     import lora_playground.plotting.paper_plots_lib as P
+
+    paper_figs.FIGS = args.out.parent / f".{args.out.stem}-figures"
+    paper_figs.FIGS.mkdir(parents=True, exist_ok=True)
 
     entrypoints = discover_entrypoints(args.notebook)
     call_elapsed_sec = []

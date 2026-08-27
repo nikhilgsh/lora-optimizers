@@ -50,32 +50,8 @@ def test_matched_precond_panel_excludes_unversioned_adamw(monkeypatch):
     assert captured["kwargs"] == {
         "target_label": None,
         "semantic_view": "precond_matched",
-        "reviewed_e1_polora": False,
         "measurement_semantics_revision": plots.MEASUREMENT_SEMANTICS_REVISION,
     }
-
-
-def test_reviewed_e1_polora_cohort_rejects_later_probe_controls():
-    from lora_playground.plotting import paper_plots_lib as plots
-
-    base = {
-        field: value
-        for field, value in {
-            **plots.PROTO,
-            "optimizer": "kl-diag-polar-lora",
-        }.items()
-        if field not in plots._POST_E1_POLORA_FIELDS
-    }
-    assert plots._in_reviewed_e1_polora_cohort(base)
-    assert not plots._in_reviewed_e1_polora_cohort({
-        **base,
-        "cw_unpinned": False,
-    })
-    assert plots._in_reviewed_e1_polora_cohort({
-        **plots.ADAMW,
-        "optimizer": "adamw",
-        "cw_unpinned": False,
-    })
 
 def test_priority_notebook_panels_execute_against_recorded_evidence(monkeypatch):
     """Exercise the exact Figure 14--16 calls that previously raised KeyError."""

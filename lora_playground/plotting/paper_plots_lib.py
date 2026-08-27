@@ -47,7 +47,10 @@ from lora_playground.plotting.dedup import (
     SourceCoherenceError,
     assert_curve_source_coherent,
 )
-from lora_playground.publication_paper import publication_view_panel
+from lora_playground.publication_paper import (
+    publication_view_panel,
+    publication_workload_view_panel,
+)
 from lora_playground.plotting.paper_view_semantics import project_paper_precond_cohort
 from lora_playground.run_catalog import RunCatalog
 from lora_playground.run_records import run_view
@@ -368,31 +371,6 @@ def _canonical_variant_key(common, arms):
     return variant_key
 
 
-_POST_E1_POLORA_FIELDS = (
-    "cw_metric_init",
-    "cw_no_rr_precond",
-    "cw_solved_rho",
-    "cw_unpinned",
-    "rdinv_variant",
-)
-
-
-def _in_reviewed_e1_polora_cohort(cfg):
-    """Keep the original E1 PoLoRA series, not later diagnostic reruns.
-
-    Later probes reused the same optimizer label and learning rate while
-    explicitly recording controls that the E1 producer did not have.  Those
-    records are distinct semantic series, not seeds of the paper baseline.
-    Non-PoLoRA arms pass through unchanged.
-    """
-    if canonical_label(cfg) != canonical_label({
-        **PROTO,
-        "optimizer": "kl-diag-polar-lora",
-    }):
-        return True
-    return all(cfg.get(field) is None for field in _POST_E1_POLORA_FIELDS)
-
-
 _UNPINNED_MEASUREMENT_REVISION = object()
 
 
@@ -464,7 +442,6 @@ def _archive_figure(view_id, suptitle=None):
 
 def _records_figure(arms, workload, ref_label, suptitle, *,
                     target_label="AdamW", semantic_view=None,
-                    reviewed_e1_polora=False,
                     measurement_semantics_revision=(
                         _UNPINNED_MEASUREMENT_REVISION
                     )):
@@ -489,14 +466,6 @@ def _records_figure(arms, workload, ref_label, suptitle, *,
                     "measurement_semantics_revision"
                 ) == measurement_semantics_revision
             )
-        if reviewed_e1_polora:
-            records = tuple(
-                record for index, record in enumerate(records)
-                if _in_reviewed_e1_polora_cohort(
-                    run_view(record, index).semantic_config
-                )
-            )
-
         variant_key = _canonical_variant_key({}, arms)
         specs = tuple(
             VariantSpec(
@@ -878,20 +847,20 @@ def _speedup_text(rows, target, baseline_label, horizon=HORIZON):
 # Panels
 # --------------------------------------------------------------------------------------
 def panel(name, model, key, rank):
-    """AdamW vs PoLoRA vs the baselines at one cell; Delta vs AdamW in sigma units."""
+    """Archived AdamW-vs-PoLoRA comparison at one declared workload."""
     from lora_playground.workloads import find_workload
     workload = find_workload(model, key, rank)
-    return _records_figure(
-        _arms.PANEL_ARMS,
+    archived = publication_workload_view_panel(
+        "paper.adamw_polora.all_workloads.v1",
         workload,
-        "AdamW",
-        name,
-        # The E1 grid predates producer-recorded measurement revisions. Later
-        # E2 reruns may share an optimizer label and LR but are not part of the
-        # E1 measurement cohort; leave them unmatched rather than splicing the
-        # two objectives into one curve.
-        measurement_semantics_revision=None,
-        reviewed_e1_polora=True,
+    )
+    return _render_panel_comparison(
+        archived.comparison,
+        reference_id=archived.reference_id,
+        target_id=archived.target_id,
+        target_label="Adam",
+        suptitle=name,
+        horizon=workload.horizon,
     )
 
 
@@ -925,7 +894,6 @@ def ablation_panel(rank=256):
         "Polar-LoRA (kl-diag)",
         f"E2 ablation - Llama-3.2-1B openmath r{rank}",
         target_label=None,
-        reviewed_e1_polora=True,
     )
 
 
@@ -939,7 +907,6 @@ def derivation_ablation_panel(rank=256):
         "PoLoRA: rxr=B^T P B, shared P,Q",
         f"Derivation: orthogonalization and metric power - "
         f"Llama-3.2-1B openmath r{rank}",
-        reviewed_e1_polora=True,
     )
 
 
@@ -969,7 +936,6 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
         f"The r x r metric slot - {model_label} {data_key} r{rank}",
         target_label=(None if matched_revision else "AdamW"),
         semantic_view=("precond_matched" if matched_revision else "precond"),
-        reviewed_e1_polora=(not matched_revision),
         measurement_semantics_revision=(
             MEASUREMENT_SEMANTICS_REVISION
             if matched_revision
