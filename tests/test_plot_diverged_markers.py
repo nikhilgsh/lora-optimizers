@@ -24,6 +24,7 @@ from matplotlib.colors import to_rgba
 from lora_playground.plotting import (
     plot_eta_vs_final, standard_sweep_figure, BASELINE_COLOR,
 )
+from lora_playground.plotting.panels import clamp_for_hollow, draw_lr_series
 
 
 def _mk_run(opt, lr, final_loss, lora_r=64, max_steps=4000, last_step=None):
@@ -60,6 +61,50 @@ def _line_ys_by_color(ax, color):
             except (TypeError, ValueError):
                 continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# Finite values above a fixed top must stay visible and must not be confused
+# with NaN/divergence. Regression for fixed-y-limit paper panels where a real
+# high-loss lr previously disappeared entirely above the box.
+# ---------------------------------------------------------------------------
+def test_finite_above_ylim_gets_distinct_top_edge_marker():
+    fig, ax = plt.subplots()
+    top = 0.55
+    ys, statuses = clamp_for_hollow([0.51, 0.72, float("nan")], top)
+
+    assert ys == [0.51, top, top]
+    assert statuses == [0, 2, 1]
+
+    draw_lr_series(
+        ax, [1e-3, 1e-2, 1e-1], ys, statuses,
+        color="#1f77b4", marker="o", label="candidate",
+    )
+    ax.set_ylim(0.49, top)
+
+    finite_clipped = [
+        line for line in ax.get_lines()
+        if line.get_marker() == "^" and list(line.get_xdata()) == [1e-2]
+    ]
+    assert len(finite_clipped) == 1
+    assert list(finite_clipped[0].get_ydata()) == [top]
+    assert finite_clipped[0].get_clip_on() is False
+
+    diverged = [
+        line for line in ax.get_lines()
+        if line.get_marker() == "o"
+        and line.get_markerfacecolor() == "none"
+        and list(line.get_xdata()) == [1e-1]
+    ]
+    assert len(diverged) == 1
+    assert list(diverged[0].get_ydata()) == [top]
+
+    # Only the connecting series contributes a legend entry. Sentinel artists
+    # use Matplotlib's private default labels, avoiding duplicate legend rows.
+    handles, labels = ax.get_legend_handles_labels()
+    assert len(handles) == 1
+    assert labels == ["candidate"]
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------

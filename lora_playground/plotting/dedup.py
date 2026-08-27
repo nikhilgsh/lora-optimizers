@@ -7,6 +7,8 @@ Key contracts enforced here:
   - ``assert_label_discriminates`` raises if a display-label function collapses
     distinct ``series_id`` values into one bucket — the silent-averaging
     failure mode this contract exists to forbid.
+  - ``assert_curve_source_coherent`` raises if one displayed learning-rate
+    curve silently joins runs produced by different execution-source snapshots.
   - ``filter_baseline`` / ``filter_variants`` hold non-target axes to the
     train.py argparse default within each per-axis group.
 """
@@ -23,6 +25,18 @@ class LabelCollisionError(ValueError):
     cfg field(s); the fix is to either extend the group_key/display_label
     function to discriminate, or (rarely) add the field to
     `manifest.SERIES_AXIS_FIELDS` if it's truly a per-series axis.
+    """
+
+
+class SourceCoherenceError(ValueError):
+    """Raised when one displayed curve mixes unaudited execution sources.
+
+    ``execution_source_sha`` is content-based and scoped to the training
+    execution closure. It is deliberately a runtime field, so same-cell reruns
+    still deduplicate newest/longest-first rather than becoming two algorithm
+    series. Once those cells are deduplicated, however, joining different
+    source hashes across learning rates can splice two algorithm versions into
+    one curve. This error guards that second boundary.
     """
 
 
@@ -179,6 +193,173 @@ def detect_group_collisions(runs, group_key_fn, *,
     return _label_collision_report(runs, group_key_fn,
                                    bucket_keys=bucket_keys,
                                    axis_fields=axis_fields)
+
+
+def _execution_source(cfg: dict) -> tuple[str, str] | None:
+    """Strongest available execution-source identifier for one run."""
+    source_sha = cfg.get("execution_source_sha")
+    if source_sha:
+        return "execution_source_sha", str(source_sha)
+    git_commit = cfg.get("git_commit")
+    if git_commit:
+        return "git_commit", str(git_commit)
+    return None
+
+
+def filter_curve_sources(runs, group_key_fn, allowed_sources_by_label: dict):
+    """Filter selected labels to exact execution sources, with a safe labeler.
+
+    Returns ``(kept_runs, excluded_runs, checked_label_fn)``. Labels absent from
+    ``allowed_sources_by_label`` are unchanged. A constrained label keeps only
+    an exact ``execution_source_sha`` match; missing provenance is an error.
+    ``checked_label_fn`` repeats the check and raises on an excluded source, so
+    accidentally passing the original unfiltered run list to a downstream
+    figure fails instead of silently restoring the rejected cohort.
+    """
+    allowed = {
+        label: {str(source) for source in sources}
+        for label, sources in allowed_sources_by_label.items()
+    }
+
+    def checked_label(cfg):
+        label = group_key_fn(cfg)
+        if label is None or label not in allowed:
+            return label
+        source = cfg.get("execution_source_sha")
+        if not source:
+            raise SourceCoherenceError(
+                f"label={label!r} is source-restricted but the run has no "
+                "execution_source_sha"
+            )
+        if str(source) not in allowed[label]:
+            raise SourceCoherenceError(
+                f"label={label!r} execution_source_sha={source} is not in the "
+                f"allowed set {sorted(allowed[label])}"
+            )
+        return label
+
+    kept, excluded = [], []
+    for run in runs:
+        cfg, _hist = run
+        label = group_key_fn(cfg)
+        if label not in allowed:
+            kept.append(run)
+            continue
+        try:
+            checked_label(cfg)
+        except SourceCoherenceError as exc:
+            if not cfg.get("execution_source_sha"):
+                raise
+            excluded.append((run, str(exc)))
+        else:
+            kept.append(run)
+    return kept, excluded, checked_label
+
+
+def assert_curve_source_coherent(
+    runs,
+    group_key_fn,
+    *,
+    bucket_keys: tuple[str, ...] = (
+        "model_name", "data_dir", "data_pipeline_version", "lora_r",
+    ),
+    equivalent_source_groups: dict | None = None,
+) -> None:
+    """Hard-fail when one displayed LR curve spans unaudited source snapshots.
+
+    Curves are grouped by ``(group_key_fn(cfg), *bucket_keys)``. Within a
+    curve, every non-empty run must resolve to one ``execution_source_sha``
+    (or, for older logs, one ``git_commit``). This is intentionally separate
+    from :func:`series_id`: source provenance must *not* split same-cell reruns
+    before the loader's newest/longest-wins dedup, but it must be coherent when
+    the surviving LR cells are joined into a line.
+
+    ``equivalent_source_groups`` is the explicit audit escape hatch. It maps a
+    displayed label to an iterable of exact source-value groups, for example
+    ``{"one-sided": [{"old-source-sha", "new-source-sha"}]}``. Only that
+    label receives the equivalence; the same two hashes remain a collision for
+    every other algorithm. Keep groups exact and narrow: this records a code-
+    review conclusion that the source change is inert for that displayed arm.
+
+    Empty histories and ``None`` labels are skipped because the figure path
+    does not display them. Missing provenance raises rather than silently
+    treating all unknown sources as equivalent.
+    """
+    from collections import defaultdict
+
+    equivalent_source_groups = equivalent_source_groups or {}
+    buckets: dict[tuple, list[dict]] = defaultdict(list)
+    for cfg, evals in runs:
+        if not evals:
+            continue
+        label = group_key_fn(cfg)
+        if label is None:
+            continue
+        bucket = tuple(_hashable(cfg.get(k)) for k in bucket_keys)
+        buckets[(_hashable(label), bucket)].append(cfg)
+
+    failures: list[str] = []
+    for (_label_key, bucket), cfgs in buckets.items():
+        label = group_key_fn(cfgs[0])
+        equivalence_groups = [
+            {str(source) for source in group}
+            for group in equivalent_source_groups.get(label, ())
+        ]
+
+        resolved: dict[tuple, dict[str, set]] = defaultdict(
+            lambda: {"sources": set(), "lrs": set(), "commits": set()}
+        )
+        missing_lrs: set = set()
+        for cfg in cfgs:
+            source = _execution_source(cfg)
+            if source is None:
+                missing_lrs.add(cfg.get("lr"))
+                continue
+            source_field, source_value = source
+            equivalence_idx = next(
+                (i for i, group in enumerate(equivalence_groups)
+                 if source_value in group),
+                None,
+            )
+            source_key = (("equivalence", equivalence_idx)
+                          if equivalence_idx is not None else source)
+            entry = resolved[source_key]
+            entry["sources"].add((source_field, source_value))
+            entry["lrs"].add(cfg.get("lr"))
+            if cfg.get("git_commit"):
+                entry["commits"].add(str(cfg["git_commit"]))
+
+        bucket_desc = dict(zip(bucket_keys, bucket))
+        if missing_lrs:
+            failures.append(
+                f"  label={label!r} bucket={bucket_desc}: missing both "
+                f"execution_source_sha and git_commit at "
+                f"lr={sorted(missing_lrs, key=repr)}"
+            )
+        if len(resolved) > 1:
+            source_lines = []
+            for entry in resolved.values():
+                source_desc = ", ".join(
+                    f"{field}={value}" for field, value in sorted(entry["sources"])
+                )
+                source_lines.append(
+                    f"[{source_desc}] lr={sorted(entry['lrs'], key=repr)} "
+                    f"git_commit={sorted(entry['commits'])}"
+                )
+            failures.append(
+                f"  label={label!r} bucket={bucket_desc}: "
+                + "; ".join(source_lines)
+            )
+
+    if failures:
+        raise SourceCoherenceError(
+            "displayed learning-rate curve mixes execution sources whose "
+            "semantic equivalence has not been audited:\n"
+            + "\n".join(failures)
+            + "\nFix: keep only runs from one semantic source, or pass "
+              "equivalent_source_groups={label: [{sha_a, sha_b}]} after "
+              "code-reviewing that exact source change for that arm."
+        )
 
 
 def _last_step(evals) -> float:

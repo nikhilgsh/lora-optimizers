@@ -21,6 +21,11 @@ from .style import (
 )
 
 
+_OFF_AXIS_NONE = 0
+_OFF_AXIS_NONFINITE = 1
+_OFF_AXIS_FINITE = 2
+
+
 def _infer_min_step(runs) -> int | None:
     """Return the target horizon by reading `max_steps` from the input cfgs.
 
@@ -75,12 +80,11 @@ def auto_ylim_for_final_panel(
     compressed — at best ≈ 0.74, `1.5 × best ≈ 1.1` still admits clearly-worse
     0.9 runs; the IQR fence adapts to the cluster's own spread and clips them.
 
-    The bound deliberately stays TIGHT around the converged cluster: a finite
-    final above this top is not stretched into view — it simply exits the top
-    of the box (matplotlib clips its marker; the connecting line runs off the
-    top edge). Only genuinely NaN-aborted runs get a sentinel marker, pinned to
-    the top edge by `clamp_for_hollow` so they read as "diverged," not as a
-    real loss value.
+    The bound deliberately stays TIGHT around the converged cluster. A finite
+    final above this top is represented by an upward triangle at the top edge;
+    a genuinely NaN-aborted run uses a hollow series marker there instead.
+    Thus neither kind of off-axis point stretches the converged region or
+    silently disappears, and the two cases remain visually distinct.
 
     `lora_r=None` aggregates across all ranks. `fallback` is returned when
     no finite finals are present.
@@ -144,25 +148,28 @@ def auto_ylim_for_trajectory_panel(
 
 
 def clamp_for_hollow(values, top: float | None):
-    """Split a list of final-loss values into (ys, is_oor).
+    """Split final losses into visible y values and off-axis statuses.
 
-    Only a NON-FINITE final (NaN/inf — a NaN-aborted run) is a divergence
-    sentinel: it has no real loss, so it is pinned to `top` (the box's top
-    edge) and flagged hollow, so it reads as "diverged to NaN" rather than as a
-    real loss value sitting just under the rim. A FINITE final is returned
-    UNCHANGED (and `is_oor=False`, i.e. drawn solid) at its true height — if
-    that height is above the deliberately-tight axis top it simply exits the top
-    of the box (matplotlib clips the marker; the connecting line runs off the
-    top edge), which is the intended "this lr is off-scale-worse" signal rather
-    than a hollow marker pinned inside. With `top is None` (no axis bound)
-    non-finite values are flagged but clamping is a no-op.
+    Status 0 means in range, 1 means non-finite/diverged, and 2 means a finite
+    observation above `top`. Both off-axis cases are pinned to `top`; the
+    renderer uses a hollow series marker for status 1 and a filled upward
+    triangle for status 2. With `top is None` (no axis bound), non-finite values
+    are still flagged but clamping is a no-op.
     """
-    is_oor = [not math.isfinite(v) for v in values]
     if top is None:
-        ys = [v for v in values]
-    else:
-        ys = [top if o else v for v, o in zip(values, is_oor)]
-    return ys, is_oor
+        return list(values), [
+            _OFF_AXIS_NONFINITE if not math.isfinite(v) else _OFF_AXIS_NONE
+            for v in values
+        ]
+
+    statuses = [
+        _OFF_AXIS_NONFINITE if not math.isfinite(v)
+        else _OFF_AXIS_FINITE if v > top
+        else _OFF_AXIS_NONE
+        for v in values
+    ]
+    ys = [top if status else v for v, status in zip(values, statuses)]
+    return ys, statuses
 
 
 def draw_lr_series(ax, xs, ys_clamped, is_oor, *, color, marker, label=None,
@@ -172,9 +179,10 @@ def draw_lr_series(ax, xs, ys_clamped, is_oor, *, color, marker, label=None,
 
     Draws (1) a connecting line through `ys_clamped` (one continuous curve),
     (2) filled markers — with optional ±σ error bars — for in-range points,
-    and (3) hollow markers (`markerfacecolor="none"`) for the OOR/diverged
-    points clamped to the cap, so a NaN-aborted or off-axis lr never vanishes
-    as a gap but stays connected to the rest of the curve. Used by both
+    and (3) hollow markers (`markerfacecolor="none"`) for non-finite/diverged
+    points, plus filled upward triangles for finite observations above the
+    axis. Both are clamped to the cap, so an off-axis lr never vanishes as a
+    gap but stays connected to the rest of the curve. Used by both
     `plot_eta_vs_final` and `compare_variants_figure` so the two entry points
     can never diverge in how they show divergence.
     """
@@ -193,12 +201,24 @@ def draw_lr_series(ax, xs, ys_clamped, is_oor, *, color, marker, label=None,
             ax.plot([xs[i] for i in in_idx], [ys_clamped[i] for i in in_idx],
                     color=color, marker=marker, markersize=ms, ls="",
                     zorder=zorder + 1)
-    oor_idx = [i for i, o in enumerate(is_oor) if o]
-    if oor_idx:
-        ax.plot([xs[i] for i in oor_idx], [ys_clamped[i] for i in oor_idx],
+    diverged_idx = [
+        i for i, o in enumerate(is_oor) if o == _OFF_AXIS_NONFINITE
+    ]
+    if diverged_idx:
+        ax.plot([xs[i] for i in diverged_idx],
+                [ys_clamped[i] for i in diverged_idx],
                 color=color, marker=marker, markersize=ms + hollow_ms_bump,
                 markerfacecolor="none", markeredgewidth=hollow_edgewidth,
                 ls="", zorder=zorder + 2)
+    finite_clipped_idx = [
+        i for i, o in enumerate(is_oor) if o == _OFF_AXIS_FINITE
+    ]
+    if finite_clipped_idx:
+        ax.plot([xs[i] for i in finite_clipped_idx],
+                [ys_clamped[i] for i in finite_clipped_idx],
+                color=color, marker="^", markersize=ms + 2,
+                markerfacecolor=color, markeredgewidth=1.2,
+                ls="", zorder=zorder + 2, clip_on=False)
 
 
 def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
@@ -353,7 +373,15 @@ def plot_eta_vs_final(ax, runs, group_key_fn: Callable[[dict], str],
     for g, xs, means, stds, is_nonfinite, style in group_agg:
         ys_clamped = [y_cap if (nf or m > y_cap) else m
                       for m, nf in zip(means, is_nonfinite)]
-        is_oor = [nf or m > y_cap for m, nf in zip(means, is_nonfinite)]
+        # Preserve the semantic distinction at the top edge: 1 is
+        # non-finite/diverged (hollow series marker), while 2 is a real finite
+        # observation above the visible range (filled upward triangle).
+        is_oor = [
+            _OFF_AXIS_NONFINITE if nf
+            else _OFF_AXIS_FINITE if m > y_cap
+            else _OFF_AXIS_NONE
+            for m, nf in zip(means, is_nonfinite)
+        ]
         if normalize_x_to_optimum and any(not o for o in is_oor):
             in_pairs = [(xs[i], means[i]) for i, o in enumerate(is_oor) if not o]
             eta_star = min(in_pairs, key=lambda p: p[1])[0]

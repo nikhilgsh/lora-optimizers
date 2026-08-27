@@ -321,7 +321,6 @@ def compare_variants_figure(
     *,
     common_where: dict,
     ref_label: str,
-    trajectory_only: bool = False,
     logs_root: str = "../logs",
     sigma_ref: float = 0.0007,
     suptitle: str | None = None,
@@ -528,19 +527,8 @@ def compare_variants_figure(
 
     from .panels import clamp_for_hollow, draw_lr_series
 
-    # `trajectory_only` drops the final-loss-vs-lr panel. It is the right panel
-    # to drop when the arms have not all been swept over the same lr grid: the
-    # left panel's job is to show each arm's minimum sitting inside its grid, and
-    # a two-point arm plotted beside a seven-point one invites reading a line
-    # segment as a resolved curve. The trajectory panel stays honest about that,
-    # because a curve that stops early visibly stops early.
-    if trajectory_only:
-        fig, ax_traj = plt.subplots(figsize=(figsize[0] * 0.6, figsize[1]),
-                                    constrained_layout=True)
-        ax_lr = None
-    else:
-        fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize,
-                                             constrained_layout=True)
+    fig, (ax_lr, ax_traj) = plt.subplots(1, 2, figsize=figsize,
+                                         constrained_layout=True)
     # Compute the y-bound BEFORE plotting so diverged / NaN-aborted lr points
     # can be clamped just inside the top and drawn as HOLLOW markers connected
     # to the rest of the lr curve (the canonical convention — see
@@ -558,25 +546,24 @@ def compare_variants_figure(
     # above this deliberately-tight top are left at their true height and exit
     # the top of the box — they are NOT clamped/hollowed (see clamp_for_hollow).
     top = final_ylim[1] if final_ylim is not None else None
-    if ax_lr is not None:
-        for label, d in per_variant.items():
-            if not d:
-                continue
-            lrs = sorted(d)
-            finals = [d[lr][0] for lr in lrs]
-            ys_clamped, is_oor = clamp_for_hollow(finals, top)
-            draw_lr_series(ax_lr, lrs, ys_clamped, is_oor, color=colors[label],
-                           marker=markers[label], label=label, lw=1.4, ms=6,
-                           zorder=4)
-        ax_lr.set_xscale("log")
-        ax_lr.set_xlabel("lr")
-        ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
-        ax_lr.set_title("final loss vs lr")
-        ax_lr.grid(True, alpha=0.3)
-        # No per-panel legend; one shared figure-level legend is added below
-        # after the trajectory panel (both share the variant→color mapping).
-        if final_ylim is not None:
-            ax_lr.set_ylim(*final_ylim)
+    for label, d in per_variant.items():
+        if not d:
+            continue
+        lrs = sorted(d)
+        finals = [d[lr][0] for lr in lrs]
+        ys_clamped, is_oor = clamp_for_hollow(finals, top)
+        draw_lr_series(ax_lr, lrs, ys_clamped, is_oor, color=colors[label],
+                       marker=markers[label], label=label, lw=1.4, ms=6,
+                       zorder=4)
+    ax_lr.set_xscale("log")
+    ax_lr.set_xlabel("lr")
+    ax_lr.set_ylabel(f"final eval_loss @ {max_steps // 1000}k")
+    ax_lr.set_title("final loss vs lr")
+    ax_lr.grid(True, alpha=0.3)
+    # No per-panel legend; one shared figure-level legend is added below after
+    # the trajectory panel (both panels share the same variant→color mapping).
+    if final_ylim is not None:
+        ax_lr.set_ylim(*final_ylim)
 
     def _pick_traj(d, d_partial):
         """Best trajectory for a variant, preferring a FINITE curve.
@@ -607,12 +594,33 @@ def compare_variants_figure(
             return cfg, h, lr, loss, True, st
         return None
 
+    # Pick every arm's curve BEFORE drawing any, so the legend can carry a
+    # STEP-MATCHED loss. When arms ran to different lengths their endpoints are
+    # not comparable -- a 9000-step arm's final against a 2000-step arm's is a
+    # horizon difference, not an effect -- and the reader would otherwise have to
+    # reconstruct the matched number by eye off the curves.
+    #
+    # The match step is DERIVED, not configured: the largest step every plotted
+    # arm reached. With all arms at one horizon it IS that horizon and the extra
+    # legend field is suppressed as redundant; with a 2000-step arm in the panel
+    # it is 2000. So the annotation appears exactly when it is needed.
+    _picks = []
     for label in variants:
         d = per_variant.get(label, {})
         d_partial = per_variant_partial.get(label, {}) if allow_partial else {}
         pick = _pick_traj(d, d_partial)
-        if pick is None:
-            continue
+        if pick is not None:
+            _picks.append((label, pick))
+    _ends = [max((e["step"] for e in pk[1]), default=0) for _l, pk in _picks]
+    match_step = min(_ends) if _ends else None
+    _mixed = bool(_ends) and max(_ends) != min(_ends)
+
+    def _at(h, step):
+        """eval_loss at the last eval on or before `step`, or None."""
+        below = [e for e in h if e.get("step") is not None and e["step"] <= step]
+        return max(below, key=lambda e: e["step"])["eval_loss"] if below else None
+
+    for label, pick in _picks:
         _cfg, h, best_lr, disp_loss, is_partial, last_step = pick
         # Partial and complete runs are drawn IDENTICALLY; only the legend text
         # differs. An in-flight run used to get linestyle="--" at lw=1.2, which
@@ -641,6 +649,12 @@ def compare_variants_figure(
                                  [m + s for m, s in zip(mean, sem)],
                                  color=colors[label], alpha=0.18, linewidth=0)
             note += f", n={n_seeds}"
+        # Only when the arms disagree on length AND this arm ran past the match
+        # step -- for an arm that ENDS there, `note` already reports that number
+        # and a second copy just makes the legend wider.
+        own_end = max((e["step"] for e in h), default=0)
+        if _mixed and own_end > match_step and (mv := _at(h, match_step)) is not None:
+            note += f" | @{match_step}: {mv:.4f}"
         ax_traj.plot(steps, mean,
                      marker=markers[label], ms=3, lw=1.4, color=colors[label],
                      label=f"{label}  (lr={best_lr:g}, {note})")

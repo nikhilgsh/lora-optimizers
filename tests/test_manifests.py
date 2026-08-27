@@ -21,13 +21,6 @@ if str(ROOT) not in sys.path:
 from lora_playground.plotting import has_runs
 
 
-PILOT_SUFFIXES = ("_500",)
-
-
-def _is_pilot(group: str) -> bool:
-    return any(s in group for s in PILOT_SUFFIXES)
-
-
 def _populated_groups(logs_root: Path) -> list[str]:
     if not logs_root.exists():
         return []
@@ -217,17 +210,13 @@ def test_optim_choices_have_color_entries() -> None:
     )
 
 
-def test_non_pilot_groups_have_non_empty_scope(logs_root: Path) -> None:
-    """Pilots (group name contains _500) may have scope=[] by design.
-    Every other populated group must have at least one scope tag.
-    """
+def test_populated_groups_have_non_empty_scope(logs_root: Path) -> None:
+    """Every populated group must have at least one non-blank scope tag."""
     groups = _populated_groups(logs_root)
     if not groups:
         pytest.skip("no populated log groups in logs/")
     bad: list[str] = []
     for g in groups:
-        if _is_pilot(g):
-            continue
         meta = logs_root / g / "run_info" / "meta.json"
         if not meta.exists():
             continue  # covered by missing-manifest test
@@ -235,11 +224,70 @@ def test_non_pilot_groups_have_non_empty_scope(logs_root: Path) -> None:
             m = json.loads(meta.read_text())
         except json.JSONDecodeError:
             continue  # covered by corrupt-json test
-        if not m.get("scope"):
+        scope = m.get("scope")
+        if isinstance(scope, str):
+            has_tag = bool(scope.strip())
+        elif isinstance(scope, (list, tuple, set)):
+            has_tag = any(isinstance(tag, str) and tag.strip() for tag in scope)
+        else:
+            has_tag = False
+        if not has_tag:
             bad.append(g)
     assert not bad, (
-        f"{len(bad)} non-pilot group(s) with empty scope:\n"
+        f"{len(bad)} populated group(s) with empty scope:\n"
         + "\n".join(f"  {g}" for g in bad)
         + "\nFix: edit meta.json scope to a non-empty list of tags. "
         "See lora_playground/manifest.py for known scopes."
     )
+
+
+def _write_manifest_fixture(logs_root: Path, group: str, scope) -> Path:
+    run_info = logs_root / group / "run_info"
+    log_dir = run_info / "logs"
+    log_dir.mkdir(parents=True)
+    (run_info / "meta.json").write_text(json.dumps({
+        "group": group,
+        "submitted_at": "2026-01-01T00:00:00+00:00",
+        "scope": scope,
+        "purpose": "manifest regression fixture",
+    }))
+    return log_dir
+
+
+def test_manifest_cache_notices_first_log_in_existing_group(tmp_path: Path) -> None:
+    """An empty cached run_info/ group becomes visible when its first log appears."""
+    from lora_playground.manifest import _LOAD_MANIFESTS_CACHE, load_manifests
+
+    logs_root = tmp_path / "logs"
+    log_dir = _write_manifest_fixture(logs_root, "starts_empty", ["pilot"])
+    _LOAD_MANIFESTS_CACHE.clear()
+
+    assert load_manifests(str(logs_root), strict=True) == []
+    (log_dir / "log_0.out").write_text("{}\n")
+
+    loaded = load_manifests(str(logs_root), strict=True)
+    assert [m["group"] for m in loaded] == ["starts_empty"]
+
+
+@pytest.mark.parametrize("scope", [[], "", "   ", [""], [" ", "\t"]])
+def test_strict_load_rejects_empty_or_blank_scope(tmp_path: Path, scope) -> None:
+    from lora_playground.manifest import (
+        _LOAD_MANIFESTS_CACHE,
+        UntaggedSweepError,
+        live_manifests_newest_first,
+        load_manifests,
+        warn_untagged,
+    )
+
+    logs_root = tmp_path / "logs"
+    log_dir = _write_manifest_fixture(logs_root, "blank_scope", scope)
+    (log_dir / "log_0.out").write_text("{}\n")
+    _LOAD_MANIFESTS_CACHE.clear()
+
+    with pytest.raises(UntaggedSweepError, match="blank_scope: empty scope"):
+        load_manifests(str(logs_root), strict=True)
+
+    non_strict = load_manifests(str(logs_root), strict=False)
+    assert non_strict[0]["_empty_scope"] is True
+    assert warn_untagged(non_strict) == ["blank_scope"]
+    assert live_manifests_newest_first(non_strict) == []

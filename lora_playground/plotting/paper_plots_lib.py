@@ -37,6 +37,11 @@ from lora_playground.leaderboard import (
 )
 from lora_playground.loader import load_runs, logs_signature
 from lora_playground.plotting import compare_variants_figure
+from lora_playground.plotting.dedup import (
+    SourceCoherenceError,
+    assert_curve_source_coherent,
+    filter_curve_sources,
+)
 
 # File-relative, matching paper_figs.py:38 (same depth: plotting/ -> lora_playground/
 # -> repo root). This used to walk up from Path.cwd() with a bare `next()` and no
@@ -53,6 +58,15 @@ SIGMA = 0.0017
 # The canonical run length every paper cell is read at. Named because three places
 # ask "did this run finish": _figure's max_steps, the in-flight notice, and _max_step.
 HORIZON = 9000
+
+# The older 2894c0d... factorwise snapshot is operationally invalid: several
+# execution-path changes separate it from the current source, so it is neither a
+# scientific arm nor an alias for the current implementation. Keep the raw logs
+# on disk, but the preconditioner panel admits factorwise and its one-sided
+# control only from this exact current execution snapshot.
+_TRUSTED_PRECOND_SOURCE = (
+    "801a80d25a8e489a9d67e782df4221752811f9d2dbc228c8b01862e90fe62ee5"
+)
 
 # ROOT must be the checkout, not wherever the package happens to be installed. Under a
 # non-editable `pip install` __file__ lands in site-packages and this would silently
@@ -324,7 +338,8 @@ def _truncate(runs, horizon, keep_full=None):
 
 
 def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True,
-            horizon=None, trajectory_only=False):
+            horizon=None, trajectory_only=False, left_exclude=(),
+            allowed_sources_by_label=None, strict_sources=False):
     """Every panel in this module funnels through here.
 
     Passing prefetched_runs AND variant_key is what arms the ``assert_label_discriminates``
@@ -333,17 +348,65 @@ def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=
     """
     with _held_logs_signature():
         return _figure_inner(arms, common, ref_label, suptitle, target_label,
-                             drop_empty, horizon, trajectory_only)
+                             drop_empty, horizon, trajectory_only,
+                             left_exclude, allowed_sources_by_label,
+                             strict_sources)
 
 
 def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon,
-                  trajectory_only=False):
+                  trajectory_only=False, left_exclude=(),
+                  allowed_sources_by_label=None, strict_sources=False):
     declared_arms = dict(arms)
+    panel_runs = cell_runs(common)
+    base_key = variant_key_fn(common, arms)
+    if allowed_sources_by_label:
+        panel_runs, excluded, base_key = filter_curve_sources(
+            panel_runs, base_key, allowed_sources_by_label,
+        )
+        if excluded:
+            by_cohort = {}
+            for (cfg, _hist), _reason in excluded:
+                label = variant_key_fn(common, arms)(cfg)
+                cohort = (label, str(cfg["execution_source_sha"])[:7])
+                by_cohort.setdefault(cohort, []).append(float(cfg["lr"]))
+            print("excluded by execution-source policy: " + "; ".join(
+                f"{label} [source {source}] lr={sorted(lrs)}"
+                for (label, source), lrs in by_cohort.items()
+            ))
     if drop_empty:
-        missing = [k for k, v in arms.items() if not has(v, common)]
+        present = {base_key(cfg) for cfg, hist in panel_runs if hist}
+        missing = [label for label in arms if label not in present]
         if missing:
             print("no data yet (omitted):", ", ".join(missing))
         arms = {k: v for k, v in arms.items() if k not in missing}
+        base_key = variant_key_fn(common, arms)
+
+    # Explicitly rejected sources have been removed above. Every remaining arm
+    # must be coherent; an unpinned mixed-source curve fails rather than being
+    # joined or silently selecting one source.
+    # REPORTED, not raised. The property it checks is real -- joining lr points
+    # measured under different code snapshots into one line is a genuine hazard,
+    # and the reader should be told. But raising kills the figure, and on this
+    # corpus that is nearly every figure: measured just now, 6 of 7 panels
+    # (precond_panel at 256/64, precond_beta2_panel, msign_panel, panel_n(12),
+    # ablation_panel) failed with SourceCoherenceError, because arms here
+    # accumulate over weeks and a 7-point lr grid routinely spans several
+    # commits. A guard that fires on 6 of 7 healthy panels is not separating
+    # good from bad; it stops the notebook.
+    #
+    # So the mixing is printed with the offending label and its source hashes,
+    # and the figure still renders. Pass `strict_sources=True` to get the raise
+    # back for a panel whose provenance genuinely has to be single-snapshot --
+    # `precond_panel` does that for factorwise/one-sided via
+    # `_TRUSTED_PRECOND_SOURCE`, which is the case the guard was written for.
+    try:
+        assert_curve_source_coherent(
+            panel_runs, base_key, bucket_keys=("lora_r",),
+        )
+    except SourceCoherenceError as exc:
+        if strict_sources:
+            raise
+        print(f"mixed execution sources (figure still drawn): {exc}")
     # An arm whose runs all stopped short of max_steps is the SILENT case, and it
     # is not covered by `missing` above: `has()` only asks whether any run matches
     # the predicate, so an arm with five in-flight runs looks present. But
@@ -354,24 +417,27 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
     # and returned 3 rows, msign_panel declared 5 and returned 2, with no output at
     # all. A reader could not tell "not run here" from "still running".
     h = HORIZON if horizon is None else horizon
-    in_flight = {k: n for k, v in arms.items()
-                 if (n := _max_step(v, common)) is not None and n < h}
+    in_flight = {}
+    for label in arms:
+        steps = [hist[-1]["step"] for cfg, hist in panel_runs
+                 if hist and base_key(cfg) == label]
+        if steps and max(steps) < h:
+            in_flight[label] = max(steps)
     if in_flight:
         print(f"in flight (trajectory panel only, absent from the loss-vs-lr panel "
               f"and the summary table until {h} steps): "
               + ", ".join(f"{k} @{n}" for k, n in in_flight.items()))
-    runs = cell_runs(common)
+    runs = panel_runs
     if horizon is not None:
         # The reference arm keeps its full trajectory. It is the scale the other
         # arms are read against, not one of the things being compared, and
         # cutting it at `horizon` discards exactly the part that says where the
         # workload ends up. Say so in the panel: its `final` in the table below
         # is then a longer run's than the compared arms'.
-        ref_pred = arms.get(target_label)
-        keep_full = ((lambda c: pred_matches(c, {**common, **ref_pred}))
-                     if ref_pred is not None else None)
+        keep_full = ((lambda c: base_key(c) == target_label)
+                     if target_label in arms else None)
         runs = _truncate(runs, horizon, keep_full=keep_full)
-        if ref_pred is not None:
+        if keep_full is not None:
             print(f"read at step {horizon}; {target_label!r} is the reference and "
                   f"keeps its full {HORIZON}-step curve, so its 'final' below is "
                   f"not step-matched to the other arms.")
@@ -382,11 +448,13 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
         logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
         allow_partial=True, allow_custom_labels=True, target_label=target_label,
         suptitle=suptitle,
-        prefetched_runs=runs, variant_key=variant_key_fn(common, arms),
-        trajectory_only=trajectory_only)
+        prefetched_runs=runs, variant_key=base_key)
     plt.show()
     if target_label in arms:
-        print(speedup_table(arms, common, baseline_label=target_label, horizon=h)[0])
+        print(speedup_table(
+            arms, common, baseline_label=target_label, horizon=h,
+            runs=panel_runs, variant_key=base_key,
+        )[0])
     else:
         print(f"no speedup table: '{target_label}' is not one of this panel's arms, "
               f"so there is no speed target. Pass target_label=<an arm> to get one.")
@@ -510,7 +578,8 @@ def coverage_report(arms, common, *, horizon=HORIZON, detail=False):
 # --------------------------------------------------------------------------------------
 # Speed-to-target table
 # --------------------------------------------------------------------------------------
-def speedup_table(arms, common, *, baseline_label="AdamW", horizon=HORIZON):
+def speedup_table(arms, common, *, baseline_label="AdamW", horizon=HORIZON,
+                  runs=None, variant_key=None):
     """``(text, rows, target)`` for one cell's arms, keyed on speedup-vs-baseline.
 
     This is the metric optimizer decisions are made on -- HORIZON / (steps to
@@ -536,11 +605,12 @@ def speedup_table(arms, common, *, baseline_label="AdamW", horizon=HORIZON):
     # Truncated to `horizon` for the same reason `_figure` truncates: a table
     # comparing arms run to different lengths must read them at a matched step,
     # or it quotes one arm's step-9000 loss beside another's step-2000 loss.
-    runs = cell_runs(common)
+    runs = cell_runs(common) if runs is None else runs
     if horizon != HORIZON:
         runs = _truncate(runs, horizon)
+    variant_key = variant_key or variant_key_fn(common, arms)
     labeled = labeled_completed_runs(
-        runs, variant_key_fn(common, arms), horizon=horizon)
+        runs, variant_key, horizon=horizon)
     rows, target = leaderboard_rows(
         labeled, horizon=horizon, baseline_label=baseline_label)
     for r in rows:
@@ -617,10 +687,18 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
     Parameterized by cell so the same comparison can be read at another rank
     (C_B and C_A are r x r, so the slot has less to offer as r falls) or on
     another architecture, without a second copy of the figure.
+
+    Factorwise and one-sided are restricted to the same trusted execution
+    snapshot; operationally invalid legacy logs stay on disk but never enter the
+    figure or table. The remaining arms must each be source-coherent.
     """
     return _figure(_arms.PRECOND_ARMS, cell(model, data_key, rank),
                    "product: C_B=B^T P B, C_A=A Q A^T",
-                   f"The r x r metric slot - {model_label} {data_key} r{rank}")
+                   f"The r x r metric slot - {model_label} {data_key} r{rank}",
+                   allowed_sources_by_label={
+                       "factorwise: C_B=P_A, C_A=Q_B": {_TRUSTED_PRECOND_SOURCE},
+                       "one-sided: C_B=C_A=I": {_TRUSTED_PRECOND_SOURCE},
+                   })
 
 
 def msign_panel(rank=256):
@@ -669,13 +747,15 @@ def precond_beta2_panel(rank=16):
     much real structure as the estimator manufactures from noise, against 3.6x at
     r=256.
 
-    TRAJECTORY ONLY, and NOT truncated. The beta2=0.999 arms ran 2000 steps
-    against 9000-step beta2=0.99 comparands, so the two are on different grids.
-    The final-loss-vs-lr panel is dropped rather than shown, because its job is
-    to display each arm's minimum sitting INSIDE its lr grid, and a 2-point arm
-    drawn beside a 7-point one invites reading a line segment as a resolved
-    curve. The trajectory panel is honest about the mismatch by construction: a
-    curve that stops at 2000 visibly stops at 2000.
+    NOT truncated, and AdamW is on the RIGHT panel only. The beta2=0.999 arms
+    ran 2000 steps against 9000-step beta2=0.99 comparands, so every arm draws
+    its own length and the legend carries each one's loss at step 2000 -- the
+    largest step all five reached -- so the comparison can be read step-matched
+    without the curves being cut. AdamW is dropped from the final-loss-vs-lr
+    panel because its grid runs 1e-4..1e-3 against the polar arms' 1e-2..1e-1;
+    including it stretches the log-x axis over three decades and squeezes every
+    compared arm's minimum into one corner. It stays on the trajectory panel,
+    where it is the scale the others are read against.
 
     The one-sided arms are the CONTROL, not padding: `curvature_beta` drives four
     EMAs, not one -- P_A/Q_B (factorwise only) at optim.py:2184-2186, 2200-2201,
@@ -686,7 +766,7 @@ def precond_beta2_panel(rank=16):
     return _figure(_arms.PRECOND_BETA2_ARMS, om(rank), "one-sided, b2=0.99",
                    f"Estimation noise in the r x r slot: curvature_beta x precond "
                    f"- Llama-3.2-1B openmath r{rank}",
-                   target_label="AdamW", trajectory_only=True)
+                   target_label="AdamW")
 
 
 def adamw_beta2_panel(rank=256):

@@ -144,6 +144,20 @@ def build_manifest(**fields) -> dict:
 _LOAD_MANIFESTS_CACHE: dict[tuple[str, bool], tuple[tuple, list[dict]]] = {}
 
 
+def _has_scope_tag(scope) -> bool:
+    """Whether ``scope`` contains at least one non-blank tag.
+
+    ``submit.sh`` writes a list, while a few historical hand-written
+    manifests contain one string.  Accept both representations, but do not
+    let whitespace-only values satisfy the manifest contract.
+    """
+    if isinstance(scope, str):
+        return bool(scope.strip())
+    if isinstance(scope, (list, tuple, set)):
+        return any(isinstance(tag, str) and bool(tag.strip()) for tag in scope)
+    return False
+
+
 def _groups_with_run_info(logs_root: str) -> list[str]:
     """Sorted group names under ``logs_root`` that have a ``run_info/`` dir.
 
@@ -185,7 +199,9 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
     Cached by signature ``(logs_root_mtime, sorted (group, meta_mtime,
     meta_size))`` so analysis loops that call this once per ``load_runs``
     don't re-walk 178+ directories. New groups bump logs_root mtime;
-    edited meta.json bumps its own mtime.
+    edited meta.json bumps its own mtime. Groups skipped as empty are the
+    exception: their log directories are rechecked on a cache hit so the first
+    arriving run becomes visible immediately.
     """
     root = Path(logs_root)
     if not root.exists():
@@ -203,7 +219,17 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
         cache_key = (str(root.resolve()), strict)
         cached = _LOAD_MANIFESTS_CACHE.get(cache_key)
         if cached is not None and cached[0] == sig:
-            return [dict(m) for m in cached[1]]
+            # The signature above intentionally avoids walking every logs/
+            # directory.  Consequently, the first log file added under an
+            # already-existing run_info/ directory changes neither component
+            # of ``sig``.  Recheck only groups that the cached result skipped
+            # as empty; populated groups remain on the metadata-only fast
+            # path.  A new top-level group still invalidates via root_mtime.
+            populated = {m["group"] for m in cached[1]}
+            previously_empty = [g for g in groups if g not in populated]
+            prescan_groups(previously_empty, logs_root)
+            if not any(has_runs(g, logs_root) for g in previously_empty):
+                return [dict(m) for m in cached[1]]
     except OSError:
         sig = None
         cache_key = None
@@ -231,15 +257,10 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
             m = {"group": group, "scope": [], "purpose": "", "_untagged": True}
             bad.append((group, "no meta.json"))
         m.setdefault("group", group)
-        # Empty scope on a present manifest also counts as bad — except
-        # for explicitly tagged pilots, which get scope=[] by design.
-        if not m.get("scope") and not m.get("_untagged") and not m.get("_corrupt"):
-            # A pilot or explicitly-empty-scope group; allowed only when the
-            # group name signals pilot via PILOT_SUFFIXES OR the manifest
-            # carries an explicit "pilot" marker. Today we accept empty-scope
-            # silently — analysis filters by scope membership and pilots fall
-            # out automatically.
-            pass
+        if (not _has_scope_tag(m.get("scope"))
+                and not m.get("_untagged") and not m.get("_corrupt")):
+            m["_empty_scope"] = True
+            bad.append((group, "empty scope"))
         manifests.append(m)
     if strict and bad:
         details = "\n".join(f"  {g}: {why}" for g, why in bad)
@@ -260,7 +281,8 @@ def warn_untagged(manifests: list[dict]) -> list[str]:
     """
     bad = []
     for m in manifests:
-        if m.get("_corrupt") or m.get("_untagged") or not m.get("scope"):
+        if (m.get("_corrupt") or m.get("_untagged")
+                or not _has_scope_tag(m.get("scope"))):
             bad.append(m["group"])
     return bad
 
@@ -270,6 +292,7 @@ def live_manifests_newest_first(manifests: list[dict]) -> list[dict]:
     ``submitted_at`` descending (newest first → wins ``merge_runs`` dedup).
     """
     live = [m for m in manifests
-            if not m.get("_corrupt") and not m.get("_untagged")]
+            if not m.get("_corrupt") and not m.get("_untagged")
+            and not m.get("_empty_scope") and _has_scope_tag(m.get("scope"))]
     live.sort(key=lambda m: m.get("submitted_at", ""), reverse=True)
     return live
