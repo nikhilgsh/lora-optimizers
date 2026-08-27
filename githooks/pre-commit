@@ -1,25 +1,50 @@
 #!/usr/bin/env bash
-# Remind when leaderboard inputs change; never regenerate or stage data.
+# Keep the generated leaderboard synchronized with staged source inputs.
 #
 # Enable once per clone (tracked hooks aren't active by default):
 #     git config core.hooksPath githooks
 #
-# The leaderboard is data-derived publication material. Its documented workflow
-# requires a fresh canonical load, review of the concrete diff, and user
-# confirmation. A commit hook cannot perform that review and must not mutate the
-# index. Keep this check fast and independent of the local logs tree.
+# Unrelated commits remain a fast no-op. When a generator input or the generated
+# output itself is staged, update_leaderboard.sh renders from an index checkout
+# (not unstaged source), protects conflicting unstaged doc edits, and stages only
+# the deterministic generated output.
 set -eo pipefail
 
-STAGED="$(git diff --cached --name-only)"
-case "$STAGED" in
-  *lora_playground/leaderboard.py*|*lora_playground/workloads.py*|\
-  *lora_playground/plotting/labels.py*|*scripts/analysis/build_leaderboard_doc.py*)
-    case "$STAGED" in
-      *docs/notes/leaderboard.md*) ;;
-      *)
-        echo "pre-commit: leaderboard inputs changed; regenerate and review docs/notes/leaderboard.md explicitly if this change affects published values" >&2
-        ;;
-    esac
-    ;;
-esac
-exit 0
+ROOT="$(git rev-parse --show-toplevel)"
+RELEVANT=0
+
+while IFS= read -r -d '' path; do
+  case "$path" in
+    docs/notes/leaderboard.md|\
+    scripts/analysis/build_leaderboard_doc.py|\
+    scripts/analysis/update_leaderboard.sh|\
+    lora_playground/leaderboard.py|\
+    lora_playground/workloads.py|\
+    lora_playground/loader.py|\
+    lora_playground/manifest.py|\
+    lora_playground/run_cache.py|\
+    lora_playground/run_exclusions.py|\
+    lora_playground/commit_exclusions.py|\
+    lora_playground/dirty_attestations.py|\
+    lora_playground/invariants.py|\
+    lora_playground/execution_scope.py|\
+    lora_playground/optim.py|\
+    lora_playground/optim_config.py|\
+    lora_playground/optim_specs.py|\
+    lora_playground/train.py|\
+    lora_playground/plotting/arms.py|\
+    lora_playground/plotting/dedup.py|\
+    lora_playground/plotting/labels.py|\
+    lora_playground/plotting/loading.py|\
+    lora_playground/plotting/merge.py)
+      RELEVANT=1
+      break
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMRD -z)
+
+if [[ "$RELEVANT" == 0 ]]; then
+  exit 0
+fi
+
+exec "$ROOT/scripts/analysis/update_leaderboard.sh" --from-hook

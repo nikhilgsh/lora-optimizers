@@ -128,7 +128,7 @@ def build_aggregate(perf_matrix: dict, workloads: list) -> str:
     return "\n".join(lines)
 
 
-def render_doc() -> str:
+def render_doc(logs_root: str = LOGS) -> str:
     """Build the full leaderboard markdown from the live logs. Pure (no I/O)."""
     header = [
         "# Optimizer leaderboard — speed-to-AdamW-target",
@@ -164,7 +164,7 @@ def render_doc() -> str:
     # table and the cross-setting aggregate matrix (frac_best_lr per workload).
     sections, perf_matrix, workloads = [], {}, []
     for wl in iter_workloads():
-        runs = workload_runs(wl, logs_root=LOGS)
+        runs = workload_runs(wl, logs_root=logs_root)
         labeled = labeled_completed_runs(runs, canonical_label, horizon=wl.horizon)
         rows, target = leaderboard_rows(labeled, horizon=wl.horizon)
         sections.append(build_section(wl, rows, target))
@@ -177,9 +177,9 @@ def render_doc() -> str:
             + "\n".join(sections) + "\n")
 
 
-def _logs_present() -> bool:
+def _logs_present(logs_root: str = LOGS) -> bool:
     """True if the logs tree exists and holds at least one group dir."""
-    p = Path(LOGS)
+    p = Path(logs_root)
     return p.is_dir() and any(p.iterdir())
 
 
@@ -190,26 +190,41 @@ def main(argv=None):
         help="regenerate in memory and compare to the committed doc; exit 1 on "
              "drift without writing (for staleness detection / CI gating).",
     )
+    ap.add_argument(
+        "--logs-root", default=LOGS,
+        help="logs tree to read (default: this checkout's logs/).",
+    )
+    ap.add_argument(
+        "--output", default=str(OUT),
+        help="generated markdown path (default: docs/notes/leaderboard.md).",
+    )
+    ap.add_argument(
+        "--require-logs", action="store_true",
+        help="fail instead of silently leaving output untouched when logs are absent.",
+    )
     args = ap.parse_args(argv)
+    logs_root = str(Path(args.logs_root).resolve())
+    output = Path(args.output).resolve()
 
-    if not _logs_present():
+    if not _logs_present(logs_root):
         # Clean checkout / machine without data: never blank the doc.
-        print(f"no logs under {LOGS} — leaving {OUT} untouched")
-        return 0
+        print(f"no logs under {logs_root} — leaving {output} untouched")
+        return 2 if args.require_logs else 0
 
-    fresh = render_doc()
+    fresh = render_doc(logs_root)
 
     if args.check:
-        current = OUT.read_text() if OUT.exists() else ""
+        current = output.read_text() if output.exists() else ""
         if fresh != current:
-            print(f"STALE: {OUT} differs from a fresh regeneration — "
-                  f"run `python scripts/analysis/build_leaderboard_doc.py`")
+            print(f"STALE: {output} differs from a fresh regeneration — "
+                  "run `./scripts/analysis/update_leaderboard.sh --stage`")
             return 1
-        print(f"up to date: {OUT}")
+        print(f"up to date: {output}")
         return 0
 
-    OUT.write_text(fresh)
-    print(f"wrote {OUT}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(fresh)
+    print(f"wrote {output}")
     return 0
 
 
