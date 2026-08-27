@@ -2,9 +2,9 @@
 
 Discovery follows populated physical log directories.  ``meta.json`` is read as
 an optional annotation and can contribute issues, but it never decides whether
-a group or run exists.  Parsing temporarily delegates to the existing
-single-file JSONL parser; physical resume segments stay separate until explicit
-lineage validates them.  No loader enrichment, current argparse defaults,
+a group or run exists.  A neutral single-file JSONL parser keeps physical
+resume segments separate until explicit lineage validates them.  No loader
+enrichment, current argparse defaults,
 optimizer registry, deduplication, or exclusion policy is applied.
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
+from .run_parsing import parse_run_file
 from .run_records import RunIssue, RunRecord, freeze_value
 
 
@@ -243,22 +244,19 @@ class RunCatalog:
         if cached is not None:
             return cached
         descriptor = self._descriptor(group_name)
-        # Temporary dependency: use only the existing per-file parser. Calling
-        # load_sweep here would union resume siblings by step before explicit
-        # lineage can prove that they belong together.
-        from .plotting import loading as legacy_loading
-
         records_list: list[RunRecord] = []
         runtime_issues: list[RunIssue] = []
         for index, path in enumerate(_physical_log_files(
             self._logs_root, group_name
         )):
             try:
-                cfg, history = legacy_loading.load_run(path)
+                parsed = parse_run_file(path)
+                cfg = parsed.raw_config()
+                history = parsed.mutable_evals()
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 runtime_issues.append(RunIssue(
                     code="parser_error",
-                    message=f"existing log parser failed: {exc}",
+                    message=f"neutral log parser failed: {exc}",
                     source=f"{group_name}/{path.name}",
                 ))
                 continue
@@ -358,3 +356,88 @@ class RunCatalog:
     ) -> list[tuple[dict, list[dict]]]:
         chosen = self.records if records is None else tuple(records)
         return [record.as_legacy_tuple() for record in chosen]
+
+    def resolve_lineages(
+        self,
+        records: Iterable[RunRecord] | None = None,
+    ) -> tuple[Any, ...]:
+        """Validate and merge only versioned, explicitly linked attempts.
+
+        Historical records remain independent physical records; this method
+        never sends them through filename/step-range resume inference.
+        Versioned records are grouped by their declared checkpoint identity,
+        not directory or task filename.  When ``records`` is a query subset,
+        selecting any segment returns its complete explicitly connected chain.
+        """
+        from .run_lineage import build_run_lineages
+
+        chosen = self.records if records is None else tuple(records)
+        legacy = [record for record in chosen
+                  if "run_schema_version" not in record.raw_config]
+        selected_attempt_ids = {
+            record.raw_config.get("attempt_id")
+            for record in chosen
+            if "run_schema_version" in record.raw_config
+        }
+        if not selected_attempt_ids:
+            return tuple(legacy)
+
+        buckets: dict[str, list[RunRecord]] = {}
+        # Build against the catalog domain, not just the predicate subset, so a
+        # child selected by a physical field can still resolve its declared
+        # parent and a root selected before a group rename keeps its child.
+        seen_attempt_ids: dict[str, str] = {}
+        all_records = self.records
+        for record in all_records:
+            if "run_schema_version" not in record.raw_config:
+                continue
+            attempt_id = record.raw_config.get("attempt_id")
+            checkpoint_identity = record.raw_config.get("checkpoint_identity")
+            if isinstance(attempt_id, str) and attempt_id:
+                previous = seen_attempt_ids.get(attempt_id)
+                if previous is not None and previous != checkpoint_identity:
+                    from .run_lineage import LineageStructureError, LineageIssue
+                    raise LineageStructureError(LineageIssue(
+                        code="duplicate_attempt_id_across_checkpoints",
+                        attempt_id=attempt_id,
+                        parent_attempt_id=None,
+                        details=freeze_value({
+                            "checkpoint_identities": (
+                                previous, checkpoint_identity,
+                            ),
+                        }),
+                    ))
+                seen_attempt_ids[attempt_id] = checkpoint_identity
+            bucket = (
+                checkpoint_identity
+                if isinstance(checkpoint_identity, str)
+                else f"<invalid:{record.physical_id}>"
+            )
+            buckets.setdefault(bucket, []).append(record)
+
+        resolved: list[Any] = list(legacy)
+        for key in sorted(buckets):
+            for lineage in build_run_lineages(buckets[key]):
+                if selected_attempt_ids.intersection(lineage.attempt_ids):
+                    resolved.append(lineage)
+        return tuple(resolved)
+
+    def resolved_legacy_tuples(
+        self,
+        records: Iterable[RunRecord] | None = None,
+    ) -> list[tuple[dict, list[dict]]]:
+        """Plot-compatible copies after explicit-only lineage resolution."""
+        from .run_lineage import MergedRunLineage
+        from .run_records import thaw_value
+
+        out = []
+        for run in self.resolve_lineages(records):
+            if isinstance(run, RunRecord):
+                out.append(run.as_legacy_tuple())
+                continue
+            if not isinstance(run, MergedRunLineage):
+                raise TypeError(f"unexpected resolved run type: {type(run)!r}")
+            cfg = thaw_value(run.cfg)
+            cfg.setdefault("run_id", run.terminal_attempt_id)
+            out.append((cfg, thaw_value(run.history)))
+        return out

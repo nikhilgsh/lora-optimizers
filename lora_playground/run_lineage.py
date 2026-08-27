@@ -86,11 +86,14 @@ def _fail(error_type, code: str, attempt_id=None, parent_attempt_id=None,
 
 def _unpack(run: Any, ordinal: int):
     if isinstance(run, tuple) and len(run) == 2:
-        return run
+        return run[0], run[1], None
     if hasattr(run, "cfg") and hasattr(run, "history"):
-        return run.cfg, run.history
+        return run.cfg, run.history, None
     if hasattr(run, "raw_config") and hasattr(run, "history"):
-        return run.raw_config, run.history
+        semantic_config = getattr(
+            run, "semantic_config", getattr(run, "effective_config", None)
+        )
+        return run.raw_config, run.history, semantic_config
     _fail(LineageStructureError, "invalid_run_shape",
           input_ordinal=ordinal,
           expected=("(cfg, history) or object exposing .cfg/.history or "
@@ -98,23 +101,42 @@ def _unpack(run: Any, ordinal: int):
 
 
 def _segment(run: Any, ordinal: int) -> RunSegment:
-    raw_cfg, raw_history = _unpack(run, ordinal)
+    raw_cfg, raw_history, record_semantic_config = _unpack(run, ordinal)
     if not isinstance(raw_cfg, Mapping):
         _fail(LineageStructureError, "invalid_config", input_ordinal=ordinal)
     cfg = thaw_value(raw_cfg)
     attempt_hint = cfg.get("attempt_id")
-    required = (
-        "attempt_id", "resume_parent_attempt_id", "checkpoint_identity",
-        "semantic_config", "semantic_revisions",
-    )
+    required = ("attempt_id", "checkpoint_identity", "semantic_revisions")
+    if record_semantic_config is None:
+        required += ("semantic_config",)
     missing = [field for field in required if field not in cfg]
     if missing:
         _fail(LineageStructureError, "missing_field", attempt_hint,
               missing_fields=tuple(missing), input_ordinal=ordinal)
 
     attempt_id = cfg["attempt_id"]
-    parent_id = cfg["resume_parent_attempt_id"]
-    checkpoint = cfg["checkpoint_identity"]
+    # For versioned runs, only the parser-preserved ``resume`` event proves
+    # that a checkpoint was loaded.  A launch may always carry --resume_from
+    # while the directory is empty, so launcher intent cannot create a parent
+    # edge.  Legacy synthetic inputs keep accepting the direct cfg field for
+    # compatibility with the pure lineage API and its historical tests.
+    resume_event = cfg.get("_resume")
+    if isinstance(resume_event, Mapping):
+        parent_id = resume_event.get("resume_parent_attempt_id")
+        checkpoint = resume_event.get(
+            "checkpoint_identity", cfg["checkpoint_identity"]
+        )
+    elif "run_schema_version" in cfg:
+        parent_id = None
+        checkpoint = cfg["checkpoint_identity"]
+    else:
+        parent_id = cfg.get("resume_parent_attempt_id")
+        checkpoint = cfg["checkpoint_identity"]
+    semantic_config = (
+        record_semantic_config
+        if record_semantic_config is not None
+        else cfg["semantic_config"]
+    )
     if not isinstance(attempt_id, str) or not attempt_id:
         _fail(LineageStructureError, "invalid_attempt_id",
               value=attempt_id, input_ordinal=ordinal)
@@ -124,7 +146,7 @@ def _segment(run: Any, ordinal: int) -> RunSegment:
     if not isinstance(checkpoint, str) or not checkpoint:
         _fail(LineageStructureError, "invalid_checkpoint_identity", attempt_id,
               parent_id, value=checkpoint)
-    if not isinstance(cfg["semantic_config"], Mapping):
+    if not isinstance(semantic_config, Mapping):
         _fail(LineageStructureError, "invalid_semantic_config", attempt_id,
               parent_id)
     if not isinstance(cfg["semantic_revisions"], Mapping):
@@ -145,7 +167,7 @@ def _segment(run: Any, ordinal: int) -> RunSegment:
         attempt_id=attempt_id,
         resume_parent_attempt_id=parent_id,
         checkpoint_identity=checkpoint,
-        semantic_config=freeze_value(cfg["semantic_config"]),
+        semantic_config=freeze_value(semantic_config),
         semantic_revisions=freeze_value(cfg["semantic_revisions"]),
         cfg=freeze_value(cfg),
         history=tuple(events),

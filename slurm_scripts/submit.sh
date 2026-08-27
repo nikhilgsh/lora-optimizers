@@ -10,37 +10,14 @@
 # To exclude an old sweep from analysis, delete its log dir.
 set -euo pipefail
 
-# ── Manifest contract refusal ────────────────────────────────────────────────
-# Refuse to submit without scope tags. The notebook + tests (lora_playground/
-# manifest.py, tests/test_manifests.py) require every populated log group to
-# carry a non-empty scope; enforcing it at submission means "untagged sweep"
-# becomes impossible by construction rather than by reminder.
+# Scope is useful audit metadata, but it is not part of run identity and may
+# not block a valid experiment. Missing scope remains visible in catalog audit
+# issues and strict manifest checks.
 if [[ -z "${SWEEP_SCOPE:-}" ]]; then
-    echo "ERROR: SWEEP_SCOPE not set. Set scope tags before submitting:" >&2
-    echo "  SWEEP_SCOPE=\"ext_compare,polar_family\" \\" >&2
-    echo "  SWEEP_PURPOSE=\"E2: AdaMuon-faithful + polar-product geometry\" \\" >&2
-    echo "  ./slurm_scripts/submit.sh params/<sweep>.json <group> <n_gpus> [...]" >&2
-    echo "" >&2
-    echo "Known scopes: ext_compare, muon_family, all_optimizers (r=16 only)," >&2
-    echo "              r_extension (r != 16), loraplus_family, svd_oracle," >&2
-    echo "              diagnostics, lin_scaled_investigation, polar_family," >&2
-    echo "              winner_rerun, pilot, legacy," >&2
-    echo "              tight_chord_paper, phase_L, longhorizon_1b," >&2
-    echo "              repack_baseline, lr_extension," >&2
-    echo "              phase_L_robustness, dataset_robustness, model_robustness" >&2
-    echo "" >&2
-    echo "See lora_playground/manifest.py for the full schema." >&2
-    exit 1
+    echo "WARN: SWEEP_SCOPE is empty; recording an unscoped audit annotation." >&2
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-
-# ── Dirty-tree refusal ───────────────────────────────────────────────────────
-# Refuse if load-bearing code (lora_playground/*.py, train_lora.py, sweep/
-# sbatch shell wrappers) has uncommitted changes. Without this guard, the
-# manifest records git_dirty=true and the loader silently excludes the runs.
-# Override with FORCE_DIRTY=1.
-REPO_DIR="${REPO_DIR}" "${REPO_DIR}/scripts/check_clean_tree.sh"
 
 # --emit-pending: do everything EXCEPT the final `sbatch` — write a self-contained
 # pending sbatch to slurm_pending/ instead (for when org policy bars running sbatch).
@@ -104,33 +81,16 @@ python ~/hp_scaling/generate_task_file.py \
 # ── Checkpoint injection ─────────────────────────────────────────────────────
 # Each generated task line looks like:
 #   sweep.sh <args...> > /…/logs/log_NN.out 2> /…/logs/log_NN.err
-# Inject a per-task `CHECKPOINT_DIR=<RUN_DIR>/checkpoints/task_NN` env-var
-# prefix so the train.py invocation under the sweep wrapper picks up
-# --checkpoint_dir + --resume_from (idempotent: first run finds empty dir,
-# resume picks the latest ckpt_step{N}). Opt out with NO_CHECKPOINTS=1.
+# Inject per-task checkpoint plumbing plus a fresh explicit attempt ID. The
+# checkpoint identity is stable across resubmissions of the same task; the
+# attempt ID is new on every invocation. train.py records the actual parent
+# only after a checkpoint load succeeds, so an empty first-run directory never
+# masquerades as a continuation. Opt out with NO_CHECKPOINTS=1.
 if [[ -z "${NO_CHECKPOINTS:-}" ]]; then
-    python - <<PYEOF
-import re
-from pathlib import Path
-tasks_path = Path("${RUN_DIR}/tasks")
-ckpt_root = Path("${RUN_DIR}/checkpoints")
-ckpt_root.mkdir(parents=True, exist_ok=True)
-out_lines = []
-for line in tasks_path.read_text().splitlines():
-    if not line.strip():
-        out_lines.append(line)
-        continue
-    m = re.search(r"log_(\d+)\.out", line)
-    if not m:
-        out_lines.append(line)
-        continue
-    nn = m.group(1)
-    task_ckpt = ckpt_root / f"task_{nn}"
-    # Prepend per-task env var so it scopes to this command only. disBatch
-    # runs each line via /bin/sh -c, which honors leading KEY=value tokens.
-    out_lines.append(f"CHECKPOINT_DIR={task_ckpt} {line}")
-tasks_path.write_text("\n".join(out_lines) + "\n")
-PYEOF
+    python "${REPO_DIR}/lora_playground/submission.py" inject-task-metadata \
+        --tasks "${RUN_DIR}/tasks" \
+        --checkpoint-root "${RUN_DIR}/checkpoints" \
+        --group "${GROUP}"
 fi
 
 # ── Snapshot dir injection (opt-in via SNAPSHOTS=1) ──────────────────────────
@@ -166,8 +126,8 @@ fi
 # If a `log_NN.out` already exists from a prior wall-killed run on the same
 # group, rotate it to `log_NN.out.resume_K` (K = next available) before
 # disBatch creates fresh log_NN.out files. The loader's load_sweep merges
-# events across log_NN.out + log_NN.out.resume_K siblings, so the partial
-# trajectory survives the resubmit.
+# physical segments remain separate. New runs carry explicit attempt/checkpoint
+# metadata so the lineage layer can validate and merge only a real resume.
 python - <<PYEOF
 import re
 from pathlib import Path
@@ -193,6 +153,41 @@ cat "${RUN_DIR}/tasks"
 echo ""
 
 export TASK_FILE="${RUN_DIR}/tasks"
+
+# ── Optional manifest annotation ─────────────────────────────────────────────
+# Write a complete annotation BEFORE submission so a fast-starting task never
+# races a half-written/missing meta.json. Physical logs remain discoverable if
+# this annotation is later lost; it is audit metadata, not an admission gate.
+GIT_COMMIT=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY="false"
+if ! git -C "${REPO_DIR}" diff-index --quiet HEAD 2>/dev/null; then
+    GIT_DIRTY="true"
+fi
+SUBMITTED_AT=$(date -Iseconds)
+
+write_submission_manifest() {
+    local job_id="$1"
+    local dirty_args=()
+    if [[ "${GIT_DIRTY}" == "true" ]]; then
+        dirty_args+=(--git-dirty)
+    fi
+    PYTHONPATH="${REPO_DIR}" python -m lora_playground.manifest write-submission \
+        --path "${RUN_DIR}/meta.json" \
+        --group "${GROUP}" \
+        --submitted-at "${SUBMITTED_AT}" \
+        --slurm-job-id "${job_id}" \
+        --n-gpus "${N_GPUS}" \
+        --params-file "$(basename "${PARAM_FILE}")" \
+        --sweep-script "${SWEEP_SCRIPT}" \
+        --sbatch-script "${SBATCH_SCRIPT}" \
+        --git-commit "${GIT_COMMIT}" \
+        "${dirty_args[@]}" \
+        --scope "${SWEEP_SCOPE:-}" \
+        --purpose "${SWEEP_PURPOSE:-}" \
+        --data-pipeline-version "${SWEEP_DATA_PIPELINE_VERSION:-packed_v1}"
+}
+
+write_submission_manifest "pending"
 
 if [[ -n "${EMIT_PENDING:-}" ]]; then
     # ── Emit a self-contained pending sbatch instead of calling sbatch ───────
@@ -274,45 +269,6 @@ else
     SLURM_JOB_ID=$(echo "${SBATCH_OUT}" | awk '{print $NF}')
 fi
 
-# ── Manifest contract ─────────────────────────────────────────────────────────
-# Every sweep submission writes meta.json next to the run logs. The notebook
-# (and any other downstream analysis) consumes manifests, never raw directory
-# listings. Untagged sweeps still produce a manifest — analysis code surfaces
-# them as warnings rather than silent dropouts.
-GIT_COMMIT=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo "unknown")
-GIT_DIRTY="false"
-if ! git -C "${REPO_DIR}" diff-index --quiet HEAD 2>/dev/null; then
-    GIT_DIRTY="true"
+if [[ "${SLURM_JOB_ID}" != "pending" ]]; then
+    write_submission_manifest "${SLURM_JOB_ID}"
 fi
-SUBMITTED_AT=$(date -Iseconds)
-
-python - <<PYEOF
-import json, os, sys
-from pathlib import Path
-
-scope_raw = os.environ.get("SWEEP_SCOPE", "").strip()
-scope = [s.strip() for s in scope_raw.split(",") if s.strip()] if scope_raw else []
-manifest = {
-    "group": "${GROUP}",
-    "submitted_at": "${SUBMITTED_AT}",
-    "slurm_job_id": "${SLURM_JOB_ID}",
-    "n_gpus": int("${N_GPUS}"),
-    "params_file": "$(basename "${PARAM_FILE}")",
-    "sweep_script": "${SWEEP_SCRIPT}",
-    "sbatch_script": "${SBATCH_SCRIPT}",
-    "git_commit": "${GIT_COMMIT}",
-    "git_dirty": ("${GIT_DIRTY}" == "true"),
-    "scope": scope,
-    "purpose": os.environ.get("SWEEP_PURPOSE", ""),
-    # Default-tag the data pipeline version. Per-run cfg events carry the
-    # authoritative value (set by --data_pipeline_version on train.py); this is just
-    # a sweep-level hint for analysis filters. Override via env var if a
-    # sweep deliberately mixes versions.
-    "data_pipeline_version": os.environ.get(
-        "SWEEP_DATA_PIPELINE_VERSION", "packed_v1",
-    ),
-}
-out = Path("${RUN_DIR}") / "meta.json"
-out.write_text(json.dumps(manifest, indent=2) + "\n")
-print(f"Wrote manifest: {out}")
-PYEOF

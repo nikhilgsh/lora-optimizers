@@ -1,8 +1,9 @@
 """Pure construction of plot-ready optimizer comparisons from loaded runs.
 
 This module owns no I/O and imports no rendering code at module import time.
-Callers provide the existing ``(cfg, history)`` tuples returned by
-``loader.load_runs``.  The builder then performs the one semantic reduction
+Callers normally provide immutable catalog records returned by
+``loader.load_records``; existing ``(cfg, history)`` tuples remain accepted as
+a compatibility input.  The builder then performs the one semantic reduction
 that every plot needs:
 
 * assign every run to exactly one variant;
@@ -27,6 +28,7 @@ from .leaderboard import is_final, mean_over_seeds
 RunConfig = Mapping[str, Any]
 History = Sequence[Mapping[str, Any]]
 Run = tuple[RunConfig, History]
+RunInput = Run | Any
 VariantPredicate = Mapping[str, Any] | Callable[[RunConfig], bool]
 
 
@@ -107,6 +109,31 @@ class AmbiguousVariantError(ValueError):
         )
 
 
+class SemanticRevisionConflictError(ValueError):
+    """One displayed variant contains multiple recorded semantics."""
+
+    def __init__(
+        self,
+        variant_id: str,
+        signatures: Mapping,
+        lr: float | None = None,
+    ):
+        self.variant_id = variant_id
+        self.lr = lr
+        self.signatures = MappingProxyType(dict(signatures))
+        location = (
+            f"at lr={lr:g}" if lr is not None else "across selected LRs"
+        )
+        super().__init__(
+            f"variant {variant_id!r} {location} mixes semantic revisions: "
+            + "; ".join(
+                f"{signature!r} -> {list(run_ids)!r}"
+                for signature, run_ids in self.signatures.items()
+            )
+            + ". Split these into distinct VariantSpec.id values."
+        )
+
+
 @dataclass(frozen=True)
 class _AssignedRun:
     cfg: dict[str, Any]
@@ -114,6 +141,67 @@ class _AssignedRun:
     last: dict[str, Any]
     last_step: int
     run_id: str
+
+
+def _comparison_input(run: RunInput, index: int) -> tuple[RunConfig, History]:
+    """Normalize catalog records/lineages and legacy tuples at one boundary.
+
+    Catalog objects contribute only their logged effective configuration plus
+    the few physical/status fields comparison needs.  This deliberately avoids
+    reintroducing the raw config as a second source of semantic defaults.
+    """
+    if isinstance(run, tuple) and len(run) == 2:
+        return run
+
+    if hasattr(run, "effective_config") and hasattr(run, "history"):
+        cfg = dict(run.effective_config)
+        raw = getattr(run, "raw_config", {})
+        revisions = raw.get("semantic_revisions", {}) if isinstance(
+            raw, Mapping
+        ) else {}
+        if isinstance(revisions, Mapping):
+            cfg.setdefault("optimizer_impl_revision",
+                           revisions.get("optimizer_impl"))
+            cfg.setdefault("measurement_semantics_revision",
+                           revisions.get("measurement"))
+            cfg.setdefault("data_pipeline_version",
+                           revisions.get("data_pipeline"))
+        cfg["run_id"] = str(getattr(run, "physical_id", f"run[{index}]"))
+        group = getattr(run, "group", None)
+        filename = getattr(run, "log_filename", None)
+        if group is not None:
+            cfg["log_group"] = group
+        if filename is not None:
+            cfg["_log_filename"] = filename
+        if isinstance(raw, Mapping) and raw.get("_aborted") is not None:
+            cfg["_aborted"] = raw["_aborted"]
+        return cfg, run.history
+
+    if (hasattr(run, "semantic_config") and hasattr(run, "cfg")
+            and hasattr(run, "history")):
+        cfg = dict(run.semantic_config)
+        raw = run.cfg
+        revisions = getattr(run, "semantic_revisions", {})
+        if isinstance(revisions, Mapping):
+            cfg.setdefault("optimizer_impl_revision",
+                           revisions.get("optimizer_impl"))
+            cfg.setdefault("measurement_semantics_revision",
+                           revisions.get("measurement"))
+            cfg.setdefault("data_pipeline_version",
+                           revisions.get("data_pipeline"))
+        cfg["run_id"] = str(
+            getattr(run, "terminal_attempt_id", f"run[{index}]")
+        )
+        if isinstance(raw, Mapping):
+            for field in ("log_group", "_log_filename", "_aborted"):
+                if raw.get(field) is not None:
+                    cfg[field] = raw[field]
+        return cfg, run.history
+
+    raise TypeError(
+        "runs must contain (cfg, history) tuples, RunRecord objects, or "
+        "MergedRunLineage objects"
+    )
 
 
 def _run_id(cfg: RunConfig, index: int) -> str:
@@ -200,6 +288,34 @@ def _aggregate_completed(
     )
 
 
+def _semantic_signature(cfg: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    """Scalar revision identity visible to both new and compatibility paths."""
+    return (
+        cfg.get("optimizer_impl_revision"),
+        cfg.get("measurement_semantics_revision"),
+        cfg.get("data_pipeline_version"),
+    )
+
+
+def _require_one_semantic_signature(
+    variant_id: str,
+    members: Sequence[_AssignedRun],
+    lr: float | None = None,
+) -> None:
+    signatures: dict[tuple[Any, Any, Any], list[str]] = {}
+    for member in members:
+        signatures.setdefault(_semantic_signature(member.cfg), []).append(
+            member.run_id
+        )
+    if len(signatures) > 1:
+        raise SemanticRevisionConflictError(
+            variant_id,
+            {signature: tuple(run_ids)
+             for signature, run_ids in signatures.items()},
+            lr=lr,
+        )
+
+
 def _partial_curve(
     variant_id: str,
     lr: float,
@@ -219,7 +335,7 @@ def _partial_curve(
 
 
 def build_comparison(
-    runs: Sequence[Run],
+    runs: Sequence[RunInput],
     variants: Sequence[VariantSpec],
     horizon: int,
     completion_slack: int = 300,
@@ -253,12 +369,13 @@ def build_comparison(
         raise ValueError(f"duplicate VariantSpec.id value(s): {duplicates}")
 
     completed_members: dict[tuple[str, float], list[_AssignedRun]] = {}
-    partial_members: dict[tuple[str, float], _AssignedRun] = {}
+    partial_members: dict[tuple[str, float], list[_AssignedRun]] = {}
     unmatched: list[str] = []
     empty_history: list[str] = []
     ambiguities: list[tuple[str, tuple[str, ...]]] = []
 
-    for index, (raw_cfg, raw_history) in enumerate(runs):
+    for index, raw_run in enumerate(runs):
+        raw_cfg, raw_history = _comparison_input(raw_run, index)
         run_id = _run_id(raw_cfg, index)
         matches = tuple(spec.id for spec in specs if _matches(spec, raw_cfg))
         if not matches:
@@ -295,12 +412,25 @@ def build_comparison(
         if is_final(last_step, horizon, completion_slack) or aborted:
             completed_members.setdefault(key, []).append(member)
         else:
-            previous = partial_members.get(key)
-            if previous is None or member.last_step > previous.last_step:
-                partial_members[key] = member
+            partial_members.setdefault(key, []).append(member)
 
     if ambiguities:
         raise AmbiguousVariantError(ambiguities)
+
+    # One displayed optimizer curve cannot splice implementation or
+    # measurement semantics across learning rates. This is deliberately wider
+    # than per-(variant, LR) replicate validation: best-LR selection itself is
+    # a cross-LR comparison.
+    for variant_id in ids:
+        semantic_members = [
+            member
+            for (member_variant, _lr), members in (
+                list(completed_members.items()) + list(partial_members.items())
+            )
+            if member_variant == variant_id
+            for member in members
+        ]
+        _require_one_semantic_signature(variant_id, semantic_members)
 
     completed: dict[str, dict[float, AggregatedCurve]] = {
         spec.id: {} for spec in specs
@@ -312,7 +442,8 @@ def build_comparison(
         completed[variant_id][lr] = _aggregate_completed(
             variant_id, lr, members
         )
-    for (variant_id, lr), member in partial_members.items():
+    for (variant_id, lr), members in partial_members.items():
+        member = max(members, key=lambda candidate: candidate.last_step)
         partials[variant_id][lr] = _partial_curve(variant_id, lr, member)
 
     best_completed = MappingProxyType({

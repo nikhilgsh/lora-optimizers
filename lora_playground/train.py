@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -7,6 +6,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import torch
@@ -36,7 +36,6 @@ from .distributed import (
     init_distributed,
     is_main,
 )
-from .manifest import build_manifest
 from .mfu import (
     compute_mfu,
     count_total_params,
@@ -51,6 +50,12 @@ from .optim import (
     optimizer_config_dict,
     optimizer_effective_config,
 )
+from .run_schema import (
+    ATTEMPT_ID_ENV,
+    CHECKPOINT_IDENTITY_ENV,
+    attempt_metadata,
+    semantic_revisions,
+)
 from .training_kernel import (
     batch_to_device,
     build_peft_model,
@@ -61,6 +66,31 @@ from .training_kernel import (
 
 TRAINING_MODES = ("lora", "svd_step_oracle", "svd_cumulative_oracle", "galore", "ucv")
 DATA_PIPELINE_VERSIONS = ("packed_v1.1", "packed_v1", "unpacked_v0")
+
+
+def _current_attempt_metadata(args) -> dict:
+    """Resolve one execution attempt without inferring a resume parent.
+
+    Submission tooling supplies stable per-task checkpoint identity and a new
+    attempt ID on every launch. Direct invocations still get explicit IDs: a
+    checkpoint/resume path is a stable local lineage namespace, while a run
+    that cannot resume uses its own attempt as the namespace. The actual
+    parent is filled only after ``load_checkpoint`` succeeds and is emitted in
+    the resume event, never guessed here from the presence of ``--resume_from``.
+    """
+    attempt_id = os.environ.get(ATTEMPT_ID_ENV) or f"local-{uuid.uuid4().hex}"
+    checkpoint_identity = os.environ.get(CHECKPOINT_IDENTITY_ENV)
+    if not checkpoint_identity:
+        checkpoint_path = args.checkpoint_dir or args.resume_from
+        checkpoint_identity = (
+            f"local-checkpoint:{Path(checkpoint_path).resolve()}"
+            if checkpoint_path
+            else f"nonresumable:{attempt_id}"
+        )
+    return attempt_metadata(
+        attempt_id=attempt_id,
+        checkpoint_identity=checkpoint_identity,
+    )
 
 
 def _resume_replays_original_dataloader(args) -> bool:
@@ -302,131 +332,20 @@ def git_commit():
     return result.stdout.strip()
 
 
-def _git_diff_text() -> str | None:
-    """Return `git diff HEAD --no-ext-diff` text, or None if git is unavailable
-    or the call fails. Covers staged + unstaged tracked-file changes; untracked
-    files are reported separately via `_git_untracked_files`.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "diff", "HEAD", "--no-ext-diff"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-    except Exception:
-        return None
-    return result.stdout
-
-
-def _git_untracked_files() -> list[str]:
-    """Sorted list of untracked file paths reported by git. Empty list when
-    clean or git is unavailable. Excludes ignored files (no -i flag).
-    """
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-    except Exception:
-        return []
-    files = [line for line in result.stdout.splitlines() if line]
-    files.sort()
-    return files
-
-
 def git_dirty_state() -> dict:
-    """Return {git_dirty, git_diff_sha, git_untracked_files} for the cfg event.
-
-    git_dirty is True iff tracked-file diffs are non-empty OR untracked files
-    exist. git_diff_sha is the sha256 of `git diff HEAD --no-ext-diff` (None
-    when there are no tracked diffs). git_untracked_files is the sorted path
-    list (NOT contents); attestation refuses to vouch for runs with non-empty
-    untracked because content addressing wouldn't be sound.
-    """
-    diff_text = _git_diff_text()
-    diff_sha = None
-    if diff_text:
-        diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
-    untracked = _git_untracked_files()
-    dirty = bool(diff_text) or bool(untracked)
-    return {
-        "git_dirty": dirty,
-        "git_diff_sha": diff_sha,
-        "git_untracked_files": untracked,
-    }
-
-
-def ensure_group_manifest(checkpoint_dir, commit, data_pipeline_version):
-    """Write a stub `run_info/meta.json` if this run's log group has none.
-
-    Returns a note to log when one was written or could not be, else "".
-
-    `slurm_scripts/submit.sh` writes the manifest unconditionally, so the hole is
-    not a missing write — it is a job that never went through submit.sh (a
-    hand-built task file dropped straight into `slurm_pending/`). Such a run
-    completes normally and is then invisible to every analysis: `loader`'s
-    `load_manifests(strict=False)` plus `live_manifests_newest_first` drop the
-    whole group before any `where` predicate runs. Measured on
-    `logs/e2_precond_r16_postfix_xl`, whose 4 completed 9000-step runs had to be
-    recovered by hand from `sacct` and log parsing.
-
-    This runs in train.py because that is the ONE place every launch path passes
-    through, and it can identify its group: `tests/test_sweep_scripts_checkpoint`
-    requires all 120 wrappers under `scripts/sweep/` to pass `--checkpoint_dir`,
-    which is `logs/<group>/run_info*/checkpoints/task_N`.
-
-    A stub is written rather than the run being aborted: killing a queued GPU job
-    over metadata is worse than the omission. `scope` is deliberately left EMPTY
-    — train.py cannot know the sweep's scientific intent, and an invented tag
-    would load the runs under a false label, which is worse than not loading
-    them. Empty scope keeps `warn_untagged` flagging the group, so `load_runs`
-    now says so out loud, and the fix is adding one tag rather than
-    reconstructing ten fields.
-    """
-    if not checkpoint_dir:
-        return ""
-    parts = Path(checkpoint_dir).resolve().parts
-    # The LAST "logs" segment, so an ancestor directory that happens to be
-    # named logs/ does not win over the real one. Layout:
-    #   .../logs/<group>/run_info*/checkpoints/task_N
-    logs_at = [n for n, p in enumerate(parts) if p == "logs"]
-    if not logs_at:
-        return ""
-    i = logs_at[-1]
-    if i + 2 >= len(parts) or not parts[i + 2].startswith("run_info"):
-        return ""
-    group = parts[i + 1]
-    run_info = Path(*parts[: i + 3])
-    meta = run_info / "meta.json"
-    if meta.exists():
-        return ""
-    stub = build_manifest(
-        group=group,
-        submitted_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        slurm_job_id=os.environ.get("SLURM_JOB_ID", "unknown"),
-        git_commit=commit,
-        scope=[],                     # empty on purpose — see the docstring above
-        purpose=("STUB written by train.py: this group had no meta.json, so it "
-                 "was launched outside slurm_scripts/submit.sh. Add a scope tag "
-                 "to make these runs visible to load_runs."),
-        data_pipeline_version=data_pipeline_version,
-        _stub=True,
-    )
+    """Record plain ``git status --short`` output as audit provenance."""
     try:
-        run_info.mkdir(parents=True, exist_ok=True)
-        meta.write_text(json.dumps(stub, indent=2) + "\n")
-    except OSError as e:
-        return (f"group {group!r} has no run_info/meta.json and the stub "
-                f"could not be written ({e}); its runs will be invisible to "
-                f"load_runs until one exists.")
-    return (f"group {group!r} had no run_info/meta.json — wrote a STUB with "
-            f"empty scope. Its runs stay invisible to load_runs until a scope tag "
-            f"is added to {meta}.")
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        return {"git_dirty": None, "git_status": []}
+    status = [line for line in result.stdout.splitlines() if line]
+    return {"git_dirty": bool(status), "git_status": status}
 
 
 def log_event(payload):
@@ -788,8 +707,8 @@ def make_parser():
                         help="How many pairs the default evenly-spaced stride selects. "
                              "Ignored when --dump_pre_polar_pairs is given.")
     parser.add_argument("--cw_metric_init", default="1e-12",
-                        help="Init of the CurvatureWhitenLoRA diagonal metric EMAs D_in (=Q) "
-                             "and D_out (=P). DEFAULT '1e-12': a FLOAT ε → P₀=Q₀=εI, the "
+                        help="Init of the CurvatureWhitenLoRA diagonal metric EMAs Q and P. "
+                             "DEFAULT '1e-12': a FLOAT ε → P₀=Q₀=εI, the "
                              "branch-free prior-free init (ε ≪ the ~1e-7 curvature scale, so no "
                              "_rdinv step-one branch and no warmup bias; validated to reproduce "
                              "zero-init to ≤5e-4 across all 4 models). Other values are ablations: "
@@ -1480,48 +1399,26 @@ def main():
         )
 
     dirty_state = git_dirty_state()
-    # Phase 4: content-hash-based execution provenance. Scoped to the AST
-    # closure starting at train_lora.py; insensitive to notebook/loader/docs
-    # edits. The whole-tree `dirty_state` above stays in the cfg event as
-    # audit-only.
-    from .execution_scope import (
-        compute_execution_provenance,
-        get_or_bootstrap_snapshot,
-        project_root as _project_root,
+    _attempt = _current_attempt_metadata(args)
+    _semantic_revisions = semantic_revisions(
+        optimizer,
+        {"data_pipeline_version": args.data_pipeline_version},
     )
-    _snapshot, _snapshot_sha = get_or_bootstrap_snapshot()
-    _exec_provenance = compute_execution_provenance(
-        entry_path=_project_root() / "train_lora.py",
-        project_root=_project_root(),
-        snapshot=_snapshot,
-        snapshot_sha=_snapshot_sha,
-        git_commit=git_commit(),
-    )
-    _manifest_note = ensure_group_manifest(args.checkpoint_dir, git_commit(),
-                                           args.data_pipeline_version)
-    if _manifest_note:
-        log_event({"event": "warning", "kind": "missing_sweep_manifest",
-                   "detail": _manifest_note})
-        print(f"[train] {_manifest_note}", file=sys.stderr, flush=True)
     log_event(
         {
             "event": "config",
+            **_attempt,
+            "semantic_revisions": _semantic_revisions,
+            # Scalar projections keep semantic revisions visible to existing
+            # dedup/series identity code, which deliberately ignores nested
+            # config blocks. The bounded dict above remains the lineage API.
+            "optimizer_impl_revision": _semantic_revisions["optimizer_impl"],
+            "measurement_semantics_revision": _semantic_revisions["measurement"],
             "command": " ".join(shlex.quote(arg) for arg in sys.argv),
             "git_commit": git_commit(),
-            # Phase 1 fields — kept as AUDIT-ONLY metadata after Phase 4.
-            # These represent whole-tree dirtiness, which is too coarse to
-            # drive exclusion (notebook edits flag dirty here). The loader
-            # consults `execution_source_*` below for the load-bearing
-            # decision instead.
+            # Recorded provenance, never an admission or attestation gate.
             "git_dirty": dirty_state["git_dirty"],
-            "git_diff_sha": dirty_state["git_diff_sha"],
-            "git_untracked_files": dirty_state["git_untracked_files"],
-            # Phase 4: load-bearing execution-scope provenance.
-            "execution_source_sha": _exec_provenance["execution_source_sha"],
-            "execution_source_paths": _exec_provenance["execution_source_paths"],
-            "execution_source_dirty": _exec_provenance["execution_source_dirty"],
-            "execution_env": _exec_provenance["execution_env"],
-            "execution_env_sha": _exec_provenance["execution_env_sha"],
+            "git_status": dirty_state["git_status"],
             "device": str(device),
             "training_mode": args.training_mode,
             "optimizer": effective_optimizer,
@@ -1694,9 +1591,30 @@ def main():
             scheduler=scheduler,
         )
         if resume_state is not None:
+            loaded_checkpoint_identity = resume_state.get("checkpoint_identity")
+            if (loaded_checkpoint_identity is not None
+                    and loaded_checkpoint_identity != _attempt["checkpoint_identity"]):
+                raise ValueError(
+                    "checkpoint lineage mismatch: current attempt declares "
+                    f"{_attempt['checkpoint_identity']!r}, but loaded checkpoint "
+                    f"declares {loaded_checkpoint_identity!r}"
+                )
+            resume_parent_attempt_id = resume_state.get("attempt_id")
+            if resume_parent_attempt_id == _attempt["attempt_id"]:
+                raise ValueError(
+                    "checkpoint attempt metadata would create a self-parent "
+                    f"lineage for {_attempt['attempt_id']!r}"
+                )
             resume_segment = resume_state["resume_segment"] + 1
             log_event({
                 "event": "resume",
+                "attempt_id": _attempt["attempt_id"],
+                "resume_parent_attempt_id": resume_parent_attempt_id,
+                "checkpoint_identity": _attempt["checkpoint_identity"],
+                "checkpoint_metadata_explicit": bool(
+                    resume_parent_attempt_id is not None
+                    and loaded_checkpoint_identity is not None
+                ),
                 "resumed_from_step": resume_state["step"],
                 "resumed_from_total_tokens": resume_state["total_tokens"],
                 "resume_segment": resume_segment,
@@ -1986,6 +1904,8 @@ def main():
                     cfg_snapshot={"command": " ".join(
                         shlex.quote(a) for a in sys.argv
                     )},
+                    attempt_id=_attempt["attempt_id"],
+                    checkpoint_identity=_attempt["checkpoint_identity"],
                 )
                 log_event({
                     "event": "snapshot_saved",
@@ -2028,6 +1948,8 @@ def main():
                     cfg_snapshot={"command": " ".join(
                         shlex.quote(a) for a in sys.argv
                     )},
+                    attempt_id=_attempt["attempt_id"],
+                    checkpoint_identity=_attempt["checkpoint_identity"],
                 )
                 if args.checkpoint_keep_last and args.checkpoint_keep_last > 0:
                     prune_checkpoints(

@@ -7,6 +7,7 @@ import pytest
 
 from lora_playground.comparison import (
     AmbiguousVariantError,
+    SemanticRevisionConflictError,
     VariantSpec,
     build_comparison,
 )
@@ -216,3 +217,111 @@ def test_duplicate_variant_ids_and_invalid_bounds_raise():
         build_comparison([], [], horizon=0)
     with pytest.raises(ValueError, match="completion_slack"):
         build_comparison([], [], horizon=1000, completion_slack=-1)
+
+
+def test_same_variant_lr_cannot_average_distinct_semantic_revisions():
+    runs = [
+        _run(
+            "adamw", 1e-3, [(1000, 0.8)], run_id="rev1", seed=0,
+            optimizer_impl_revision=1,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+        _run(
+            "adamw", 1e-3, [(1000, 0.7)], run_id="rev2", seed=1,
+            optimizer_impl_revision=2,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+    ]
+
+    with pytest.raises(SemanticRevisionConflictError) as exc_info:
+        build_comparison(
+            runs,
+            [VariantSpec("adam", "AdamW", {"optimizer": "adamw"})],
+            horizon=1000,
+            completion_slack=0,
+        )
+
+    assert exc_info.value.variant_id == "adam"
+    assert set(exc_info.value.signatures.values()) == {("rev1",), ("rev2",)}
+
+
+def test_one_variant_cannot_splice_semantic_revisions_across_lrs():
+    runs = [
+        _run(
+            "adamw", 1e-3, [(1000, 0.8)], run_id="rev1",
+            optimizer_impl_revision=1,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+        _run(
+            "adamw", 3e-3, [(1000, 0.7)], run_id="rev2",
+            optimizer_impl_revision=2,
+            measurement_semantics_revision=1,
+            data_pipeline_version="packed_v1.1",
+        ),
+    ]
+
+    with pytest.raises(SemanticRevisionConflictError, match="selected LRs"):
+        build_comparison(
+            runs,
+            [VariantSpec("adam", "AdamW", {"optimizer": "adamw"})],
+            horizon=1000,
+            completion_slack=0,
+        )
+
+
+def test_build_comparison_accepts_catalog_records_and_explicit_lineages():
+    from lora_playground.run_lineage import build_run_lineages
+    from lora_playground.run_records import RunRecord
+
+    def record(attempt_id, step, *, parent=None, filename="log_0.out"):
+        raw = {
+            "event": "config",
+            "run_schema_version": 1,
+            "attempt_id": attempt_id,
+            "resume_parent_attempt_id": None,
+            "checkpoint_identity": "group/task_0",
+            "semantic_revisions": {
+                "optimizer_impl": 1,
+                "data_pipeline": "packed_v1.1",
+                "measurement": 1,
+            },
+            "optimizer_impl_revision": 1,
+            "measurement_semantics_revision": 1,
+            "optimizer": "adamw",
+            "lr": 1e-3,
+            "data_pipeline_version": "packed_v1.1",
+            "_log_filename": filename,
+        }
+        if parent is not None:
+            raw["_resume"] = {
+                "resume_parent_attempt_id": parent,
+                "checkpoint_identity": "group/task_0",
+            }
+        return RunRecord.from_parsed(
+            raw,
+            [{"event": "eval", "step": step,
+              "eval_loss": 1.0 - step / 10_000, "lr": 1e-3}],
+            group="group",
+            manifest=None,
+        )
+
+    root = record("attempt-a", 400, filename="log_0.out.resume_0")
+    child = record("attempt-b", 1000, parent="attempt-a")
+    lineage = build_run_lineages([root, child])[0]
+    variants = [VariantSpec("adamw", "AdamW", {"optimizer": "adamw"})]
+
+    from_record = build_comparison(
+        [child], variants, horizon=1000, completion_slack=0
+    )
+    from_lineage = build_comparison(
+        [lineage], variants, horizon=1000, completion_slack=0
+    )
+
+    assert from_record.best_completed["adamw"].run_ids == (
+        "group/log_0.out",
+    )
+    assert from_lineage.best_completed["adamw"].run_ids == ("attempt-b",)
+    assert from_lineage.best_completed["adamw"].last_step == 1000

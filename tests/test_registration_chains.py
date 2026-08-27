@@ -193,37 +193,13 @@ def test_known_default_true_booleans_are_still_default_true(flag):
     )
 
 
-# ── the manifest schema, written in two places ──────────────────────────────
+# ── the manifest schema, written once ───────────────────────────────────────
 
 
 def test_submit_sh_writes_every_manifest_field():
-    """`slurm_scripts/submit.sh` builds the manifest dict in inline python, and
-    `train.py`'s stub writer builds it via `manifest.build_manifest`. The field
-    set therefore lives in two places, and a field added to `MANIFEST_FIELDS`
-    without touching submit.sh would make every real sweep's manifest silently
-    lack it while the stub writer has it.
-
-    Asserted rather than refactored: submit.sh runs before the conda env is
-    necessarily active, and rewiring the production submission path to import
-    lora_playground is a bigger risk than a drift guard. (Verified importable
-    under system python3 with no torch, so the refactor is possible later.)
-    """
-    from lora_playground.manifest import MANIFEST_FIELDS
+    """Submission delegates schema construction to the manifest module."""
 
     submit = (ROOT / "slurm_scripts" / "submit.sh").read_text()
-    # The manifest literal, bounded so an unrelated dict elsewhere cannot match.
-    start = submit.index("manifest = {")
-    body = submit[start:submit.index("out = Path(", start)]
-    written = set(re.findall(r'^\s*"([a-z_]+)":', body, re.M))
-    missing = sorted(set(MANIFEST_FIELDS) - written)
-    assert not missing, (
-        f"slurm_scripts/submit.sh does not write manifest field(s) {missing}; "
-        f"every real sweep's meta.json would lack them while train.py's stub has "
-        f"them. Add them to the dict in submit.sh's manifest block."
-    )
-    extra = sorted(written - set(MANIFEST_FIELDS))
-    assert not extra, (
-        f"slurm_scripts/submit.sh writes field(s) {extra} that "
-        f"lora_playground.manifest.MANIFEST_FIELDS does not declare, so nothing "
-        f"reading manifests knows about them. Add to MANIFEST_FIELDS or drop them."
-    )
+    assert "python -m lora_playground.manifest write-submission" in submit
+    assert "manifest = {" not in submit
+    assert "write_submission_manifest \"pending\"" in submit

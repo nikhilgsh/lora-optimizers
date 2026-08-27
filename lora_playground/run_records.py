@@ -13,13 +13,38 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 
+# Cfg fields that describe physical execution/provenance rather than the
+# algorithm or workload. This neutral boundary is the source of truth for
+# catalog records, legacy loader dedup, and plotting collision checks.
+RUNTIME_FIELDS: frozenset[str] = frozenset({
+    "git_commit", "command", "log_group",
+    "git_dirty", "git_status", "git_diff_sha", "git_untracked_files",
+    "execution_source_sha", "execution_source_paths",
+    "execution_source_dirty", "execution_env", "execution_env_sha",
+    "run_id", "_log_filename",
+    "run_schema_version", "attempt_id", "resume_parent_attempt_id",
+    "checkpoint_identity", "_resume",
+    "wandb_project", "wandb_run_name",
+    "device", "tf32", "no_tf32",
+    "log_basic_diagnostics", "log_heavy_diagnostics",
+    "log_optim_diagnostics", "no-log_optim_diagnostics",
+    "optim_diagnostics_every", "diagnostics",
+    "profile_steps", "profile_dir", "_optim_steps",
+    "train_file", "eval_file",
+    "checkpoint_dir", "resume_from", "checkpoint_every",
+    "checkpoint_keep_last", "picard_iters_override",
+})
+
+
 _AUDIT_FIELDS = frozenset({
     "event", "command", "run_id", "log_group", "_log_filename",
-    "git_commit", "git_dirty", "git_diff_sha", "git_untracked_files",
+    "run_schema_version", "attempt_id", "resume_parent_attempt_id",
+    "checkpoint_identity", "semantic_revisions",
+    "git_commit", "git_dirty", "git_status", "git_diff_sha", "git_untracked_files",
     "execution_source_sha", "execution_source_paths",
     "execution_source_dirty", "execution_env", "execution_env_sha",
     "device", "wandb_project", "wandb_run_name",
-})
+}) | RUNTIME_FIELDS
 
 _LOGGED_CONFIG_BLOCKS = (
     "_cli_args",
@@ -111,6 +136,14 @@ def _logged_effective_config(
     effective: dict[str, Any] = {}
     issues: list[RunIssue] = []
 
+    def is_semantic_field(key: Any) -> bool:
+        return (
+            isinstance(key, str)
+            and key not in _AUDIT_FIELDS
+            and key not in _LOGGED_CONFIG_BLOCKS
+            and not key.startswith("_")
+        )
+
     for block_name in _LOGGED_CONFIG_BLOCKS[:2]:
         block = raw_config.get(block_name)
         if block is None:
@@ -122,18 +155,19 @@ def _logged_effective_config(
                 source=source,
             ))
             continue
-        effective.update(block)
+        effective.update({key: value for key, value in block.items()
+                          if is_semantic_field(key)})
 
     for key, value in raw_config.items():
-        if (key in _AUDIT_FIELDS or key in _LOGGED_CONFIG_BLOCKS
-                or key.startswith("_")):
+        if not is_semantic_field(key):
             continue
         effective[key] = value
 
     block = raw_config.get("optimizer_effective")
     if block is not None:
         if isinstance(block, Mapping):
-            effective.update(block)
+            effective.update({key: value for key, value in block.items()
+                              if is_semantic_field(key)})
         else:
             issues.append(RunIssue(
                 code="invalid_config_block",

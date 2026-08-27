@@ -16,7 +16,6 @@ latency-bound, and ``os.scandir``/``os.stat`` release the GIL).
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
@@ -25,6 +24,8 @@ from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, NamedTuple
+
+from ..run_parsing import clear_run_file_cache, parse_run_file
 
 
 @lru_cache(maxsize=None)
@@ -95,9 +96,6 @@ def parse_cli_command(command: str) -> dict:
     return out
 
 
-_LOAD_RUN_CACHE: dict[str, tuple[tuple[int, int], dict | None, list[dict]]] = {}
-
-
 def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
     """Parse a single task .out file → (config dict, list of eval dicts).
 
@@ -107,47 +105,13 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
     ``RUNTIME_FIELDS`` re-exported from this package list it, so dedup
     ignores it.
 
-    Result is cached by (path, mtime, size); an in-flight file's growing size
-    invalidates the entry so re-parses pick up new events. Returned cfg is
-    shallow-copied per call because merge_runs mutates ``cfg["log_group"]``
-    and downstream enrichment writes ``cfg["_derived"]``; the cached cfg
-    must stay clean across callers.
+    Neutral parsing is cached by (path, mtime, size); this wrapper then applies
+    the historical reconstruction required by compatibility consumers.
     """
-    path_str = str(log_path)
-    try:
-        st = log_path.stat()
-        sig = (st.st_mtime_ns, st.st_size)
-    except OSError:
-        sig = None
-    cached = _LOAD_RUN_CACHE.get(path_str) if sig is not None else None
-    if cached is not None and cached[0] == sig:
-        cfg, evs = cached[1], cached[2]
-        return (None if cfg is None else dict(cfg)), evs
-
-    config, evals, optim_steps = None, [], []
-    init_override_mode = None
-    abort_event = None
-    for line in Path(log_path).read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        ev = obj.get("event")
-        if ev == "config":
-            config = obj
-        elif ev == "eval":
-            evals.append(obj)
-        elif ev == "optim_step":
-            optim_steps.append(obj)
-        elif ev == "lora_init_override":
-            init_override_mode = obj.get("mode")
-        elif isinstance(ev, str) and ev.startswith("abort_on_"):
-            abort_event = obj
+    parsed = parse_run_file(log_path)
+    config = parsed.raw_config()
+    evals = parsed.mutable_evals()
     if config is not None and evals:
-        config["_log_filename"] = log_path.name
         config.setdefault("lr", evals[0]["lr"])
         cmd = config.get("command", "")
         lp = parse_flag(cmd, "--lora_plus_multiplier")
@@ -157,6 +121,10 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         config.setdefault("precond_method", parse_flag(cmd, "--precond_method"))
         if config.get("lora_init_b") is None:
             cli_init = parse_flag(cmd, "--lora_init_b")
+            init_override = parsed.init_override_event
+            init_override_mode = (
+                init_override.get("mode") if init_override is not None else None
+            )
             config["lora_init_b"] = cli_init or init_override_mode or "zero"
 
         # Generic CLI backfill — every flag in the launched command line
@@ -171,16 +139,7 @@ def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
         if cmd:
             for k, v in parse_cli_command(cmd).items():
                 config.setdefault(k, v)
-        config["_optim_steps"] = optim_steps
-        if abort_event is not None:
-            # Surface aborted runs to downstream analysis. Plotting primitives
-            # (e.g. compare_variants_figure) treat aborted runs as completed-
-            # but-diverged so they appear in the leaderboard table at their
-            # last eval, instead of silently vanishing as partial runs.
-            config["_aborted"] = abort_event
-    if sig is not None:
-        _LOAD_RUN_CACHE[path_str] = (sig, config, evals)
-    return (None if config is None else dict(config)), evals
+    return config, evals
 
 
 _LOAD_SWEEP_CACHE: dict[tuple[str, str], tuple[tuple, list[tuple[dict, list[dict]]]]] = {}
@@ -439,7 +398,7 @@ def clear_run_caches() -> None:
     has moved. Cross-session pickle cache (run_cache.py) keys differently
     and refreshes via its own staleness check; this is the in-process tier.
     """
-    _LOAD_RUN_CACHE.clear()
+    clear_run_file_cache()
     _LOAD_SWEEP_CACHE.clear()
     if _SCAN_EPOCH is not None:
         _SCAN_EPOCH.clear()

@@ -185,3 +185,43 @@ def test_lineage_accepts_the_catalog_run_record_contract():
 
     assert lineage.attempt_ids == ("attempt-a",)
     assert [event["step"] for event in lineage.history] == [100, 200]
+
+
+def test_versioned_catalog_records_use_actual_resume_not_launcher_intent():
+    shared = {
+        "run_schema_version": 2,
+        "checkpoint_identity": "group/task-0",
+        "semantic_revisions": {
+            "optimizer_impl": 1,
+            "data_pipeline": "packed_v1",
+            "measurement": 1,
+        },
+        "optimizer": "adamw",
+        "lr": 1e-3,
+    }
+    root = RunRecord.from_parsed(
+        {**shared, "attempt_id": "attempt-a",
+         # A launcher may provide this candidate even when no checkpoint exists.
+         "resume_parent_attempt_id": "not-actual"},
+        [{"step": 100, "eval_loss": 0.8}],
+        group="group-a",
+        manifest=None,
+    )
+    child = RunRecord.from_parsed(
+        {**shared, "attempt_id": "attempt-b",
+         "resume_parent_attempt_id": "wrong-launcher-candidate",
+         "_resume": {
+             "resume_parent_attempt_id": "attempt-a",
+             "checkpoint_identity": "group/task-0",
+         }},
+        [{"step": 200, "eval_loss": 0.7}],
+        group="group-a",
+        manifest=None,
+    )
+
+    lineages = build_run_lineages([root, child])
+
+    assert len(lineages) == 1
+    assert lineages[0].attempt_ids == ("attempt-a", "attempt-b")
+    assert "attempt_id" not in lineages[0].semantic_config
+    assert "semantic_revisions" not in lineages[0].semantic_config

@@ -11,59 +11,10 @@ from __future__ import annotations
 
 from typing import Callable, Iterable
 
+from ..run_records import RUNTIME_FIELDS
 from .dedup import _hashable
 from .loading import has_runs, iter_sweep_raw, prescan_groups, scan_epoch
 from .style import DIVERGE_THRESHOLD
-
-
-# Cfg fields that legitimately differ between otherwise-identical runs (run
-# provenance, instrumentation knobs, file paths). Canonical definition;
-# ``loader.RUNTIME_FIELDS`` re-exports this name so dedup-key construction
-# and the hidden-axis collision check share one source of truth (drift
-# between two parallel lists previously caused silent collisions on
-# ``_optim_steps`` differences — see git log for 2026-05-06 fix).
-RUNTIME_FIELDS: frozenset[str] = frozenset({
-    "git_commit", "command", "log_group",
-    # Provenance fields (Phase 1 cfg-event enrichment, 2026-05-14): dirty-tree
-    # state captured at submission. Loader's invariants/dirty_attestations
-    # layers consume them but dedup must not split otherwise-identical runs.
-    "git_dirty", "git_diff_sha", "git_untracked_files",
-    # Phase 4 (2026-05-14): execution-scope provenance. Drive loader exclusion
-    # decisions but don't define the series.
-    "execution_source_sha", "execution_source_paths",
-    "execution_source_dirty", "execution_env", "execution_env_sha",
-    # Loader-assigned per-run identifier; see loader._enrich_cfg.
-    "run_id", "_log_filename",
-    "wandb_project", "wandb_run_name",
-    "device", "tf32", "no_tf32",
-    # Diagnostic toggles (none affect optimizer math). Both current names
-    # and legacy aliases from before the 2026-05-12 diagnostics refactor.
-    "log_basic_diagnostics", "log_heavy_diagnostics",
-    "log_optim_diagnostics", "no-log_optim_diagnostics",
-    "optim_diagnostics_every",
-    "diagnostics",   # canonical block (Phase 1, 2026-05-14)
-    "profile_steps", "profile_dir",
-    "_optim_steps",
-    "train_file", "eval_file",
-    # Per-task checkpoint plumbing injected by submit.sh / the disbatch template
-    # (one dir per task). Two runs of the SAME config on different hardware (or a
-    # resubmit) differ only in these paths; they are the same series, so dedup
-    # must not split on them. Otherwise a cross-hardware re-run (e.g. the same
-    # lr-sweep on both `_blackwell` and `_gpuxl_h200`) trips the label-collision
-    # guard despite being one algorithm.
-    # `checkpoint_every` / `checkpoint_keep_last` belong here for the same
-    # reason as the paths: how OFTEN a run writes a checkpoint, and how many it
-    # retains, cannot change the loss it produces. Splitting on them made a
-    # re-run that merely added `CHECKPOINT_EVERY=1000` a distinct series from
-    # its predecessor, and `assert_label_discriminates` then failed the whole
-    # panel with `differing fields: checkpoint_every=[1000, None]` -- eight
-    # collisions across `factorwise, b2=0.999` and `one-sided, b2=0.999` at
-    # r=16, on runs that are otherwise the same configuration.
-    "checkpoint_dir", "resume_from", "checkpoint_every", "checkpoint_keep_last",
-    # CLI override flags whose canonical resolved value is promoted by
-    # `_enrich_cfg` to a top-level scalar (e.g. `effective_picard_iters`).
-    "picard_iters_override",
-})
 
 
 def _hidden_axis_diffs(cfg_a: dict, cfg_b: dict) -> list[tuple]:

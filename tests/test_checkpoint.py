@@ -230,6 +230,37 @@ def test_save_load_round_trip(tmp_path, optimizer_type):
     _equal_state(src_opt, dst_opt)
 
 
+def test_checkpoint_round_trips_explicit_attempt_lineage_metadata(tmp_path):
+    model = _PeftLikeWrapper(_ToyModel())
+    optimizer = _make_optimizer(model.inner, "adam-lin-lora")
+    ckpt = ckpt_dir_for_step(tmp_path, step=1)
+
+    save_checkpoint(
+        ckpt,
+        bare_model=model,
+        optimizer=optimizer,
+        scheduler=None,
+        step=1,
+        total_tokens=42,
+        resume_segment=0,
+        cfg_snapshot={"command": "test"},
+        attempt_id="attempt-a",
+        checkpoint_identity="sweep/task-0",
+    )
+    fresh_model = _PeftLikeWrapper(_ToyModel())
+    fresh_optimizer = _make_optimizer(fresh_model.inner, "adam-lin-lora")
+
+    info = load_checkpoint(
+        ckpt,
+        bare_model=fresh_model,
+        optimizer=fresh_optimizer,
+    )
+
+    assert info["checkpoint_meta_schema_version"] == 2
+    assert info["attempt_id"] == "attempt-a"
+    assert info["checkpoint_identity"] == "sweep/task-0"
+
+
 def test_save_load_round_trips_adaptive_kappa_transient_group_state(tmp_path):
     """Replay checkpoints must preserve adaptive-kappa warm starts.
 

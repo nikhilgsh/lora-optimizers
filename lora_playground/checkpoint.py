@@ -24,6 +24,9 @@ import numpy as np
 import torch
 
 
+CHECKPOINT_META_SCHEMA_VERSION = 2
+
+
 # pair_state: persist EVERY entry. Each optimizer's pair_state schema is its
 # own (Adam moments, per-pair step counters, side-channel raw-grad moments
 # when diagnostics are on, etc.); listing keys here breaks any optimizer that
@@ -242,6 +245,8 @@ def save_checkpoint(
     total_tokens: int,
     resume_segment: int,
     cfg_snapshot: dict,
+    attempt_id: str | None = None,
+    checkpoint_identity: str | None = None,
 ) -> None:
     """Atomically save a step-continuous checkpoint.
 
@@ -278,10 +283,17 @@ def save_checkpoint(
 
     # 3. Sidecar JSON with scalar metadata.
     meta = {
+        "checkpoint_meta_schema_version": CHECKPOINT_META_SCHEMA_VERSION,
         "step": int(step),
         "total_tokens": int(total_tokens),
         "resume_segment": int(resume_segment),
         "cfg_snapshot": cfg_snapshot,
+        # These two fields make a later resume relationship observable.  They
+        # are plain identifiers, not content attestations: load returns what
+        # the checkpoint recorded and the run schema decides whether the
+        # parent/lineage declaration is complete enough to merge.
+        "attempt_id": attempt_id,
+        "checkpoint_identity": checkpoint_identity,
     }
     with open(_meta_path(tmp_dir), "w") as fh:
         json.dump(meta, fh, indent=2, sort_keys=True)
@@ -320,8 +332,11 @@ def load_checkpoint(
     scheduler=None,
     restore_rng: bool = False,
 ) -> Optional[dict]:
-    """Resume in place. Returns `{step, total_tokens, resume_segment, ckpt_path}`
-    or None if no usable checkpoint is present at the given path."""
+    """Resume in place and return the checkpoint's recorded metadata.
+
+    Old checkpoints remain loadable: explicit attempt/lineage fields are
+    returned as ``None`` when their sidecar predates schema version 2.
+    """
     ckpt_dir = _resolve_ckpt_dir(ckpt_dir_or_parent)
     if ckpt_dir is None:
         return None
@@ -413,6 +428,11 @@ def load_checkpoint(
         "total_tokens": int(meta["total_tokens"]),
         "resume_segment": int(meta["resume_segment"]),
         "ckpt_path": str(ckpt_dir),
+        "checkpoint_meta_schema_version": meta.get(
+            "checkpoint_meta_schema_version", 1
+        ),
+        "attempt_id": meta.get("attempt_id"),
+        "checkpoint_identity": meta.get("checkpoint_identity"),
         "rng_state": rng_state,
         "rng_state_present": rng_state is not None,
         "rng_restore_status": rng_restore_status,

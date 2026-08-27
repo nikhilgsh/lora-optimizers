@@ -45,6 +45,31 @@ def _default_logs_root() -> str:
     return str(Path(__file__).resolve().parent.parent / "logs")
 
 
+def load_records(
+    *,
+    equals: dict[str, Any] | None = None,
+    one_of: dict[str, Iterable[Any]] | None = None,
+    logs_root: str | None = None,
+    resolve_lineages: bool = True,
+):
+    """Primary run-loading API: catalog query plus explicit lineage.
+
+    Predicates are intentionally limited to scalar equality and explicit
+    membership. The returned objects are immutable ``RunRecord`` instances or,
+    when enabled, validated ``MergedRunLineage`` objects. Historical logs stay
+    as independent records; only versioned attempts with an actual recorded
+    resume edge are merged.
+
+    ``load_runs`` below remains the mutable-tuple compatibility adapter for
+    existing notebooks while consumers migrate to this API.
+    """
+    from .run_catalog import RunCatalog
+
+    catalog = RunCatalog.discover(logs_root or _default_logs_root())
+    records = catalog.query(equals=equals, one_of=one_of)
+    return catalog.resolve_lineages(records) if resolve_lineages else records
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -1031,7 +1056,13 @@ def load_runs(
     allow_axes: tuple[str, ...] = (),
     quiet: bool = True,
 ) -> list[tuple[dict, list[dict]]]:
-    """Load all runs whose cfg matches every predicate in ``where``.
+    """Compatibility API returning mutable ``(cfg, history)`` tuples.
+
+    New code should use :func:`load_records`. This adapter retains legacy
+    current-default reconstruction, historical exclusion registries, and
+    callable predicates until the existing notebooks are migrated.
+
+    Load all runs whose cfg matches every predicate in ``where``.
 
     Predicate types per field (see ``_matches``):
       - literal:               ``cfg[field] == value``
@@ -1108,39 +1139,8 @@ def _load_runs_inner(
 ) -> list[tuple[dict, list[dict]]]:
     """Body of :func:`load_runs`, run inside a `scan_epoch`."""
     manifests = load_manifests(logs_root, strict=False)
-    # `strict=False` is right here -- one untagged sweep must not make every
-    # analysis call raise -- but it used to be SILENT, and that silence cost a
-    # wrong reading. `live_manifests_newest_first` drops groups that are corrupt
-    # or untagged, so a completed sweep whose `run_info/meta.json` was never
-    # written (a job launched outside slurm_scripts/submit.sh, which is what
-    # writes it) disappears from `groups` before any `where` predicate runs. Its
-    # runs are then absent from every panel and every leaderboard row, and the
-    # figure looks exactly like one where the arm has no data yet. Measured: the
-    # 4 completed runs of logs/e2_precond_r16_postfix_xl were invisible this way,
-    # and restoring them moved the r16 factorwise arm from 1.10x to 1.14x.
-    #
-    # So warn, naming the groups. `tests/test_manifests.py` already asserts this
-    # condition, but nothing runs it -- there is no CI, no pre-commit config, and
-    # no hook that invokes pytest -- so the test cannot be the only line of
-    # defence.
-    #
-    # NOT gated on `quiet`, which suppresses the chatty per-call "excluded N
-    # run(s)" print at line 1359. This is a correctness signal, in the same class
-    # as the cross-commit warning below, and it fires only when a group really is
-    # being dropped. `warnings.warn` under the default filter shows an identical
-    # message once per session rather than once per cell, so it does not spam a
-    # notebook that calls load_runs from every panel.
-    untagged = warn_untagged(manifests)
-    if untagged:
-        warnings.warn(
-            f"load_runs is ignoring {len(untagged)} populated log group(s) with no "
-            f"manifest or an empty scope, so their runs are absent from every "
-            f"result: {', '.join(sorted(untagged))}. Write "
-            f"logs/<group>/run_info/meta.json (schema in lora_playground/"
-            f"manifest.py) or re-submit via slurm_scripts/submit.sh with "
-            f"SWEEP_SCOPE set.",
-            stacklevel=3,
-        )
+    # Ordering remains a legacy newest-wins tiebreak. Manifest health is audit
+    # metadata and never filters the physical populated groups returned here.
     groups = [m["group"] for m in live_manifests_newest_first(manifests)]
     filter_fn = _build_filter(where)
     pre_filter, group_filter = _build_pushdown(where, cfg_postprocess)
@@ -1162,7 +1162,6 @@ def _load_runs_inner(
     # longest trajectory) picks one canonical run per seed.
     from .invariants import evaluate_invariants
     from .run_exclusions import is_run_excluded
-    from .dirty_attestations import lookup_attestation
     from .commit_exclusions import (
         is_commit_excluded as _new_is_commit_excluded,
         is_buggy_eps_rel as _new_is_buggy_eps_rel,
@@ -1176,22 +1175,12 @@ def _load_runs_inner(
     _EXAMPLES_PER_REASON = 3
 
     def _evaluate_new_layer(cfg: dict) -> tuple[bool, str | None]:
-        """Code-correctness + run-quality exclusion. Three schema branches
-        determine how dirty trees are resolved:
+        """Apply explicit known-bad run/code exclusions only.
 
-          Phase 4 cfgs (have `execution_source_sha`):
-            content-hash auto-resolve. Searches descendants of cfg.git_commit
-            for a commit C whose tree-restricted-to-execution_source_paths
-            matches the recorded execution_source_sha. If found, invariants
-            run against C. If not, exclude with reason.
-
-          Phase 1 cfgs (have `git_dirty` / `git_diff_sha`, no execution_source_sha):
-            legacy attestation policy. Dirty runs need a dirty_attestations
-            entry keyed by (group, log_filename, diff_sha). Untracked files
-            in this schema auto-exclude unless attested.
-
-          Pre-Phase 1 cfgs (neither):
-            treat as clean at cfg.git_commit.
+        Commit, dirty-tree, source-hash, environment, and host values remain
+        available as recorded audit provenance. Loading does not attest them or
+        search Git history for a matching tree. New runs use explicit semantic
+        revisions; narrow historical correctness exclusions remain below.
         """
         # Per-run quality exclusion always takes precedence.
         log_group = cfg.get("log_group")
@@ -1208,76 +1197,16 @@ def _load_runs_inner(
         if excluded:
             return True, reason
 
-        # ── Schema dispatch for dirty-tree resolution ────────────────────
-        if cfg.get("execution_source_sha") is not None:
-            # Phase 4 schema: content-hash auto-resolve.
-            if not cfg.get("execution_source_dirty"):
-                effective_commit = cfg.get("git_commit")
-            else:
-                from .execution_scope import auto_resolve_by_content, project_root
-                resolved = auto_resolve_by_content(
-                    base_commit=cfg["git_commit"],
-                    paths=cfg["execution_source_paths"],
-                    target_source_sha=cfg["execution_source_sha"],
-                    project_root=project_root(),
-                )
-                if resolved is None:
-                    # Phase 4 auto-resolve failed. Fall through to Phase-1
-                    # manual attestation: a human can vouch that the dirty
-                    # diff is non-load-bearing at runtime (e.g. opt-in CLI
-                    # flags not invoked by this sweep), keyed by (group,
-                    # log_filename, git_diff_sha). Without this fallback,
-                    # Phase-4 runs are stuck whenever the at-submission tree
-                    # is never committed — which is the common case for
-                    # untracked-file dirt that gets cleaned up later.
-                    attestation = lookup_attestation(
-                        log_group, log_filename, cfg.get("git_diff_sha"),
-                    )
-                    if attestation is None:
-                        return True, (
-                            "execution source hash not found in descendant "
-                            "commits within search bounds; either commit your "
-                            "at-submission state, or add a dirty_attestation"
-                        )
-                    effective_commit = attestation.treat_as_commit
-                else:
-                    effective_commit = resolved
-        elif cfg.get("git_dirty"):
-            # Phase 1 schema: legacy attestation policy. NOTE: per the
-            # Phase-4 policy revision (treat untracked files as audit-only,
-            # not load-bearing), the legacy auto-exclude on untracked files
-            # is removed for consistency. Attestation against
-            # (group, log_filename, diff_sha) drives the resolution.
-            # Attestation lookup also handles "manual relabel": entries
-            # with null git_diff_sha match Phase-2-backfilled runs that have
-            # no diff_sha — a human asserts the effective commit explicitly.
-            attestation = lookup_attestation(
-                log_group, log_filename, cfg.get("git_diff_sha"),
-            )
-            if attestation is not None:
-                effective_commit = attestation.treat_as_commit
-            elif cfg.get("git_diff_sha") is None:
-                # Legacy-dirty, no attestation: accept at face value
-                # (we have no information to do better).
-                effective_commit = cfg.get("git_commit")
-            else:
-                return True, "unattested dirty tree"
-        else:
-            effective_commit = cfg.get("git_commit")
-
         # Code-correctness invariants.
         excluded, name, inv_reason = evaluate_invariants(
-            cfg, effective_commit, _is_ancestor,
+            cfg, cfg.get("git_commit"), _is_ancestor,
         )
         if excluded:
             return True, f"invariant {name}: {inv_reason}"
         return False, None
 
-    # Apply the new exclusion layer (invariants + run_exclusions +
-    # dirty_attestations + commit_exclusions). The Phase-3 dual-output mode
-    # against the legacy Python registries is removed now that the
-    # disagreement set has been reviewed; the JSON commit_exclusions
-    # reproduces every legacy entry's effect by construction.
+    # Apply explicit run/commit exclusions and historical correctness
+    # invariants. Provenance is reported separately and never gates loading.
     _user_filter = filter_fn
     # Evidence for the where-key validation below: which of the caller's
     # where-keys exist on SOME candidate cfg ("does this field exist at all, or
@@ -1293,13 +1222,8 @@ def _load_runs_inner(
     )
     _n_candidates = 0
     def _wrapped_filter(cfg: dict) -> bool:
-        # Cheap user predicate FIRST. `_evaluate_new_layer` can shell out to git
-        # for dirty-tree content-hash resolution (~10s over a full multi-hundred
-        # group pool, dominated by in-flight runs); paying that for runs the
-        # caller's `where` rejects anyway was the bulk of cold-load latency.
-        # Result set is unchanged — (not excluded) AND (user match) is the same
-        # set either order; only the exclusion diagnostic now counts just the
-        # where-matching runs, which is the relevant population for the query.
+        # Cheap user predicate first so explicit historical-invariant checks run
+        # only on the query's candidate population.
         if _user_filter is not None and not _user_filter(cfg):
             return False
         excluded, reason = _evaluate_new_layer(cfg)

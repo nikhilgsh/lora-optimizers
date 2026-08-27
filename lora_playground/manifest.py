@@ -1,7 +1,9 @@
-"""Sweep manifest helpers.
+"""Optional sweep-manifest annotations and audit helpers.
 
 Every sweep submitted via ``slurm_scripts/submit.sh`` writes a ``meta.json``
-into ``logs/<group>/run_info/``. This module reads those manifests.
+into ``logs/<group>/run_info/``. Physical populated log groups remain
+discoverable when this annotation is missing or malformed; ``strict=True`` is
+an explicit audit mode, not an admission policy.
 
 Schema (written by submit.sh):
 
@@ -38,11 +40,17 @@ no scope strings. To remove an old sweep from analysis, delete its log dir.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping
 
-from .plotting import RUNTIME_FIELDS, has_runs, parallel_map, prescan_groups
+from .run_records import RUNTIME_FIELDS
 
 
 # Phase 3 deletion (2026-05-14): EXCLUDED_COMMITS, EXCLUDED_GROUPS,
@@ -91,7 +99,7 @@ SERIES_AXIS_FIELDS: frozenset[str] = frozenset({
 
 
 class UntaggedSweepError(RuntimeError):
-    """A populated log group has no manifest or empty scope.
+    """An explicit manifest audit found a missing/malformed annotation.
 
     Fix:
       1. New sweep that bypassed submit.sh — re-run via
@@ -100,8 +108,8 @@ class UntaggedSweepError(RuntimeError):
          ``manifest.py``.
       2. Old log dir restored without metadata — re-derive scope and
          drop a meta.json next to the run logs.
-    For ad-hoc exploratory work, ``load_manifests(strict=False)`` opts
-    out of the check.
+    Ordinary discovery uses ``load_manifests(strict=False)`` and keeps every
+    populated group; strict mode exists for CI/audit callers only.
     """
 
 
@@ -141,7 +149,88 @@ def build_manifest(**fields) -> dict:
     return out
 
 
+def write_manifest_atomic(
+    path: str | os.PathLike[str],
+    manifest: Mapping[str, Any],
+) -> Path:
+    """Atomically replace one ``meta.json`` with a complete JSON object.
+
+    The payload is serialized before the destination is touched, then written
+    and fsynced in the destination directory before ``os.replace``.  A failed
+    serialization or write therefore leaves any prior manifest intact.  This
+    is the writer entry point submission code can adopt without duplicating an
+    inline schema or exposing readers to a half-written JSON file.
+    """
+    if not isinstance(manifest, Mapping):
+        raise TypeError("manifest must be a mapping")
+    payload = json.dumps(dict(manifest), sort_keys=True, indent=2) + "\n"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp",
+        dir=str(destination.parent),
+    )
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            mode = destination.stat().st_mode & 0o777
+        except OSError:
+            mode = 0o644
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, destination)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    # A same-process reader should not need to wait for a signature comparison
+    # to notice the write (particularly on coarse-mtime filesystems).
+    _LOAD_MANIFESTS_CACHE.clear()
+    return destination
+
+
+def write_submission_manifest(
+    path: str | os.PathLike[str],
+    *,
+    group: str,
+    submitted_at: str,
+    slurm_job_id: str,
+    n_gpus: int,
+    params_file: str,
+    sweep_script: str,
+    sbatch_script: str,
+    git_commit: str,
+    git_dirty: bool,
+    scope: str | list[str] | tuple[str, ...],
+    purpose: str,
+    data_pipeline_version: str,
+) -> Path:
+    """Build and atomically write the canonical submission annotation."""
+    if isinstance(scope, str):
+        scope = [part.strip() for part in scope.split(",") if part.strip()]
+    manifest = build_manifest(
+        group=group,
+        submitted_at=submitted_at,
+        slurm_job_id=slurm_job_id,
+        n_gpus=int(n_gpus),
+        params_file=params_file,
+        sweep_script=sweep_script,
+        sbatch_script=sbatch_script,
+        git_commit=git_commit,
+        git_dirty=bool(git_dirty),
+        scope=list(scope),
+        purpose=purpose,
+        data_pipeline_version=data_pipeline_version,
+    )
+    return write_manifest_atomic(path, manifest)
+
+
 _LOAD_MANIFESTS_CACHE: dict[tuple[str, bool], tuple[tuple, list[dict]]] = {}
+_TASK_FILE_RE = re.compile(r"^log_(\d+)\.out(?:\.resume_\d+)?$")
 
 
 def _has_scope_tag(scope) -> bool:
@@ -172,6 +261,41 @@ def _groups_with_run_info(logs_root: str) -> list[str]:
             if os.path.isdir(os.path.join(logs_root, g, "run_info"))]
 
 
+def _has_runs(group: str, logs_root: str) -> bool:
+    """Whether the physical group contains a populated task log.
+
+    Kept local so manifest discovery does not import plotting.loading merely to
+    answer a filesystem question.
+    """
+    log_dir = os.path.join(logs_root, group, "run_info", "logs")
+    try:
+        entries = os.scandir(log_dir)
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        return False
+    with entries:
+        for entry in entries:
+            if not _TASK_FILE_RE.match(entry.name):
+                continue
+            try:
+                if entry.is_file() and entry.stat().st_size > 0:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _parallel_map(fn, items: list[str]):
+    """Small metadata-only parallel map with a serial failure fallback."""
+    if len(items) < 2:
+        return [fn(item) for item in items]
+    try:
+        with ThreadPoolExecutor(max_workers=min(8, len(items)),
+                                thread_name_prefix="manifest-stat") as pool:
+            return list(pool.map(fn, items))
+    except RuntimeError:
+        return [fn(item) for item in items]
+
+
 def _meta_stats(logs_root: str, groups: list[str]
                 ) -> list[tuple[str, int, int]]:
     """``(group, meta.json mtime_ns, size)`` per group, missing file → (0, 0)."""
@@ -182,17 +306,19 @@ def _meta_stats(logs_root: str, groups: list[str]
             return (group, 0, 0)
         return (group, st.st_mtime_ns, st.st_size)
 
-    return parallel_map(one, groups)
+    return _parallel_map(one, groups)
 
 
-def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict]:
-    """Return one manifest dict per sweep that has both a ``meta.json`` and
-    at least one populated run output. Manifests without runs are skipped
-    silently.
+def load_manifests(logs_root: str = "../logs", strict: bool = False) -> list[dict]:
+    """Return one annotation record per populated physical log group.
 
-    With ``strict=True`` (default), raises ``UntaggedSweepError`` if any
+    Groups without run output are skipped. Missing, corrupt, non-object, or
+    empty-scope manifests are represented by flagged stub dictionaries and are
+    never silently omitted.
+
+    With explicit ``strict=True``, raises ``UntaggedSweepError`` if any
     populated log dir lacks a manifest, has corrupt JSON, or empty scope.
-    With ``strict=False``, those groups are returned with stub manifests
+    The ordinary ``strict=False`` path returns those groups with stub manifests
     flagged (`_untagged`, `_corrupt`, `_empty_scope`) so the caller can
     decide.
 
@@ -227,20 +353,18 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
             # path.  A new top-level group still invalidates via root_mtime.
             populated = {m["group"] for m in cached[1]}
             previously_empty = [g for g in groups if g not in populated]
-            prescan_groups(previously_empty, logs_root)
-            if not any(has_runs(g, logs_root) for g in previously_empty):
+            if not any(_has_runs(g, logs_root) for g in previously_empty):
                 return [dict(m) for m in cached[1]]
     except OSError:
         sig = None
         cache_key = None
         groups = _groups_with_run_info(logs_root)
 
-    prescan_groups(groups, logs_root)
     manifests: list[dict] = []
     bad: list[tuple[str, str]] = []  # (group, reason)
     for group in groups:
         run_info = root / group / "run_info"
-        if not has_runs(group, logs_root):
+        if not _has_runs(group, logs_root):
             continue
         meta_path = run_info / "meta.json"
         try:
@@ -253,10 +377,23 @@ def load_manifests(logs_root: str = "../logs", strict: bool = True) -> list[dict
             except json.JSONDecodeError:
                 m = {"group": group, "scope": [], "purpose": "", "_corrupt": True}
                 bad.append((group, "corrupt meta.json"))
+            else:
+                if not isinstance(m, dict):
+                    m = {
+                        "group": group, "scope": [], "purpose": "",
+                        "_corrupt": True, "_malformed_type": True,
+                    }
+                    bad.append((group, "meta.json is not an object"))
         else:
             m = {"group": group, "scope": [], "purpose": "", "_untagged": True}
             bad.append((group, "no meta.json"))
-        m.setdefault("group", group)
+        recorded_group = m.get("group")
+        if recorded_group not in (None, group):
+            m["_manifest_group"] = recorded_group
+            m["_group_mismatch"] = True
+            bad.append((group, f"manifest group is {recorded_group!r}"))
+        # Physical identity is authoritative; manifest content is annotation.
+        m["group"] = group
         if (not _has_scope_tag(m.get("scope"))
                 and not m.get("_untagged") and not m.get("_corrupt")):
             m["_empty_scope"] = True
@@ -287,12 +424,71 @@ def warn_untagged(manifests: list[dict]) -> list[str]:
     return bad
 
 
+def _submitted_at_sort_key(manifest: Mapping[str, Any]) -> tuple[int, float]:
+    """Chronological key with missing/malformed timestamps ordered oldest."""
+    raw = manifest.get("submitted_at")
+    if not isinstance(raw, str) or not raw.strip():
+        return (0, 0.0)
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        value = datetime.fromisoformat(text)
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return (1, value.timestamp())
+    except (ValueError, OverflowError, OSError):
+        return (0, 0.0)
+
+
 def live_manifests_newest_first(manifests: list[dict]) -> list[dict]:
-    """Filter to non-corrupt, scope-tagged manifests, sorted by
-    ``submitted_at`` descending (newest first → wins ``merge_runs`` dedup).
+    """Return every populated-group annotation, newest known time first.
+
+    The historical name is retained for API compatibility. Missing, corrupt,
+    and empty-scope annotations remain in the result: manifest health is audit
+    metadata, not admission. Nullable or malformed ``submitted_at`` values sort
+    after valid timestamps without raising; stable input order breaks ties.
     """
-    live = [m for m in manifests
-            if not m.get("_corrupt") and not m.get("_untagged")
-            and not m.get("_empty_scope") and _has_scope_tag(m.get("scope"))]
-    live.sort(key=lambda m: m.get("submitted_at", ""), reverse=True)
-    return live
+    return sorted(manifests, key=_submitted_at_sort_key, reverse=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    write = subparsers.add_parser("write-submission")
+    write.add_argument("--path", required=True)
+    write.add_argument("--group", required=True)
+    write.add_argument("--submitted-at", required=True)
+    write.add_argument("--slurm-job-id", required=True)
+    write.add_argument("--n-gpus", required=True, type=int)
+    write.add_argument("--params-file", required=True)
+    write.add_argument("--sweep-script", required=True)
+    write.add_argument("--sbatch-script", required=True)
+    write.add_argument("--git-commit", required=True)
+    write.add_argument("--git-dirty", action="store_true")
+    write.add_argument("--scope", default="")
+    write.add_argument("--purpose", default="")
+    write.add_argument("--data-pipeline-version", required=True)
+    args = parser.parse_args(argv)
+    if args.command == "write-submission":
+        path = write_submission_manifest(
+            args.path,
+            group=args.group,
+            submitted_at=args.submitted_at,
+            slurm_job_id=args.slurm_job_id,
+            n_gpus=args.n_gpus,
+            params_file=args.params_file,
+            sweep_script=args.sweep_script,
+            sbatch_script=args.sbatch_script,
+            git_commit=args.git_commit,
+            git_dirty=args.git_dirty,
+            scope=args.scope,
+            purpose=args.purpose,
+            data_pipeline_version=args.data_pipeline_version,
+        )
+        print(f"Wrote manifest: {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

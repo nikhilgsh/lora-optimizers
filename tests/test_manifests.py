@@ -1,11 +1,4 @@
-"""CPU-only enforcement: every populated log group must have a meta.json
-with at least one scope tag (or be explicitly tagged as a pilot).
-
-This test catches drift between submissions — e.g., a sweep submitted
-without `SWEEP_SCOPE`, an old log dir restored without metadata, or a
-hand-edited `meta.json` with empty scope. Fast (~1 s), no GPU, no
-model loads.
-"""
+"""CPU-only tests for optional manifest annotations and strict audits."""
 from __future__ import annotations
 
 import json
@@ -35,33 +28,14 @@ def logs_root() -> Path:
     return ROOT / "logs"
 
 
-def test_every_populated_group_has_manifest(logs_root: Path) -> None:
+def test_manifest_audit_enumerates_every_populated_group(logs_root: Path) -> None:
+    from lora_playground.manifest import load_manifests
+
     groups = _populated_groups(logs_root)
     if not groups:
         pytest.skip("no populated log groups in logs/")
-    missing = [g for g in groups if not (logs_root / g / "run_info" / "meta.json").exists()]
-    assert not missing, (
-        f"{len(missing)} populated log group(s) without meta.json:\n"
-        + "\n".join(f"  {g}" for g in missing)
-        + "\nFix: re-submit via slurm_scripts/submit.sh with SWEEP_SCOPE set, "
-        "or write meta.json by hand (schema in lora_playground/manifest.py)."
-    )
-
-
-def test_every_manifest_is_valid_json(logs_root: Path) -> None:
-    groups = _populated_groups(logs_root)
-    if not groups:
-        pytest.skip("no populated log groups in logs/")
-    corrupt: list[tuple[str, str]] = []
-    for g in groups:
-        meta = logs_root / g / "run_info" / "meta.json"
-        if not meta.exists():
-            continue  # covered by the missing-manifest test
-        try:
-            json.loads(meta.read_text())
-        except json.JSONDecodeError as e:
-            corrupt.append((g, str(e)))
-    assert not corrupt, "corrupt meta.json:\n" + "\n".join(f"  {g}: {e}" for g, e in corrupt)
+    annotations = load_manifests(str(logs_root), strict=False)
+    assert {item["group"] for item in annotations} == set(groups)
 
 
 def test_optim_colors_are_unique() -> None:
@@ -210,37 +184,6 @@ def test_optim_choices_have_color_entries() -> None:
     )
 
 
-def test_populated_groups_have_non_empty_scope(logs_root: Path) -> None:
-    """Every populated group must have at least one non-blank scope tag."""
-    groups = _populated_groups(logs_root)
-    if not groups:
-        pytest.skip("no populated log groups in logs/")
-    bad: list[str] = []
-    for g in groups:
-        meta = logs_root / g / "run_info" / "meta.json"
-        if not meta.exists():
-            continue  # covered by missing-manifest test
-        try:
-            m = json.loads(meta.read_text())
-        except json.JSONDecodeError:
-            continue  # covered by corrupt-json test
-        scope = m.get("scope")
-        if isinstance(scope, str):
-            has_tag = bool(scope.strip())
-        elif isinstance(scope, (list, tuple, set)):
-            has_tag = any(isinstance(tag, str) and tag.strip() for tag in scope)
-        else:
-            has_tag = False
-        if not has_tag:
-            bad.append(g)
-    assert not bad, (
-        f"{len(bad)} populated group(s) with empty scope:\n"
-        + "\n".join(f"  {g}" for g in bad)
-        + "\nFix: edit meta.json scope to a non-empty list of tags. "
-        "See lora_playground/manifest.py for known scopes."
-    )
-
-
 def _write_manifest_fixture(logs_root: Path, group: str, scope) -> Path:
     run_info = logs_root / group / "run_info"
     log_dir = run_info / "logs"
@@ -290,4 +233,160 @@ def test_strict_load_rejects_empty_or_blank_scope(tmp_path: Path, scope) -> None
     non_strict = load_manifests(str(logs_root), strict=False)
     assert non_strict[0]["_empty_scope"] is True
     assert warn_untagged(non_strict) == ["blank_scope"]
-    assert live_manifests_newest_first(non_strict) == []
+    assert live_manifests_newest_first(non_strict) == non_strict
+
+
+def test_default_discovery_keeps_missing_corrupt_and_empty_scope(tmp_path: Path) -> None:
+    from lora_playground.manifest import (
+        _LOAD_MANIFESTS_CACHE,
+        live_manifests_newest_first,
+        load_manifests,
+        warn_untagged,
+    )
+
+    logs_root = tmp_path / "logs"
+    missing_logs = _write_manifest_fixture(logs_root, "missing", ["audit"])
+    (logs_root / "missing" / "run_info" / "meta.json").unlink()
+    corrupt_logs = _write_manifest_fixture(logs_root, "corrupt", ["audit"])
+    (logs_root / "corrupt" / "run_info" / "meta.json").write_text("{bad-json")
+    empty_logs = _write_manifest_fixture(logs_root, "empty", [])
+    for log_dir in (missing_logs, corrupt_logs, empty_logs):
+        (log_dir / "log_0.out").write_text("{}\n")
+    _LOAD_MANIFESTS_CACHE.clear()
+
+    # strict=False is deliberately the ordinary default.
+    annotations = load_manifests(str(logs_root))
+    assert [item["group"] for item in annotations] == [
+        "corrupt", "empty", "missing"
+    ]
+    assert warn_untagged(annotations) == ["corrupt", "empty", "missing"]
+    assert {item["group"] for item in live_manifests_newest_first(annotations)} == {
+        "corrupt", "empty", "missing"
+    }
+
+
+def test_legacy_load_runs_compatibility_does_not_gate_on_manifest(tmp_path: Path) -> None:
+    from lora_playground.loader import load_runs
+    from lora_playground.manifest import _LOAD_MANIFESTS_CACHE
+
+    logs_root = tmp_path / "logs"
+    log_dir = logs_root / "missing" / "run_info" / "logs"
+    log_dir.mkdir(parents=True)
+    events = [
+        {"event": "config", "optimizer": "adamw", "lr": 1e-3,
+         "lora_r": 4, "max_steps": 1, "eval_every": 1,
+         "data_pipeline_version": "packed_v1.1",
+         "git_dirty": True, "git_diff_sha": "unattested",
+         "execution_source_dirty": True,
+         "execution_source_sha": "not-present-in-git",
+         "execution_source_paths": ["train_lora.py"]},
+        {"event": "eval", "step": 1, "eval_loss": 0.8, "lr": 1e-3},
+    ]
+    (log_dir / "log_0.out").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n"
+    )
+    _LOAD_MANIFESTS_CACHE.clear()
+
+    runs = load_runs(
+        where={"optimizer": "adamw", "lora_r": 4},
+        logs_root=str(logs_root),
+        warn_cross_commit=False,
+        quiet=True,
+    )
+
+    assert len(runs) == 1
+    assert runs[0][0]["log_group"] == "missing"
+
+
+def test_newest_sort_handles_nullable_and_malformed_timestamps() -> None:
+    from lora_playground.manifest import live_manifests_newest_first
+
+    annotations = [
+        {"group": "missing", "submitted_at": None, "_untagged": True},
+        {"group": "older", "submitted_at": "2026-01-01T00:00:00+00:00"},
+        {"group": "malformed", "submitted_at": {"not": "a string"}},
+        {"group": "newer", "submitted_at": "2026-01-02T00:00:00Z"},
+        {"group": "bad-text", "submitted_at": "yesterday", "_corrupt": True},
+    ]
+
+    ordered = live_manifests_newest_first(annotations)
+    assert [item["group"] for item in ordered[:2]] == ["newer", "older"]
+    assert {item["group"] for item in ordered[2:]} == {
+        "missing", "malformed", "bad-text"
+    }
+
+
+def test_atomic_manifest_write_replaces_complete_json(tmp_path: Path) -> None:
+    from lora_playground.manifest import write_manifest_atomic
+
+    path = tmp_path / "group" / "run_info" / "meta.json"
+    written = write_manifest_atomic(path, {
+        "group": "group", "scope": ["audit"], "submitted_at": None,
+    })
+
+    assert written == path
+    assert json.loads(path.read_text()) == {
+        "group": "group", "scope": ["audit"], "submitted_at": None,
+    }
+    assert path.read_text().endswith("\n")
+    assert not list(path.parent.glob(".meta.json.*.tmp"))
+
+
+def test_submission_writer_owns_the_complete_schema(tmp_path: Path) -> None:
+    from lora_playground.manifest import (
+        MANIFEST_FIELDS,
+        write_submission_manifest,
+    )
+
+    path = tmp_path / "meta.json"
+    write_submission_manifest(
+        path,
+        group="group",
+        submitted_at="2026-08-27T12:00:00-04:00",
+        slurm_job_id="pending",
+        n_gpus=4,
+        params_file="params.json",
+        sweep_script="scripts/sweep/sweep.sh",
+        sbatch_script="slurm_scripts/sbatch.sh",
+        git_commit="abc",
+        git_dirty=False,
+        scope="comparison, audit",
+        purpose="test",
+        data_pipeline_version="packed_v1.1",
+    )
+
+    payload = json.loads(path.read_text())
+    assert set(payload) == set(MANIFEST_FIELDS)
+    assert payload["scope"] == ["comparison", "audit"]
+    assert payload["n_gpus"] == 4
+
+
+def test_atomic_manifest_write_failure_preserves_previous_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import lora_playground.manifest as manifest_module
+
+    path = tmp_path / "meta.json"
+    path.write_text('{"group": "old"}\n')
+    old = path.read_bytes()
+
+    def fail_replace(_source, _destination):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(manifest_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected replace failure"):
+        manifest_module.write_manifest_atomic(path, {"group": "new"})
+
+    assert path.read_bytes() == old
+    assert not list(tmp_path.glob(".meta.json.*.tmp"))
+
+
+def test_manifest_series_axes_share_neutral_runtime_fields() -> None:
+    from lora_playground.manifest import SERIES_AXIS_FIELDS
+    from lora_playground.plotting import RUNTIME_FIELDS
+    from lora_playground.run_records import RUNTIME_FIELDS as NEUTRAL_RUNTIME_FIELDS
+
+    assert RUNTIME_FIELDS is NEUTRAL_RUNTIME_FIELDS
+    assert SERIES_AXIS_FIELDS == RUNTIME_FIELDS | {
+        "seed", "lr", "lora_r", "lora_alpha", "max_steps", "eval_every",
+    }

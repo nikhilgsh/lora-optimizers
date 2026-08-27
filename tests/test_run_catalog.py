@@ -86,16 +86,16 @@ def test_catalog_is_lazy_and_stable_ids_are_physical(tmp_path, monkeypatch):
     )
     _write_group(tmp_path, "fallback")
 
-    from lora_playground.plotting import loading as legacy_loading
+    import lora_playground.run_catalog as run_catalog_module
 
-    original = legacy_loading.load_run
+    original = run_catalog_module.parse_run_file
     calls = []
 
     def counted(path):
         calls.append(path.parent.parent.parent.name)
         return original(path)
 
-    monkeypatch.setattr(legacy_loading, "load_run", counted)
+    monkeypatch.setattr(run_catalog_module, "parse_run_file", counted)
     catalog = RunCatalog(tmp_path)
     assert calls == []
     assert catalog.groups == ("explicit", "fallback")
@@ -149,6 +149,78 @@ def test_catalog_does_not_implicitly_stitch_resume_segments(tmp_path):
     assert len({record.physical_id for record in records}) == 2
 
 
+def test_catalog_preserves_actual_resume_event_as_audit_metadata(tmp_path):
+    run_info = tmp_path / "resumed" / "run_info"
+    log_dir = run_info / "logs"
+    log_dir.mkdir(parents=True)
+    events = [
+        {"event": "config", "optimizer": "adamw", "lr": 1e-3,
+         "attempt_id": "attempt-b"},
+        {"event": "resume", "resumed_from_step": 100,
+         "resume_parent_attempt_id": "attempt-a",
+         "checkpoint_identity": "group/task-0"},
+        {"event": "eval", "step": 200, "eval_loss": 0.7, "lr": 1e-3},
+    ]
+    (log_dir / "log_0.out").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n"
+    )
+
+    record = RunCatalog(tmp_path).records[0]
+
+    assert record.raw_config["_resume"]["resume_parent_attempt_id"] == (
+        "attempt-a"
+    )
+    assert record.raw_config["_resume"]["resumed_from_step"] == 100
+    # Audit metadata does not leak into the effective comparison config.
+    assert "_resume" not in record.effective_config
+
+
+def test_catalog_resolves_only_explicit_versioned_lineage(tmp_path):
+    log_dir = tmp_path / "resumed" / "run_info" / "logs"
+    log_dir.mkdir(parents=True)
+    common = {
+        "event": "config",
+        "run_schema_version": 1,
+        "checkpoint_identity": "resumed/task_0",
+        "semantic_revisions": {
+            "optimizer_impl": 1,
+            "data_pipeline": "packed_v1.1",
+            "measurement": 1,
+        },
+        "optimizer": "adamw",
+        "lr": 1e-3,
+        "data_pipeline_version": "packed_v1.1",
+    }
+    root_events = [
+        {**common, "attempt_id": "attempt-a",
+         "resume_parent_attempt_id": None},
+        {"event": "eval", "step": 100, "eval_loss": 0.8, "lr": 1e-3},
+    ]
+    child_events = [
+        {**common, "attempt_id": "attempt-b",
+         "resume_parent_attempt_id": None},
+        {"event": "resume", "attempt_id": "attempt-b",
+         "resume_parent_attempt_id": "attempt-a",
+         "checkpoint_identity": "resumed/task_0"},
+        {"event": "eval", "step": 200, "eval_loss": 0.7, "lr": 1e-3},
+    ]
+    (log_dir / "log_0.out.resume_0").write_text(
+        "\n".join(json.dumps(event) for event in root_events) + "\n"
+    )
+    (log_dir / "log_0.out").write_text(
+        "\n".join(json.dumps(event) for event in child_events) + "\n"
+    )
+
+    catalog = RunCatalog(tmp_path)
+    resolved = catalog.resolve_lineages()
+    legacy = catalog.resolved_legacy_tuples()
+
+    assert len(resolved) == 1
+    assert resolved[0].attempt_ids == ("attempt-a", "attempt-b")
+    assert [event["step"] for event in resolved[0].history] == [100, 200]
+    assert [event["step"] for event in legacy[0][1]] == [100, 200]
+
+
 def test_logged_schema_drives_effective_config_and_explicit_queries(
     tmp_path, monkeypatch
 ):
@@ -159,10 +231,16 @@ def test_logged_schema_drives_effective_config_and_explicit_queries(
             "optimizer": "method",
             "lr": 3e-3,
             "beta1": 0.85,
-            "_cli_args": {"brand_new_logged_flag": 17, "beta1": 0.7},
+            "_cli_args": {
+                "brand_new_logged_flag": 17,
+                "beta1": 0.7,
+                "checkpoint_dir": "/runtime/checkpoint",
+                "optim_diagnostics_every": 1,
+            },
             "optimizer_config": {
                 "constructor_only": "logged-constructor-value",
                 "beta1": 0.8,
+                "device": "cuda:0",
             },
             "optimizer_effective": {
                 "effective_picard_iters": 9,
@@ -196,6 +274,9 @@ def test_logged_schema_drives_effective_config_and_explicit_queries(
     assert effective["effective_picard_iters"] == 9
     assert effective["beta1"] == 0.9
     assert "current_only_default" not in effective
+    assert "checkpoint_dir" not in effective
+    assert "optim_diagnostics_every" not in effective
+    assert "device" not in effective
 
     selected = catalog.query(
         equals={"optimizer": "method"},
