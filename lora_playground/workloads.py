@@ -200,6 +200,15 @@ def discover_cells(logs_root: str | None = None) -> dict[tuple[str, str, int], i
     lands, and what goes in the paper's leaderboard is a decision, not a scan.
 
     Not called at import: it runs a full `load_runs`, seconds not milliseconds.
+
+    The post-load filter here is deliberately STRICTER than `workload_runs`', and
+    the two must not be merged into one shared predicate. Both apply `_denied`
+    and `resolve_dataset`, but this function additionally requires that a run
+    actually REACHED `MIN_COMPLETED_STEPS`, whereas `workload_runs` pushes only
+    `max_steps` into the load and returns in-flight runs, leaving completion to
+    `leaderboard.labeled_completed_runs`. That asymmetry is the point: a cell
+    EXISTS once a run has finished there, while a cell's RUN LIST wants the
+    in-flight ones too so a panel can draw them.
     """
     from lora_playground.loader import load_runs  # lazy: avoid import cycle
     found: dict[tuple[str, str, int], int] = {}
