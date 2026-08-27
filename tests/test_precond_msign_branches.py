@@ -233,28 +233,79 @@ def test_msign_is_orthogonal_to_precond(precond):
         f"msign=diag was a no-op under precond={precond}"
 
 
-def test_cheap_branch_does_no_rxr_inverse_sqrt():
+def _spy_on_expensive_primitives(monkeypatch):
+    """Record calls to the O(r^2 d) primitives; returns the growing call list.
+
+    Watches the r x r inverse square root (`gram_ns_inv_sqrt`, a module-level
+    function that `_cw_apply_grouped` calls as a bare global, so it is patched on
+    the module) and the polar/msign step (`_polar_ns_guarded`, a method). Every
+    name is resolved with a bare `getattr` and no None-skip, so a name that stops
+    existing fails the test instead of quietly dropping out of the watch set.
+    """
+    import lora_playground.optim as O
+
+    calls = []
+
+    orig_polar = CurvatureWhitenLoRA._polar_ns_guarded
+
+    def polar_spy(self, *a, **k):
+        calls.append("_polar_ns_guarded")
+        return orig_polar(self, *a, **k)
+
+    monkeypatch.setattr(CurvatureWhitenLoRA, "_polar_ns_guarded", polar_spy)
+
+    orig_invsqrt = O.gram_ns_inv_sqrt
+
+    def invsqrt_spy(*a, **k):
+        calls.append("gram_ns_inv_sqrt")
+        return orig_invsqrt(*a, **k)
+
+    monkeypatch.setattr(O, "gram_ns_inv_sqrt", invsqrt_spy)
+    return calls
+
+
+def test_cheap_branch_does_no_rxr_inverse_sqrt(monkeypatch):
     """precond=one-sided + msign=diag is the O(rd) configuration: no r x r matmul
     or inverse square root anywhere in the direction. Assert it by refusing the
-    inverse-sqrt primitives, which is what actually costs O(r^2 d)."""
-    import lora_playground.optim as O
+    inverse-sqrt primitives, which is what actually costs O(r^2 d).
+
+    The spies are installed with `monkeypatch`, which restores the original
+    attributes on the SAME class object. This used to undo itself with
+    `importlib.reload(lora_playground.optim)`, which does not restore anything —
+    it rebinds every name in the module to a NEW object, so
+    `lora_playground.optim.CurvatureWhitenLoRA` stopped being the class that
+    other already-imported modules hold. Nothing noticed until a test elsewhere
+    asserted `isinstance(build_optimizer(...), CurvatureWhitenLoRA)`, which then
+    failed only when this file ran first in the same session.
+    """
+    calls = _spy_on_expensive_primitives(monkeypatch)
     m, x, tgt = _make(seed=17)
     opt = CurvatureWhitenLoRA(m, precond="one-sided", msign="diag", **_KW)
-    calls = []
-    for name in ("_polar_ns_guarded", "_newton_schulz_batched"):
-        orig = getattr(O.CurvatureWhitenLoRA, name, None)
-        if orig is None:
-            continue
-        def spy(self, *a, _n=name, _o=orig, **k):
-            calls.append(_n)
-            return _o(self, *a, **k)
-        setattr(O.CurvatureWhitenLoRA, name, spy)
-    try:
-        _run(m, opt, x, tgt, steps=2)
-    finally:
-        import importlib
-        importlib.reload(O)
+    _run(m, opt, x, tgt, steps=2)
     assert not calls, f"the cheap branch still called {sorted(set(calls))}"
+
+
+def test_the_expensive_primitive_spy_is_not_vacuous(monkeypatch):
+    """Known-positive control for the spy the test above relies on.
+
+    Without this, that test passes for two uninteresting reasons as easily as
+    the interesting one: a watched name that does not resolve, or a call site
+    the patch does not reach. Both had happened — it watched
+    `_newton_schulz_batched` as a CurvatureWhitenLoRA attribute, but that is a
+    module-level function, so `getattr` returned None and the name was silently
+    skipped; and it never watched `gram_ns_inv_sqrt`, which is the r x r inverse
+    square root the cheap branch is supposed to avoid. So its headline claim,
+    "no inverse square root anywhere in the direction", was the one thing it did
+    not check.
+    """
+    calls = _spy_on_expensive_primitives(monkeypatch)
+    m, x, tgt = _make(seed=17)
+    opt = CurvatureWhitenLoRA(m, precond="product", msign="full", **_KW)
+    _run(m, opt, x, tgt, steps=2)
+    assert "gram_ns_inv_sqrt" in calls, \
+        f"the r x r inverse sqrt spy never fired on the expensive branch: {sorted(set(calls))}"
+    assert "_polar_ns_guarded" in calls, \
+        f"the polar spy never fired on the expensive branch: {sorted(set(calls))}"
 
 
 def test_one_sided_agrees_between_the_grouped_and_per_pair_paths():
