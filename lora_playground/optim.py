@@ -1200,6 +1200,10 @@ class CurvatureWhitenLoRA(Optimizer):
         'Q_B': 'U_B',   # eigh eigenbasis
     }
 
+    # Revision 2 is the post-7792797 factorwise free-slot initialization and
+    # normalization semantics recorded by the versioned run schema.
+    IMPLEMENTATION_REVISION = 2
+
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-3, eps=1e-8,
                  curvature_beta=0.99, use_polar=False, ns_steps=5,
                  polar_method="ns", precond_method="eigh", higham_iters=10,

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from lora_playground.loader import load_records
+from lora_playground.run_catalog import RunCatalog
 from lora_playground.run_lineage import MergedRunLineage
 from lora_playground.run_records import RunRecord
 
@@ -148,3 +151,22 @@ def test_explicit_lineage_crosses_physical_groups_and_query_closes_chain(
     assert len(runs) == 1
     assert isinstance(runs[0], MergedRunLineage)
     assert runs[0].attempt_ids == ("attempt-a", "attempt-b")
+
+
+def test_load_records_accepts_an_explicit_catalog_snapshot(tmp_path):
+    logs = tmp_path / "logs"
+    _write(logs / "group" / "run_info" / "logs" / "log_0.out", [
+        {"event": "config", "optimizer": "adamw", "lr": 1e-3},
+        {"event": "eval", "step": 10, "eval_loss": 0.9, "lr": 1e-3},
+    ])
+    catalog = RunCatalog.discover(logs)
+
+    records = load_records(
+        equals={"optimizer": "adamw"},
+        catalog=catalog,
+        resolve_lineages=False,
+    )
+
+    assert len(records) == 1
+    with pytest.raises(ValueError, match="either catalog or logs_root"):
+        load_records(catalog=catalog, logs_root=str(logs))

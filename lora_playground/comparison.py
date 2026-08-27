@@ -192,6 +192,12 @@ def _comparison_input(run: RunInput, index: int) -> tuple[RunConfig, History]:
         cfg["run_id"] = str(
             getattr(run, "terminal_attempt_id", f"run[{index}]")
         )
+        group = getattr(run, "terminal_group", None)
+        filename = getattr(run, "terminal_log_filename", None)
+        if group is not None:
+            cfg["log_group"] = group
+        if filename is not None:
+            cfg["_log_filename"] = filename
         if isinstance(raw, Mapping):
             for field in ("log_group", "_log_filename", "_aborted"):
                 if raw.get(field) is not None:

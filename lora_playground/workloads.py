@@ -61,15 +61,20 @@ LEADERBOARD_CORPORA = frozenset(d for _, d in _DATASET_SUBSTRINGS) - _LEGACY_DAT
 
 
 def resolve_dataset(cfg: dict) -> str | None:
-    """Dataset id parsed from --data_dir in cfg['command'].
+    """Dataset id from a logged ``data_dir`` value or launcher command.
 
-    Returns None when no --data_dir is present. Never consults
-    cfg['dataset_name'] (stale Magicoder default).
+    New schema records expose the executed ``data_dir`` as a semantic field.
+    Historical logs may carry it only inside ``command``; that parser fallback
+    reads recorded input and never consults current argparse defaults. Returns
+    None when neither form is present. Never consults ``dataset_name`` (the
+    stale Magicoder default).
     """
-    m = _DATA_DIR_RE.search(cfg.get("command") or "")
-    if not m:
-        return None
-    dd = m.group(1)
+    dd = cfg.get("data_dir")
+    if not isinstance(dd, str) or not dd:
+        match = _DATA_DIR_RE.search(cfg.get("command") or "")
+        if not match:
+            return None
+        dd = match.group(1)
     for sub, name in _DATASET_SUBSTRINGS:
         if sub in dd:
             return name
@@ -270,3 +275,37 @@ def workload_runs(wl: Workload, *, logs_root: str | None = None) -> list[tuple[d
     )
     return [(c, h) for c, h in runs
             if resolve_dataset(c) == wl.dataset and not _denied(c.get("log_group"))]
+
+
+def workload_records(
+    wl: Workload,
+    *,
+    logs_root: str | None = None,
+    catalog=None,
+) -> tuple:
+    """Records-native cell discovery with explicit lineage resolution.
+
+    This is the primary input for new comparison/rendering consumers.  The
+    tuple-returning :func:`workload_runs` remains the legacy notebook facade
+    until label/default parity has been audited cell by cell.
+    """
+    from lora_playground.comparison import _comparison_input
+    from lora_playground.loader import load_records
+
+    records = load_records(
+        equals={"model_name": wl.model_name, "lora_r": wl.rank},
+        logs_root=(logs_root or DEFAULT_LOGS_ROOT) if catalog is None else None,
+        catalog=catalog,
+    )
+    selected = []
+    for index, record in enumerate(records):
+        cfg, _history = _comparison_input(record, index)
+        max_steps = cfg.get("max_steps")
+        if not isinstance(max_steps, int) or max_steps < wl.min_completed_steps:
+            continue
+        if resolve_dataset(cfg) != wl.dataset:
+            continue
+        if _denied(cfg.get("log_group")):
+            continue
+        selected.append(record)
+    return tuple(selected)

@@ -53,6 +53,9 @@ class RunSegment:
     cfg: Mapping[str, Any]
     history: tuple[Mapping[str, Any], ...]
     input_ordinal: int
+    physical_id: str | None = None
+    group: str | None = None
+    log_filename: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,22 @@ class MergedRunLineage:
     def attempt_ids(self) -> tuple[str, ...]:
         return tuple(segment.attempt_id for segment in self.segments)
 
+    @property
+    def groups(self) -> tuple[str, ...]:
+        """Physical groups traversed by this logical checkpoint chain."""
+        return tuple(dict.fromkeys(
+            segment.group for segment in self.segments
+            if segment.group is not None
+        ))
+
+    @property
+    def terminal_group(self) -> str | None:
+        return self.segments[-1].group
+
+    @property
+    def terminal_log_filename(self) -> str | None:
+        return self.segments[-1].log_filename
+
 
 def _fail(error_type, code: str, attempt_id=None, parent_attempt_id=None,
           **details):
@@ -86,14 +105,21 @@ def _fail(error_type, code: str, attempt_id=None, parent_attempt_id=None,
 
 def _unpack(run: Any, ordinal: int):
     if isinstance(run, tuple) and len(run) == 2:
-        return run[0], run[1], None
+        return run[0], run[1], None, None, None, None
     if hasattr(run, "cfg") and hasattr(run, "history"):
-        return run.cfg, run.history, None
+        return run.cfg, run.history, None, None, None, None
     if hasattr(run, "raw_config") and hasattr(run, "history"):
         semantic_config = getattr(
             run, "semantic_config", getattr(run, "effective_config", None)
         )
-        return run.raw_config, run.history, semantic_config
+        return (
+            run.raw_config,
+            run.history,
+            semantic_config,
+            getattr(run, "physical_id", None),
+            getattr(run, "group", None),
+            getattr(run, "log_filename", None),
+        )
     _fail(LineageStructureError, "invalid_run_shape",
           input_ordinal=ordinal,
           expected=("(cfg, history) or object exposing .cfg/.history or "
@@ -101,7 +127,14 @@ def _unpack(run: Any, ordinal: int):
 
 
 def _segment(run: Any, ordinal: int) -> RunSegment:
-    raw_cfg, raw_history, record_semantic_config = _unpack(run, ordinal)
+    (
+        raw_cfg,
+        raw_history,
+        record_semantic_config,
+        physical_id,
+        group,
+        log_filename,
+    ) = _unpack(run, ordinal)
     if not isinstance(raw_cfg, Mapping):
         _fail(LineageStructureError, "invalid_config", input_ordinal=ordinal)
     cfg = thaw_value(raw_cfg)
@@ -172,6 +205,9 @@ def _segment(run: Any, ordinal: int) -> RunSegment:
         cfg=freeze_value(cfg),
         history=tuple(events),
         input_ordinal=ordinal,
+        physical_id=physical_id,
+        group=group,
+        log_filename=log_filename,
     )
 
 

@@ -35,6 +35,12 @@ def test_optimizer_revision_uses_class_attribute_or_stable_default():
     assert optimizer_implementation_revision(_RevisedOptimizer) == 3
 
 
+def test_curvature_whiten_records_the_reviewed_post_fix_revision():
+    from lora_playground.optim import CurvatureWhitenLoRA
+
+    assert optimizer_implementation_revision(CurvatureWhitenLoRA) == 2
+
+
 @pytest.mark.parametrize("bad_revision", [True, 0, -1, 1.5, "2"])
 def test_optimizer_revision_rejects_ambiguous_values(bad_revision):
     class _BadOptimizer:

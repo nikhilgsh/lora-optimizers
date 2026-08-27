@@ -50,6 +50,7 @@ def load_records(
     equals: dict[str, Any] | None = None,
     one_of: dict[str, Iterable[Any]] | None = None,
     logs_root: str | None = None,
+    catalog=None,
     resolve_lineages: bool = True,
 ):
     """Primary run-loading API: catalog query plus explicit lineage.
@@ -65,7 +66,12 @@ def load_records(
     """
     from .run_catalog import RunCatalog
 
-    catalog = RunCatalog.discover(logs_root or _default_logs_root())
+    if catalog is not None and logs_root is not None:
+        raise ValueError("pass either catalog or logs_root, not both")
+    if catalog is None:
+        catalog = RunCatalog.discover(logs_root or _default_logs_root())
+    elif not isinstance(catalog, RunCatalog):
+        raise TypeError("catalog must be a RunCatalog")
     records = catalog.query(equals=equals, one_of=one_of)
     return catalog.resolve_lineages(records) if resolve_lineages else records
 
