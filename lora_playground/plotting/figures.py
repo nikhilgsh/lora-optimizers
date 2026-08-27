@@ -12,6 +12,7 @@ from typing import Callable, Iterable
 
 import matplotlib.pyplot as plt
 
+from lora_playground.comparison import ComparisonResult, VariantSpec
 from lora_playground.leaderboard import is_final, mean_over_seeds
 from .dedup import assert_label_discriminates
 from .merge import report_diverged, split_diverged
@@ -317,10 +318,10 @@ def sweep_figure_with_auto_ylim(
 
 
 def compare_variants_figure(
-    variants: dict,
+    variants: dict | None = None,
     *,
-    common_where: dict,
-    ref_label: str,
+    common_where: dict | None = None,
+    ref_label: str | None = None,
     logs_root: str = "../logs",
     sigma_ref: float = 0.0007,
     suptitle: str | None = None,
@@ -331,6 +332,11 @@ def compare_variants_figure(
     completion_slack: int = 300,
     allow_partial: bool = False,
     prefetched_runs: list | None = None,
+    records: Iterable | None = None,
+    variant_specs: Iterable[VariantSpec] | None = None,
+    comparison: ComparisonResult | None = None,
+    reference_id: str | None = None,
+    target_id: str | None = None,
     variant_key=None,
     final_ylim: tuple[float, float] | None = None,
     traj_ylim: tuple[float, float] | None = None,
@@ -342,10 +348,20 @@ def compare_variants_figure(
 ):
     """Compare named optimizer variants at a fixed config; 2-panel + tables.
 
-    `variants` maps `label -> extra_where_dict`. Each variant is loaded as
-    `load_runs(where={**common_where, **extra}, ...)`. The figure shows
-    final-loss vs lr (left) and best-lr trajectory (right). Δ vs `ref_label`
-    is reported in σ-units (`sigma_ref`).
+    The records-native entry point is ``records`` plus explicit
+    ``variant_specs``.  It delegates assignment, semantic-revision checks,
+    completion classification, replicate aggregation, and best-LR selection
+    to :func:`lora_playground.comparison.build_comparison`.  Stable
+    ``VariantSpec.id`` values are the only identities in that path; labels and
+    styles are presentation-only.  An already-built ``comparison`` can be
+    passed instead when the caller owns selection upstream.  In both explicit
+    paths, ``reference_id`` (and optional ``target_id``) names a stable variant
+    ID.
+
+    ``variants`` / ``common_where`` / ``ref_label`` and ``prefetched_runs``
+    remain compatibility inputs. ``variants`` maps
+    ``label -> extra_where_dict`` and, without prefetched input, each variant
+    is loaded as ``load_runs(where={**common_where, **extra}, ...)``.
 
     Y-limits: by default (`auto_ylim=True`) both panels exclude runs whose
     final eval_loss exceeds `divergent_ratio × best_final` (default 1.5×) from
@@ -367,8 +383,104 @@ def compare_variants_figure(
     per variant; `summary_df` has ('variant', 'best_lr', 'final', 'delta',
     'delta_sigma').
     """
+    if reference_id is not None and ref_label is not None:
+        if reference_id != ref_label:
+            raise ValueError(
+                "reference_id and ref_label disagree; explicit comparisons "
+                "must name one stable reference ID"
+            )
+    resolved_reference = reference_id or ref_label
+
+    if records is not None and prefetched_runs is not None:
+        raise ValueError("pass records or prefetched_runs, not both")
+
+    def _render_explicit(result: ComparisonResult):
+        if resolved_reference is None:
+            raise ValueError(
+                "reference_id is required for records-native comparisons"
+            )
+        from .render import render_comparison
+        return render_comparison(
+            result,
+            reference_id=resolved_reference,
+            target_id=target_id,
+            horizon=max_steps,
+            sigma_ref=sigma_ref,
+            colors=colors,
+            markers=markers,
+            figsize=figsize,
+            suptitle=suptitle,
+            show_partials=allow_partial,
+            final_ylim=final_ylim,
+            traj_ylim=traj_ylim,
+            auto_ylim=auto_ylim,
+            divergent_ratio=divergent_ratio,
+        )
+
+    if comparison is not None:
+        conflicts = []
+        if variants is not None:
+            conflicts.append("variants")
+        if common_where is not None:
+            conflicts.append("common_where")
+        if prefetched_runs is not None or records is not None:
+            conflicts.append("records/prefetched_runs")
+        if variant_specs is not None:
+            conflicts.append("variant_specs")
+        if variant_key is not None:
+            conflicts.append("variant_key")
+        if conflicts:
+            raise ValueError(
+                "comparison already owns assignment and selection; do not "
+                f"also pass {', '.join(conflicts)}"
+            )
+        return _render_explicit(comparison)
+
+    if variant_specs is not None:
+        if variants is not None or common_where is not None:
+            raise ValueError(
+                "variant_specs is the complete assignment registry; do not "
+                "also pass variants or common_where"
+            )
+        if variant_key is not None:
+            raise ValueError(
+                "variant_specs and variant_key are mutually exclusive"
+            )
+        if records is None:
+            raise ValueError(
+                "variant_specs requires records; legacy prefetched_runs use "
+                "the variants/variant_key compatibility path"
+            )
+        from lora_playground.comparison import build_comparison
+        result = build_comparison(
+            tuple(records),
+            tuple(variant_specs),
+            horizon=max_steps,
+            completion_slack=completion_slack,
+        )
+        return _render_explicit(result)
+
+    if records is not None:
+        raise ValueError(
+            "records requires explicit variant_specs so recorded runs are not "
+            "classified through a display-label adapter"
+        )
+    if target_id is not None:
+        raise ValueError(
+            "target_id is for explicit comparison identities; compatibility "
+            "callers should use target_label"
+        )
+    if variants is None:
+        raise ValueError(
+            "pass comparison, records plus variant_specs, or legacy variants"
+        )
+    if resolved_reference is None:
+        raise ValueError("ref_label is required for the compatibility path")
+    # From here down the compatibility implementation consistently uses its
+    # historical name.  ``reference_id`` is accepted as a migration alias.
+    ref_label = resolved_reference
+
     import pandas as pd
-    from lora_playground.loader import load_runs
     from .labels import canonical_label, canonical_colors, order_labels
     from .dedup import assert_label_discriminates
 
@@ -390,7 +502,7 @@ def compare_variants_figure(
         # best-LR selection.  This adapter keeps the established plotting
         # dictionaries intact so table construction and rendering below do
         # not acquire a second comparison implementation.
-        from lora_playground.comparison import VariantSpec, build_comparison
+        from lora_playground.comparison import build_comparison
 
         known_labels = set(variants)
         # GUARD: a (label, lora_r, lr) bucket holding >1 distinct series_id means
@@ -446,9 +558,10 @@ def compare_variants_figure(
         # Compatibility shim for callers that still ask this plotting helper
         # to perform one loader query per variant.  New callers should prefetch
         # once and use the comparison core above.
+        from lora_playground.loader import load_runs
         for label, extra in variants.items():
             runs = load_runs(
-                where={**common_where, **extra},
+                where={**(common_where or {}), **extra},
                 logs_root=logs_root,
                 warn_cross_commit=False,
                 quiet=True,
