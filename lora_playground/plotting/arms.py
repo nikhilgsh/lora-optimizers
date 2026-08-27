@@ -346,6 +346,30 @@ PRECOND_ARMS = {
     "factorwise: C_B=P_A, C_A=Q_B": NOPRODUCT,
 }
 
+# `curvature_beta` crossed with `precond`, for the estimation-noise question:
+# is factorwise's deficit at small r the cost of whitening by a NOISY estimate?
+# `P_A` is a finite EMA, so it is anisotropic even when the true curvature is
+# not, while one-sided's C_B = I has zero estimation variance and cannot make
+# that error. Measured floor, feeding the EMA gradients whose true second moment
+# is exactly I: injected anisotropy 0.098 / 0.126 / 0.125 at r = 16 / 64 / 256 —
+# roughly FLAT in rank — against real anisotropy 0.195 / 0.338 / 0.447, which
+# GROWS. beta2 0.99 -> 0.999 takes the effective sample size from 100 to 1000
+# and should drop the floor with the signal untouched.
+#
+# BOTH branches appear at BOTH decays, and the one-sided rows are not padding:
+# `curvature_beta` drives four EMAs, not one — P_A/Q_B (factorwise only) at
+# optim.py:2184-2186, 2200-2201 and D_in/D_out (BOTH arms) at 2191-2195,
+# 2202-2203 — so without a one-sided control at the same decay, a shrinking gap
+# cannot be told from beta2 simply helping everything. Measured in flight at
+# step 750: beta2=0.999 moved factorwise -0.0006 and one-sided -0.0003, i.e.
+# most of the effect is the shared diagonal metric.
+PRECOND_BETA2_ARMS = {
+    "factorwise, b2=0.99": {**NOPRODUCT, "curvature_beta": 0.99},
+    "factorwise, b2=0.999": {**NOPRODUCT, "curvature_beta": 0.999},
+    "one-sided, b2=0.99": {**ONESIDED, "curvature_beta": 0.99},
+    "one-sided, b2=0.999": {**ONESIDED, "curvature_beta": 0.999},
+}
+
 # The `msign` axis, run at both ends of `precond`: can the matrix sign be replaced
 # by its diagonal (row/column normalization) with the slot present, and with it
 # gone? (one-sided, diag) is the O(rd) configuration — no r x r matmul or inverse
@@ -374,4 +398,5 @@ ALL_ARM_DICTS = {
     "MAGNITUDE_RULE_ARMS": MAGNITUDE_RULE_ARMS,
     "PROTO_BETA2_ARMS": PROTO_BETA2_ARMS,
     "ADAMW_BETA2_ARMS": ADAMW_BETA2_ARMS,
+    "PRECOND_BETA2_ARMS": PRECOND_BETA2_ARMS,
 }
