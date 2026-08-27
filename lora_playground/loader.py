@@ -378,22 +378,33 @@ _ARGPARSE_DEFAULTS_CACHE = Path(__file__).resolve().parent.parent / "logs" / "_a
 _TRAIN_PY_PATH = Path(__file__).resolve().parent / "train.py"
 
 
-def _argparse_defaults_cache_is_fresh() -> bool:
-    """True iff the JSON sidecar exists AND is newer than train.py. Any
-    edit to train.py (adding a flag, changing a default) bumps its mtime
-    and triggers a one-shot regeneration on the next call. Cheap: two
-    `stat()` calls."""
+def _cache_is_fresh(cache: Path, *sources: Path) -> bool:
+    """True iff ``cache`` exists AND is at least as new as every source file.
+    Any edit to a source (adding a flag, changing a default, registering an
+    optimizer) bumps its mtime and triggers a one-shot regeneration on the next
+    call. Cheap: one ``stat()`` per path.
+
+    A source that does not exist is skipped rather than treated as stale: these
+    caches snapshot something reproducible from the codebase, so a missing
+    source is a reason to trust the snapshot, not to re-import.
+    """
     try:
-        cache_mt = _ARGPARSE_DEFAULTS_CACHE.stat().st_mtime_ns
+        cache_mt = cache.stat().st_mtime_ns
     except OSError:
         return False
-    try:
-        src_mt = _TRAIN_PY_PATH.stat().st_mtime_ns
-    except OSError:
-        # train.py missing (shouldn't happen in this repo); fall back to
-        # the JSON regardless rather than re-import unnecessarily.
-        return True
-    return cache_mt >= src_mt
+    for src in sources:
+        try:
+            src_mt = src.stat().st_mtime_ns
+        except OSError:
+            continue
+        if src_mt > cache_mt:
+            return False
+    return True
+
+
+def _argparse_defaults_cache_is_fresh() -> bool:
+    """True iff the JSON sidecar exists AND is newer than train.py."""
+    return _cache_is_fresh(_ARGPARSE_DEFAULTS_CACHE, _TRAIN_PY_PATH)
 
 
 @lru_cache(maxsize=1)
@@ -446,6 +457,8 @@ def _argparse_defaults() -> dict[str, Any]:
     return defaults
 
 
+# ─── precond-branch backfill ──────────────────────────────────────────────────
+#
 # Which of the three `precond` branches a pre-flag run was actually in. Before
 # `--precond` existed the branch was implied by the optimizer's pinned
 # `diag_metric`: the kl-diag / diag-shampoo specs pin it True (slots = the partner
@@ -456,21 +469,99 @@ def _argparse_defaults() -> dict[str, Any]:
 # `precond` at all while a new one carries "product", and the two land in
 # different arms of the same figure.
 #
+# The map is DERIVED from `optim_specs.REGISTRY`, not transcribed from it. A
+# hand-written table duplicated the pins and had nothing asserting the two
+# agreed, so an 11th CurvatureWhitenLoRA spec would have been absent from it,
+# its runs would have carried `precond=None`, and every arm predicate that pins
+# `precond` would have skipped them — rendering the arm as absent rather than
+# raising. `tests/test_loader_precond_backfill.py` pins the derivation against
+# the ten entries the table used to hold.
+#
 # There is no historical "one-sided": the retired `cw_no_rr_precond` put the
 # identity in the direction only and left the p, q estimator whitening by the real
-# C_A/C_B, so it is NOT the one-sided branch and is deliberately not mapped to it.
-_PRECOND_BY_OPTIMIZER: dict[str, str] = {
-    "kl-diag-lora": "product",
-    "kl-diag-polar-lora": "product",
-    "kl-diag-polar-flatout-lora": "product",
-    "kl-diag-flatout-lora": "product",
-    "diag-shampoo-lora": "product",
-    "diag-shampoo-polar-lora": "product",
-    "kl-shampoo-lora": "factorwise",
-    "kl-shampoo-polar-lora": "factorwise",
-    "curvature-whiten-lora": "factorwise",
-    "curvature-whiten-polar-lora": "factorwise",
-}
+# C_A/C_B, so it is NOT the one-sided branch. It is dropped below rather than
+# mapped onto a branch.
+_PRECOND_CACHE = Path(__file__).resolve().parent.parent / "logs" / "_precond_by_optimizer.json"
+_OPTIM_SPECS_PATH = Path(__file__).resolve().parent / "optim_specs.py"
+_OPTIM_PATH = Path(__file__).resolve().parent / "optim.py"
+
+
+def _derive_precond_by_optimizer() -> dict[str, str]:
+    """``{optimizer_name: "product" | "factorwise"}`` for every registered
+    ``CurvatureWhitenLoRA`` variant, read off the ``diag_metric`` its spec pins.
+
+    Mirrors the resolution inside ``CurvatureWhitenLoRA.__init__``::
+
+        self.precond = precond or ("product" if self.diag_metric else "factorwise")
+
+    That line is the definition of the branch; this applies the same map to the
+    value each spec pins, which is what a run with no ``--precond`` flag
+    constructed with. A spec that does NOT pin ``diag_metric`` falls through to
+    the constructor's own default — read by introspection, not transcribed — so
+    a new variant is covered whether or not it states the pin.
+
+    Imports ``optim_specs``, which imports torch (~2.5 s) and would otherwise be
+    the loader's only heavy dependency; ``_precond_by_optimizer`` snapshots the
+    result to JSON so the import is paid once per edit of the source, not once
+    per process.
+    """
+    import inspect
+
+    from . import optim as _optim
+    from .optim_specs import REGISTRY
+    cw = _optim.CurvatureWhitenLoRA
+    class_default = inspect.signature(cw.__init__).parameters["diag_metric"].default
+    return {
+        name: ("product" if s.fixed.get("diag_metric", class_default) else "factorwise")
+        for name, s in REGISTRY.items() if s.cls is cw
+    }
+
+
+@lru_cache(maxsize=1)
+def _precond_by_optimizer() -> dict[str, str]:
+    """:func:`_derive_precond_by_optimizer` behind a JSON snapshot.
+
+    Same trade as :func:`_argparse_defaults`: the mapping is reproducible from
+    the codebase but the import that produces it is expensive, and the loader is
+    otherwise torch-free (it is imported by every plotting and notebook path).
+    The snapshot at ``logs/_precond_by_optimizer.json`` is regenerated whenever
+    ``optim_specs.py`` or ``optim.py`` is newer than it.
+
+    Raises whatever the import raises when there is no usable snapshot AND
+    ``optim_specs`` cannot be imported. That is deliberate: returning an empty
+    map instead would put every curvature-whiten run back at ``precond=None``
+    and silently empty the arms that pin it, which is the failure this
+    derivation exists to prevent.
+    """
+    if _cache_is_fresh(_PRECOND_CACHE, _OPTIM_SPECS_PATH, _OPTIM_PATH):
+        try:
+            with open(_PRECOND_CACHE) as f:
+                cached = json.load(f)
+            if isinstance(cached, dict) and cached and all(
+                    isinstance(k, str) and v in ("product", "factorwise")
+                    for k, v in cached.items()):
+                return cached
+        except (json.JSONDecodeError, OSError):
+            pass
+    derived = _derive_precond_by_optimizer()
+    try:
+        _PRECOND_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_PRECOND_CACHE, "w") as f:
+            json.dump(derived, f, sort_keys=True, indent=2)
+    except OSError:
+        pass
+    return derived
+
+
+# Cfg key recording what `_backfill_precond` synthesized or dropped on a run.
+# Underscore-prefixed on purpose: every consumer that walks cfg keys skips those
+# (`_denylist_key`, `_check_unique_on`, `dedup.series_id`,
+# `dedup._label_collision_report`, `dedup._series_diff`,
+# `dedup._baseline_values`, `merge`'s hidden-axis check), so the extra key
+# cannot split a series or change a dedup key. `labels._residual_knobs` and the
+# `arms.arm()` predicates iterate `arms.PINNED_FIELDS()` (OptimizerConfig
+# fields), which it is not one of.
+PRECOND_BACKFILL_MARKER = "_precond_backfilled"
 
 
 def _backfill_precond(cfg: dict, opt_cfg: dict) -> None:
@@ -480,16 +571,31 @@ def _backfill_precond(cfg: dict, opt_cfg: dict) -> None:
     attribute, not the CLI value, so a default run logs "product" rather than
     None). Pre-flag runs log neither; this derives them so old and new runs of the
     same arm carry the same value. Never overwrites a logged value.
+
+    A cfg this touches no longer agrees with its own ``config.json`` on disk, so
+    the keys it synthesized or dropped are recorded under
+    ``PRECOND_BACKFILL_MARKER`` — a tuple of key names, absent entirely on a cfg
+    that needed nothing. Read it to tell a synthesized branch from a logged one;
+    ``tests/test_loader_precond_backfill.py`` counts it to decide when this shim
+    has no runs left to serve and should be deleted.
+
+    Idempotent: ``_enrich_cfg`` runs twice per run under ``load_runs``, and the
+    second pass finds ``precond`` already set and the retired key already gone,
+    so the record accumulates rather than resetting.
     """
+    touched: list[str] = []
     if cfg.get("precond") is None:
-        opt = cfg.get("optimizer")
-        # `diag_metric` in the recorded optimizer_config wins over the name table
-        # when present — it is what the run actually constructed with.
+        # `diag_metric` in the recorded optimizer_config wins over the derived
+        # name map when present — it is what the run actually constructed with.
         dm = opt_cfg.get("diag_metric")
         if dm is not None:
             cfg["precond"] = "product" if dm else "factorwise"
-        elif opt in _PRECOND_BY_OPTIMIZER:
-            cfg["precond"] = _PRECOND_BY_OPTIMIZER[opt]
+            touched.append("precond")
+        else:
+            branch = _precond_by_optimizer().get(cfg.get("optimizer"))
+            if branch is not None:
+                cfg["precond"] = branch
+                touched.append("precond")
     # `msign` needs no explicit backfill: the generic argparse-default loop below
     # fills every CLI flag that is None, and `--msign` defaults to "full", which
     # is what every pre-flag run did wherever it applied a matrix sign at all.
@@ -500,7 +606,12 @@ def _backfill_precond(cfg: dict, opt_cfg: dict) -> None:
     # reads that False-vs-absent split as two distinct series under one label.
     # The three sweeps that set it True were deleted, so no surviving run means
     # anything by this key: drop it rather than let a dead flag split live series.
-    cfg.pop("cw_no_rr_precond", None)
+    if "cw_no_rr_precond" in cfg:
+        del cfg["cw_no_rr_precond"]
+        touched.append("cw_no_rr_precond")
+    if touched:
+        prior = cfg.get(PRECOND_BACKFILL_MARKER) or ()
+        cfg[PRECOND_BACKFILL_MARKER] = tuple(sorted(set(prior).union(touched)))
 
 
 def _enrich_cfg(cfg: dict) -> dict:
@@ -807,11 +918,18 @@ def _build_filter(where: dict[str, Any] | None) -> Callable[[dict], bool] | None
 # fields the pre-filter may reject; on every other field it must abstain and let
 # the run take the full path. A caller-supplied `cfg_postprocess` disables the
 # pushdown altogether, since it can rewrite anything.
+#
+# `cw_no_rr_precond` is here because `_backfill_precond` DELETES it: a raw cfg
+# carrying `False` would pass a pre-filter pinning False and then be rejected by
+# the full filter, which reads a cfg the key is gone from. `precond` needs no
+# entry — enrichment writes it only when the raw value is None, and the
+# pre-filter already abstains on None.
 _ENRICHMENT_WRITTEN_FIELDS: frozenset[str] = frozenset({
     "run_id", "_derived", "optimizer_config",
     "effective_picard_iters", "effective_polar_iters",
     "effective_inner_polar", "effective_polar_pre_norm",
     "log_basic_diagnostics", "log_heavy_diagnostics", "optim_diagnostics_every",
+    "cw_no_rr_precond",
 })
 
 # Cfg keys that appear only after `merge_runs` has processed a run — `log_group`
