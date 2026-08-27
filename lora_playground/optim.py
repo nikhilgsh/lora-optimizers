@@ -1751,6 +1751,34 @@ class CurvatureWhitenLoRA(Optimizer):
         if getattr(self, "_batched_step", True):
             self._cw_apply_grouped(lr, cb, b1, eps)
         else:
+            # `_cw_apply_per_pair` is a SECOND implementation of the same step,
+            # and it silently implements a DIFFERENT algorithm outside
+            # precond_method="eigh": it never reads `precond_method`,
+            # `cw_unpinned`, or LORA_MULTIMOMENT_RESCALE (verified by grep over
+            # both function bodies; the grouped path reads all three at 2262/2356,
+            # 2376/2428/2490 and 2215). Under gram_ns or higham it applies the
+            # frozen identity eigenbasis, i.e. only the DIAGONAL of the r x r
+            # curvature, discarding every off-diagonal entry the production
+            # inverse-sqrt uses. `_batched_step` is set nowhere but tests, so this
+            # never fires in production -- but every equivalence test that flips it
+            # leaves precond_method at its "eigh" default, so the "oracle" has
+            # never validated a production config. Refuse rather than quietly
+            # measure a different optimizer.
+            if self.precond_method != "eigh":
+                raise NotImplementedError(
+                    f"_batched_step=False selects the per-pair reference path, which "
+                    f"only implements precond_method='eigh'; got "
+                    f"{self.precond_method!r}. It ignores precond_method, "
+                    f"cw_unpinned and LORA_MULTIMOMENT_RESCALE, so it would run a "
+                    f"different algorithm than the grouped path and any equivalence "
+                    f"check would be vacuous. Compare grouped-vs-grouped, or use "
+                    f"precond_method='eigh'.")
+            if self.cw_unpinned:
+                raise NotImplementedError(
+                    "_batched_step=False does not implement cw_unpinned: the "
+                    "per-pair path neither flattens rho nor skips the sigma_max(W) "
+                    "rescale, so it silently runs the PINNED step (measured: 5.3% "
+                    "parameter divergence after 6 steps). Use the grouped path.")
             self._cw_apply_per_pair(lr, cb, b1, eps)
         if _timer: _timer.stop()
 

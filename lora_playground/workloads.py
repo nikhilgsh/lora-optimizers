@@ -42,6 +42,16 @@ _DATASET_SUBSTRINGS: tuple[tuple[str, str], ...] = (  # ordered; first match win
     ("magicoder_seq512", "magicoder"),  # legacy; never a leaderboard cell
 )
 
+# Datasets that are NOT leaderboard cells. This is the ONE list that has to be
+# maintained per corpus, replacing a hand-typed entry per (model, dataset, rank)
+# combination: `discover_cells` below finds the cells from logs/, and a new model
+# or a new rank on an existing corpus then needs no edit at all.
+_LEGACY_DATASETS = frozenset({"magicoder"})
+
+# Corpora a declared cell may use, derived from the substring table rather than
+# retyped -- adding a corpus to `_DATASET_SUBSTRINGS` admits it automatically.
+LEADERBOARD_CORPORA = frozenset(d for _, d in _DATASET_SUBSTRINGS) - _LEGACY_DATASETS
+
 
 def resolve_dataset(cfg: dict) -> str | None:
     """Dataset id parsed from --data_dir in cfg['command'].
@@ -162,6 +172,47 @@ WORKLOADS: list[Workload] = [
     #    polar-family sweep — all-token loss, not instruction tuning) ──────────
     Workload("Qwen/Qwen3-0.6B-Base", "openwebmath", 64, "Qwen3-0.6B", _OPENWEBMATH_DISPLAY, 9000, _SIGMA, True),
 ]
+
+
+def discover_cells(logs_root: str | None = None) -> dict[tuple[str, str, int], int]:
+    """``{(model_name, dataset, rank): completed_run_count}`` found in logs/.
+
+    The cell SET, derived from the same predicates `workload_runs` uses for run
+    membership -- `resolve_dataset`, `_denied`, and the long-horizon floor. The
+    module docstring has always described discovery as predicate-based, but that
+    only ever applied to which RUNS join a cell; WHICH CELLS EXIST was a
+    hand-typed list, so a completed campaign at a new (model, rank) never
+    appeared and nothing said so. Measured when this was added: 24 cells on disk
+    against 19 declared, the difference being 29 completed runs.
+
+    Paired with `tests/test_workloads_match_disk.py`, which fails naming the
+    exact key to add, so forgetting raises instead of silently omitting. Kept as
+    a check rather than as the source of `WORKLOADS` on purpose: making
+    `iter_workloads` discover would silently change what
+    `scripts/analysis/build_leaderboard_doc.py` publishes the moment a new sweep
+    lands, and what goes in the paper's leaderboard is a decision, not a scan.
+
+    Not called at import: it runs a full `load_runs`, seconds not milliseconds.
+    """
+    from lora_playground.loader import load_runs  # lazy: avoid import cycle
+    found: dict[tuple[str, str, int], int] = {}
+    runs = load_runs(
+        where={"max_steps": lambda s: isinstance(s, int) and s >= 8000},
+        logs_root=logs_root or DEFAULT_LOGS_ROOT,
+        warn_cross_commit=False,
+        quiet=True,
+    )
+    for cfg, hist in runs:
+        if _denied(cfg.get("log_group")):
+            continue
+        dataset = resolve_dataset(cfg)
+        if dataset is None or dataset in _LEGACY_DATASETS:
+            continue
+        if not hist or max(e.get("step", 0) for e in hist) < 8000:
+            continue
+        key = (cfg.get("model_name"), dataset, cfg.get("lora_r"))
+        found[key] = found.get(key, 0) + 1
+    return found
 
 
 def iter_workloads() -> list[Workload]:
