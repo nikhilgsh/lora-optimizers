@@ -244,6 +244,8 @@ AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 
 | method | best lr | final@best | speedup @ best lr | speedup (lr-avg) |
 |---|---|---|---|---|
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 minit=1e-12 +cw_nesterov precond_method=gram_ns | 1e-02 | 0.2867 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 minit=1e-12 +cw_nesterov precond_method=gram_ns | 3e-03 | 0.2882 | — | 1.00× |
 | AdamW minit=1e-12 | 3e-05 | 0.2935 | — | 1.00× |
 | KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 +cw_nesterov precond_method=gram_ns | 1e-02 | 0.2877 | — | 1.00× |
 
