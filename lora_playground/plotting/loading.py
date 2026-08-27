@@ -1,5 +1,5 @@
 """Per-task log loading: parse JSONL `.out` files into (cfg, evs) tuples,
-merge resume segments, and cache the result both in-process and persistently.
+merge resume segments, and cache the result in-process.
 
 The two top-level entry points are `load_run(path)` (single file) and
 `load_sweep(group, logs_root)` (all tasks in one group). `has_runs(group)` is
@@ -7,9 +7,9 @@ the cheap existence check used to skip empty groups in audit code.
 
 Directory scanning goes through :func:`scan_group`, which reads a group's log
 directory with ONE ``os.scandir`` and one ``stat`` per log file. Everything that
-needs the file list or the freshness signature — ``has_runs``, ``load_sweep``,
-``run_cache``'s signature check — consumes that single scan instead of walking
-the directory itself. Inside a :func:`scan_epoch` block the scan is memoised per
+needs the file list or the freshness signature — ``has_runs`` and
+``load_sweep`` — consumes that single scan instead of walking the directory
+itself. Inside a :func:`scan_epoch` block the scan is memoised per
 group, so a whole-tree pass costs one ``scandir`` per group rather than three,
 and :func:`prescan_groups` issues them concurrently (metadata ops on GPFS are
 latency-bound, and ``os.scandir``/``os.stat`` release the GIL).
@@ -154,9 +154,7 @@ class GroupScan(NamedTuple):
     exists:   the `run_info/logs` dir is there at all.
     tasks:    task index → filenames, `.out` first then `.resume_K` ascending.
     sig:      per-file `(name, mtime_ns, size)`, sorted — the freshness key for
-              both the in-process and the pickle cache. Format is byte-identical
-              to what `load_sweep` built by hand before, and to
-              `run_cache.compute_group_sig`, so existing pickles stay valid.
+              the in-process cache.
     nonempty: at least one matching file with size > 0 (what `has_runs` asks).
     """
     exists: bool
@@ -326,12 +324,6 @@ def _load_sweep_cached(group: str, logs_root: str) -> list[tuple[dict, list[dict
     if cached is not None and cached[0] == sig:
         return cached[1]
 
-    from .. import run_cache as _run_cache
-    persistent = _run_cache.get_cached_sweep(group, logs_root, sig=sig)
-    if persistent is not None:
-        _LOAD_SWEEP_CACHE[cache_key] = (sig, persistent)
-        return persistent
-
     log_dir = Path(logs_root) / group / "run_info" / "logs"
     runs = []
     for task_idx in sorted(scan.tasks):
@@ -352,7 +344,6 @@ def _load_sweep_cached(group: str, logs_root: str) -> list[tuple[dict, list[dict
             cfg["_log_filename"] = names[-1]
             runs.append((cfg, merged))
     _LOAD_SWEEP_CACHE[cache_key] = (sig, runs)
-    _run_cache.update_group(group, logs_root, runs, sig=sig)
     return runs
 
 
@@ -364,12 +355,8 @@ def load_sweep(group: str, logs_root: str = "../logs") -> list[tuple[dict, list[
     submit.sh's pre-submit log rotation when a wall-killed run is resubmitted
     with checkpoint resume.
 
-    Cached in two tiers, both invalidated by the per-file (name, mtime, size)
-    signature of the group's log files:
-      1. In-process module dict (`_LOAD_SWEEP_CACHE`) — fastest, dies on
-         interpreter exit.
-      2. Cross-session per-group pickles under `<logs_root>/_runs_cache/`
-         (`lora_playground.run_cache`) — survive kernel restarts.
+    Cached in the in-process module dict (`_LOAD_SWEEP_CACHE`), invalidated by
+    the per-file (name, mtime, size) signature of the group's log files.
 
     Returned cfgs are shallow copies: `merge_runs` writes `cfg["log_group"]`
     and the loader's enrichment writes `cfg["_derived"]`, so the cached dicts
@@ -395,8 +382,7 @@ def clear_run_caches() -> None:
     Useful as the first cell of an analysis notebook after a loader code
     change (e.g. new CLI-flag backfill) — file mtimes haven't changed, so
     the (mtime, size)-keyed entries are stale even though the parser logic
-    has moved. Cross-session pickle cache (run_cache.py) keys differently
-    and refreshes via its own staleness check; this is the in-process tier.
+    has moved.
     """
     clear_run_file_cache()
     _LOAD_SWEEP_CACHE.clear()
