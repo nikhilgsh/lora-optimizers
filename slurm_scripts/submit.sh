@@ -6,6 +6,7 @@
 # Optional env vars (recommended — consumed by analysis tooling):
 #   SWEEP_SCOPE="ext_compare,polar_family"   comma-separated tags
 #   SWEEP_PURPOSE="E2: AdaMuon-faithful + polar-product geometry"
+#   SWEEP_LOGS_ROOT=/path/to/canonical/logs   shared live catalog (optional)
 #
 # To exclude an old sweep from analysis, delete its log dir.
 set -euo pipefail
@@ -18,6 +19,7 @@ if [[ -z "${SWEEP_SCOPE:-}" ]]; then
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LOGS_ROOT="${SWEEP_LOGS_ROOT:-${REPO_DIR}/logs}"
 
 # --emit-pending: do everything EXCEPT the final `sbatch` — write a self-contained
 # pending sbatch to slurm_pending/ instead (for when org policy bars running sbatch).
@@ -50,7 +52,7 @@ case "$SBATCH_SCRIPT" in /*) SBATCH_SCRIPT="${SBATCH_SCRIPT#${REPO_DIR}/}";; esa
 # is equivalent to picard_iters=1 / uncoupled). See
 # scripts/analysis/audit_sweep_overlap.py.
 if [[ -z "${FORCE_OVERLAP:-}" ]]; then
-    if ! python "${REPO_DIR}/scripts/analysis/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${REPO_DIR}/logs" --sweep-script "${REPO_DIR}/${SWEEP_SCRIPT}"; then
+    if ! python "${REPO_DIR}/scripts/analysis/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${LOGS_ROOT}" --sweep-script "${REPO_DIR}/${SWEEP_SCRIPT}"; then
         echo "" >&2
         echo "ERROR: sweep overlaps with existing logs (see ✓ rows above)." >&2
         echo "Drop the duplicate cells from ${PARAM_FILE}, or set FORCE_OVERLAP=1" >&2
@@ -64,7 +66,7 @@ if [[ -n "${SWEEP_SUPERSEDES:-}" ]]; then
     echo "      To exclude '${SWEEP_SUPERSEDES}' from analysis, delete its log dir." >&2
 fi
 
-RUN_DIR="${REPO_DIR}/logs/${GROUP}/run_info"
+RUN_DIR="${LOGS_ROOT}/${GROUP}/run_info"
 mkdir -p "${RUN_DIR}/logs" "${REPO_DIR}/slurm_logs" "${REPO_DIR}/disbatch_logs"
 
 cp "${REPO_DIR}/${SWEEP_SCRIPT}" "${RUN_DIR}/sweep.sh"
