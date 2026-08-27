@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .optim_config import ALIAS as OPTIMIZER_CONFIG_ALIASES
 from .run_records import freeze_value, thaw_value
 
 
@@ -56,15 +57,11 @@ LAYOUT_AUDIT_OPTIMIZER_FIELDS = frozenset({"muon_params", "adamw_params"})
 # one representation, so class refactors such as ``betas`` tuple vs split
 # attributes do not create a new publication identity.
 _CONFIG_ALIASES = {
-    "delta": "precond_delta",
-    "ns_steps": "muon_ns_steps",
-    "lr_b_multiplier": "lora_plus_multiplier",
-    "alpha": "muon_alpha",
-    "rank": "muon_rank",
-    "gamma": "precond_gamma",
-    "ema_beta": "precond_ema_beta",
-    "update_proj_gap": "galore_update_proj_gap",
-    "scale": "galore_scale",
+    **OPTIMIZER_CONFIG_ALIASES,
+    # Per-spec spelling used by AdamPolarProductLoRA. It belongs on the
+    # producer schema too: the normalized payload uses OptimizerConfig names,
+    # never implementation-local constructor names.
+    "core_remix_alpha": "polar_core_remix_alpha",
 }
 
 # Known resolved fields are retained only when the normalized constructor
@@ -290,12 +287,50 @@ def publication_semantics_from_payload(
     )
 
 
+def build_optimizer_variant_semantics_payload(
+    *,
+    optimizer: str,
+    optimizer_instance: object,
+    optimizer_config: Mapping[str, Any],
+    optimizer_effective: Mapping[str, Any],
+    semantic_revision: str | int,
+    implementation_revision: str | int,
+) -> dict[str, Any]:
+    """Build the producer-owned JSON block for one constructed optimizer.
+
+    Both identity and presentation adapters consume this exact normalized
+    snapshot. The producer supplies the already-constructed instance plus its
+    recorded config/effective blocks; no run reader imports defaults or
+    re-introspects a newer class later.
+    """
+    optimizer_class = type(optimizer_instance)
+    implementation_class = (
+        f"{optimizer_class.__module__}.{optimizer_class.__qualname__}"
+    )
+    config, effective = normalize_optimizer_variant_fields(
+        optimizer_config, optimizer_effective
+    )
+    semantics = PublicationVariantSemantics(
+        optimizer=optimizer,
+        config=config,
+        effective=effective,
+        semantic_revision=semantic_revision,
+        implementation_class=implementation_class,
+        implementation_revision=implementation_revision,
+    )
+    # Validate finite, canonical JSON at the producer boundary. A run must not
+    # advertise schema-v2 semantics that a later reader cannot identify.
+    _canonical_json(semantics.exact_payload)
+    return thaw_value(semantics.exact_payload)
+
+
 __all__ = [
     "OBSERVATION_ONLY_OPTIMIZER_FIELDS",
     "LAYOUT_AUDIT_OPTIMIZER_FIELDS",
     "PUBLICATION_SEMANTICS_SCHEMA_VERSION",
     "PublicationSemanticsError",
     "PublicationVariantSemantics",
+    "build_optimizer_variant_semantics_payload",
     "normalize_optimizer_variant_fields",
     "normalize_legacy_optimizer_variant_fields",
     "publication_semantics_from_payload",

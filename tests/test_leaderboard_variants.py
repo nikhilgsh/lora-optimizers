@@ -358,25 +358,30 @@ def test_spec_registry_allows_multiple_exact_ids_in_one_reviewed_view():
     }) == "shared-view"
 
 
-def test_unversioned_live_run_without_archive_fields_fails_closed():
+@pytest.mark.parametrize("schema_version", [None, 1, True, "2"])
+def test_preproducer_live_run_without_archive_fields_fails_closed(schema_version):
     live = _versioned_run()
-    unversioned = RunView(
+    raw = {
+        key: value
+        for key, value in live.raw_config.items()
+        if key != "run_schema_version"
+    }
+    if schema_version is not None:
+        raw["run_schema_version"] = schema_version
+    preproducer = RunView(
         semantic_config=live.semantic_config,
         audit_config=live.audit_config,
-        raw_config=freeze_value({
-            key: value
-            for key, value in live.raw_config.items()
-            if key != "run_schema_version"
-        }),
+        raw_config=freeze_value(raw),
         history=live.history,
         physical_id=live.physical_id,
         group=live.group,
         log_filename=live.log_filename,
         semantic_revisions=live.semantic_revisions,
+        run_schema_version=schema_version,
     )
 
-    with pytest.raises(PublicationVariantProjectionError, match="unversioned"):
-        project_publication_runs([unversioned], label_adapter=_label)
+    with pytest.raises(PublicationVariantProjectionError, match=r"schema 2\+"):
+        project_publication_runs([preproducer], label_adapter=_label)
 
 
 def test_versioned_projection_requires_producer_semantics_block():
@@ -389,4 +394,31 @@ def test_versioned_projection_requires_producer_semantics_block():
         PublicationVariantProjectionError,
         match="optimizer_variant_semantics",
     ):
+        project_publication_runs([malformed], label_adapter=_label)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"schema_version": 99},
+        {
+            "schema_version": 1,
+            "optimizer": "toy-optimizer",
+            "config": {},
+            "effective": {},
+            "semantic_revision": 1,
+            "implementation": {"class": "tests.ToyOptimizer"},
+        },
+    ],
+)
+def test_schema2_malformed_producer_semantics_fails_at_publication_boundary(
+    payload,
+):
+    live = _versioned_run()
+    raw = dict(live.raw_config)
+    raw[PRODUCER_SEMANTICS_FIELD] = payload
+    malformed = replace(live, raw_config=freeze_value(raw))
+
+    with pytest.raises(PublicationVariantProjectionError):
         project_publication_runs([malformed], label_adapter=_label)

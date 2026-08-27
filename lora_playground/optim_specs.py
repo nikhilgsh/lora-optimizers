@@ -15,7 +15,6 @@ covers the registered subset.
 """
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -23,6 +22,9 @@ import torch as _torch
 
 from .optim_config import OptimizerConfig, ALIAS, CONFIG_FIELDS
 from . import optim as _optim
+from .constructor_introspection import (
+    forwardable_constructor_parameters as _forwardable_params,
+)
 from .utils import collect_lora_pairs as _collect_lora_pairs
 
 
@@ -54,37 +56,6 @@ def spec(name, cls=None, *, fixed=None, defaults=None, alias=None,
          takes_targets=False, build=None, skip=None):
     REGISTRY[name] = OptimizerSpec(cls, fixed or {}, defaults or {}, alias or {},
                                    takes_targets, build, skip or set())
-
-
-def _forwardable_params(cls):
-    """Constructor params to consider for forwarding: everything after self and the
-    first positional (model/targets), excluding lr and *args/**kwargs.
-
-    Walks the MRO (bounded to this package) so a subclass with ``__init__(self,
-    model, lr, **kwargs)`` that forwards to a base (the soap/adafactor polar-product
-    subclasses) contributes the base's named params too. Stops at the first class
-    whose ``__init__`` does NOT absorb ``**kwargs`` (the real consumer)."""
-    seen: dict[str, inspect.Parameter] = {}
-    for c in cls.__mro__:
-        if not getattr(c, "__module__", "").startswith("lora_playground"):
-            continue
-        params = list(inspect.signature(c.__init__).parameters.values())[1:]  # drop self
-        dropped_first, has_var_kw = False, False
-        for p in params:
-            if p.kind == p.VAR_KEYWORD:
-                has_var_kw = True
-                continue
-            if p.kind == p.VAR_POSITIONAL:
-                continue
-            if not dropped_first:
-                dropped_first = True  # model/targets
-                continue
-            if p.name == "lr":
-                continue
-            seen.setdefault(p.name, p)
-        if not has_var_kw:
-            break  # this class consumes its args directly — don't walk further up
-    return list(seen.values())
 
 
 def build_from_spec(model_or_targets, name: str, config: OptimizerConfig):

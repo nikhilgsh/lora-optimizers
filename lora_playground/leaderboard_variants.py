@@ -28,6 +28,7 @@ PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD = (
 )
 PUBLICATION_STYLE_KEY_FIELD = "_publication_style_key"
 PRODUCER_SEMANTICS_FIELD = "optimizer_variant_semantics"
+MIN_PRODUCER_RUN_SCHEMA_VERSION = 2
 
 LabelAdapter = Callable[[Mapping[str, Any]], str | None]
 
@@ -132,10 +133,16 @@ def project_publication_runs(
             view.semantic_config, physical_id=view.physical_id
         )
         if existing is None:
-            if not view.is_versioned:
+            if (
+                isinstance(view.run_schema_version, bool)
+                or not isinstance(view.run_schema_version, int)
+                or view.run_schema_version < MIN_PRODUCER_RUN_SCHEMA_VERSION
+            ):
                 raise PublicationVariantProjectionError(
-                    f"unversioned run {view.physical_id!r} must come from a "
-                    "publication archive with explicit publication fields"
+                    f"run {view.physical_id!r} needs producer run schema "
+                    f"{MIN_PRODUCER_RUN_SCHEMA_VERSION}+ or must come from a "
+                    "publication archive with explicit publication fields; "
+                    f"got {view.run_schema_version!r}"
                 )
             semantics = _recorded_semantics(view)
             exact_id = semantics.exact_id
@@ -237,6 +244,7 @@ def _publication_optimizer_semantic_key(cfg: Mapping[str, Any]) -> str:
 
 __all__ = [
     "PRODUCER_SEMANTICS_FIELD",
+    "MIN_PRODUCER_RUN_SCHEMA_VERSION",
     "PUBLICATION_EXACT_ID_FIELD",
     "PUBLICATION_OPTIMIZER_SEMANTIC_KEY_FIELD",
     "PUBLICATION_STYLE_KEY_FIELD",

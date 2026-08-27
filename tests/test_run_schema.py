@@ -93,6 +93,7 @@ def test_attempt_metadata_accepts_dedicated_environment_values():
         "checkpoint_identity": "sweep-a/task-4",
     }
     json.dumps(metadata)
+    assert RUN_SCHEMA_VERSION == 2
 
 
 def test_explicit_attempt_values_override_environment_and_parent_is_ignored():

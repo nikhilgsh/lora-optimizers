@@ -246,6 +246,17 @@ def test_logged_schema_drives_effective_config_and_explicit_queries(
                 "effective_picard_iters": 9,
                 "beta1": 0.9,
             },
+            "optimizer_variant_semantics": {
+                "schema_version": 1,
+                "optimizer": "method",
+                "config": {"beta1": 0.9},
+                "effective": {"effective_picard_iters": 9},
+                "semantic_revision": 1,
+                "implementation": {
+                    "class": "package.Method",
+                    "revision": "abc123",
+                },
+            },
         },
         manifest={"group": "new_schema", "scope": ["new"]},
     )
@@ -273,6 +284,10 @@ def test_logged_schema_drives_effective_config_and_explicit_queries(
     assert effective["constructor_only"] == "logged-constructor-value"
     assert effective["effective_picard_iters"] == 9
     assert effective["beta1"] == 0.9
+    assert "optimizer_variant_semantics" not in effective
+    assert record.raw_config["optimizer_variant_semantics"]["optimizer"] == (
+        "method"
+    )
     assert "current_only_default" not in effective
     assert "checkpoint_dir" not in effective
     assert "optim_diagnostics_every" not in effective

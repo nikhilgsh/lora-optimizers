@@ -1,5 +1,5 @@
-import inspect
 import json
+import math
 import os
 import statistics
 
@@ -20,6 +20,7 @@ from .utils import (
     truncated_svd,
 )
 from ._step_timer import maybe_time
+from .constructor_introspection import forwardable_constructor_parameters
 from .optim_diagnostics import factor_diagnostics
 from .lora_rite import LoRARite  # noqa: F401  (registered via optim_specs as "lora-rite")
 
@@ -30,7 +31,7 @@ from .lora_rite import LoRARite  # noqa: F401  (registered via optim_specs as "l
 # across runs. Add a name here only if it's a constructor wiring input, not
 # a hyperparameter.
 _CONFIG_DICT_SKIP = frozenset({
-    "self", "model", "targets", "pairs", "lora_modules",
+    "self", "model", "targets", "pairs", "lora_pairs", "lora_modules",
     "params", "param_groups", "adapter_name",
 })
 
@@ -39,17 +40,48 @@ _CONFIG_DICT_SKIP = frozenset({
 # the __init__ param name to a callable extracting the value from `self`.
 def _extract_lr(opt):
     """torch.optim.Optimizer stores lr inside param_groups, not as self.lr."""
+    defaults = getattr(opt, "defaults", None)
+    if defaults and "lr" in defaults:
+        return defaults["lr"]
     groups = getattr(opt, "param_groups", None)
     if groups:
         return groups[0].get("lr")
     return getattr(opt, "lr", None)
 
 
+def _extract_betas(opt):
+    """Return the betas the optimizer actually stored and will execute."""
+    beta1 = getattr(opt, "beta1", None)
+    beta2 = getattr(opt, "beta2", None)
+    attribute_betas = (
+        (beta1, beta2) if beta1 is not None and beta2 is not None else None
+    )
+    groups = getattr(opt, "param_groups", None)
+    group_betas = [tuple(group["betas"]) for group in (groups or ())
+                   if "betas" in group]
+    if group_betas and any(value != group_betas[0]
+                           for value in group_betas[1:]):
+        raise ValueError(
+            f"{type(opt).__name__} has group-specific betas that cannot be "
+            "represented by optimizer_config_dict"
+        )
+    if group_betas:
+        if attribute_betas is not None and attribute_betas != group_betas[0]:
+            raise ValueError(
+                f"{type(opt).__name__} beta attributes disagree with its "
+                "parameter groups"
+            )
+        return group_betas[0]
+    if attribute_betas is not None:
+        return attribute_betas
+    defaults = getattr(opt, "defaults", None)
+    if defaults and "betas" in defaults:
+        return tuple(defaults["betas"])
+    return (beta1, beta2)
+
+
 _CONFIG_DICT_ALIASES = {
-    "betas": lambda opt: (
-        getattr(opt, "beta1", None),
-        getattr(opt, "beta2", None),
-    ),
+    "betas": _extract_betas,
     "lr": _extract_lr,
     # Stored as `self._higham_compute_dtype` (None or torch.float16) — invert
     # the conversion back to the "fp32"/"fp16" string the __init__ accepts.
@@ -93,8 +125,10 @@ def _muon_group_size(opt, which: str) -> int | None:
 
 
 def _is_json_safe(v) -> bool:
-    if v is None or isinstance(v, (bool, int, float, str)):
+    if v is None or isinstance(v, (bool, int, str)):
         return True
+    if isinstance(v, float):
+        return math.isfinite(v)
     if isinstance(v, (list, tuple)):
         return all(_is_json_safe(x) for x in v)
     return False
@@ -168,12 +202,13 @@ def optimizer_effective_config(opt) -> dict:
 
 
 def optimizer_config_dict(opt) -> dict:
-    """Resolved-hyperparameter snapshot of `opt` via __init__ introspection.
+    """Resolved-hyperparameter snapshot of ``opt`` via MRO introspection.
 
-    Walks `inspect.signature(type(opt).__init__)`; for each parameter not in
-    `_CONFIG_DICT_SKIP`, looks up the matching attribute on `opt` (with
-    `_CONFIG_DICT_ALIASES` overriding for split-storage cases). Returns a flat
-    dict of JSON-safe values plus `_optim_class` for traceability.
+    Walks the same project-owned constructor chain used by the declarative
+    factory; for each forwardable parameter not in ``_CONFIG_DICT_SKIP``, looks
+    up the matching attribute on ``opt`` (with ``_CONFIG_DICT_ALIASES``
+    overriding for split-storage cases). Returns a flat dict of JSON-safe
+    values plus ``_optim_class`` for traceability.
 
     Convention enforcement: every optimizer in OPTIMIZER_CHOICES must store
     each non-skipped __init__ param as an attribute of the same name (or via
@@ -181,12 +216,16 @@ def optimizer_config_dict(opt) -> dict:
     OPTIMIZER_CHOICES and fails if any param is unrecorded — that's how we
     keep this from going stale as new optimizers ship.
     """
-    out = {"_optim_class": type(opt).__name__}
-    sig = inspect.signature(type(opt).__init__)
-    for name, param in sig.parameters.items():
+    out = {
+        "_optim_class": type(opt).__name__,
+        # The shared constructor walker excludes lr because the declarative
+        # factory passes it explicitly. Provenance still records the unscaled
+        # base lr; defaults is authoritative for multi-group LoRA+.
+        "lr": _extract_lr(opt),
+    }
+    for param in forwardable_constructor_parameters(type(opt)):
+        name = param.name
         if name in _CONFIG_DICT_SKIP:
-            continue
-        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             continue
         if name in _CONFIG_DICT_ALIASES:
             value = _CONFIG_DICT_ALIASES[name](opt)
@@ -205,12 +244,17 @@ def optimizer_config_dict(opt) -> dict:
             elif defaults and name in defaults:
                 value = defaults[name]
             else:
-                # Surface as missing rather than silently dropping. The CI test
-                # asserts no value lands here for any optimizer in
-                # OPTIMIZER_CHOICES.
-                value = "<unrecorded>"
-        if _is_json_safe(value) or value == "<unrecorded>":
-            out[name] = value
+                raise ValueError(
+                    f"{type(opt).__name__} does not expose constructor "
+                    f"parameter {name!r}; store it as an attribute or add a "
+                    "_CONFIG_DICT_ALIASES extractor"
+                )
+        if not _is_json_safe(value):
+            raise TypeError(
+                f"{type(opt).__name__} constructor parameter {name!r} has "
+                f"non-JSON-safe value {value!r}"
+            )
+        out[name] = value
     return out
 
 

@@ -21,9 +21,13 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from lora_playground.optim import (
+    _CONFIG_DICT_SKIP,
     OPTIMIZER_CHOICES,
     build_optimizer,
     optimizer_config_dict,
+)
+from lora_playground.constructor_introspection import (
+    forwardable_constructor_parameters,
 )
 
 
@@ -79,11 +83,86 @@ def test_config_dict_records_all_init_params(optimizer_type):
         lr=1e-3,
     )
     cfg = optimizer_config_dict(opt)
-    unrecorded = sorted(k for k, v in cfg.items() if v == "<unrecorded>")
-    assert not unrecorded, (
-        f"{optimizer_type} ({type(opt).__name__}): __init__ params not stored "
-        f"as same-named attributes: {unrecorded}. Either store them as "
-        f"`self.<param_name>` in __init__, or add an entry to "
-        f"`_CONFIG_DICT_ALIASES` in optim.py."
+    expected = {
+        parameter.name
+        for parameter in forwardable_constructor_parameters(type(opt))
+        if parameter.name not in _CONFIG_DICT_SKIP
+    } | {"lr"}
+    assert expected <= cfg.keys(), (
+        f"{optimizer_type} ({type(opt).__name__}) omitted constructor fields: "
+        f"{sorted(expected - cfg.keys())}"
     )
     assert cfg["_optim_class"] == type(opt).__name__
+
+
+def test_config_dict_rejects_group_specific_betas():
+    opt = build_optimizer(
+        TinyLoRAModel(), optimizer_type="adamw", lr=1e-3
+    )
+    opt.param_groups[1]["betas"] = (0.8, 0.9)
+
+    with pytest.raises(ValueError, match="group-specific betas"):
+        optimizer_config_dict(opt)
+
+
+def test_adamw_records_executed_betas_and_unscaled_base_lr():
+    opt = build_optimizer(
+        TinyLoRAModel(),
+        optimizer_type="adamw",
+        lr=3e-4,
+        beta1=0.81,
+        beta2=0.9564,
+        lora_plus_multiplier=8.0,
+    )
+
+    cfg = optimizer_config_dict(opt)
+
+    assert cfg["betas"] == (0.81, 0.9564)
+    assert cfg["lr"] == 3e-4
+    assert {group["lr"] for group in opt.param_groups} == {3e-4, 2.4e-3}
+
+
+@pytest.mark.parametrize(
+    "optimizer_type, inherited_fields",
+    [
+        (
+            "adam-soap-polar-product-lora",
+            {"betas", "polar_method", "precond_method", "magnitude_rule"},
+        ),
+        (
+            "adafactor-polar-product-lora",
+            {"betas", "polar_method", "precond_method", "magnitude_rule"},
+        ),
+    ],
+)
+def test_forwarding_subclasses_record_inherited_semantic_fields(
+    optimizer_type, inherited_fields
+):
+    opt = build_optimizer(
+        TinyLoRAModel(), optimizer_type=optimizer_type, lr=1e-3
+    )
+
+    cfg = optimizer_config_dict(opt)
+
+    assert inherited_fields <= cfg.keys()
+
+
+@pytest.mark.parametrize(
+    "optimizer_type, expected",
+    [
+        ("sgd", {"momentum": 0, "weight_decay": 0}),
+        ("adafactor", {"weight_decay": 0.0, "relative_step": False}),
+    ],
+)
+def test_external_optimizers_record_their_concrete_constructor_fields(
+    optimizer_type, expected
+):
+    opt = build_optimizer(
+        TinyLoRAModel(), optimizer_type=optimizer_type, lr=1e-3
+    )
+
+    cfg = optimizer_config_dict(opt)
+
+    assert cfg["lr"] == 1e-3
+    for key, value in expected.items():
+        assert cfg[key] == value

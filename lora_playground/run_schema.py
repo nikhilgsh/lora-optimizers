@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-RUN_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 2
 """Version of the top-level run config-event schema fields in this module."""
 
 DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION = 1

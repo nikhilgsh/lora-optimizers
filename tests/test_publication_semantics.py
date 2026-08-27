@@ -1,11 +1,14 @@
 """Normalized publication semantics separate provenance, cohorts, and labels."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from lora_playground.publication_semantics import (
     PublicationSemanticsError,
     PublicationVariantSemantics,
+    build_optimizer_variant_semantics_payload,
     normalize_legacy_optimizer_variant_fields,
     normalize_optimizer_variant_fields,
     publication_semantics_from_payload,
@@ -127,3 +130,56 @@ def test_payload_parser_requires_versioned_normalized_schema():
 
     with pytest.raises(PublicationSemanticsError, match="schema_version"):
         publication_semantics_from_payload({"schema_version": 2})
+
+
+def test_producer_payload_is_normalized_json_and_names_exact_implementation():
+    class ToyOptimizer:
+        pass
+
+    payload = build_optimizer_variant_semantics_payload(
+        optimizer="toy",
+        optimizer_instance=ToyOptimizer(),
+        optimizer_config={
+            "_optim_class": "stale-display-name",
+            "lr": 1e-3,
+            "betas": [0.9, 0.999],
+            "core_remix_alpha": 0.25,
+            "diagnostics_every": 1,
+        },
+        optimizer_effective={"mode": "resolved"},
+        semantic_revision=3,
+        implementation_revision=7,
+    )
+
+    assert payload == {
+        "schema_version": 1,
+        "optimizer": "toy",
+        "config": {
+            "beta1": 0.9,
+            "beta2": 0.999,
+            "polar_core_remix_alpha": 0.25,
+        },
+        "effective": {"mode": "resolved"},
+        "semantic_revision": 3,
+        "implementation": {
+            "class": f"{ToyOptimizer.__module__}.{ToyOptimizer.__qualname__}",
+            "revision": 7,
+        },
+    }
+    json.dumps(payload, sort_keys=True, allow_nan=False)
+    assert publication_semantics_from_payload(payload).exact_payload == payload
+
+
+def test_producer_payload_rejects_nonfinite_values():
+    class ToyOptimizer:
+        pass
+
+    with pytest.raises(PublicationSemanticsError, match="canonical JSON"):
+        build_optimizer_variant_semantics_payload(
+            optimizer="toy",
+            optimizer_instance=ToyOptimizer(),
+            optimizer_config={"momentum": float("nan")},
+            optimizer_effective={},
+            semantic_revision=1,
+            implementation_revision="abc123",
+        )

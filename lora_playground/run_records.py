@@ -49,6 +49,7 @@ _AUDIT_FIELDS = frozenset({
 _LOGGED_CONFIG_BLOCKS = (
     "_cli_args",
     "optimizer_config",
+    "optimizer_variant_semantics",
     "optimizer_effective",
 )
 
@@ -144,7 +145,7 @@ def _logged_effective_config(
             and not key.startswith("_")
         )
 
-    for block_name in _LOGGED_CONFIG_BLOCKS[:2]:
+    for block_name in ("_cli_args", "optimizer_config"):
         block = raw_config.get(block_name)
         if block is None:
             continue
@@ -289,6 +290,25 @@ class RunView:
         return self.run_schema_version is not None
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticRunProjection:
+    """A run with a narrow, named view-semantic overlay.
+
+    The underlying raw/audit provenance and physical identity are unchanged.
+    This is for reviewed consumer semantics such as a historical paper cohort,
+    not for reconstructing missing execution configuration.
+    """
+
+    physical_id: str
+    effective_config: Mapping[str, Any]
+    raw_config: Mapping[str, Any]
+    history: tuple[Mapping[str, Any], ...]
+    group: str | None
+    log_filename: str | None
+    semantic_revisions: Mapping[str, Any]
+    projection_id: str
+
+
 def _audit_config(raw_config: Mapping[str, Any]) -> Mapping[str, Any]:
     return freeze_value({
         key: value for key, value in raw_config.items() if key in _AUDIT_FIELDS
@@ -421,14 +441,63 @@ def run_view(run: Any, index: int = 0) -> RunView:
     )
 
 
+def project_run_semantics(
+    run: Any,
+    overlay: Mapping[str, Any],
+    *,
+    projection_id: str,
+    index: int = 0,
+) -> SemanticRunProjection:
+    """Return an immutable semantic overlay without changing run provenance."""
+    if not isinstance(overlay, Mapping):
+        raise TypeError("overlay must be a mapping")
+    if not isinstance(projection_id, str) or not projection_id.strip():
+        raise ValueError("projection_id must be a non-empty string")
+    invalid = sorted(
+        key for key in overlay
+        if not isinstance(key, str) or key in _AUDIT_FIELDS or key.startswith("_")
+    )
+    if invalid:
+        raise ValueError(
+            "semantic overlays cannot contain audit/private fields: "
+            f"{invalid!r}"
+        )
+
+    view = run_view(run, index)
+    config = dict(view.semantic_config)
+    conflicts = {
+        key: (config[key], value)
+        for key, value in overlay.items()
+        if key in config and config[key] != value
+    }
+    if conflicts:
+        raise ValueError(
+            f"semantic projection {projection_id!r} would overwrite recorded "
+            f"values: {conflicts!r}"
+        )
+    config.update(overlay)
+    return SemanticRunProjection(
+        physical_id=view.physical_id,
+        effective_config=freeze_value(config),
+        raw_config=view.raw_config,
+        history=view.history,
+        group=view.group,
+        log_filename=view.log_filename,
+        semantic_revisions=view.semantic_revisions,
+        projection_id=projection_id,
+    )
+
+
 __all__ = [
     "AuditProvenance",
     "RUNTIME_FIELDS",
     "RunIssue",
     "RunRecord",
+    "SemanticRunProjection",
     "RunView",
     "freeze_value",
     "physical_run_id",
+    "project_run_semantics",
     "run_view",
     "thaw_value",
 ]

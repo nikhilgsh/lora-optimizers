@@ -50,6 +50,7 @@ from .optim import (
     optimizer_config_dict,
     optimizer_effective_config,
 )
+from .publication_semantics import build_optimizer_variant_semantics_payload
 from .run_schema import (
     ATTEMPT_ID_ENV,
     CHECKPOINT_IDENTITY_ENV,
@@ -330,6 +331,32 @@ def git_commit():
     except Exception:
         return None
     return result.stdout.strip()
+
+
+def _optimizer_provenance_fields(
+    *,
+    optimizer_name: str,
+    optimizer,
+    semantic_revision: str | int,
+    implementation_revision: str | int,
+) -> dict:
+    """Build the three optimizer config-event blocks from one snapshot."""
+    config = optimizer_config_dict(optimizer)
+    effective = optimizer_effective_config(optimizer)
+    return {
+        "optimizer_config": config,
+        "optimizer_effective": effective,
+        "optimizer_variant_semantics": (
+            build_optimizer_variant_semantics_payload(
+                optimizer=optimizer_name,
+                optimizer_instance=optimizer,
+                optimizer_config=config,
+                optimizer_effective=effective,
+                semantic_revision=semantic_revision,
+                implementation_revision=implementation_revision,
+            )
+        ),
+    }
 
 
 def git_dirty_state() -> dict:
@@ -1404,6 +1431,13 @@ def main():
         optimizer,
         {"data_pipeline_version": args.data_pipeline_version},
     )
+    _git_commit = git_commit() or "unavailable"
+    _optimizer_provenance = _optimizer_provenance_fields(
+        optimizer_name=effective_optimizer,
+        optimizer=optimizer,
+        semantic_revision=_semantic_revisions["optimizer_impl"],
+        implementation_revision=_git_commit,
+    )
     log_event(
         {
             "event": "config",
@@ -1415,7 +1449,7 @@ def main():
             "optimizer_impl_revision": _semantic_revisions["optimizer_impl"],
             "measurement_semantics_revision": _semantic_revisions["measurement"],
             "command": " ".join(shlex.quote(arg) for arg in sys.argv),
-            "git_commit": git_commit(),
+            "git_commit": _git_commit,
             # Recorded provenance, never an admission or attestation gate.
             "git_dirty": dirty_state["git_dirty"],
             "git_status": dirty_state["git_status"],
@@ -1423,6 +1457,7 @@ def main():
             "training_mode": args.training_mode,
             "optimizer": effective_optimizer,
             "requested_optimizer": args.optimizer,
+            **_optimizer_provenance,
             "model_name": args.model_name,
             "dataset_name": args.dataset_name if not args.train_file else "json",
             "train_file": args.train_file,

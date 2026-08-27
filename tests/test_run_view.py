@@ -9,7 +9,11 @@ from lora_playground.plotting.paper_view_semantics import (
     FACTORWISE_SLOT_BOUNDARY,
     filter_paper_precond_cohort,
 )
-from lora_playground.run_records import RunRecord, run_view
+from lora_playground.run_records import (
+    RunRecord,
+    project_run_semantics,
+    run_view,
+)
 from lora_playground.workloads import (
     DatasetProvenanceConflict,
     Workload,
@@ -50,6 +54,32 @@ def test_run_view_keeps_semantic_audit_and_raw_surfaces_separate():
     assert view.audit_config["git_commit"] == "abc123"
     assert view.raw_config["data_dir"].endswith("openmath_instruct_2_2m")
     assert view.semantic_revisions == {"optimizer_impl": 2}
+
+
+def test_semantic_projection_is_narrow_immutable_and_preserves_provenance():
+    record = _record({
+        "optimizer": "method",
+        "git_commit": "abc123",
+    })
+
+    projected = project_run_semantics(
+        record,
+        {"reviewed_view_revision": 2},
+        projection_id="paper.reviewed.v1",
+    )
+    view = run_view(projected)
+
+    assert view.semantic_config["reviewed_view_revision"] == 2
+    assert view.audit_config["git_commit"] == "abc123"
+    assert view.physical_id == record.physical_id
+    with pytest.raises(ValueError, match="audit/private"):
+        project_run_semantics(
+            record, {"git_commit": "other"}, projection_id="bad"
+        )
+    with pytest.raises(ValueError, match="overwrite recorded"):
+        project_run_semantics(
+            record, {"optimizer": "other"}, projection_id="bad"
+        )
 
 
 def test_legacy_command_only_datasets_are_selected_by_workload_records(tmp_path):
