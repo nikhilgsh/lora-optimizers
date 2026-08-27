@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -59,14 +60,51 @@ SIGMA = 0.0017
 # ask "did this run finish": _figure's max_steps, the in-flight notice, and _max_step.
 HORIZON = 9000
 
-# The older 2894c0d... factorwise snapshot is operationally invalid: several
-# execution-path changes separate it from the current source, so it is neither a
-# scientific arm nor an alias for the current implementation. Keep the raw logs
-# on disk, but the preconditioner panel admits factorwise and its one-sided
-# control only from this exact current execution snapshot.
-_TRUSTED_PRECOND_SOURCE = (
-    "801a80d25a8e489a9d67e782df4221752811f9d2dbc228c8b01862e90fe62ee5"
-)
+# The factorwise arm changed at this commit: it initializes the r x r free
+# Kronecker slots at RR_FREE_INIT_EPS*I instead of zeros. A run launched before
+# it is a DIFFERENT implementation of factorwise, so its losses must not be
+# joined to post-fix ones in a curve or averaged into a cell.
+#
+# Membership is decided by GIT ANCESTRY, not by a pinned `execution_source_sha`.
+# The source sha changes on every commit, including plotting-only ones -- three
+# of today's post-fix commits (02112c2, 5ff2b5a, 9e7f43c) carry three different
+# shas and only two distinct optim.py blobs -- so pinning one sha would discard
+# valid data every time anybody commits anything, and would need re-pinning by
+# hand forever. Ancestry answers the question actually being asked: was this run
+# produced by code that already had the fix?
+_PRECOND_FIX_COMMIT = "7792797"
+
+
+@lru_cache(maxsize=1)
+def _post_fix_sources() -> frozenset:
+    """`execution_source_sha` values whose run was launched from code that
+    already had the factorwise fix.
+
+    Built by asking git whether each run's recorded `git_commit` descends from
+    `_PRECOND_FIX_COMMIT`. Cached: it shells out once per session, over the
+    handful of distinct commits present in `logs/`, not per run.
+
+    A run whose commit git cannot resolve (a branch since deleted, a shallow
+    clone) is EXCLUDED. Unknown provenance is not evidence of correctness, and
+    the alternative -- admitting it -- is how superseded data gets plotted.
+    """
+    import subprocess
+    commits = {cfg.get("git_commit") for cfg, hist in
+               load_runs(warn_cross_commit=False, quiet=True) if hist}
+    commits.discard(None)
+    ok = set()
+    for c in commits:
+        r = subprocess.run(["git", "-C", str(ROOT), "merge-base",
+                            "--is-ancestor", _PRECOND_FIX_COMMIT, c],
+                           capture_output=True)
+        if r.returncode == 0:
+            ok.add(c)
+    return frozenset(
+        cfg.get("execution_source_sha")
+        for cfg, hist in load_runs(warn_cross_commit=False, quiet=True)
+        if hist and cfg.get("git_commit") in ok
+        and cfg.get("execution_source_sha")
+    )
 
 # ROOT must be the checkout, not wherever the package happens to be installed. Under a
 # non-editable `pip install` __file__ lands in site-packages and this would silently
@@ -398,7 +436,7 @@ def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, h
     # and the figure still renders. Pass `strict_sources=True` to get the raise
     # back for a panel whose provenance genuinely has to be single-snapshot --
     # `precond_panel` does that for factorwise/one-sided via
-    # `_TRUSTED_PRECOND_SOURCE`, which is the case the guard was written for.
+    # `_post_fix_sources()`, which is the case the guard was written for.
     try:
         assert_curve_source_coherent(
             panel_runs, base_key, bucket_keys=("lora_r",),
@@ -689,45 +727,54 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
     (C_B and C_A are r x r, so the slot has less to offer as r falls) or on
     another architecture, without a second copy of the figure.
 
-    Factorwise and one-sided PREFER the trusted execution snapshot, and fall
-    back to whatever exists when this cell has none of it.
+    Factorwise and one-sided are admitted ONLY from the trusted execution
+    snapshot. There is no fallback: `7792797` changed the factorwise arm, so a
+    pre-fix run is a different implementation, and a cell with no trusted run
+    renders that arm EMPTY rather than filling it with superseded data.
 
-    The preference is right: `7792797` changed the factorwise arm, so a curve
-    joining pre- and post-fix points is mixing two implementations. But applied
-    as a hard filter it emptied the figure wherever the trusted snapshot had not
-    been run. Measured: only 8 runs on disk carry it, all at r=16, so
-    `precond_panel(256)` and `precond_panel(64)` dropped BOTH arms and rendered
-    with AdamW and product alone — two of four, with the omission reported only
-    in a line of console text above the plot.
+    That is a deliberate cost. Measured: only 8 runs on disk carry the trusted
+    sha and all are at r=16, so `precond_panel(256)` and `precond_panel(64)`
+    show AdamW and product only until those cells are re-run. An empty arm with
+    `_missing_trusted_note` naming what has to be re-run is the honest state;
+    a filled one is a figure that says something the current code did not
+    produce.
 
-    A fallback is defensible here because the size of the staleness is measured,
-    not assumed: job 6951323 re-ran r=16 factorwise on the fixed code and got
-    0.4187 against the pre-fix 0.4193. A 0.0005 shift against a 0.00043 seed sd
-    is stale-by-a-little, not invalid, so showing it WITH its provenance beats
-    showing nothing. `_figure` prints the source mixing either way.
-
-    Pass `trusted_only=True` for the strict reading once every cell has been
-    re-run on one snapshot.
+    A fallback was tried and removed. It rested on the pre-fix/post-fix gap
+    being small (0.4193 -> 0.4187 at r=16, against a 0.00043 seed sd), but "the
+    difference happens to be small at the one cell where we can measure it" is
+    not a licence to plot the other cells, where it has not been measured at
+    all.
     """
-    allowed = None
-    if trusted_only or _has_trusted_precond_runs(cell(model, data_key, rank)):
-        allowed = {"factorwise: C_B=P_A, C_A=Q_B": {_TRUSTED_PRECOND_SOURCE},
-                   "one-sided: C_B=C_A=I": {_TRUSTED_PRECOND_SOURCE}}
-    return _figure(_arms.PRECOND_ARMS, cell(model, data_key, rank),
-                   "product: C_B=B^T P B, C_A=A Q A^T",
-                   f"The r x r metric slot - {model_label} {data_key} r{rank}",
-                   allowed_sources_by_label=allowed)
+    common = cell(model, data_key, rank)
+    fig = _figure(_arms.PRECOND_ARMS, common,
+                  "product: C_B=B^T P B, C_A=A Q A^T",
+                  f"The r x r metric slot - {model_label} {data_key} r{rank}",
+                  allowed_sources_by_label={
+                      "factorwise: C_B=P_A, C_A=Q_B": _post_fix_sources(),
+                      "one-sided: C_B=C_A=I": _post_fix_sources(),
+                  })
+    _missing_trusted_note(common, f"{model_label} {data_key} r{rank}")
+    return fig
 
 
-def _has_trusted_precond_runs(common) -> bool:
-    """Does this cell have any factorwise/one-sided run on the trusted snapshot?
+def _missing_trusted_note(common, cell_name) -> None:
+    """Say which arms are empty for want of a trusted-snapshot run, and why.
 
-    Cheap: `cell_runs` is memoized and `_figure` holds one logs signature for the
-    panel, so this costs a dict scan rather than a tree walk.
+    Without this the omission reads as "that arm was never run here", which is
+    false — the runs exist, on superseded code. The distinction decides whether
+    the fix is a re-run or nothing at all, so the panel states it.
     """
-    return any(cfg.get("execution_source_sha") == _TRUSTED_PRECOND_SOURCE
-               and cfg.get("precond") in ("factorwise", "one-sided")
-               for cfg, hist in cell_runs(common) if hist)
+    have = {cfg.get("precond") for cfg, hist in cell_runs(common) if hist
+            and cfg.get("execution_source_sha") in _post_fix_sources()}
+    stale = {cfg.get("precond") for cfg, hist in cell_runs(common) if hist
+             and cfg.get("precond") in ("factorwise", "one-sided")
+             and cfg.get("execution_source_sha") not in _post_fix_sources()}
+    missing = sorted(stale - have)
+    if missing:
+        print(f"{cell_name}: {', '.join(missing)} EMPTY — runs exist but predate "
+              f"7792797, which changed the factorwise arm. Re-run this cell on "
+              f"the current source to populate it; the older logs stay on disk "
+              f"and are deliberately not plotted.")
 
 
 def msign_panel(rank=256):
@@ -788,18 +835,26 @@ def precond_beta2_panel(rank=16):
 
     The one-sided arms are the CONTROL, not padding: `curvature_beta` drives four
     EMAs, not one -- P_A/Q_B (factorwise only) at optim.py:2184-2186, 2200-2201,
-    and D_in/D_out (BOTH arms) at 2191-2195, 2202-2203. Raising it helps
+    and Q/P (BOTH arms) at 2191-2195, 2202-2203. Raising it helps
     everything, so only a gap that shrinks MORE than the one-sided control moves
     isolates the r x r slot.
     """
-    return _figure(_arms.PRECOND_BETA2_ARMS, om(rank), "one-sided, b2=0.99",
-                   f"Estimation noise in the r x r slot: curvature_beta x precond "
-                   f"- Llama-3.2-1B openmath r{rank}",
-                   target_label="AdamW")
+    common = om(rank)
+    fig = _figure(_arms.PRECOND_BETA2_ARMS, common, "one-sided, b2=0.99",
+                  f"Estimation noise in the r x r slot: curvature_beta x precond "
+                  f"- Llama-3.2-1B openmath r{rank}",
+                  target_label="AdamW",
+                  allowed_sources_by_label={
+                      lbl: _post_fix_sources() for lbl in _arms.PRECOND_BETA2_ARMS
+                      if lbl != "AdamW"
+                  })
+    _missing_trusted_note(common, f"Llama-3.2-1B openmath r{rank} (beta2 panel)")
+    return fig
 
 
 def adamw_beta2_panel(rank=256):
     """AdamW beta2 control -- the negative control for the protagonist beta2 grid."""
-    return _figure(_arms.ADAMW_BETA2_ARMS, om(rank), "AdamW (beta2=0.999)",
+    return _figure(_arms.ADAMW_BETA2_ARMS, om(rank),
+                   "AdamW (shipped, b2=0.999)",
                    f"AdamW beta2 control - Llama-3.2-1B openmath r{rank}",
                    target_label=None)
