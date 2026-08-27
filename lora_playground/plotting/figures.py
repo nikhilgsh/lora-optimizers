@@ -12,7 +12,7 @@ from typing import Callable, Iterable
 
 import matplotlib.pyplot as plt
 
-from lora_playground.leaderboard import is_final
+from lora_playground.leaderboard import is_final, mean_over_seeds
 from .dedup import assert_label_discriminates
 from .merge import report_diverged, split_diverged
 from .overlays import baseline_overlay
@@ -433,6 +433,16 @@ def compare_variants_figure(
                         f"Use the canonical label as the dict key (or pass "
                         f"allow_custom_labels=True for an intentional grouping)."
                     )
+        # Seed repeats are COLLECTED per lr and averaged below, not reduced
+        # pairwise as they arrive. The previous rule kept the minimum-loss run
+        # (`last_loss < d[lr][0]`), which is not merely an arbitrary tiebreak but
+        # a BIASED one: min-of-n falls as n grows, so an arm with four seeds was
+        # scored on its luckiest run while a single-seed arm was scored on its
+        # only one. Measured on Llama-3.2-1B/openmath/r256 factorwise lr=1e-2,
+        # whose four seeds are 0.3676/0.3678/0.3684/0.3685: the panel reported
+        # 0.3676 against a true mean of 0.3681 -- a 0.0005 flattering shift, set
+        # against a 0.00043 seed sd and arm-to-arm deltas of about 0.0008.
+        by_lr: dict[float, list] = {}
         d, d_partial = {}, {}
         for c, h in runs:
             if not h:
@@ -452,13 +462,23 @@ def compare_variants_figure(
             # final-vs-lr panel and mislabelled high-lr partials as "diverged").
             # Shared rule with the loader (lora_playground.leaderboard.is_final).
             if is_final(last_step, max_steps, completion_slack) or is_aborted:
-                if lr not in d or last_loss < d[lr][0]:
-                    d[lr] = (last_loss, c, h)
+                by_lr.setdefault(lr, []).append((c, h, last_step))
             elif allow_partial:
                 # Track the most-progressed partial run per lr (so trajectory
                 # panel shows the longest in-progress curve).
                 if lr not in d_partial or last_step > d_partial[lr][3]:
                     d_partial[lr] = (last_loss, c, h, last_step)
+        for lr, members in by_lr.items():
+            # A resub continuation genuinely supersedes its shorter predecessor;
+            # runs that reached the same horizon are seed repeats. Same rule as
+            # `leaderboard.labeled_completed_runs`, and the same helper does the
+            # averaging, so the plotted curve and the speedup table can never
+            # disagree about what a cell's number is.
+            longest = max(m[2] for m in members)
+            finished = [m for m in members if m[2] == longest]
+            mean_final, merged = mean_over_seeds(
+                [(h, h[-1], ls) for _c, h, ls in finished])
+            d[lr] = (mean_final, finished[0][0], merged)
         per_variant[label] = d
         per_variant_partial[label] = d_partial
 
@@ -590,7 +610,25 @@ def compare_variants_figure(
         # running" here and "reference line" elsewhere in the same axes.
         note = (f"partial @{last_step}: {disp_loss:.4f}" if is_partial
                 else f"final={disp_loss:.4f}")
-        ax_traj.plot([e["step"] for e in h], [e["eval_loss"] for e in h],
+        # A seed-averaged curve is drawn with its spread. `labeled_completed_runs`
+        # averages runs that differ only on `manifest.SERIES_AXIS_FIELDS` and
+        # stamps each record with n_seeds / eval_loss_sd / eval_loss_sem, so a
+        # multi-seed mean must not render as a bare line indistinguishable from a
+        # single run -- that reads as more authoritative while hiding the one
+        # thing that says whether a gap between two arms is legible. Band is
+        # +/-1 SEM (the uncertainty in the MEAN, which is what the curve IS);
+        # n=1 arms get no band and say so in the legend.
+        steps = [e["step"] for e in h]
+        mean = [e["eval_loss"] for e in h]
+        n_seeds = max((e.get("n_seeds", 1) for e in h), default=1)
+        if n_seeds > 1:
+            sem = [e.get("eval_loss_sem", 0.0) for e in h]
+            ax_traj.fill_between(steps,
+                                 [m - s for m, s in zip(mean, sem)],
+                                 [m + s for m, s in zip(mean, sem)],
+                                 color=colors[label], alpha=0.18, linewidth=0)
+            note += f", n={n_seeds}"
+        ax_traj.plot(steps, mean,
                      marker=markers[label], ms=3, lw=1.4, color=colors[label],
                      label=f"{label}  (lr={best_lr:g}, {note})")
     # Dashed black line at the speed target: where each curve crosses it is the

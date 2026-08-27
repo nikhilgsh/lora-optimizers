@@ -195,7 +195,7 @@ AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 | KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) msign-diag H=8 minit=1e-12 precond_method=gram_ns | 3e-02 | 0.3726 | — | 1.00× |
 | KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided H=8 minit=1e-12 precond_method=gram_ns | 3e-03 | 0.3673 | — | 1.00× |
 | KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) one-sided msign-diag H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3810 | — | 1.00× |
-| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3676 | — | 1.00× |
+| KL-Shampoo +polar PE=8 (f=10, β_c=0.99, δ=1e-4) factorwise H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3681 | — | 1.00× |
 | KL-diag (f=10, β_c=0.909, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 3e-02 | 0.3728 | — | — |
 | KL-diag (f=10, β_c=0.9564, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 3e-02 | 0.3730 | — | — |
 | KL-diag (f=10, β_c=0.9791, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 3e-02 | 0.3731 | — | — |
@@ -210,7 +210,7 @@ AdamW speed target (best-lr final loss): **—**  ·  horizon 9000 steps
 | KL-diag +polar PE=8 (f=10, β_c=0.909, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3644 | — | — |
 | KL-diag +polar PE=8 (f=10, β_c=0.9564, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3643 | — | — |
 | KL-diag +polar PE=8 (f=10, β_c=0.9791, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3643 | — | — |
-| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3648 | — | 1.00× |
+| KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 1e-02 | 0.3650 | — | 1.00× |
 | KL-diag-flatout +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 precond_method=gram_ns | 3e-03 | 0.3702 | — | 1.00× |
 | KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 +cw_solved_rho precond_method=gram_ns | 3e-03 | 0.3692 | — | 1.00× |
 | KL-diag +polar PE=8 (f=10, β_c=0.99, δ=1e-4) H=8 minit=1e-12 rdinv=VN rdδ=1e-6 precond_method=gram_ns | 1e-02 | 0.3643 | — | 1.00× |

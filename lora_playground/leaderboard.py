@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from statistics import fmean, stdev
 from typing import Callable
 
 # eval cadence varies (250) and some sweeps stopped at 8970 instead of 9000;
@@ -146,12 +147,80 @@ def labeled_completed_runs(
             bucket_keys=("lora_r", "lr"),
         )
 
-    by: dict[str, dict[float, tuple[float, list[dict], int]]] = defaultdict(dict)
+    # Group first, THEN reduce. Reducing pairwise as we go (keeping a running
+    # "best" run) cannot average, because the members are not all in hand until
+    # the group is closed.
+    groups: dict[tuple[str, float], list[tuple[list[dict], dict, int]]] = defaultdict(list)
     for cfg, hist, label, lr, last, last_step in kept:
-        prev = by[label].get(lr)
-        if prev is None or last_step > prev[2]:
-            by[label][lr] = (last["eval_loss"], hist, last_step)
-    return {v: {lr: (fl, h) for lr, (fl, h, _) in d.items()} for v, d in by.items()}
+        groups[(label, lr)].append((hist, last, last_step))
+
+    by: dict[str, dict[float, tuple[float, list[dict]]]] = defaultdict(dict)
+    for (label, lr), members in groups.items():
+        # A resub continuation is genuinely longer than its predecessor and
+        # supersedes it — that is the ONLY thing last_step should arbitrate.
+        # Runs that reached the same horizon are seed repeats and get averaged.
+        longest = max(m[2] for m in members)
+        finished = [m for m in members if m[2] == longest]
+        by[label][lr] = mean_over_seeds(finished)
+    return {v: dict(d) for v, d in by.items()}
+
+
+def mean_over_seeds(
+    members: list[tuple[list[dict], dict, int]],
+) -> tuple[float, list[dict]]:
+    """Average a (label, lr) bucket's seed repeats into one series.
+
+    `manifest.SERIES_AXIS_FIELDS` puts `seed` among the per-series axes, whose
+    docstring says runs differing only on those "are averaged together as
+    members of one series". This is where that happens. Before it did, the
+    bucket kept whichever member had the largest `last_step` and broke ties by
+    iteration order, so a 4-seed cell reported ONE arbitrary seed: the r=256
+    openmath factorwise point read 0.3676 (seed 0) or 0.3685 (seed 3) depending
+    on directory order, a 0.0009 swing against a 0.0004 seed sd and against
+    deltas of 0.0012 that were being read off it.
+
+    Returns the mean final eval_loss and a history averaged at the steps every
+    member evaluated. Steps only some members have are dropped rather than
+    averaged over a changing population, which would put a discontinuity in the
+    curve wherever a member's eval grid ended.
+
+    Every averaged record carries its own spread — ``n_seeds``, ``eval_loss_sd``
+    (sample sd, ddof=1) and ``eval_loss_sem`` = sd/sqrt(n) — so a plotter can
+    band the mean instead of drawing a bare line that hides how many runs are
+    under it. A mean without a spread is worse than a single seed, because it
+    looks more authoritative while discarding the one thing that says whether a
+    difference is readable. Single-member buckets carry ``n_seeds`` = 1 and no
+    sd, which is how a caller tells "one run" from "four that agree".
+    """
+    n = len(members)
+    finals = [last["eval_loss"] for _, last, _ in members]
+    if n == 1:
+        hist, last, _ = members[0]
+        return (last["eval_loss"], [dict(e, n_seeds=1) for e in hist])
+
+    common: set[float] | None = None
+    for hist, _, _ in members:
+        steps = {e["step"] for e in hist
+                 if "step" in e and e.get("eval_loss") is not None}
+        common = steps if common is None else (common & steps)
+    common = common or set()
+
+    template = {e["step"]: e for e in members[0][0] if e.get("step") in common}
+    merged: list[dict] = []
+    for s in sorted(common):
+        vals: list[float] = []
+        for hist, _, _ in members:
+            for e in hist:
+                if e.get("step") == s and e.get("eval_loss") is not None:
+                    vals.append(e["eval_loss"])
+                    break
+        rec = dict(template[s])
+        rec["eval_loss"] = fmean(vals)
+        rec["n_seeds"] = len(vals)
+        rec["eval_loss_sd"] = stdev(vals) if len(vals) > 1 else 0.0
+        rec["eval_loss_sem"] = rec["eval_loss_sd"] / math.sqrt(len(vals))
+        merged.append(rec)
+    return (fmean(finals), merged)
 
 
 def merge_labeled(*labeled_dicts) -> dict[str, dict[float, tuple[float, list[dict]]]]:
