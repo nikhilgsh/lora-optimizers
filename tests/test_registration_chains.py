@@ -58,6 +58,16 @@ def _default_true_booleans() -> list[str]:
     )
 
 
+def _all_family_members() -> frozenset:
+    """Every optimizer named by any OPTIM_FAMILIES set.
+
+    One idiom: the two tests below computed this union two different ways a
+    few lines apart (`set().union(*...)` and a nested comprehension).
+    """
+    from lora_playground.plotting import OPTIM_FAMILIES
+    return frozenset(o for members in OPTIM_FAMILIES.values() for o in members)
+
+
 @lru_cache(maxsize=1)
 def _wrapper_lines() -> tuple[tuple[str, int, str], ...]:
     """``(wrapper name, line number, line)`` for every non-comment line.
@@ -83,10 +93,9 @@ def test_no_optim_colors_entry_is_outside_every_family():
     once, and there is no CI here, so assert it too. The failure it prevents:
     a family-filtered plot silently omits the new optimizer.
     """
-    from lora_playground.plotting import OPTIM_COLORS, OPTIM_FAMILIES
+    from lora_playground.plotting import OPTIM_COLORS
 
-    in_a_family = set().union(*OPTIM_FAMILIES.values())
-    orphans = sorted(set(OPTIM_COLORS) - in_a_family)
+    orphans = sorted(set(OPTIM_COLORS) - _all_family_members())
     assert not orphans, (
         f"{len(orphans)} optimizer(s) have an OPTIM_COLORS entry but belong to no "
         f"OPTIM_FAMILIES set, so every family-filtered plot drops them:\n"
@@ -98,10 +107,9 @@ def test_no_optim_colors_entry_is_outside_every_family():
 def test_every_family_member_has_a_colour():
     """The reverse link: a family naming an optimizer with no colour entry makes
     the notebook's `c["optimizer"] in OPTIM_COLORS` filter drop it."""
-    from lora_playground.plotting import OPTIM_COLORS, OPTIM_FAMILIES
+    from lora_playground.plotting import OPTIM_COLORS
 
-    missing = sorted({o for members in OPTIM_FAMILIES.values() for o in members}
-                     - set(OPTIM_COLORS))
+    missing = sorted(_all_family_members() - set(OPTIM_COLORS))
     assert not missing, (
         f"OPTIM_FAMILIES names optimizer(s) with no OPTIM_COLORS entry: {missing}"
     )
@@ -111,10 +119,8 @@ def test_families_only_name_registered_optimizers():
     """A family entry for a retired optimizer reads as coverage that does not
     exist, and a typo there is invisible — nothing dereferences it."""
     from lora_playground.optim import OPTIMIZER_CHOICES
-    from lora_playground.plotting import OPTIM_FAMILIES
 
-    named = {o for members in OPTIM_FAMILIES.values() for o in members}
-    unknown = sorted(named - set(OPTIMIZER_CHOICES))
+    unknown = sorted(_all_family_members() - set(OPTIMIZER_CHOICES))
     assert not unknown, (
         f"OPTIM_FAMILIES names optimizer(s) absent from OPTIMIZER_CHOICES "
         f"(retired or misspelled): {unknown}"

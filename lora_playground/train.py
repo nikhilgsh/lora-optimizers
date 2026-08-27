@@ -391,18 +391,22 @@ def ensure_group_manifest(checkpoint_dir, commit, data_pipeline_version):
     if not checkpoint_dir:
         return ""
     parts = Path(checkpoint_dir).resolve().parts
-    try:                                    # .../logs/<group>/run_info*/checkpoints/task_N
-        i = len(parts) - 1 - parts[::-1].index("logs")
-    except ValueError:
+    # The LAST "logs" segment, so an ancestor directory that happens to be
+    # named logs/ does not win over the real one. Layout:
+    #   .../logs/<group>/run_info*/checkpoints/task_N
+    logs_at = [n for n, p in enumerate(parts) if p == "logs"]
+    if not logs_at:
         return ""
+    i = logs_at[-1]
     if i + 2 >= len(parts) or not parts[i + 2].startswith("run_info"):
         return ""
+    group = parts[i + 1]
     run_info = Path(*parts[: i + 3])
     meta = run_info / "meta.json"
     if meta.exists():
         return ""
     stub = build_manifest(
-        group=parts[i + 1],
+        group=group,
         submitted_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         slurm_job_id=os.environ.get("SLURM_JOB_ID", "unknown"),
         git_commit=commit,
@@ -417,10 +421,10 @@ def ensure_group_manifest(checkpoint_dir, commit, data_pipeline_version):
         run_info.mkdir(parents=True, exist_ok=True)
         meta.write_text(json.dumps(stub, indent=2) + "\n")
     except OSError as e:
-        return (f"group {parts[i + 1]!r} has no run_info/meta.json and the stub "
+        return (f"group {group!r} has no run_info/meta.json and the stub "
                 f"could not be written ({e}); its runs will be invisible to "
                 f"load_runs until one exists.")
-    return (f"group {parts[i + 1]!r} had no run_info/meta.json — wrote a STUB with "
+    return (f"group {group!r} had no run_info/meta.json — wrote a STUB with "
             f"empty scope. Its runs stay invisible to load_runs until a scope tag "
             f"is added to {meta}.")
 

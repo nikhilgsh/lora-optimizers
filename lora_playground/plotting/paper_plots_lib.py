@@ -124,12 +124,16 @@ _CELLS_ORDER = [
 # Registry cells with no panel, and why. A key here that the registry does not
 # declare, or a registry cell in neither this dict nor `_CELLS_ORDER`, is a test
 # failure -- that is what keeps "not shown" distinguishable from "forgotten".
+# Reasons bound once: three cells shared one string and two shared another, so
+# editing one copy could silently leave its siblings saying something else.
+_ONE_RANK_LADDER = "rank ladder is run on Llama-3.2-1B/openmath only"
+_NOT_E1_CORPUS = "tulu3 is not an E1 corpus"
 CELLS_NOT_PANELLED = {
-    ("OLMo-2-1B", "opc", 64): "rank ladder is run on Llama-3.2-1B/openmath only",
-    ("OLMo-2-1B", "openmath", 64): "rank ladder is run on Llama-3.2-1B/openmath only",
-    ("Llama-3.2-1B", "opc", 64): "rank ladder is run on Llama-3.2-1B/openmath only",
-    ("OLMo-2-1B", "tulu3", 64): "tulu3 is not an E1 corpus",
-    ("OLMo-2-1B", "tulu3", 256): "tulu3 is not an E1 corpus",
+    ("OLMo-2-1B", "opc", 64): _ONE_RANK_LADDER,
+    ("OLMo-2-1B", "openmath", 64): _ONE_RANK_LADDER,
+    ("Llama-3.2-1B", "opc", 64): _ONE_RANK_LADDER,
+    ("OLMo-2-1B", "tulu3", 64): _NOT_E1_CORPUS,
+    ("OLMo-2-1B", "tulu3", 256): _NOT_E1_CORPUS,
     ("Qwen3-0.6B", "openwebmath", 64):
         "continued pretraining (all-token loss), not instruction tuning",
 }
