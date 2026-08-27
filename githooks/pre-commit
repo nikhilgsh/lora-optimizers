@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
-# Auto-regenerate docs/notes/leaderboard.md so the committed doc is always
-# consistent with the logs/ present at commit time.
+# Remind when leaderboard inputs change; never regenerate or stage data.
 #
 # Enable once per clone (tracked hooks aren't active by default):
 #     git config core.hooksPath githooks
 #
-# Design: NON-BLOCKING. A commit must never be wedged by this hook — if logs are
-# absent, the env is unavailable, or generation errors, we warn (or stay silent)
-# and let the commit proceed. The doc just won't be refreshed that time.
-set -eo pipefail  # NOT -u: conda activate scripts abort under set -u
+# The leaderboard is data-derived publication material. Its documented workflow
+# requires a fresh canonical load, review of the concrete diff, and user
+# confirmation. A commit hook cannot perform that review and must not mutate the
+# index. Keep this check fast and independent of the local logs tree.
+set -eo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
-
-# No data → nothing to regenerate (clean checkout, machine without logs).
-if [ ! -d "$ROOT/logs" ] || [ -z "$(ls -A "$ROOT/logs" 2>/dev/null)" ]; then
-  exit 0
-fi
-
-# Delegate to the canonical regen script (same code path as the manual trigger).
-if ! "$ROOT/scripts/analysis/update_leaderboard.sh" >/dev/null 2>&1; then
-  echo "pre-commit: leaderboard regen skipped (env/generation unavailable) — commit proceeds" >&2
-  exit 0
-fi
-
-# Stage the refreshed doc if it changed; if unchanged this is a no-op.
-git add "$ROOT/docs/notes/leaderboard.md" 2>/dev/null || true
+STAGED="$(git diff --cached --name-only)"
+case "$STAGED" in
+  *lora_playground/leaderboard.py*|*lora_playground/workloads.py*|\
+  *lora_playground/plotting/labels.py*|*scripts/analysis/build_leaderboard_doc.py*)
+    case "$STAGED" in
+      *docs/notes/leaderboard.md*) ;;
+      *)
+        echo "pre-commit: leaderboard inputs changed; regenerate and review docs/notes/leaderboard.md explicitly if this change affects published values" >&2
+        ;;
+    esac
+    ;;
+esac
 exit 0
