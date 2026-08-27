@@ -109,23 +109,29 @@ def _quiet_diagnostics(monkeypatch):
 
 # ─── main.tex:684 / app:init — eps = 1e-12, and it is not the other 1e-8 ──────
 
-# The attribute holding Alg 1 line 436's clamp. The IDENTIFIER is not the paper
-# contract -- the value, and its separateness from `eps`, are -- so a deliberate
-# rename should not fail these tests, while DELETING the constant or folding it
-# back into `eps` must. Both names this class has used are listed; a future
-# rename adds a name here, which keeps the rename a visible act rather than a
-# silent one.
-_FLOOR_ATTRS = ("alg1_magnitude_floor", "sigma_floor")
+# The attribute holding Alg 1 line 436's clamp. ONE name, deliberately.
+#
+# The IDENTIFIER is not the paper contract -- the value, and its separateness
+# from `eps`, are -- so a deliberate rename is meant to be a one-line edit here
+# rather than a test failure. But the list must never carry a name that denotes
+# a DIFFERENT quantity. It previously also accepted `sigma_floor`, which is
+# spectral.py's data-dependent degenerate-vector floor and is called out at
+# optim.py:670 as distinct from this constant. Had `alg1_magnitude_floor` been
+# deleted while some `sigma_floor` attribute existed, the test would have gone
+# on passing against the wrong number -- exactly the substitution it exists to
+# catch. Verified on a live CurvatureWhitenLoRA: `alg1_magnitude_floor` = 1e-12,
+# `sigma_floor` absent.
+_FLOOR_ATTR = "alg1_magnitude_floor"
 
 
 def _floor_attr(opt):
-    found = [n for n in _FLOOR_ATTRS if hasattr(opt, n)]
-    assert len(found) == 1, (
-        f"expected exactly one of {_FLOOR_ATTRS} on the optimizer, found {found}. "
-        "Alg 1 line 436's magnitude clamp must keep its own constant, separate "
-        "from `eps` -- if it was renamed again, add the new name to _FLOOR_ATTRS."
+    assert hasattr(opt, _FLOOR_ATTR), (
+        f"the optimizer has no `{_FLOOR_ATTR}`. Alg 1 line 436's magnitude clamp "
+        "must keep its own constant, separate from `eps` -- if it was renamed, "
+        "point _FLOOR_ATTR at the new name (one name, and it must denote THIS "
+        "constant, not a similarly-spelled floor)."
     )
-    return found[0]
+    return _FLOOR_ATTR
 
 
 def test_magnitude_clamp_constant_is_1e_12_and_distinct_from_eps():
