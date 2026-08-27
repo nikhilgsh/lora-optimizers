@@ -36,24 +36,24 @@ SBATCH_SCRIPT="${5:-slurm_scripts/sbatch.sh}"
 
 # Resolve to repo-relative form. If the caller passes an absolute path, strip
 # the REPO_DIR prefix; otherwise prepending REPO_DIR below would produce
-# `/REPO_DIR//absolute/path` which silently breaks downstream tooling
-# (notably audit_sweep_overlap.py's --sweep-script, which reads launcher
-# fixed-args; a missing file there causes spurious cross-horizon overlaps).
+# `/REPO_DIR//absolute/path` which silently breaks downstream tooling. The
+# overlap audit uses this path only as recorded manifest provenance; it never
+# interprets launcher contents as missing configuration.
 case "$PARAM_FILE" in /*) PARAM_FILE="${PARAM_FILE#${REPO_DIR}/}";; esac
 case "$SWEEP_SCRIPT" in /*) SWEEP_SCRIPT="${SWEEP_SCRIPT#${REPO_DIR}/}";; esac
 case "$SBATCH_SCRIPT" in /*) SBATCH_SCRIPT="${SBATCH_SCRIPT#${REPO_DIR}/}";; esac
 
 # ── Reuse-existing-data refusal ──────────────────────────────────────────────
 # Refuse to submit if any cell in the cartesian product of PARAM_FILE already
-# exists in logs/. Override with FORCE_OVERLAP=1 (and document the reason in
-# SWEEP_PURPOSE). The audit covers semantic equivalences (e.g. picard_alpha=0
-# is equivalent to picard_iters=1 / uncoupled). See
-# scripts/analysis/audit_sweep_overlap.py.
+# exists in logs/ or cannot be proven new from producer-recorded fields.
+# Override with FORCE_OVERLAP=1 (and document the reason in SWEEP_PURPOSE).
+# The audit never reconstructs defaults, aliases, or equivalences from shell
+# text; see scripts/analysis/audit_sweep_overlap.py.
 if [[ -z "${FORCE_OVERLAP:-}" ]]; then
     if ! python "${REPO_DIR}/scripts/analysis/audit_sweep_overlap.py" "${PARAM_FILE}" --logs-root "${REPO_DIR}/logs" --sweep-script "${REPO_DIR}/${SWEEP_SCRIPT}"; then
         echo "" >&2
-        echo "ERROR: sweep overlaps with existing logs (see ✓ rows above)." >&2
-        echo "Drop the duplicate cells from ${PARAM_FILE}, or set FORCE_OVERLAP=1" >&2
+        echo "ERROR: sweep overlaps with existing logs or is not provably new." >&2
+        echo "Drop proven duplicate cells from ${PARAM_FILE}, or set FORCE_OVERLAP=1" >&2
         echo "and explain the rerun in SWEEP_PURPOSE." >&2
         exit 1
     fi

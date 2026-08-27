@@ -1,306 +1,363 @@
-"""Audit a sweep params JSON against existing logs/ for already-completed cells.
+"""Audit a sweep plan against producer-recorded runs.
 
 Usage:
     python scripts/analysis/audit_sweep_overlap.py params/<sweep>.json
 
-For each (config-tuple) in the cartesian product of the params file, search
-logs/ for an existing run matching all keys (allowing string/numeric coercion).
-Prints one line per cell: ✓ <group> if already exists, ☐ NEW otherwise.
-At the end prints a one-line "drop these cells before submit" suggestion.
+The params JSON remains a mapping from argument name to a list of values. Its
+cartesian product is compared with immutable records discovered by
+``RunCatalog``. Only fields recorded in a run's semantic configuration may
+match. This checker does not parse shell launchers or command strings, import
+current argparse/optimizer defaults, translate aliases, or maintain a second
+table of optimizer equivalences.
 
-Designed as a pre-submit forcing function: ALWAYS run before
-`./slurm_scripts/submit.sh` to enforce CLAUDE.md's "reuse existing data
-before any new run" rule. Cells marked ✓ are wasted GPU.
+``--sweep-script`` is retained because ``slurm_scripts/submit.sh`` passes it.
+The path scopes candidates to manifests that recorded the same launcher, but
+the launcher contents are never interpreted. A matching record whose launcher
+provenance or requested field is missing is UNKNOWN, not silently compatible.
 
-NOTE: matches on cfg fields recorded by train.py at run time (lr, optimizer,
-lora_r, seed, picard_alpha, picard_iters, lora_plus_multiplier, etc.).
-For sweeps that vary a NEW config field train.py just learned about,
-existing logs won't have that field — the audit treats missing-field as
-"unknown, may or may not match"; check the printed match_keys to confirm
-intent.
+Exit status is non-zero for both proven overlap and uncertainty. The submit
+wrapper's existing ``FORCE_OVERLAP=1`` escape hatch therefore remains the
+explicit route for a deliberately repeated run or an old, under-recorded run.
 """
 from __future__ import annotations
 
 import argparse
 import itertools
 import json
-import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterable, Mapping
 
-# Map JSON sweep keys → cfg key as recorded by train.py log_event(config).
-KEY_ALIASES = {
-    "picard_iters_override": "picard_iters",   # config records the actual value
-}
-
-# Semantic defaults for fields that postdate older runs. If a sweep cell
-# specifies one of these at the listed default value, an older run that
-# lacks the field entirely is still a semantic match (the disabled/no-op
-# value is what the older code path implicitly produced). Keep this list
-# narrow — only fields whose default is a true no-op.
-FIELD_DEFAULTS = {
-    "anderson_m": 0,        # m=0 disables Anderson; older runs predate the path
-    "anderson_reg": 1e-10,  # regularizer is a no-op when m=0
-}
+from lora_playground.publication_semantics import (
+    PublicationSemanticsError,
+    publication_semantics_from_payload,
+)
+from lora_playground.run_catalog import RunCatalog
+from lora_playground.run_records import RunRecord
 
 
-def load_params(p: Path) -> dict:
-    return json.loads(p.read_text())
+PRODUCER_VARIANT_FIELD = "optimizer_variant_semantics"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def cartesian(params: dict) -> list[dict]:
-    keys = list(params.keys())
-    rows = []
-    for combo in itertools.product(*(params[k] for k in keys)):
-        rows.append(dict(zip(keys, combo)))
-    return rows
+@dataclass(frozen=True, slots=True)
+class PhysicalMatch:
+    """One physical record that supports (or weakens) an audit decision."""
+
+    physical_id: str
+    group: str
+    log_filename: str | None
+    variant_view_key: str | None = None
+    variant_exact_id: str | None = None
+    missing_fields: tuple[str, ...] = ()
+    issue: str | None = None
 
 
-def coerce(v):
-    if isinstance(v, str):
-        try:
-            f = float(v)
-            return int(f) if f.is_integer() else f
-        except ValueError:
-            return v
-    return v
+@dataclass(frozen=True, slots=True)
+class CellAudit:
+    """Result for one cartesian sweep cell."""
+
+    status: str
+    cell: Mapping[str, Any]
+    evidence: tuple[PhysicalMatch, ...] = ()
+    reason: str | None = None
 
 
-def normalize_cell(cell: dict) -> list[dict]:
-    """Expand a cell into one or more SEMANTICALLY-equivalent canonical forms.
+def load_params(path: Path) -> dict[str, list[Any]]:
+    """Read and validate the existing list-valued sweep params format."""
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict) or not value:
+        raise ValueError("params file must contain a non-empty JSON object")
+    params: dict[str, list[Any]] = {}
+    for key, choices in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("params keys must be non-empty strings")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError(f"params field {key!r} must be a non-empty list")
+        params[key] = choices
+    return params
 
-    The cartesian-product cell's literal config may be equivalent to a
-    different config recorded in older logs. Encoded equivalences:
 
-    - `picard_alpha=0.0` zeros the cross-coupling term, making any
-      picard_iters≥2 run equivalent to picard_iters=1 (uncoupled).
-      Canonical form: drop picard_alpha, set picard_iters_override=1
-      OR optimizer=adam-polar-product-lora.
-    - `picard_iters_override=1` is equivalent to optimizer=
-      adam-polar-product-lora (the uncoupled variant) regardless of
-      picard_alpha.
-    - `picard_alpha=1.0` with picard_iters_override=2 is the original
-      coupled default, equivalent to optimizer=
-      adam-polar-product-lora-coupled with no overrides recorded.
+def cartesian(params: Mapping[str, list[Any]]) -> list[dict[str, Any]]:
+    keys = tuple(params)
+    return [
+        dict(zip(keys, combination))
+        for combination in itertools.product(*(params[key] for key in keys))
+    ]
 
-    Returns a list of cell dicts; existence of ANY matching log of any
-    canonical form counts as overlap.
+
+def _canonical_param_value(value: Any) -> Any:
+    """Interpret JSON-scalar strings the same way argparse records them.
+
+    Sweep files historically quote numeric values because their task generator
+    forwards positional strings. Numeric parsing is representation-only: it
+    neither supplies a missing value nor changes a field name or algorithm.
     """
-    forms = [dict(cell)]
-
-    pa = coerce(cell.get("picard_alpha"))
-    pi = coerce(cell.get("picard_iters_override"))
-    opt = cell.get("optimizer")
-
-    # α=0 → uncoupled
-    if pa == 0:
-        c = {k: v for k, v in cell.items() if k != "picard_alpha"}
-        c["optimizer"] = "adam-polar-product-lora"
-        c.pop("picard_iters_override", None)
-        forms.append(c)
-
-    # picard_iters=1 → uncoupled regardless of α
-    if pi == 1:
-        c = {k: v for k, v in cell.items() if k not in ("picard_alpha", "picard_iters_override")}
-        c["optimizer"] = "adam-polar-product-lora"
-        forms.append(c)
-
-    # α=1 with picard_iters=2 (or picard_iters_override absent) → original coupled default
-    if (pa == 1 or pa is None) and (pi is None or pi == 2):
-        c = {k: v for k, v in cell.items() if k not in ("picard_alpha", "picard_iters_override")}
-        if opt == "adam-polar-product-lora-coupled":
-            forms.append(c)
-
-    return forms
+    if not isinstance(value, str):
+        return value
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return parsed if not isinstance(parsed, (dict, list)) else value
 
 
-def cfg_field_or_command(cfg: dict, key: str, command: str):
-    """Return cfg[key] if present (and not None), else parse `--key VALUE`
-    from the recorded command line. Returns None if neither has the field.
-
-    Older runs / runs predating a CLI flag won't record the field in the
-    cfg dict — falling back to the command string lets us still match.
-    """
-    if key in cfg and cfg[key] is not None:
-        return cfg[key]
-    flag = "--" + key
-    if flag in command:
-        toks = command.split()
-        try:
-            idx = toks.index(flag)
-            return toks[idx + 1]
-        except (ValueError, IndexError):
-            return None
-    return None
+def canonical_cell(cell: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: _canonical_param_value(value) for key, value in cell.items()}
 
 
-def cell_matches_cfg(cell: dict, cfg: dict) -> bool:
-    """A normalized cell-form matches cfg iff all its keys are present and equal.
-
-    Tries every canonical form returned by normalize_cell — overlap is
-    declared if ANY form matches.
-    """
-    command = cfg.get("command", "")
-    for form in normalize_cell(cell):
-        ok = True
-        for k, v in form.items():
-            cfg_key = KEY_ALIASES.get(k, k)
-            cfg_val = cfg_field_or_command(cfg, cfg_key, command)
-            if cfg_val is None:
-                # Field doesn't exist in older run. If the cell value equals
-                # the field's semantic default, treat as match (older code
-                # path implicitly produced the same behavior).
-                default = FIELD_DEFAULTS.get(cfg_key, "__SENTINEL_NO_DEFAULT__")
-                if coerce(v) == default:
-                    continue
-                ok = False
-                break
-            if coerce(cfg_val) != coerce(v):
-                ok = False
-                break
-        if ok:
-            return True
-    return False
+def _repo_relative_launcher(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(_REPO_ROOT).as_posix()
+    except ValueError:
+        return resolved.as_posix()
 
 
-def find_match(cell: dict, logs_root: Path) -> str | None:
-    """Return group name of first matching run, or None."""
-    for group_dir in logs_root.iterdir():
-        if not group_dir.is_dir():
-            continue
-        ri = group_dir / "run_info" / "logs"
-        if not ri.is_dir():
-            continue
-        for log_file in ri.glob("log_*.out"):
-            cfg = None
-            try:
-                with open(log_file) as f:
-                    for line in f:
-                        try:
-                            rec = json.loads(line)
-                        except Exception:
-                            continue
-                        if rec.get("event") == "config":
-                            cfg = rec
-                            break
-            except Exception:
-                continue
-            if cfg is None:
-                continue
-            if cell_matches_cfg(cell, cfg):
-                return group_dir.name
-    return None
+def _launcher_relation(
+    record: RunRecord,
+    expected_launcher: str | None,
+) -> tuple[bool, str | None]:
+    """Return whether launcher provenance agrees, or why it is unknown."""
+    if expected_launcher is None:
+        return True, None
+    manifest = record.audit_provenance.manifest
+    if not isinstance(manifest, Mapping):
+        return False, "record has no manifest launcher provenance"
+    recorded = manifest.get("sweep_script")
+    if not isinstance(recorded, str) or not recorded.strip():
+        return False, "record manifest has no sweep_script"
+    return recorded == expected_launcher, None
 
 
-def parse_launcher_fixed_args(launcher_path: Path) -> dict:
-    """Extract hardcoded `--key value` pairs from a launcher shell script.
+def _physical_match(
+    record: RunRecord,
+    *,
+    variant_view_key: str | None = None,
+    variant_exact_id: str | None = None,
+    missing_fields: Iterable[str] = (),
+    issue: str | None = None,
+) -> PhysicalMatch:
+    return PhysicalMatch(
+        physical_id=record.physical_id,
+        group=record.group,
+        log_filename=record.log_filename,
+        variant_view_key=variant_view_key,
+        variant_exact_id=variant_exact_id,
+        missing_fields=tuple(sorted(missing_fields)),
+        issue=issue,
+    )
 
-    Many launchers hardcode fields that are NOT swept (e.g.
-    `--optimizer adam-ucv-core-lora`, `--training_mode ucv`,
-    `--max_steps 8000`). Without these, the audit only matches on keys
-    present in the JSON, so it conflates two sweeps that share
-    (lr, seed, lora_r, ...) but differ in optimizer or horizon.
 
-    Returns a dict of {key: value} for every line of the form
-        --<key> <literal>
-    where <literal> is NOT a bash variable (`$x` or `"$x"`). Variable
-    substitutions are sweep parameters or env vars and don't pin the value.
-
-    Raises FileNotFoundError if the launcher path doesn't exist. The caller
-    asked for disambiguation; silently returning {} would let cross-horizon
-    sweeps look like overlap (e.g. an 8k sweep flagged as duplicating a 2k
-    sweep because `max_steps` got dropped from the cell).
-    """
-    if not launcher_path.exists():
-        raise FileNotFoundError(
-            f"--sweep-script does not exist: {launcher_path}. "
-            "Without the launcher, the audit cannot pick up hardcoded fields "
-            "(optimizer, max_steps, etc.) and may report spurious overlaps "
-            "with sweeps that differ only in those fields. Pass a correct "
-            "path or omit --sweep-script."
+def _recorded_variant(record: RunRecord) -> PhysicalMatch:
+    payload = record.raw_config.get(PRODUCER_VARIANT_FIELD)
+    if payload is None:
+        return _physical_match(
+            record,
+            issue=f"record has no producer {PRODUCER_VARIANT_FIELD!r} block",
         )
-    import re
-    fixed: dict[str, str] = {}
-    text = launcher_path.read_text()
-    # Drop whole-line comments before tokenizing. The launcher's real flags only ever
-    # appear on the `python train_lora.py \` continuation, never after a `#`, but the
-    # header prose is full of things that tokenize as flags: a `--` used as a dash in
-    # a sentence yields the key "", and "adds --cw_solved_rho, the solved magnitude
-    # rule" yields "cw_solved_rho," -> "the". Those junk keys are then added to every
-    # cell's match criteria, which can only make the overlap audit miss a real overlap.
-    text = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
-    tokens = text.replace("\\\n", " ").split()
-    for token_idx, tok in enumerate(tokens):
-        if not tok.startswith("--"):
-            continue
-        if token_idx + 1 >= len(tokens):
-            continue
-        key = tok[2:]
-        val = tokens[token_idx + 1]
-        if val.startswith("--"):
-            continue
-        stripped = val.strip('"').strip("'")
-        # Bash default-substitution: ${KEY:-DEFAULT} → DEFAULT.
-        # Also handle plain ${KEY:-DEFAULT} embedded with surrounding chars.
-        m = re.fullmatch(r"\$\{[^:}]+:-([^}]*)\}", stripped)
-        if m:
-            stripped = m.group(1)
-        # Any remaining variable substitution / positional arg / param expansion → skip.
-        if "$" in stripped:
-            continue
-        if not stripped:
-            continue
-        fixed[key] = stripped
-    return fixed
+    if not isinstance(payload, Mapping):
+        return _physical_match(
+            record,
+            issue=f"recorded {PRODUCER_VARIANT_FIELD!r} is not an object",
+        )
+    try:
+        semantics = publication_semantics_from_payload(payload)
+    except PublicationSemanticsError as exc:
+        return _physical_match(record, issue=str(exc))
+    return _physical_match(
+        record,
+        variant_view_key=semantics.view_key,
+        variant_exact_id=semantics.exact_id,
+    )
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("params_file")
-    ap.add_argument("--logs-root", default="logs")
-    ap.add_argument("--sweep-script", default=None,
-                    help="Path to the launcher script. Hardcoded `--key value` "
-                         "pairs (literal, not $vars) are added to every cell's "
-                         "match criteria — so a launcher that hardcodes "
-                         "--optimizer X disambiguates from sweeps that use a "
-                         "different optimizer at the same (lr, seed, ...) tuple.")
-    args = ap.parse_args()
+def _record_relation(
+    record: RunRecord,
+    cell: Mapping[str, Any],
+) -> tuple[str, tuple[str, ...]]:
+    """Classify a record as exact, conflicting, or missing-only."""
+    missing: list[str] = []
+    for field, expected in cell.items():
+        if field not in record.semantic_config:
+            missing.append(field)
+            continue
+        if record.semantic_config[field] != expected:
+            return "conflict", ()
+    return ("missing", tuple(missing)) if missing else ("exact", ())
 
-    params = load_params(Path(args.params_file))
-    cells = cartesian(params)
-    logs_root = Path(args.logs_root)
 
-    # Augment every cell with launcher-hardcoded fields not already in JSON.
-    if args.sweep_script:
-        fixed = parse_launcher_fixed_args(Path(args.sweep_script))
-        if fixed:
-            print(f"Launcher fixes: {fixed}")
-            for cell in cells:
-                for k, v in fixed.items():
-                    if k not in cell:
-                        cell[k] = v
+def audit_cell(
+    cell: Mapping[str, Any],
+    catalog: RunCatalog,
+    *,
+    expected_launcher: str | None = None,
+) -> CellAudit:
+    """Audit one cell without reconstructing absent execution semantics."""
+    normalized = canonical_cell(cell)
+    optimizer = normalized.get("optimizer")
+    if not isinstance(optimizer, str) or not optimizer:
+        return CellAudit(
+            "UNKNOWN",
+            normalized,
+            reason=(
+                "candidate does not record optimizer; launcher text is not an "
+                "identity source"
+            ),
+        )
 
-    print(f"Sweep params: {args.params_file}")
-    print(f"Cartesian product size: {len(cells)} cells")
-    print()
-    overlap = []
-    for cell in cells:
-        match = find_match(cell, logs_root)
-        if match:
-            print(f"  ✓ EXISTS in {match:<40s}  {cell}")
-            overlap.append(cell)
+    # Optimizer is the mandatory semantic anchor. Inspecting those records lets
+    # a missing newly-added field remain UNKNOWN instead of being filtered out
+    # by an exact catalog query and mislabeled NEW.
+    candidates = catalog.query(equals={"optimizer": optimizer})
+    exact: list[PhysicalMatch] = []
+    uncertain: list[PhysicalMatch] = []
+    for record in candidates:
+        relation, missing = _record_relation(record, normalized)
+        if relation == "conflict":
+            continue
+        launcher_matches, launcher_issue = _launcher_relation(
+            record, expected_launcher
+        )
+        if launcher_issue is not None:
+            uncertain.append(_physical_match(record, issue=launcher_issue))
+            continue
+        if not launcher_matches:
+            continue
+        if relation == "missing":
+            uncertain.append(_physical_match(record, missing_fields=missing))
+            continue
+        identity = _recorded_variant(record)
+        if identity.issue is not None:
+            uncertain.append(identity)
         else:
-            print(f"  ☐ NEW                                       {cell}")
+            exact.append(identity)
+
+    if exact:
+        view_keys = {item.variant_view_key for item in exact}
+        if len(view_keys) != 1:
+            return CellAudit(
+                "UNKNOWN",
+                normalized,
+                tuple(exact),
+                reason=(
+                    "the explicit candidate fields select multiple producer "
+                    f"variant identities: {sorted(view_keys)!r}"
+                ),
+            )
+        return CellAudit("EXISTS", normalized, tuple(exact))
+    if uncertain:
+        return CellAudit(
+            "UNKNOWN",
+            normalized,
+            tuple(uncertain),
+            reason=(
+                "potential matching physical record(s) lack fields or provenance "
+                "needed to prove equivalence"
+            ),
+        )
+    return CellAudit("NEW", normalized)
+
+
+def audit_sweep(
+    params: Mapping[str, list[Any]],
+    *,
+    catalog: RunCatalog,
+    expected_launcher: str | None = None,
+) -> tuple[CellAudit, ...]:
+    return tuple(
+        audit_cell(cell, catalog, expected_launcher=expected_launcher)
+        for cell in cartesian(params)
+    )
+
+
+def _format_provenance(match: PhysicalMatch) -> str:
+    parts = [
+        f"physical_id={match.physical_id!r}",
+        f"group={match.group!r}",
+        f"log={match.log_filename!r}",
+    ]
+    if match.variant_view_key is not None:
+        parts.append(f"variant_view={match.variant_view_key!r}")
+    if match.variant_exact_id is not None:
+        parts.append(f"variant_exact={match.variant_exact_id!r}")
+    if match.missing_fields:
+        parts.append(f"missing_fields={list(match.missing_fields)!r}")
+    if match.issue is not None:
+        parts.append(f"issue={match.issue!r}")
+    return " ".join(parts)
+
+
+def _print_results(results: tuple[CellAudit, ...]) -> None:
+    symbols = {"EXISTS": "✓", "NEW": "☐", "UNKNOWN": "?"}
+    for result in results:
+        print(f"  {symbols[result.status]} {result.status:<7s} {dict(result.cell)}")
+        if result.reason:
+            print(f"      {result.reason}")
+        for match in result.evidence[:5]:
+            print(f"      {_format_provenance(match)}")
+        if len(result.evidence) > 5:
+            print(f"      ... {len(result.evidence) - 5} more physical record(s)")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("params_file")
+    parser.add_argument("--logs-root", default="logs")
+    parser.add_argument(
+        "--sweep-script",
+        default=None,
+        help=(
+            "Launcher path used only to scope against the manifest's recorded "
+            "sweep_script. Its shell contents are never parsed."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    params_path = Path(args.params_file)
+    params = load_params(params_path)
+    launcher = None
+    if args.sweep_script is not None:
+        launcher_path = Path(args.sweep_script)
+        if not launcher_path.is_file():
+            parser.error(f"--sweep-script does not exist: {launcher_path}")
+        launcher = _repo_relative_launcher(launcher_path)
+
+    catalog = RunCatalog.discover(args.logs_root)
+    results = audit_sweep(
+        params,
+        catalog=catalog,
+        expected_launcher=launcher,
+    )
+
+    print(f"Sweep params: {params_path}")
+    print(f"Cartesian product size: {len(results)} cells")
+    if launcher is not None:
+        print(f"Launcher provenance scope: {launcher} (contents not parsed)")
     print()
+    _print_results(results)
+    print()
+
+    overlap = [result for result in results if result.status == "EXISTS"]
+    unknown = [result for result in results if result.status == "UNKNOWN"]
     if overlap:
-        print(f"OVERLAP: {len(overlap)}/{len(cells)} cells already exist.")
-        print("DROP these cells from the params file before submitting:")
-        for c in overlap:
-            print(f"  {c}")
-        sys.exit(1)
-    else:
-        print(f"No overlap. All {len(cells)} cells are new.")
-        sys.exit(0)
+        print(f"OVERLAP: {len(overlap)}/{len(results)} cells already exist.")
+    if unknown:
+        print(
+            f"UNKNOWN: {len(unknown)}/{len(results)} cells cannot be proven new "
+            "from recorded fields."
+        )
+    if overlap or unknown:
+        print(
+            "Refusing the sweep. Remove proven duplicates; for intentionally "
+            "repeated or under-recorded work, use FORCE_OVERLAP=1 and record "
+            "the reason in SWEEP_PURPOSE."
+        )
+        return 1
+
+    print(f"No overlap. All {len(results)} cells are new.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
