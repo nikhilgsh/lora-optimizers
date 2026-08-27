@@ -727,7 +727,8 @@ def make_parser():
                              "'zero' (legacy; relies on the step-one branch), 'ones' (strong "
                              "identity prior, hurts +0.019), 'delta' (=δ damping floor, also hurts "
                              "since δ≫ curvature). All give an identical step-1 update.")
-    parser.add_argument("--cw_nesterov", action="store_true",
+    parser.add_argument("--cw_nesterov", action=argparse.BooleanOptionalAction,
+                        default=True,
                         help="Use Nesterov-lookahead momentum (ĝ + β₁·m, Muon "
                              "convention) into the CurvatureWhitenLoRA whiten→polar "
                              "core instead of plain bias-corrected EMA. Ablation for "

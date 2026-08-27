@@ -1167,7 +1167,7 @@ class CurvatureWhitenLoRA(Optimizer):
                  log_heavy_diagnostics=False, diagnostics_every=20,
                  precond_refresh_every=10, kl_coupled=False, soap_v=True,
                  diag_metric=False, cw_picard_iters=1, flat_outer=False,
-                 cw_nesterov=False, cw_no_radius=False, cw_no_diag_curv=False,
+                 cw_nesterov=None, cw_no_radius=False, cw_no_diag_curv=False,
                  cw_unpinned=False, cw_solved_rho=False,
                  precond=None, msign="full",
                  cw_factor_a=0.0, cw_factor_b=0.0,
@@ -1181,6 +1181,12 @@ class CurvatureWhitenLoRA(Optimizer):
         super().__init__([{"params": params, "lr": lr}], {})
         self.pairs = pairs
         self.eps = eps
+        # Alg 1 line 436's epsilon: dX = -rho * D / max(||D||_2, eps). The
+        # manuscript states eps = 1e-12 (main.tex:684, app:init); self.eps is
+        # 1e-8 and is ALSO the SOAP Adam denominator, _direction_op's relative
+        # floor and cw_solved_rho's quadratic clamp, where 1e-8 is right. One
+        # name cannot carry both values, so the magnitude clamp gets its own.
+        self.sigma_floor = 1e-12
         self.delta = float(delta)            # relative damping for the inverse-sqrts
         self.beta1, self.beta2 = betas
         self.curvature_beta = float(curvature_beta)
@@ -1354,9 +1360,20 @@ class CurvatureWhitenLoRA(Optimizer):
         # operator-norm rescale ρ/σmax(W) normalizes magnitude, so this changes only
         # the momentum DIRECTION (no lr recalibration). Defined for the closed-form
         # Shampoo core (soap_v=False); the SOAP-v̂ arm keeps plain EMA.
-        self.cw_nesterov = bool(cw_nesterov)
-        if self.cw_nesterov and self.soap_v:
-            raise ValueError("cw_nesterov is only defined for the soap_v=False (closed-form Shampoo) path.")
+        # None = "unset": take Alg 1 line 423's look-ahead, which is the
+        # manuscript's algorithm, EXCEPT on the soap_v path where it is undefined
+        # (that branch has no closed-form Shampoo core to feed). An EXPLICIT True
+        # alongside soap_v is still a caller error and still raises -- silently
+        # ignoring it would hide a real misconfiguration.
+        if cw_nesterov is None:
+            self.cw_nesterov = not self.soap_v
+        else:
+            self.cw_nesterov = bool(cw_nesterov)
+            if self.cw_nesterov and self.soap_v:
+                raise ValueError(
+                    "cw_nesterov=True is only defined for the soap_v=False "
+                    "(closed-form Shampoo) path; pass cw_nesterov=False or leave "
+                    "it unset.")
         # LEGACY ABLATION (−adaptive-radius): ρ=lr (flat) instead of the adaptive
         # ρ=lr/(σmax(A)+σmax(B)). IMPORTANT: the σ_max(W) pin is KEPT, so this does NOT
         # remove magnitude control — the magnitude-rule ablation is `cw_unpinned` (true-scale
@@ -2029,8 +2046,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
-                dA = -(cA * rho / sWA.clamp_min(self.eps)) * WA
-                dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.eps)) * WB
+                dA = -(cA * rho / sWA.clamp_min(self.sigma_floor)) * WA
+                dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.sigma_floor)) * WB
             if self.cw_solved_rho:
                 # Solved magnitude — mirror of _cw_apply_grouped (see there); the
                 # SAME blessed prodsum estimator on a 1-batch keeps this path the
@@ -2353,8 +2370,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     dA = -(cA * rho).view(-1, 1, 1) * WA
                     dB = -self.lora_plus_multiplier * (cB * rho).view(-1, 1, 1) * WB
                 else:
-                    dA = -(cA * rho / sWA.clamp_min(self.eps)).view(-1, 1, 1) * WA
-                    dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.eps)).view(-1, 1, 1) * WB
+                    dA = -(cA * rho / sWA.clamp_min(self.sigma_floor)).view(-1, 1, 1) * WA
+                    dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.sigma_floor)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if self.cw_solved_rho:
                 # Solved magnitude (see __init__): rescale the final dA, dB by

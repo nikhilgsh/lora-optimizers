@@ -158,9 +158,9 @@ _CW_ABL_SKIP = {"cw_no_radius", "cw_no_diag_curv", "cw_unpinned", "cw_solved_rho
                 "cw_factor_a", "cw_factor_b"} | _CW_PRECOND_SKIP  # kl-shampoo/flatout
 
 spec("curvature-whiten-lora", _CW, skip=_CW_SOAP_SKIP,
-     fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": False})
+     fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": False, "cw_nesterov": False})
 spec("curvature-whiten-polar-lora", _CW, skip=_CW_SOAP_SKIP,
-     fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": True})
+     fixed={"kl_coupled": False, "soap_v": True, "diag_metric": False, "use_polar": True, "cw_nesterov": False})
 spec("kl-shampoo-lora", _CW, skip=_CW_ABL_SKIP,
      fixed={"kl_coupled": True, "soap_v": False, "diag_metric": False, "use_polar": False})
 spec("kl-shampoo-polar-lora", _CW, skip=_CW_ABL_SKIP,

@@ -48,6 +48,7 @@ if [ -n "${CHECKPOINT_DIR:-}" ]; then
 fi
 
 python train_lora.py \
+    --no-cw_nesterov \
     --data_dir data/openmath_instruct_2_2m_packed_seq2048 \
     --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \
     --max_seq_length 2048 \

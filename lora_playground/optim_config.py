@@ -100,7 +100,10 @@ class OptimizerConfig:
     # in the warmup transient. Ablation only — "zero" reproduces the paper figures.
     cw_metric_init: str = "1e-12"
     cw_picard_iters: int = 1
-    cw_nesterov: bool = False
+    # Alg 1 line 423 IS the Nesterov look-ahead, so True is the manuscript's
+    # algorithm; False is an ablation. The 12 sweep wrappers that deliberately
+    # run the no-look-ahead arm now pass --no-cw_nesterov explicitly.
+    cw_nesterov: bool = True
     cw_no_radius: bool = False
     cw_no_diag_curv: bool = False
     # What fills the two r x r slots (C_B, C_A): "product" = (B^T P B, A Q A^T),

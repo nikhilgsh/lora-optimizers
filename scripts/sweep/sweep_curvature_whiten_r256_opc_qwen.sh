@@ -43,6 +43,7 @@ if [ -n "${CHECKPOINT_DIR:-}" ]; then
 fi
 
 python train_lora.py \
+    --no-cw_nesterov \
     --model_name Qwen/Qwen2.5-1.5B \
     --data_dir data/opc_sft_stage2_all_packed_seq2048_qwen25 \
     --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \

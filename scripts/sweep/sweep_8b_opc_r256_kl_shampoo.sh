@@ -61,6 +61,7 @@ if [ -n "${CHECKPOINT_DIR:-}" ]; then
 fi
 
 python train_lora.py \
+    --no-cw_nesterov \
     --model_name meta-llama/Meta-Llama-3-8B \
     --data_dir data/opc_sft_stage2_all_packed_seq2048_llama32 \
     --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \

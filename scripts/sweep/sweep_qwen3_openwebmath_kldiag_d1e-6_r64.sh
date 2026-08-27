@@ -63,6 +63,7 @@ if [ -n "${SNAPSHOT_DIR:-}" ]; then
 fi
 
 python train_lora.py \
+    --no-cw_nesterov \
     --model_name Qwen/Qwen3-0.6B-Base \
     --data_dir data/openwebmath_qwen3_320m_packed_seq2048 \
     --data_pipeline_version "${DATA_PIPELINE_VERSION:-packed_v1.1}" \
