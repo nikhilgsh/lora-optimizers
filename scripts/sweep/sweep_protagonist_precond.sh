@@ -55,6 +55,7 @@ precond_args=()
 # inductor/AOTAutograd cache gets corrupted by concurrent compiles (JSONDecodeError
 # in AOTAutogradCache.load at startup). $$ (task PID) isolates each task's cache.
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/inductor_${USER:-u}_$$}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton_${USER:-u}_$$}"
 
 compile_args=()
 [ "${COMPILE:-1}" = "1" ] && compile_args=(--compile)
@@ -70,6 +71,7 @@ if [ -n "${CHECKPOINT_DIR:-}" ]; then
         --checkpoint_keep_last "${CHECKPOINT_KEEP_LAST:-2}"
     )
     [ -n "${CHECKPOINT_EVERY:-}" ] && ckpt_args+=(--checkpoint_every "$CHECKPOINT_EVERY")
+    [ "${KEEP_CHECKPOINTS:-0}" = "1" ] && ckpt_args+=(--keep_checkpoints)
 fi
 
 python train_lora.py \

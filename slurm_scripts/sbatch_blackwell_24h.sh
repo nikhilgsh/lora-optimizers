@@ -14,6 +14,18 @@
 #SBATCH --error=slurm_logs/slurm_%j.err
 
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+repo_root=$(git rev-parse --show-toplevel)
+[[ "$repo_root" == "$PWD" ]] || {
+    echo "execution root mismatch: pwd=$PWD repo_root=$repo_root" >&2
+    exit 2
+}
+echo "execution_root=$repo_root"
+echo "execution_commit=$(git rev-parse HEAD)"
+[[ -z "$(git status --short)" ]] || {
+    echo "execution worktree is dirty" >&2
+    git status --short >&2
+    exit 2
+}
 mkdir -p slurm_logs disbatch_logs
 
 source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl
@@ -23,5 +35,13 @@ export WANDB_MODE=offline
 export WANDB_PROJECT=lora-sweeps
 export TOKENIZERS_PARALLELISM=false
 
-module load disBatch
-disBatch "$TASK_FILE" --prefix "disbatch_logs"
+module --ignore_cache load disBatch
+command -v disBatch >/dev/null
+allocated_cpus_per_task=${SLURM_CPUS_PER_TASK:?SLURM_CPUS_PER_TASK is required}
+[[ "$allocated_cpus_per_task" =~ ^[1-9][0-9]*$ ]] || {
+    echo "invalid SLURM_CPUS_PER_TASK=$allocated_cpus_per_task" >&2
+    exit 2
+}
+export SLURM_CPU_BIND=cores
+disBatch --cpusPerTask "$allocated_cpus_per_task" \
+    "$TASK_FILE" --prefix "disbatch_logs"
