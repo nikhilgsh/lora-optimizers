@@ -95,11 +95,25 @@ def test_key_fns_are_built_from_arms_predicates():
     for dict_name in ("_PAPER_ARMS", "_ABLATION_ARMS", "_ARM_KEY_ARMS"):
         arms = getattr(F, dict_name)
         assert arms, f"{dict_name} is empty"
-        pinned = A.PINNED_FIELDS()
         for label, pred in arms.items():
-            missing = pinned - set(pred)
+            # An arm pins the pinnable fields its OPTIMIZER can read, not all of
+            # them. This loop asserted `PINNED_FIELDS() - set(pred) == set()`
+            # until `arm()` started deriving the set: pinning a field the arm's
+            # own optimizer cannot receive is what silently dropped runs (5 of 13
+            # panel cells lost their AdamW baseline to a pinned `cw_nesterov`
+            # that `LoRAPlusAdamW` never reads). The mechanism claim survives —
+            # a NEW OptimizerConfig field is still pinned automatically in every
+            # arm whose optimizer receives it, which is where it can
+            # discriminate.
+            opt = pred.get("optimizer")
+            assert opt, f"{dict_name}[{label!r}] does not pin `optimizer`"
+            names = opt if isinstance(opt, (tuple, list, set, frozenset)) else [opt]
+            expected = set.intersection(*(
+                set(A.PINNED_FIELDS()) - set(A._inert_fields(o)) for o in names))
+            missing = expected - set(pred)
             assert not missing, (
                 f"{dict_name}[{label!r}] does not pin {sorted(missing)[:6]}"
-                f"{'...' if len(missing) > 6 else ''} — it was not built by "
-                f"arms.arm(), so a new config field will not be pinned in it."
+                f"{'...' if len(missing) > 6 else ''}, which {opt} DOES receive "
+                f"— it was not built by arms.arm(), so a new config field will "
+                f"not be pinned in it."
             )

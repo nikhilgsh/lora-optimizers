@@ -2,15 +2,15 @@
 §"Cross-coupling": CurvatureWhitenLoRA with ``diag_metric=True`` (plus
 ``kl_coupled=True, soap_v=False``).
 
-Option (b) commits to the single global diagonal metric (P,Q)=(D_out, D_in): the
+Option (b) commits to the single global diagonal metric (P, Q): the
 dense KL small side S_curv is replaced by the conjugate-diagonal-weighted geometric
-Gram, M_A = Bᵀ diag(D_out) B and M_B = A diag(D_in) Aᵀ, recomputed each step. The
+Gram, C_B = Bᵀ P B and C_A = A Q Aᵀ, recomputed each step. The
 diagonal KL coupling is unchanged but now whitens by M⁻¹, giving a self-consistent
 two-sided program.
 
 Covers: step runs & changes params, multistep finiteness, the batched↔per-pair
 equivalence on the diag path (both code paths were edited), the defining identity
-P_A == Bᵀ diag(D_out) B, factory dispatch, and that diag (b) actually differs from
+P_A == Bᵀ P B, factory dispatch, and that diag (b) actually differs from
 dense kl-shampoo (a).
 """
 import torch
@@ -62,7 +62,7 @@ def test_diag_metric_without_kl_coupled_is_the_diag_shampoo_arm():
 
     This test used to assert a ValueError, from when the diagonal metric existed only
     as the KL coupled fixed point (Prop 4). It is now also the accumulation for
-    `diag-shampoo-lora` / `diag-shampoo-polar-lora`, where D_in/D_out are plain
+    `diag-shampoo-lora` / `diag-shampoo-polar-lora`, where Q/P are plain
     gradient-energy EMAs instead -- see the `if self.kl_coupled:` split in
     CurvatureWhitenLoRA._cw_apply_grouped. The guard was removed when those arms
     landed; the test was not updated with it, so it has been asserting a constraint
@@ -100,44 +100,39 @@ def test_step_runs_and_changes_params(use_polar):
 
 
 @pytest.mark.parametrize("use_polar", [False, True])
-def test_batched_matches_per_pair(use_polar):
-    """Grouped batched path and the per-pair oracle must agree on the diag path —
-    both were edited for diag_metric."""
-    def run(batched):
-        m, x, target = _make(seed=3)
-        opt = _diag_opt(m, lr=1e-2, use_polar=use_polar, precond_refresh_every=2)
-        opt._batched_step = batched
-        for _ in range(4):
-            loss = ((m(x) - target) ** 2).mean()
-            loss.backward()
-            opt.step()
-        return [p.detach().clone() for p in m.parameters()]
+def test_diag_path_is_companion_independent(use_polar, companion_independent):
+    """Batching must not let one pair's update depend on its shape-group
+    companions on the diagonal-metric path, where P_A/Q_B are recomputed from
+    the factors inside the stacked bmm every step.
 
-    for pg, pp in zip(run(True), run(False)):
-        assert torch.allclose(pg, pp, atol=1e-5, rtol=1e-4), "batched vs per-pair diag mismatch"
+    Replaces a comparison against the deleted `_cw_apply_per_pair`.
+    """
+    companion_independent(lr=1e-2, use_polar=use_polar, kl_coupled=True,
+                          soap_v=False, diag_metric=True,
+                          precond_refresh_every=2)
 
 
 def test_small_side_is_geometric_gram():
     """The defining identity: after a step, the stored small-side factor P_A equals
-    Bᵀ diag(M_out) B, where M_out = (D_out/D_out.max() + δ) is the relative-damped
+    Bᵀ P B, where P is the relative-damped output metric
     output diagonal — the SAME metric the whitening and the Picard cross use (metric
     coherence). Built from the factor and diagonal as they were at the START of that
-    step (option b), NOT a dense EMA of g gᵀ and NOT the raw D_out (which vanishes
-    early when D_out ≈ 0)."""
+    step (option b), not a dense EMA of g gᵀ and not the raw P state (which
+    vanishes early when P ≈ 0)."""
     m, x, target = _make(seed=7)
     opt = _diag_opt(m, lr=1e-2, use_polar=True)
-    # Warm up so D_out is non-zero (step 1 has D_out=0 ⇒ M_out=δ via _rdinv floor).
+    # Warm up so P is non-zero (step 1 has P=0, so damping supplies the floor).
     for _ in range(3):
         ((m(x) - target) ** 2).mean().backward()
         opt.step(); opt.zero_grad()
-    # Snapshot the (B, D_out) the next step will consume, per pair.
+    # Snapshot the (B, P) the next step will consume, per pair.
     snap = []
     for i, (A, B) in enumerate(opt.pairs):
-        snap.append((B.detach().float().clone(), opt.pair_state[i]['D_out'].clone()))
+        snap.append((B.detach().float().clone(), opt.pair_state[i]['P'].clone()))
     ((m(x) - target) ** 2).mean().backward()
     opt.step(); opt.zero_grad()
     for i, (B_pre, Dout_pre) in enumerate(snap):
-        # M_out = _rdinv(D_out)^(-2), mirroring the code exactly (incl. the xmax≈0 floor).
+        # P_dmp = _rdinv(P)^(-2), mirroring the code exactly.
         M_out = opt._rdinv(Dout_pre).pow(-2)
         M_A = B_pre.transpose(-2, -1) @ (M_out.unsqueeze(-1) * B_pre)
         assert torch.allclose(opt.pair_state[i]['P_A'], M_A, atol=1e-5, rtol=1e-4), \

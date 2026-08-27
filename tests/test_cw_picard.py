@@ -60,19 +60,14 @@ def test_soap_v_picard_guard():
 
 
 @pytest.mark.parametrize("diag", [False, True])
-def test_picard_batched_matches_per_pair(diag):
-    """Grouped batched path and per-pair oracle must agree at k=2 (both edited)."""
-    def run(batched):
-        m, x, target = _make(seed=3)
-        opt = _opt(m, diag=diag, k=2, lr=1e-2)
-        opt._batched_step = batched
-        for _ in range(4):
-            ((m(x) - target) ** 2).mean().backward()
-            opt.step(); opt.zero_grad()
-        return [p.detach().clone() for p in m.parameters()]
+def test_picard_k2_is_companion_independent(diag, companion_independent):
+    """At cw_picard_iters=2 the cross term is formed inside the stacked bmm, so
+    it is a prime place for a reduction to cross the batch axis.
 
-    for pg, pp in zip(run(True), run(False)):
-        assert torch.allclose(pg, pp, atol=1e-5, rtol=1e-4), "batched vs per-pair k=2 mismatch"
+    Replaces a comparison against the deleted `_cw_apply_per_pair`.
+    """
+    companion_independent(lr=1e-2, cw_picard_iters=2, use_polar=True,
+                          kl_coupled=True, soap_v=False, diag_metric=diag)
 
 
 def _picard_increments(diag, lr=1e-2, warmup=12):

@@ -1,9 +1,9 @@
 """Tests for diag-shampoo-(polar-)lora — the non-KL ablation of kl-diag.
 
 diag-shampoo is CurvatureWhitenLoRA with the consistent diagonal metric
-(``diag_metric=True``, small side M_A = Bᵀ diag(D_out) B) and the closed-form
+(``diag_metric=True``, small side C_B = Bᵀ P B) and the closed-form
 Shampoo whitening (``soap_v=False``) — IDENTICAL to kl-diag — but with
-``kl_coupled=False`` so the diagonals D_in/D_out are textbook grad-energy EMAs
+``kl_coupled=False`` so the diagonals Q/P are textbook grad-energy EMAs
 instead of the KL coupled fixed point. It isolates what the KL coupling buys at
 fixed diagonal-metric geometry.
 
@@ -93,18 +93,16 @@ def test_multistep_finite(use_polar):
         assert torch.isfinite(p).all(), "Non-finite param over multiple diag-shampoo steps"
 
 
-@pytest.mark.parametrize("batched", [False, True])
-def test_diag_metric_LA_recomputed_not_clobbered(batched):
+def test_diag_metric_LA_recomputed_not_clobbered():
     """With diag_metric=True the small-side P_A/Q_B are recomputed each step as
-    M_A = Bᵀ diag(Dout_m) B (resp. M_B = A diag(Din_m) Aᵀ), NOT accumulated as a
+    C_B = Bᵀ P B (resp. C_A = A Q Aᵀ), not accumulated as a
     Gram EMA. The else-branch (kl_coupled=False) must skip the P_A/Q_B Gram EMA so
     it doesn't clobber the recompute. On step 1 the diagonals are still zero ⇒
-    Dout_m=Din_m=1 ⇒ M_A = B0ᵀ B0 exactly (B0 = pre-step factor). If the clobber
+    P=Q=I ⇒ C_B = B0ᵀ B0 exactly (B0 = pre-step factor). If the clobber
     guard were missing, P_A would instead hold (1-β_c)·gA gAᵀ.
     """
     m, x, target = _make(seed=3)
     opt = build_optimizer(m, "diag-shampoo-polar-lora", lr=1e-2, precond_delta=1e-4)
-    opt._batched_step = batched
     A_pre = [A.detach().float().clone() for A, B in opt.pairs]
     B_pre = [B.detach().float().clone() for A, B in opt.pairs]
     loss = ((m(x) - target) ** 2).mean()
@@ -112,8 +110,8 @@ def test_diag_metric_LA_recomputed_not_clobbered(batched):
     opt.step()
     for i in range(len(opt.pairs)):
         st = opt.pair_state[i]
-        exp_PA = B_pre[i].T @ B_pre[i]          # r×r, Dout_m=1 at step 1
-        exp_QB = A_pre[i] @ A_pre[i].T          # r×r, Din_m=1 at step 1
+        exp_PA = B_pre[i].T @ B_pre[i]          # r×r, P=I at step 1
+        exp_QB = A_pre[i] @ A_pre[i].T          # r×r, Q=I at step 1
         assert torch.allclose(st["P_A"], exp_PA, atol=1e-5, rtol=1e-4), \
             f"pair {i}: P_A not the diag-metric recompute (clobbered?)"
         assert torch.allclose(st["Q_B"], exp_QB, atol=1e-5, rtol=1e-4), \

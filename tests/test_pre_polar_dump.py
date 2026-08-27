@@ -45,13 +45,12 @@ def _make(seed=0):
     return _TinyLoRAModel(), torch.randn(3, 8), torch.randn(3, 8)
 
 
-def _proto(model, batched, **kw):
+def _proto(model, **kw):
     """The protagonist's identity flags (kl-diag-polar-lora), plus overrides."""
     opt = CurvatureWhitenLoRA(
         model, lr=1e-2, kl_coupled=True, soap_v=False, diag_metric=True,
         use_polar=True, cw_nesterov=True, polar_method="polar_express",
         precond_method="gram_ns", ns_steps=8, **kw)
-    opt._batched_step = batched
     return opt
 
 
@@ -62,12 +61,11 @@ def _run(opt, model, x, target, steps):
         opt.step()
 
 
-@pytest.mark.parametrize("batched", [True, False])
-def test_dump_writes_expected_artifact_count(tmp_path, batched):
+def test_dump_writes_expected_artifact_count(tmp_path):
     """4 pairs, cadence 2, 4 steps -> one file per (dumped step, selected pair)."""
     m, x, target = _make()
     d = tmp_path / "H"
-    opt = _proto(m, batched, dump_pre_polar_dir=str(d),
+    opt = _proto(m, dump_pre_polar_dir=str(d),
                  dump_pre_polar_every=2, dump_pre_polar_max_pairs=2)
     n_pairs = len(opt._dump_pair_idxs)
     assert n_pairs == 2
@@ -86,11 +84,11 @@ def test_dump_writes_expected_artifact_count(tmp_path, batched):
 def test_dump_does_not_change_the_update(tmp_path):
     """Dumping is diagnostic: params must match bit-for-bit with it off."""
     m0, x, target = _make(seed=1)
-    opt0 = _proto(m0, True)
+    opt0 = _proto(m0)
     _run(opt0, m0, x, target, steps=3)
 
     m1, _, _ = _make(seed=1)
-    opt1 = _proto(m1, True, dump_pre_polar_dir=str(tmp_path / "H"),
+    opt1 = _proto(m1, dump_pre_polar_dir=str(tmp_path / "H"),
                  dump_pre_polar_every=1)
     _run(opt1, m1, x, target, steps=3)
 
@@ -103,7 +101,7 @@ def test_dumped_H_feeds_lmo_scores(tmp_path):
     """The artifact is directly consumable by the scorer — the whole point."""
     m, x, target = _make(seed=2)
     d = tmp_path / "H"
-    opt = _proto(m, True, dump_pre_polar_dir=str(d), dump_pre_polar_every=1,
+    opt = _proto(m, dump_pre_polar_dir=str(d), dump_pre_polar_every=1,
                  dump_pre_polar_max_pairs=1)
     _run(opt, m, x, target, steps=1)
     rec = torch.load(sorted(glob.glob(os.path.join(str(d), "*.pt")))[0],
@@ -116,7 +114,7 @@ def test_dumped_H_feeds_lmo_scores(tmp_path):
 
 def test_selecting_pairs_by_name_substring(tmp_path):
     m, _, _ = _make()
-    opt = _proto(m, True, dump_pre_polar_dir=str(tmp_path / "H"),
+    opt = _proto(m, dump_pre_polar_dir=str(tmp_path / "H"),
                  dump_pre_polar_every=1, dump_pre_polar_pairs="l1")
     names = [opt._dump_pair_names[i] for i in sorted(opt._dump_pair_idxs)]
     assert names and all("l1" in n for n in names)
@@ -125,19 +123,19 @@ def test_selecting_pairs_by_name_substring(tmp_path):
 def test_unmatched_pair_filter_raises(tmp_path):
     m, _, _ = _make()
     with pytest.raises(ValueError, match="matched no LoRA pair"):
-        _proto(m, True, dump_pre_polar_dir=str(tmp_path / "H"),
+        _proto(m, dump_pre_polar_dir=str(tmp_path / "H"),
                dump_pre_polar_every=1, dump_pre_polar_pairs="no_such_module")
 
 
 def test_cadence_without_dir_raises():
     m, _, _ = _make()
     with pytest.raises(ValueError, match="requires dump_pre_polar_dir"):
-        _proto(m, True, dump_pre_polar_every=10)
+        _proto(m, dump_pre_polar_every=10)
 
 
 def test_off_by_default_writes_nothing(tmp_path):
     m, x, target = _make()
-    opt = _proto(m, True)
+    opt = _proto(m)
     assert opt.dump_pre_polar_every == 0
     assert opt._dump_pair_idxs is None
     _run(opt, m, x, target, steps=2)

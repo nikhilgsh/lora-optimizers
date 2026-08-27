@@ -28,10 +28,16 @@ def test_protagonist_config_locked_flags():
     cfg = protagonist_config("allenai/OLMo-2-0425-1B", 256)
     assert cfg.lora_alpha == 256                  # alpha = r convention
     assert cfg.optimizer == "kl-diag-polar-lora"
-    assert cfg.beta1 == 0.95 and cfg.polar_method == "polar_express"
+    # The post-2026-06-11 pivot (4bd5abb "Pivot protagonist defaults"), which
+    # moved protagonist_config to beta1=0.9 and precond_method="gram_ns" and left
+    # this test asserting the pre-pivot 0.95 / "eigh". It had been red ever since:
+    # the values are spelled out in protagonist_config's own docstring
+    # (bench/config.py:124-127), so the test was checking a config that no
+    # wrapper passes.
+    assert cfg.beta1 == 0.9 and cfg.polar_method == "polar_express"
     assert cfg.muon_ns_steps == 8 and cfg.cw_picard_iters == 1
     assert cfg.precond_delta == 1e-4 and cfg.precond_refresh_every == 10
-    assert cfg.precond_method == "eigh"           # QR today; Phase-1 adds higham
+    assert cfg.precond_method == "gram_ns" and cfg.higham_iters == 8
     assert "kl-diag-polar-lora" in cfg.banner()
 
 
@@ -41,7 +47,7 @@ def test_build_optimizer_kwargs_construct_and_forward():
     cfg = protagonist_config("m", 16)
     opt = build_optimizer(_Model(), optimizer_type=cfg.optimizer, lr=1e-3,
                           **cfg.build_optimizer_kwargs())
-    assert opt.beta1 == 0.95
+    assert opt.beta1 == 0.9          # 4bd5abb pivot; see the note above
     assert opt.ns_steps == 8
     assert opt.polar_method == "polar_express"
     assert opt.cw_nesterov is True

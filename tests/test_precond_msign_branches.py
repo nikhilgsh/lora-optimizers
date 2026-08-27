@@ -162,7 +162,7 @@ def test_one_sided_q_update_is_the_unwhitened_gram_diagonal():
     # Compare against the EMA's own prior state rather than reconstructing the
     # cw_metric_init fill — that keeps the assertion exact and independent of
     # which init mode is in force.
-    prev = [(opt.pair_state[i]['D_in'].clone(), opt.pair_state[i]['D_out'].clone())
+    prev = [(opt.pair_state[i]['Q'].clone(), opt.pair_state[i]['P'].clone())
             for i in range(len(opt.pairs))]
     opt.step()
     cb = opt.curvature_beta
@@ -172,9 +172,9 @@ def test_one_sided_q_update_is_the_unwhitened_gram_diagonal():
         d_in_prev, d_out_prev = prev[i]
         want_in = cb * d_in_prev + (1.0 - cb) / r * (ga * ga).sum(dim=0)
         want_out = cb * d_out_prev + (1.0 - cb) / r * (gb * gb).sum(dim=1)
-        assert torch.allclose(st['D_in'], want_in, atol=1e-8, rtol=1e-5), \
+        assert torch.allclose(st['Q'], want_in, atol=1e-8, rtol=1e-5), \
             "q update did not whiten by the identity"
-        assert torch.allclose(st['D_out'], want_out, atol=1e-8, rtol=1e-5), \
+        assert torch.allclose(st['P'], want_out, atol=1e-8, rtol=1e-5), \
             "p update did not whiten by the identity"
 
 
@@ -308,52 +308,21 @@ def test_the_expensive_primitive_spy_is_not_vacuous(monkeypatch):
         f"the polar spy never fired on the expensive branch: {sorted(set(calls))}"
 
 
-def test_one_sided_agrees_between_the_grouped_and_per_pair_paths():
-    """The per-pair path is the grouped step's equivalence oracle. It used to
-    REFUSE `cw_no_rr_precond` outright — the override lived only in the grouped
-    step, so a second copy could have drifted from the first unnoticed. Now both
-    paths implement one-sided by pinning the slots to the identity, so the oracle
-    covers this branch and the two must agree.
+@pytest.mark.parametrize("precond", sorted(PRECOND_CHOICES))
+def test_each_precond_branch_is_companion_independent(precond, companion_independent):
+    """Every `precond` branch must give a pair the same update whichever shape
+    group it lands in.
 
-    Run at precond_method="eigh", NOT the _KW default "gram_ns". The per-pair
-    path never reads `precond_method` at all, so under gram_ns it applies the
-    frozen identity eigenbasis -- only the DIAGONAL of the r x r curvature --
-    while the grouped path applies the full gram_ns_inv_sqrt. This test passed
-    under gram_ns anyway, and VACUOUSLY: `precond="one-sided"` pins lamA=lamB=1
-    in both paths, so the whitener is the identity on both sides and the
-    comparison never touched the divergent code. It now errors instead, from the
-    guard at the _batched_step dispatch, which is the honest outcome.
+    Replaces a grouped-vs-per-pair comparison at `precond="one-sided"`, which
+    was VACUOUS: one-sided pins the whitener to the identity in both paths, so
+    the comparison never reached the code the two implementations differed on.
+    It also ran only at `precond_method="eigh"`. This runs all three branches at
+    the production `gram_ns`, bit-exactly.
     """
-    kw = {**_KW, "precond_method": "eigh"}
-    m1, x, tgt = _make(seed=21)
-    m2, _, _ = _make(seed=21)
-    a_opt = CurvatureWhitenLoRA(m1, precond="one-sided", **kw)
-    b_opt = CurvatureWhitenLoRA(m2, precond="one-sided", **kw)
-    b_opt._batched_step = False
-    a = _run(m1, a_opt, x, tgt, steps=4)
-    b = _run(m2, b_opt, x, tgt, steps=4)
-    assert _max_abs_diff(a, b) < 1e-5, "grouped and per-pair one-sided disagree"
-
-
-def test_the_per_pair_oracle_refuses_a_production_precond_method():
-    """Known-positive for the dispatch guard.
-
-    The per-pair path is described in its own docstring as the grouped step's
-    equivalence oracle, but it implements only precond_method="eigh" -- it never
-    reads precond_method, cw_unpinned, or LORA_MULTIMOMENT_RESCALE, all three of
-    which the grouped path branches on. Every equivalence test in the suite that
-    sets _batched_step=False leaves precond_method at its "eigh" default, so the
-    oracle has never once validated a production configuration. Refusing is what
-    keeps that fact from being rediscovered as a mysterious 2% drift.
-    """
-    m, _, _ = _make(seed=1)
-    opt = CurvatureWhitenLoRA(m, precond="one-sided", **{**_KW, "precond_method": "gram_ns"})
-    opt._batched_step = False
-    for A, B in opt.pairs:
-        A.grad = torch.zeros_like(A)
-        B.grad = torch.zeros_like(B)
-    with pytest.raises(NotImplementedError, match="only implements precond_method"):
-        opt.step()
+    companion_independent(lr=3e-2, curvature_beta=0.99, ns_steps=8, delta=1e-4,
+                          cw_nesterov=True, kl_coupled=True, soap_v=False,
+                          use_polar=True, precond_method="gram_ns",
+                          precond=precond)
 
 
 @pytest.mark.parametrize("msign", sorted(MSIGN_CHOICES))

@@ -107,21 +107,19 @@ def test_determinism(use_polar):
 
 
 @pytest.mark.parametrize("use_polar", [False, True])
-def test_batched_matches_per_pair(use_polar):
-    """The grouped batched path and the per-pair oracle must agree on the KL
-    path too — guards the new coupled-EMA / Shampoo-core orientation."""
-    def run(batched):
-        m, x, target = _make(seed=3)
-        opt = _kl_opt(m, lr=1e-2, use_polar=use_polar, precond_refresh_every=2)
-        opt._batched_step = batched
-        for _ in range(4):
-            loss = ((m(x) - target) ** 2).mean()
-            loss.backward()
-            opt.step()
-        return [p.detach().clone() for p in m.parameters()]
+def test_kl_path_is_companion_independent(use_polar, companion_independent):
+    """Batching must not let one pair's KL update depend on its shape-group
+    companions — guards the coupled-EMA / Shampoo-core orientation through the
+    stacked bmm.
 
-    for pg, pp in zip(run(True), run(False)):
-        assert torch.allclose(pg, pp, atol=1e-5, rtol=1e-4), "batched vs per-pair KL mismatch"
+    This replaces a grouped-vs-per-pair comparison against
+    `_cw_apply_per_pair`, a second implementation of the same step that has
+    since been deleted. That comparison could not catch a bug both copies
+    shared, and it ran only at `precond_method="eigh"`, which no production
+    sweep uses; this one is bit-exact and config-agnostic.
+    """
+    companion_independent(lr=1e-2, use_polar=use_polar, kl_coupled=True,
+                          soap_v=False, precond_refresh_every=2)
 
 
 def test_warmup_kl_gram_identity():
@@ -129,7 +127,7 @@ def test_warmup_kl_gram_identity():
     identity, so the coupled KL Gram update reduces to its one-sided warm form
     with the 1/d normalizer:
         P_A  = (1-β_c)/d_in * g_A g_Aᵀ
-        D_in = (1-β_c)/r    * diag(g_Aᵀ g_A)
+        Q = (1-β_c)/r    * diag(g_Aᵀ g_A)
     This pins both the 1/d normalizers and the identity-inverse warmup fallback.
     """
     cb = 0.99
@@ -143,9 +141,9 @@ def test_warmup_kl_gram_identity():
     opt.step()
     st = opt.pair_state[0]
     expected_PA = (1.0 - cb) / d_in * (gA @ gA.T)
-    expected_Din = (1.0 - cb) / r * (gA * gA).sum(dim=0)
+    expected_Q = (1.0 - cb) / r * (gA * gA).sum(dim=0)
     assert torch.allclose(st["P_A"], expected_PA, atol=1e-6, rtol=1e-5)
-    assert torch.allclose(st["D_in"], expected_Din, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(st["Q"], expected_Q, atol=1e-6, rtol=1e-5)
 
 
 def test_coupled_kl_gram_update_nontrivial():
@@ -156,15 +154,14 @@ def test_coupled_kl_gram_update_nontrivial():
     in both paths). This recomputes the four coupled EMA targets from the
     pre-update factors using the reference formula and the optimizer's own
     relative-damped inverse, then checks the post-step state matches:
-        P_A  ← β P_A  + ((1-β)/d_in)  g_A diag(D_in)^{-1} g_A^T
-        D_in ← β D_in + ((1-β)/r)     diag(g_A^T S_curv,A^{-1} g_A)
+        P_A ← β P_A + ((1-β)/d_in) g_A Q^{-1} g_A^T
+        Q ← β Q + ((1-β)/r) diag(g_A^T S_curv,A^{-1} g_A)
     (B-side symmetric with 1/d_out and 1/r). precond_refresh_every is set huge so
     the injected eigenbasis Q is not overwritten mid-step.
     """
     cb = 0.9
     m, x, target = _make(seed=5)
     opt = _kl_opt(m, lr=1e-3, curvature_beta=cb, precond_refresh_every=10_000)
-    opt._batched_step = False  # exercise the per-pair oracle
     opt._q_initialized = True  # no eigh reseed; keep the injected Q
     A, B = opt.pairs[0]
     r, d_in = A.shape
@@ -180,11 +177,11 @@ def test_coupled_kl_gram_update_nontrivial():
     st["U_B"].copy_(UB)
     st["P_A"].copy_(UA @ torch.diag(lamA_eig) @ UA.T)
     st["Q_B"].copy_(UB @ torch.diag(lamB_eig) @ UB.T)
-    st["D_in"].copy_(torch.linspace(0.5, 3.0, d_in))
-    st["D_out"].copy_(torch.linspace(0.4, 2.5, d_out))
+    st["Q"].copy_(torch.linspace(0.5, 3.0, d_in))
+    st["P"].copy_(torch.linspace(0.4, 2.5, d_out))
 
-    PA0 = st["P_A"].clone(); Din0 = st["D_in"].clone()
-    QB0 = st["Q_B"].clone(); Dout0 = st["D_out"].clone()
+    PA0 = st["P_A"].clone(); Q0 = st["Q"].clone()
+    QB0 = st["Q_B"].clone(); P0 = st["P"].clone()
 
     loss = ((m(x) - target) ** 2).mean()
     loss.backward()
@@ -195,20 +192,20 @@ def test_coupled_kl_gram_update_nontrivial():
     # Reference inverses from the PRE-update factors (matches the code path).
     lamA = opt._rdinv((UA * (PA0 @ UA)).sum(dim=0))      # (-1/2)
     lamB = opt._rdinv((UB * (QB0 @ UB)).sum(dim=0))
-    dinA = opt._rdinv(Din0); doutB = opt._rdinv(Dout0)
-    Din_inv = dinA * dinA; Dout_inv = doutB * doutB       # (-1)
+    Q_inv = opt._rdinv(Q0).square()
+    P_inv = opt._rdinv(P0).square()
     SAinv = UA @ (torch.diag(lamA * lamA) @ UA.T)
     RBinv = UB @ (torch.diag(lamB * lamB) @ UB.T)
 
-    exp_PA = cb * PA0 + ((1 - cb) / d_in) * ((gA * Din_inv.unsqueeze(0)) @ gA.T)
-    exp_Din = cb * Din0 + ((1 - cb) / r) * (gA * (SAinv @ gA)).sum(dim=0)
-    exp_QB = cb * QB0 + ((1 - cb) / d_out) * (gB.T @ (gB * Dout_inv.unsqueeze(-1)))
-    exp_Dout = cb * Dout0 + ((1 - cb) / r) * (gB * (gB @ RBinv)).sum(dim=1)
+    exp_PA = cb * PA0 + ((1 - cb) / d_in) * ((gA * Q_inv.unsqueeze(0)) @ gA.T)
+    exp_Q = cb * Q0 + ((1 - cb) / r) * (gA * (SAinv @ gA)).sum(dim=0)
+    exp_QB = cb * QB0 + ((1 - cb) / d_out) * (gB.T @ (gB * P_inv.unsqueeze(-1)))
+    exp_P = cb * P0 + ((1 - cb) / r) * (gB * (gB @ RBinv)).sum(dim=1)
 
     assert torch.allclose(st["P_A"], exp_PA, atol=1e-6, rtol=1e-5)
-    assert torch.allclose(st["D_in"], exp_Din, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(st["Q"], exp_Q, atol=1e-6, rtol=1e-5)
     assert torch.allclose(st["Q_B"], exp_QB, atol=1e-6, rtol=1e-5)
-    assert torch.allclose(st["D_out"], exp_Dout, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(st["P"], exp_P, atol=1e-6, rtol=1e-5)
 
 
 def test_polar_ns_guard_survives_sigma_max_underestimate():
@@ -289,7 +286,6 @@ def test_picard_converges_by_k2(use_polar):
     m, x, target = _make(seed=3)
     opt = CurvatureWhitenLoRA(m, lr=1e-2, use_polar=use_polar, kl_coupled=True,
                               soap_v=False, diag_metric=True)
-    opt._batched_step = True
     opt.cw_picard_iters = 1
     for _ in range(12):
         for p in m.parameters():

@@ -63,10 +63,62 @@ def test_no_config_field_escapes_the_pin_set():
     assert A.check_config_fields_pinnable()["no_cli_flag"] == ["muon_alpha", "muon_rank"]
 
 
-def test_arm_pins_every_pinnable_field():
+def test_arm_pins_every_field_its_optimizer_CAN_READ():
+    """`arm()` pins the pinnable fields the named optimizer actually receives,
+    not all of them.
+
+    This test used to assert `set(a) == {"optimizer"} | PINNED_FIELDS()`, i.e.
+    that every arm pins all ~76 OptimizerConfig fields. That rule caused the bug
+    it was meant to prevent, three times: a field the arm's own optimizer cannot
+    read was still pinned at the dataclass default, so any run that logged a
+    different value for that INERT field was silently dropped and the arm drew an
+    empty series. `cw_nesterov` on ADAMW cost 5 of 13 panel cells their baseline;
+    `cw_nesterov` on MUON and IMUON cost 6 runs each; `muon_ns_steps` on ADAMW
+    cost 5. Each was patched by widening one pin to a membership tuple until
+    `arm()` started deriving the set from what `build_from_spec` forwards.
+
+    What must NOT weaken: a field the optimizer DOES read stays pinned, so two
+    genuinely different configurations cannot merge into one label. For adamw
+    that is exactly beta1, beta2, lora_plus_multiplier and weight_decay --
+    `LoRAPlusAdamW.__init__` takes `betas` (packed from beta1/beta2),
+    `lora_plus_multiplier` and `weight_decay`, and nothing else from the config.
+    beta2 being pinned is what keeps the AdamW beta2 grid out of the baseline.
+    """
     a = A.arm("adamw")
-    assert set(a) == {"optimizer"} | A.PINNED_FIELDS()
     assert a["optimizer"] == "adamw"
+    assert set(a) == {"optimizer", "beta1", "beta2", "lora_plus_multiplier",
+                      "weight_decay"}
+    assert set(a) - {"optimizer"} <= A.PINNED_FIELDS(), \
+        "arm() must only pin pinnable fields"
+
+
+def test_arm_does_not_pin_a_field_its_optimizer_cannot_read():
+    """The derivation, stated as the property that matters.
+
+    `MuonLoRA.__init__` takes no `cw_nesterov`; `LoRAPlusAdamW.__init__` takes
+    neither `cw_nesterov` nor `muon_ns_steps`. Pinning them dropped real runs.
+    """
+    assert "cw_nesterov" not in A.arm("muon-lora")
+    assert "cw_nesterov" not in A.arm("adamw")
+    assert "muon_ns_steps" not in A.arm("adamw")
+    # ...while the optimizer that DOES read them keeps them pinned.
+    proto = A.arm("kl-diag-polar-lora")
+    assert "cw_nesterov" in proto and "muon_ns_steps" in proto
+    # The pinned value is the dataclass default, read rather than typed -- this
+    # assertion originally hardcoded False and was wrong.
+    from dataclasses import fields as _fields
+    from lora_playground.optim_config import OptimizerConfig
+    defaults = {f.name: f.default for f in _fields(OptimizerConfig)}
+    assert proto["cw_nesterov"] == defaults["cw_nesterov"]
+
+
+def test_a_custom_build_optimizer_pins_only_what_its_builder_reads():
+    """`imuon-lora` is built by a callable that runs the authors' vendored code
+    verbatim, reading only `config.lr` and hardcoding momentum / ns_steps / the
+    variant. No pinned field can distinguish two of its runs, so pinning any of
+    them only drops runs — measured, 6 on cw_nesterov."""
+    a = A.arm("imuon-lora")
+    assert set(a) == {"optimizer"}, f"imuon-lora should pin nothing else, got {sorted(a)}"
 
 
 def test_arm_override_wins_over_the_default():

@@ -262,7 +262,102 @@ def arm(optimizer: str, **overrides) -> dict:
             f"an unknown field pins nothing. Check the spelling against "
             f"lora_playground/optim_config.py or train.py's parser."
         )
-    return {"optimizer": optimizer, **_pinned(), **overrides}
+    inert = _inert_fields(optimizer)
+    pins = {k: v for k, v in _pinned().items() if k not in inert}
+    return {"optimizer": optimizer, **pins, **overrides}
+
+
+@lru_cache(maxsize=None)
+def _inert_fields(optimizer: str) -> frozenset:
+    """Pinned fields the named optimizer's constructor never receives.
+
+    Pinning such a field is the bug that shipped three times. `arm()` used to
+    pin ALL ~76 `OptimizerConfig` fields at their dataclass defaults, including
+    ones the arm's own optimizer cannot read — so any run that happened to log a
+    non-default value for an INERT field was silently dropped, and the arm drew
+    an empty series indistinguishable from "no data yet". Measured instances:
+
+      - `cw_nesterov` on `ADAMW`: `LoRAPlusAdamW.__init__` takes no such
+        argument, yet every adamw run at 5 of the 13 panel cells logs False
+        against the pinned True. Those cells rendered with NO baseline and
+        `leaderboard_rows` returned a NaN speed target.
+      - `cw_nesterov` on `MUON` and `IMUON`: same shape, 6 runs each.
+      - `muon_ns_steps` on `ADAMW`: 5 runs.
+
+    Each was previously patched one arm at a time by widening the pin to a
+    membership tuple. Deriving the set instead removes the class: a field the
+    constructor does not accept is provenance, not an axis, so it is not pinned
+    at all and every logged value is admitted.
+
+    Derived from `optim_specs.REGISTRY[optimizer].cls.__init__`, which resolves
+    for all 79 registered names. `spec.skip` is included because those fields are
+    deliberately withheld from the constructor for that variant, so they stay at
+    the class default rather than tracking the run. An unregistered name, or one
+    built by a custom `build` callable whose real consumer cannot be introspected,
+    returns the empty set — i.e. falls back to the old pin-everything behaviour,
+    which is conservative: it can drop runs, never admit wrong ones.
+    """
+    import inspect
+    try:
+        from ..optim_specs import ALIAS, REGISTRY, _forwardable_params
+    except Exception:
+        return frozenset()
+    spec = REGISTRY.get(optimizer)
+    if spec is None:
+        return frozenset()
+    if spec.build is not None:
+        # A custom `build` callable (imuon, sgd, adafactor) constructs the
+        # optimizer its own way, so signature introspection does not apply.
+        # Read the SOURCE for `config.<field>` instead: those are the only run
+        # values that can reach it. `_build_imuon`, for instance, reads
+        # `config.lr` and hardcodes everything else -- it runs the authors' code
+        # verbatim -- so no pinned field can distinguish two of its runs, and
+        # pinning any of them only drops runs (measured: 6, on cw_nesterov).
+        import re
+        try:
+            src = inspect.getsource(spec.build)
+        except (OSError, TypeError):
+            return frozenset()
+        # Bail out if `config` is used other than as `config.<attr>` (e.g. handed
+        # to a helper), since then the reads are not visible here.
+        body = "\n".join(src.split("\n")[1:])          # drop the def line
+        if re.search(r"\bconfig\b(?!\s*\.)", body):
+            return frozenset()
+        read = set(re.findall(r"\bconfig\.(\w+)", body))
+        return frozenset(k for k in _pinned() if k not in read)
+    if spec.cls is None:
+        return frozenset()
+    try:
+        params = list(_forwardable_params(spec.cls))
+    except (TypeError, ValueError):
+        return frozenset()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return frozenset()          # **kwargs absorbs anything; cannot tell
+
+    # Mirror `build_from_spec`'s forwarding, which is the only authority on which
+    # CONFIG FIELD reaches the constructor. Introspecting the signature alone is
+    # NOT enough and gets it wrong in the direction that matters: `betas` is
+    # PACKED from beta1 and beta2, so a signature-only rule called both inert and
+    # would have stopped ADAMW pinning beta2 -- reopening the exact incident this
+    # module was written for, where the AdamW beta2 grid merged into the baseline.
+    reachable = set()
+    for prm in params:
+        n = prm.name
+        if n in (spec.fixed or {}):
+            continue                                  # a constant, not the run's value
+        if n == "betas":
+            reachable |= {"beta1", "beta2"}           # packed, not passed through
+            continue
+        if n == "picard_iters":
+            reachable |= {"picard_iters_override"}
+            continue
+        if n in (spec.defaults or {}):
+            continue                                  # per-variant constant
+        fld = (spec.alias or {}).get(n) or ALIAS.get(n, n)
+        if fld in (spec.skip or set()):
+            continue                                  # withheld on purpose
+        reachable.add(fld)
+    return frozenset(k for k in _pinned() if k not in reachable)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,8 +393,15 @@ CW_PRODUCTION = dict(
 # speed target — the panel still rendered, just with no baseline to speak of.
 # Any field an optimizer never reads is a provenance record, not an axis: admit
 # every logged value rather than pinning one.
-ADAMW = arm("adamw", beta2=0.999, precond_method=(None, "higham"),
-            cw_nesterov=(False, True))
+# `precond_method` and `cw_nesterov` used to be widened here to membership
+# tuples, because pinning either dropped runs: LoRAPlusAdamW reads NEITHER, and
+# different wrappers logged different values. `arm()` now derives its pin set
+# from what `build_from_spec` actually forwards to the constructor, so an inert
+# field is not pinned at all and every logged value is admitted. The widening is
+# therefore unnecessary -- and its absence is what makes the fix general rather
+# than one patch per arm. beta2 stays pinned by derivation (LoRAPlusAdamW takes
+# `betas`), which is what keeps the AdamW beta2 grid out of the baseline.
+ADAMW = arm("adamw")
 # max_steps pins exclude the 1000-step lr pilots (ranking-only, never measured).
 IMUON = arm("imuon-lora", max_steps=9000)
 MUON = arm("muon-lora", max_steps=9000,
@@ -436,7 +538,7 @@ PRECOND_ARMS = {
 #
 # BOTH branches appear at BOTH decays, and the one-sided rows are not padding:
 # `curvature_beta` drives four EMAs, not one — P_A/Q_B (factorwise only) at
-# optim.py:2184-2186, 2200-2201 and D_in/D_out (BOTH arms) at 2191-2195,
+# optim.py:2184-2186, 2200-2201 and Q/P (BOTH arms) at 2191-2195,
 # 2202-2203 — so without a one-sided control at the same decay, a shrinking gap
 # cannot be told from beta2 simply helping everything. Measured in flight at
 # step 750: beta2=0.999 moved factorwise -0.0006 and one-sided -0.0003, i.e.
