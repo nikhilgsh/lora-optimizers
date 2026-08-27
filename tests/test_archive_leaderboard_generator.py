@@ -14,6 +14,7 @@ from lora_playground.publication_archive import (
     PublicationArchiveError,
     load_publication_archive,
 )
+from lora_playground.publication_queries import publication_workload_runs
 from lora_playground.workloads import (
     find_workload,
     resolve_record_dataset,
@@ -65,7 +66,6 @@ def test_checked_in_archive_preserves_reviewed_evidence_counts():
 
 
 def test_olmo_opc_r64_pins_recorded_publication_pipeline():
-    generator = _generator_module()
     archive = load_publication_archive(ARCHIVE)
     workload = find_workload("OLMo-2-1B", "opc", 64)
     dimension_records = [
@@ -80,7 +80,7 @@ def test_olmo_opc_r64_pins_recorded_publication_pipeline():
         run.effective_config["data_pipeline_version"]
         for run in dimension_records
     ) == {"packed_v1": 6, "packed_v1.1": 83}
-    selected = generator._workload_archive_runs(archive.runs, workload)
+    selected = publication_workload_runs(archive, workload)
     assert len(selected) == 83
     assert workload.data_pipeline_version == "packed_v1.1"
     assert {
@@ -106,7 +106,6 @@ def test_archive_generator_renders_all_pipeline_scoped_workloads():
 
 
 def test_archive_workload_selection_requires_recorded_pipeline():
-    generator = _generator_module()
     archive = load_publication_archive(ARCHIVE)
     workload = find_workload("OLMo-2-1B", "opc", 256)
     source = next(
@@ -119,9 +118,10 @@ def test_archive_workload_selection_requires_recorded_pipeline():
     config = dict(source.effective_config)
     config.pop("data_pipeline_version")
     malformed = replace(source, effective_config=MappingProxyType(config))
+    malformed_archive = replace(archive, runs=(malformed,))
 
     with pytest.raises(PublicationArchiveError, match="data_pipeline_version"):
-        generator._workload_archive_runs((malformed,), workload)
+        publication_workload_runs(malformed_archive, workload)
 
 
 def test_missing_archive_does_not_create_output(tmp_path):

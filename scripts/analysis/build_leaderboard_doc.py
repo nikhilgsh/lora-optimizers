@@ -31,10 +31,10 @@ from lora_playground.leaderboard import (
 )
 from lora_playground.leaderboard_variants import publication_variant_specs
 from lora_playground.publication_archive import (
-    PublicationArchiveError,
     load_publication_archive,
 )
-from lora_playground.workloads import iter_workloads, resolve_record_dataset
+from lora_playground.publication_queries import publication_workload_runs
+from lora_playground.workloads import iter_workloads
 
 # Cross-setting ranking shows only variants run on >= AGG_MIN_COVERAGE workloads;
 # scores are only comparable between variants that span a similar set of cells.
@@ -134,30 +134,6 @@ def build_aggregate(perf_matrix: dict, workloads: list) -> str:
     return "\n".join(lines)
 
 
-def _workload_archive_runs(archive_runs, wl) -> tuple:
-    """Select one declared workload from immutable archived records."""
-    selected = []
-    for index, run in enumerate(archive_runs):
-        cfg = run.effective_config
-        max_steps = cfg.get("max_steps")
-        if cfg.get("model_name") != wl.model_name or cfg.get("lora_r") != wl.rank:
-            continue
-        if not isinstance(max_steps, int) or max_steps < wl.min_completed_steps:
-            continue
-        if resolve_record_dataset(run, index=index) != wl.dataset:
-            continue
-        pipeline = cfg.get("data_pipeline_version")
-        if not isinstance(pipeline, str) or not pipeline:
-            raise PublicationArchiveError(
-                f"archived run {run.physical_id!r} has no recorded "
-                "config.data_pipeline_version"
-            )
-        if pipeline != wl.data_pipeline_version:
-            continue
-        selected.append(run)
-    return tuple(selected)
-
-
 def _unique_variant_id(variants, label: str) -> str:
     matches = [variant.id for variant in variants if variant.label == label]
     if len(matches) != 1:
@@ -217,7 +193,7 @@ def render_doc(archive_path: str | Path = ARCHIVE) -> str:
     # cross-setting aggregate matrix (frac_best_lr per workload).
     sections, perf_matrix, workloads = [], {}, []
     for wl in iter_workloads():
-        runs = _workload_archive_runs(archive.runs, wl)
+        runs = publication_workload_runs(archive, wl)
         comparison = build_comparison(runs, variants, horizon=wl.horizon)
         try:
             rows, target = leaderboard_rows_from_comparison(

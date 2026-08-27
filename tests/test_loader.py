@@ -4,8 +4,7 @@ Synthetic-fixture tests — build a temp logs/ tree per test so behavior is
 fully isolated from the real project state. Validates:
 
   - Predicate matching: literal, list, callable.
-  - load_runs honors `where`, dedups via key_axes.
-  - Newest-wins-on-collision.
+  - load_runs honors `where` and keeps physical reruns visible.
   - inventory_runs detects orphans, unknown optimizers, and pinning at
     the lr-range boundary.
   - render_inventory smoke (returns non-empty plain-text report).
@@ -145,21 +144,21 @@ def test_load_runs_callable_predicate(tmp_path: Path):
     assert {int(c["lora_r"]) for c, _ in runs} == {128, 256}
 
 
-def test_load_runs_newest_wins_on_dedup_collision(tmp_path: Path):
-    """When two non-deprecated groups have a colliding key, newer wins.
-    Replaces the role the destructive `supersedes` field used to play."""
+def test_load_runs_keeps_colliding_physical_runs_in_filesystem_order(tmp_path: Path):
+    """Manifest timestamps neither order nor deduplicate physical records."""
     logs = tmp_path / "logs"
     cfg = _cfg("adam-polar-product-lora", 3e-4)
-    _write_group(logs, "g_old",
+    _write_group(logs, "a_old",
                  {"scope": ["polar_family"], "submitted_at": "2026-04-01T00:00:00-04:00"},
                  [(cfg, _evs((2000, 0.80)))])
-    _write_group(logs, "g_new",
+    _write_group(logs, "z_new",
                  {"scope": ["polar_family"], "submitted_at": "2026-04-30T00:00:00-04:00"},
                  [(cfg, _evs((2000, 0.74)))])
     runs = load_runs(where={"optimizer": "adam-polar-product-lora"}, logs_root=str(logs))
-    assert len(runs) == 1, "dedup didn't collapse colliding runs"
-    _, evs = runs[0]
-    assert evs[-1]["eval_loss"] == 0.74
+    assert [(cfg["log_group"], evs[-1]["eval_loss"]) for cfg, evs in runs] == [
+        ("a_old", 0.80),
+        ("z_new", 0.74),
+    ]
 
 
 def test_load_runs_unique_on_raises_on_uncontrolled_axis(tmp_path: Path):
@@ -626,7 +625,7 @@ def test_load_runs_warns_when_runs_span_multiple_commits(tmp_path: Path):
                  [(cfg_a, _evs((2000, 0.74)))])
     _write_group(logs, "g_b", {"scope": ["polar_family"]},
                  [(cfg_b, _evs((2000, 0.74)))])
-    with pytest.warns(UserWarning, match=r"runs from 2 commits"):
+    with pytest.warns(UserWarning, match=r"runs from 2 recorded commits"):
         load_runs(where={"optimizer": "adam-polar-product-lora"},
                   logs_root=str(logs))
 
@@ -669,10 +668,10 @@ def test_load_runs_warn_cross_commit_can_be_silenced(tmp_path: Path, recwarn):
     assert not cross_commit_warnings
 
 
-# ─── load_runs end-to-end: enrichment is applied ──────────────────────────────
+# ─── load_runs end-to-end: logged values only ─────────────────────────────────
 
-def test_load_runs_enriches_returned_cfgs(tmp_path: Path):
-    """End-to-end: a run loaded via load_runs must have _derived populated."""
+def test_load_runs_does_not_reconstruct_command_flags_or_defaults(tmp_path: Path):
+    """The compatibility facade must not reinterpret old runs with live code."""
     logs = tmp_path / "logs"
     cfg = _cfg("adam-polar-product-lora-coupled", 3e-4, lora_r=64)
     cfg["command"] = (
@@ -685,10 +684,11 @@ def test_load_runs_enriches_returned_cfgs(tmp_path: Path):
     runs = load_runs(where={"optimizer": "adam-polar-product-lora-coupled"},
                      logs_root=str(logs))
     assert len(runs) == 1
-    enriched_cfg, _ = runs[0]
-    assert "_derived" in enriched_cfg
-    assert enriched_cfg["_derived"]["effective_inner_polar"] == "svd_exact"
-    assert "effective_picard_iters" in enriched_cfg["_derived"]
+    loaded_cfg, _ = runs[0]
+    assert "_derived" not in loaded_cfg
+    assert "polar_sigma_power" not in loaded_cfg
+    assert "effective_picard_iters" not in loaded_cfg
+    assert "data_pipeline_version" not in loaded_cfg
 
 
 # ─── exclusion observability: per-group surfacing ─────────────────────────────
@@ -735,9 +735,8 @@ def test_inventory_surfaces_blanket_excluded_group(tmp_path: Path, monkeypatch):
     assert "ALL RUNS EXCLUDED" in text
 
 
-def test_load_runs_summary_includes_group_examples(tmp_path: Path, monkeypatch, capsys):
-    """The exclusion summary print must name an example (group, log_filename)
-    so a user can identify which sweep got swept up."""
+def test_load_runs_does_not_apply_commit_exclusions(tmp_path: Path, monkeypatch, capsys):
+    """Commit registries are audit inputs, not ordinary discovery gates."""
     logs = tmp_path / "logs"
     from lora_playground import commit_exclusions as cx_mod
     monkeypatch.setattr(
@@ -749,15 +748,11 @@ def test_load_runs_summary_includes_group_examples(tmp_path: Path, monkeypatch, 
     _write_group(logs, "phase_L_test", {"scope": ["all_optimizers"]},
                  [(cfg, _evs((2000, 0.76)))])
 
-    # quiet=False: the exclusion summary is only printed when not quiet (the
-    # loader defaults to quiet=True for notebook use).
     runs = load_runs(where={"optimizer": "adamw"}, logs_root=str(logs), quiet=False)
     out = capsys.readouterr().out
-    assert "phase_L_test" in out, (
-        f"summary print missing group name; got: {out!r}"
-    )
-    # The exclusion blocks user filter from seeing the run.
-    assert len(runs) == 0
+    assert out == ""
+    assert len(runs) == 1
+    assert runs[0][0]["log_group"] == "phase_L_test"
 
 
 def test_load_runs_warns_on_unknown_where_key(tmp_path: Path):

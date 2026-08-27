@@ -29,7 +29,8 @@ from .plotting import (
     DIVERGE_THRESHOLD, OPTIM_COLORS, RUNTIME_FIELDS, has_runs, load_sweep,
     max_loss, merge_runs, parse_flag, prescan_groups, scan_epoch, scan_group,
 )
-from .run_catalog import load_records
+from .run_catalog import RunCatalog, load_records
+from .run_records import RunRecord, thaw_value
 
 
 class UncontrolledAxisError(RuntimeError):
@@ -1034,9 +1035,11 @@ def load_runs(
 ) -> list[tuple[dict, list[dict]]]:
     """Compatibility API returning mutable ``(cfg, history)`` tuples.
 
-    New code should use :func:`load_records`. This adapter retains legacy
-    current-default reconstruction, historical exclusion registries, and
-    callable predicates until the existing notebooks are migrated.
+    New code should use :func:`load_records`. This adapter discovers physical
+    records through :class:`RunCatalog`, resolves only explicitly recorded
+    versioned lineages, and exposes mutable copies for older callers. It never
+    reconstructs missing defaults, applies historical exclusion registries,
+    infers resume lineage, or consults manifests for admission or ordering.
 
     Load all runs whose cfg matches every predicate in ``where``.
 
@@ -1048,20 +1051,11 @@ def load_runs(
     Omitted fields impose no constraint. A run missing a field referenced in
     ``where`` is excluded (treat absence as non-match).
 
-    Dedup model:
-      - ``key_axes=None`` (default, recommended): **deny-list** dedup. Two
-        runs collapse iff their cfg fields are equal except for fields in
-        ``runtime_fields`` (git_commit, command, log_group, etc.). New
-        behavioral hyperparameters automatically become dedup axes.
-      - ``key_axes=tuple(...)``: **allow-list** dedup. Used to intentionally
-        collapse across some axis (e.g. seed averaging). Older mode; prefer
-        the deny-list default for general analysis.
-
-    ``merge_runs`` keeps longest-trajectory-wins; group priority is
-    newest-first (by ``submitted_at``). The hidden-axis collision check
-    still fires if two runs share the dedup key but differ on another cfg
-    axis (most useful in allow-list mode; under deny-list it almost never
-    fires by construction).
+    ``key_axes`` remains in the call signature but non-``None`` values raise:
+    the compatibility layer no longer guesses which physical run should win a
+    collision. Physical reruns stay visible by default; comparison code must
+    select among them explicitly. ``runtime_fields`` still controls the optional
+    ``unique_on`` guard below.
 
     Uncontrolled-axis guard (``unique_on``):
       When set, after the where-filter the loader buckets returned runs by
@@ -1077,13 +1071,10 @@ def load_runs(
       via ``assert_label_discriminates``; ``unique_on`` is the load-time
       analogue for ad-hoc cells.
 
-    Cost model: ``where`` is pushed in front of the per-run cfg postprocess
-    (see ``_build_pushdown``), so a narrow query enriches only the runs it can
-    still return rather than every run in ``logs/``. Passing your own
-    ``cfg_postprocess`` turns the pushdown off, because it may rewrite any
-    field the predicate reads. Directory scanning is shared across the call
-    and issued concurrently; ``logs_signature`` exposes just that half, for
-    callers that want to skip a re-query when the tree has not moved.
+    ``cfg_postprocess`` runs before ``where`` matching, preserving callers that
+    use it to add a temporary alias consumed by their predicate. Every value
+    exposed before that callback came from the log itself; missing values stay
+    missing.
     """
     warnings.warn(
         "load_runs() is deprecated; use load_records() for immutable catalog "
@@ -1104,6 +1095,50 @@ def load_runs(
     )
 
 
+def _compat_record_key(record: RunRecord) -> tuple[str, str | None, str]:
+    """Stable lookup key shared with explicit-lineage terminal segments."""
+    return record.group, record.log_filename, record.physical_id
+
+
+def _compat_record_cfg(record: RunRecord) -> dict:
+    """Mutable flat cfg containing only values logged by ``record``.
+
+    The raw event remains the base so audit blocks stay available to legacy
+    consumers. ``semantic_config`` then overlays the producer-recorded
+    effective values (including values inside logged config blocks). No value
+    is synthesized from current code or historical tables.
+    """
+    cfg = thaw_value(record.raw_config)
+    cfg.update(thaw_value(record.semantic_config))
+    cfg.setdefault("log_group", record.group)
+    if record.log_filename is not None:
+        cfg.setdefault("_log_filename", record.log_filename)
+    cfg.setdefault("run_id", record.physical_id)
+    return cfg
+
+
+def _warn_cross_commit_runs(runs: list[tuple[dict, list[dict]]]) -> None:
+    """Report differing recorded commits without interpreting or gating them."""
+    commits: dict[str, int] = {}
+    for cfg, _ in runs:
+        commit = cfg.get("git_commit") or "<missing>"
+        commits[str(commit)] = commits.get(str(commit), 0) + 1
+    if len(commits) <= 1:
+        return
+    summary = ", ".join(
+        f"{commit[:7]} ({n} run{'s' if n != 1 else ''})"
+        for commit, n in sorted(commits.items(), key=lambda item: -item[1])
+    )
+    warnings.warn(
+        f"load_runs returned runs from {len(commits)} recorded commits: "
+        f"{summary}. Commit values are audit provenance only; this compatibility "
+        "loader does not interpret or gate them. Pass warn_cross_commit=False "
+        "to silence.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 def _load_runs_compatibility(
     where: dict[str, Any] | None = None,
     *,
@@ -1116,21 +1151,75 @@ def _load_runs_compatibility(
     allow_axes: tuple[str, ...] = (),
     quiet: bool = True,
 ) -> list[tuple[dict, list[dict]]]:
-    """Execute the legacy mutable-tuple loading implementation."""
+    """Thin mutable-tuple adapter over the neutral physical run catalog."""
     if logs_root is None:
         logs_root = _default_logs_root()
-    # One scan epoch for the whole call: `load_manifests`' has_runs check,
-    # `merge_runs`' has_runs check, and each group's cache-freshness signature
-    # all read the same `os.scandir` result instead of walking the tree three
-    # times over. The epoch ends when this call returns, so the next call
-    # re-stats every file and picks up in-flight sweeps.
-    with scan_epoch():
-        return _load_runs_inner(
-            where, key_axes=key_axes, runtime_fields=runtime_fields,
-            cfg_postprocess=cfg_postprocess, logs_root=logs_root,
-            warn_cross_commit=warn_cross_commit, unique_on=unique_on,
-            allow_axes=allow_axes, quiet=quiet,
+    if key_axes is not None:
+        raise NotImplementedError(
+            "load_runs(key_axes=...) no longer performs implicit physical-run "
+            "deduplication; load physical records and make the selection "
+            "explicitly in the comparison consumer"
         )
+    # ``quiet`` remains in the public signature while callers migrate, but
+    # physical discovery has no implicit exclusion summary to silence.
+    _ = quiet
+
+    catalog = RunCatalog.discover(logs_root)
+    filter_fn = _build_filter(where)
+    processed: dict[tuple[str, str | None, str], dict] = {}
+    selected: list[RunRecord] = []
+    seen_fields: set[str] = set()
+
+    for record in catalog.records:
+        cfg = _compat_record_cfg(record)
+        if cfg_postprocess is not None:
+            cfg_postprocess(cfg, record.group)
+        processed[_compat_record_key(record)] = cfg
+        seen_fields.update(cfg)
+        if filter_fn is None or filter_fn(cfg):
+            selected.append(record)
+
+    # Preserve the useful typo warning without treating current argparse
+    # defaults or loader-written fields as evidence that a cfg key exists.
+    if where and processed:
+        resolved_where = _resolve_where(where)
+        unknown = sorted(field for field in resolved_where if field not in seen_fields)
+        if unknown:
+            warnings.warn(
+                f"load_runs: where-key(s) {unknown!r} do not appear in any "
+                f"logged cfg in the candidate pool ({len(processed)} runs "
+                "examined). Possible typo or filtering on an unrecorded field. "
+                f"Known cfg keys (sample): {sorted(seen_fields)[:20]}...",
+                stacklevel=3,
+            )
+
+    runs: list[tuple[dict, list[dict]]] = []
+    for resolved in catalog.resolve_lineages(selected):
+        if isinstance(resolved, RunRecord):
+            cfg = processed[_compat_record_key(resolved)]
+            history = thaw_value(resolved.history)
+        else:
+            # RunCatalog.resolve_lineages returns MergedRunLineage here. Reuse
+            # the already-postprocessed terminal cfg so cfg_postprocess runs
+            # exactly once per physical record, then substitute the logical
+            # attempt ID when the producer did not log its own run_id.
+            terminal = resolved.segments[-1]
+            terminal_key = (
+                terminal.group,
+                terminal.log_filename,
+                terminal.physical_id,
+            )
+            cfg = processed[terminal_key]
+            if "run_id" not in terminal.cfg:
+                cfg["run_id"] = resolved.terminal_attempt_id
+            history = thaw_value(resolved.history)
+        runs.append((cfg, history))
+
+    if unique_on is not None and runs:
+        _check_unique_on(runs, unique_on, runtime_fields, allow_axes)
+    if warn_cross_commit and runs:
+        _warn_cross_commit_runs(runs)
+    return runs
 
 
 def _load_runs_inner(
