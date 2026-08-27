@@ -85,22 +85,72 @@ from .arms import (  # noqa: F401,E402
     NOMAG, NOPRODUCT, NOSHAMPOO, ONESIDED, ONESIDED_DIAG, PROTO, PROTO_DIAG,
 )
 
-# The E1 cell set (paper/e1_coverage_fill.md). data_key is substring-matched on data_dir.
-CELLS = [
-    ("OLMo-2-1B opc r256",        "allenai/OLMo-2-0425-1B",     "opc",      256),
-    ("Qwen2.5-1.5B opc r256",     "Qwen/Qwen2.5-1.5B",          "opc",      256),
-    ("Llama-3.2-1B opc r256",     "meta-llama/Llama-3.2-1B",    "opc",      256),
-    ("Llama-3-8B opc r256",       "meta-llama/Meta-Llama-3-8B", "opc",      256),
-    ("Qwen2.5-1.5B bengali r256", "Qwen/Qwen2.5-1.5B",          "bengali",  256),
-    ("OLMo-2-1B openmath r256",    "allenai/OLMo-2-0425-1B",     "openmath", 256),
-    ("Qwen2.5-1.5B openmath r256", "Qwen/Qwen2.5-1.5B",          "openmath", 256),
-    ("Llama-3-8B openmath r256",   "meta-llama/Meta-Llama-3-8B", "openmath", 256),
-    ("Llama-3.2-1B openmath r16",  "meta-llama/Llama-3.2-1B",    "openmath",  16),
-    ("Llama-3.2-1B openmath r32",  "meta-llama/Llama-3.2-1B",    "openmath",  32),
-    ("Llama-3.2-1B openmath r64",  "meta-llama/Llama-3.2-1B",    "openmath",  64),
-    ("Llama-3.2-1B openmath r128", "meta-llama/Llama-3.2-1B",    "openmath", 128),
-    ("Llama-3.2-1B openmath r256", "meta-llama/Llama-3.2-1B",    "openmath", 256),
+# The E1 cell set (paper/e1_coverage_fill.md), as an ORDER over the workload
+# registry rather than a second list of experiments.
+#
+# `lora_playground.workloads` calls itself the single source of truth for
+# (model, dataset, rank) cells and discovers them by predicate. This list used to
+# retype 13 of them, and the two had already drifted in BOTH directions: r16 was
+# here but absent from the registry (while r32/64/128/256 were all declared), and
+# the registry carried OLMo openmath r64 and Qwen3-0.6B openwebmath r64 that
+# never appear in a panel. So the leaderboard and the paper panels disagreed
+# about which experiments exist, with no way to tell a deliberate omission from
+# an oversight.
+#
+# Now only the ORDER and the panel captions live here, because `panel_n(i)`
+# indexes this list and every notebook cell is written as `P.panel_n(3)` -- a
+# reordering would silently repoint every figure. Existence comes from the
+# registry: `_cell_from_registry` raises on a key the registry does not declare,
+# so adding a panel for an undeclared cell fails loudly instead of rendering a
+# figure the leaderboard does not know about. Cells the registry declares but
+# that no panel shows are listed in `CELLS_NOT_PANELLED` with a reason.
+_CELLS_ORDER = [
+    ("OLMo-2-1B",      "opc",      256),
+    ("Qwen2.5-1.5B",   "opc",      256),
+    ("Llama-3.2-1B",   "opc",      256),
+    ("Meta-Llama-3-8B", "opc",     256),
+    ("Qwen2.5-1.5B",   "bengali",  256),
+    ("OLMo-2-1B",      "openmath", 256),
+    ("Qwen2.5-1.5B",   "openmath", 256),
+    ("Meta-Llama-3-8B", "openmath", 256),
+    ("Llama-3.2-1B",   "openmath",  16),
+    ("Llama-3.2-1B",   "openmath",  32),
+    ("Llama-3.2-1B",   "openmath",  64),
+    ("Llama-3.2-1B",   "openmath", 128),
+    ("Llama-3.2-1B",   "openmath", 256),
 ]
+
+# Registry cells with no panel, and why. A key here that the registry does not
+# declare, or a registry cell in neither this dict nor `_CELLS_ORDER`, is a test
+# failure -- that is what keeps "not shown" distinguishable from "forgotten".
+CELLS_NOT_PANELLED = {
+    ("OLMo-2-1B", "opc", 64): "rank ladder is run on Llama-3.2-1B/openmath only",
+    ("OLMo-2-1B", "openmath", 64): "rank ladder is run on Llama-3.2-1B/openmath only",
+    ("Llama-3.2-1B", "opc", 64): "rank ladder is run on Llama-3.2-1B/openmath only",
+    ("OLMo-2-1B", "tulu3", 64): "tulu3 is not an E1 corpus",
+    ("OLMo-2-1B", "tulu3", 256): "tulu3 is not an E1 corpus",
+    ("Qwen3-0.6B", "openwebmath", 64):
+        "continued pretraining (all-token loss), not instruction tuning",
+}
+
+
+# Panel caption overrides, where the registry's `model_display` is not the name
+# the paper uses. The registry spells the 8B model "Meta-Llama-3-8B" so its
+# `label` property yields "Meta/..." and does not collide with Llama-3.2-1B's
+# "Llama/..." cross-setting key; the manuscript and this project's CLAUDE.md both
+# say "Llama-3-8B". Keep the registry's disambiguation and the paper's name.
+_CAPTION_MODEL = {"Meta-Llama-3-8B": "Llama-3-8B"}
+
+
+def _cell_from_registry(model_display, dataset, rank):
+    """One `CELLS` entry, with existence checked against the workload registry."""
+    from lora_playground.workloads import find_workload
+    wl = find_workload(model_display, dataset, rank)   # raises KeyError on a miss
+    name = _CAPTION_MODEL.get(wl.model_display, wl.model_display)
+    return (f"{name} {wl.dataset} r{wl.rank}", wl.model_name, wl.dataset, wl.rank)
+
+
+CELLS = [_cell_from_registry(*key) for key in _CELLS_ORDER]
 
 # --------------------------------------------------------------------------------------
 # Per-cell run cache

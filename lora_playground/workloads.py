@@ -141,6 +141,11 @@ WORKLOADS: list[Workload] = [
     # ── Llama-3.2-1B ─────────────────────────────────────────────────────────
     Workload("meta-llama/Llama-3.2-1B", "opc", 64, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
     Workload("meta-llama/Llama-3.2-1B", "opc", 256, "Llama-3.2-1B", _OPC_DISPLAY, 9000, _SIGMA, True),
+    # r16 completes the rank ladder. It was absent while r32/64/128/256 were all
+    # declared, so `find_workload(..., 16)` raised while `paper_plots_lib.CELLS`
+    # listed the cell -- the leaderboard and the paper panels disagreed about
+    # whether it exists. It is the cell the `precond` ablation is read at.
+    Workload("meta-llama/Llama-3.2-1B", "openmath", 16, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     Workload("meta-llama/Llama-3.2-1B", "openmath", 32, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     Workload("meta-llama/Llama-3.2-1B", "openmath", 64, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),
     Workload("meta-llama/Llama-3.2-1B", "openmath", 128, "Llama-3.2-1B", _OPENMATH_DISPLAY, 9000, _SIGMA, True),

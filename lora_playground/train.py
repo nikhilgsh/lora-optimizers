@@ -360,6 +360,75 @@ def git_dirty_state() -> dict:
     }
 
 
+def ensure_group_manifest(checkpoint_dir, commit, data_pipeline_version):
+    """Write a stub `run_info/meta.json` if this run's log group has none.
+
+    Returns a note to log when one was written or could not be, else "".
+
+    `slurm_scripts/submit.sh` writes the manifest unconditionally, so the hole is
+    not a missing write — it is a job that never went through submit.sh (a
+    hand-built task file dropped straight into `slurm_pending/`). Such a run
+    completes normally and is then invisible to every analysis: `loader`'s
+    `load_manifests(strict=False)` plus `live_manifests_newest_first` drop the
+    whole group before any `where` predicate runs. Measured on
+    `logs/e2_precond_r16_postfix_xl`, whose 4 completed 9000-step runs had to be
+    recovered by hand from `sacct` and log parsing.
+
+    This runs in train.py because that is the ONE place every launch path passes
+    through, and it can identify its group: `tests/test_sweep_scripts_checkpoint`
+    requires all 120 wrappers under `scripts/sweep/` to pass `--checkpoint_dir`,
+    which is `logs/<group>/run_info*/checkpoints/task_N`.
+
+    A stub is written rather than the run being aborted: killing a queued GPU job
+    over metadata is worse than the omission. `scope` is deliberately left EMPTY
+    — train.py cannot know the sweep's scientific intent, and an invented tag
+    would load the runs under a false label, which is worse than not loading
+    them. Empty scope keeps `warn_untagged` flagging the group, so `load_runs`
+    now says so out loud, and the fix is adding one tag rather than
+    reconstructing ten fields.
+    """
+    if not checkpoint_dir:
+        return ""
+    parts = Path(checkpoint_dir).resolve().parts
+    try:                                    # .../logs/<group>/run_info*/checkpoints/task_N
+        i = len(parts) - 1 - parts[::-1].index("logs")
+    except ValueError:
+        return ""
+    if i + 2 >= len(parts) or not parts[i + 2].startswith("run_info"):
+        return ""
+    run_info = Path(*parts[: i + 3])
+    meta = run_info / "meta.json"
+    if meta.exists():
+        return ""
+    stub = {
+        "group": parts[i + 1],
+        "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID", "unknown"),
+        "n_gpus": None,
+        "params_file": None,
+        "sweep_script": None,
+        "sbatch_script": None,
+        "git_commit": commit,
+        "git_dirty": None,
+        "scope": [],
+        "purpose": ("STUB written by train.py: this group had no meta.json, so it "
+                    "was launched outside slurm_scripts/submit.sh. Add a scope tag "
+                    "to make these runs visible to load_runs."),
+        "data_pipeline_version": data_pipeline_version,
+        "_stub": True,
+    }
+    try:
+        run_info.mkdir(parents=True, exist_ok=True)
+        meta.write_text(json.dumps(stub, indent=2) + "\n")
+    except OSError as e:
+        return (f"group {parts[i + 1]!r} has no run_info/meta.json and the stub "
+                f"could not be written ({e}); its runs will be invisible to "
+                f"load_runs until one exists.")
+    return (f"group {parts[i + 1]!r} had no run_info/meta.json — wrote a STUB with "
+            f"empty scope. Its runs stay invisible to load_runs until a scope tag "
+            f"is added to {meta}.")
+
+
 def log_event(payload):
     """Emit JSON-line config/eval/train_step events. Rank-gated under DDP so
     only rank 0 writes — the on-disk log stays single-stream, matching
@@ -1428,6 +1497,12 @@ def main():
         snapshot_sha=_snapshot_sha,
         git_commit=git_commit(),
     )
+    _manifest_note = ensure_group_manifest(args.checkpoint_dir, git_commit(),
+                                           args.data_pipeline_version)
+    if _manifest_note:
+        log_event({"event": "warning", "kind": "missing_sweep_manifest",
+                   "detail": _manifest_note})
+        print(f"[train] {_manifest_note}", file=sys.stderr, flush=True)
     log_event(
         {
             "event": "config",
