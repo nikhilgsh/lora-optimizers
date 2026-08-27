@@ -1177,6 +1177,29 @@ class CurvatureWhitenLoRA(Optimizer):
     variant (a different arm). When describing the METHOD or its ablations, cite
     Alg 1 — do NOT paraphrase from these eigenbasis fragments.
     """
+
+    # CHECKPOINT COMPATIBILITY. `pair_state` keys are SERIALIZED verbatim, so a
+    # bare rename strands every checkpoint written before it — silently, because
+    # load inserts the unknown key and leaves the live buffer at its init value.
+    # `checkpoint._pair_state_aliases` reads this map and `load_checkpoint`
+    # applies it. Old name left, current name right.
+    #
+    # Applied as ONE SIMULTANEOUS PERMUTATION, never key by key: `Q_B` is both a
+    # retired name (the eigh eigenbasis, now `U_B`) and a CURRENT one (the free
+    # Kronecker factor allocated below), so a key-at-a-time rewrite would drop
+    # the old eigenbasis tensor into the free-factor slot.
+    #
+    # Scoped to THIS class deliberately: AdamSOAPPolarProductLoRA carries
+    # pair_state keys spelled 'L_A'/'R_B'/'Q_A'/'Q_B' that mean its own things
+    # and must not be translated. Drop an entry only when no resumable
+    # checkpoint still uses it.
+    PAIR_STATE_ALIASES = {
+        'L_A': 'P_A',   # r x r slot, now the free Kronecker factor P_A
+        'R_B': 'Q_B',   # r x r slot, now the free Kronecker factor Q_B
+        'Q_A': 'U_A',   # eigh eigenbasis
+        'Q_B': 'U_B',   # eigh eigenbasis
+    }
+
     def __init__(self, model, lr=2e-4, betas=(0.9, 0.999), delta=1e-3, eps=1e-8,
                  curvature_beta=0.99, use_polar=False, ns_steps=5,
                  polar_method="ns", precond_method="eigh", higham_iters=10,
