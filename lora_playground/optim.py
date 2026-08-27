@@ -660,7 +660,7 @@ MSIGN_CHOICES = {"full", "diag"}
 # _direction_op's relative floor and cw_solved_rho's quadratic clamp. Also
 # distinct from spectral.py's `sigma_floor`, a data-dependent degenerate-vector
 # guard that shares only the name.
-_ALG1_SIGMA_FLOOR = 1e-12
+_ALG1_MAGNITUDE_FLOOR = 1e-12
 
 OPTIMIZER_CHOICES = {
     "adamw",
@@ -1195,7 +1195,7 @@ class CurvatureWhitenLoRA(Optimizer):
         # 1e-8 and is ALSO the SOAP Adam denominator, _direction_op's relative
         # floor and cw_solved_rho's quadratic clamp, where 1e-8 is right. One
         # name cannot carry both values, so the magnitude clamp gets its own.
-        self.sigma_floor = _ALG1_SIGMA_FLOOR
+        self.alg1_magnitude_floor = _ALG1_MAGNITUDE_FLOOR
         self.delta = float(delta)            # relative damping for the inverse-sqrts
         self.beta1, self.beta2 = betas
         self.curvature_beta = float(curvature_beta)
@@ -2053,8 +2053,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     WB = (((zB @ QB) * lamB.unsqueeze(0)) @ QBt) * doutB.unsqueeze(-1)
                 sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
                 sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
-                dA = -(cA * rho / sWA.clamp_min(self.sigma_floor)) * WA
-                dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.sigma_floor)) * WB
+                dA = -(cA * rho / sWA.clamp_min(self.alg1_magnitude_floor)) * WA
+                dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.alg1_magnitude_floor)) * WB
             if self.cw_solved_rho:
                 # Solved magnitude — mirror of _cw_apply_grouped (see there); the
                 # SAME blessed prodsum estimator on a 1-batch keeps this path the
@@ -2377,8 +2377,8 @@ class CurvatureWhitenLoRA(Optimizer):
                     dA = -(cA * rho).view(-1, 1, 1) * WA
                     dB = -self.lora_plus_multiplier * (cB * rho).view(-1, 1, 1) * WB
                 else:
-                    dA = -(cA * rho / sWA.clamp_min(self.sigma_floor)).view(-1, 1, 1) * WA
-                    dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.sigma_floor)).view(-1, 1, 1) * WB
+                    dA = -(cA * rho / sWA.clamp_min(self.alg1_magnitude_floor)).view(-1, 1, 1) * WA
+                    dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.alg1_magnitude_floor)).view(-1, 1, 1) * WB
             if timer: timer.stop()
             if self.cw_solved_rho:
                 # Solved magnitude (see __init__): rescale the final dA, dB by

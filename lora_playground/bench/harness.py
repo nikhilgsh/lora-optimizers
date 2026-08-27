@@ -121,12 +121,19 @@ def build_protagonist_direct(bare, cfg: BenchConfig, *, precond_method, K):
     from ..optim import CurvatureWhitenLoRA
     from ..optim_specs import REGISTRY
     identity = dict(REGISTRY[cfg.optimizer].fixed)  # kl_coupled/soap_v/diag_metric/use_polar
-    return CurvatureWhitenLoRA(
-        bare, lr=1e-3, betas=(cfg.beta1, cfg.beta2), delta=cfg.precond_delta,
+    # A flag the spec pins IS the arm's identity, so it wins over the BenchConfig
+    # field. Forwarding both raises TypeError("multiple values for keyword
+    # argument"): curvature-whiten-lora and curvature-whiten-polar-lora pin
+    # cw_nesterov=False, and passing cfg.cw_nesterov alongside would kill the
+    # bench 8+ minutes into a model load.
+    kwargs = dict(
+        lr=1e-3, betas=(cfg.beta1, cfg.beta2), delta=cfg.precond_delta,
         curvature_beta=cfg.curvature_beta, ns_steps=cfg.muon_ns_steps,
         polar_method=cfg.polar_method, cw_picard_iters=cfg.cw_picard_iters,
         cw_nesterov=cfg.cw_nesterov, precond_refresh_every=K,
-        precond_method=precond_method, higham_iters=cfg.higham_iters, **identity)
+        precond_method=precond_method, higham_iters=cfg.higham_iters)
+    kwargs.update(identity)
+    return CurvatureWhitenLoRA(bare, **kwargs)
 
 
 def build_model(cfg: BenchConfig, device):
