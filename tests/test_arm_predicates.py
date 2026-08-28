@@ -53,9 +53,16 @@ _LOGS_ROOT = ROOT / "logs"
 # whereas this test reads every run in logs/ with no cohort projection, so it
 # compares within one revision instead. A collision INSIDE a revision, which is
 # what the guard exists to catch, still fails.
+# `freeze_factorwise_slots` is here for the same reason as the revision. The
+# freeze ablation lives in its own arm dict (`paper_plots_lib.FREEZE_ARMS`), so
+# `PRECOND_ARMS` deliberately does not sweep it and its factorwise arm matches
+# both a live run and the frozen fork of that run -- two series under one label,
+# split by the fork's `resume_debug_replay`. The panels separate them by
+# `canonical_arm_label`'s " frozen-slots" suffix; this test matches on
+# predicates, so it compares within one freeze setting instead.
 BUCKET_KEYS = (
     "model_name", "data_dir", "lora_r", "data_pipeline_version",
-    "optimizer_impl_revision", "lr",
+    "optimizer_impl_revision", "freeze_factorwise_slots", "lr",
 )
 
 

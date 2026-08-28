@@ -483,14 +483,94 @@ def _archive_figure(view_id, suptitle=None):
     return summary
 
 
+def _arm_branch(predicate):
+    """The `precond` branch an arm selects, or None if it selects no branch.
+
+    Reads the arm's own pin, falling back to the branch the optimizer's spec
+    implies (`optim_specs.resolved_precond`). An arm may pin `optimizer` with a
+    tuple of equivalent names, so one is sampled -- they resolve to the same
+    branch by construction, which `arms.NOPRODUCT`'s comment states.
+    """
+    from lora_playground.optim_specs import resolved_precond
+
+    pinned = predicate.get("precond")
+    if isinstance(pinned, str):
+        return pinned
+    optimizer = predicate.get("optimizer")
+    if isinstance(optimizer, (list, tuple, set, frozenset)):
+        optimizer = sorted(optimizer)[0] if optimizer else None
+    if not isinstance(optimizer, str):
+        return None
+    return resolved_precond({
+        **{k: v for k, v in predicate.items() if k != "precond"},
+        "optimizer": optimizer,
+    })
+
+
+def _default_slot_view(arms):
+    """The factorwise-slot cohort view these arms need, or None.
+
+    An arm on the factorwise branch is subject to the slot fix, so its cohort
+    must be projected or pre-fix runs supply the arm. Arms that touch no
+    factorwise branch need no projection.
+
+    Returns the ORDINARY view. `_records_figure` escalates to the matched view
+    when the data requires it, because which view is needed is a fact about the
+    runs on disk rather than about the arms: the same three-branch arms dict
+    needs `precond` on Llama-3.2-1B/openmath (one revision per arm) and
+    `precond_matched` on Qwen2.5-1.5B (product carries pre-fix runs too). An
+    author cannot know that in advance, and getting it wrong surfaces as a
+    SemanticRevisionConflictError from deep inside `comparison`.
+    """
+    branches = {_arm_branch(predicate) for predicate in arms.values()}
+    return "precond" if "factorwise" in branches else None
+
+
+def _arm_revision_spread(records, arms):
+    """{arm label: number of distinct semantic revisions} for these records."""
+    from collections import defaultdict
+
+    variant_key = _canonical_variant_key({}, arms)
+    seen = defaultdict(set)
+    for index, record in enumerate(records):
+        cfg = run_view(record, index).semantic_config
+        label = variant_key(cfg)
+        if label is None:
+            continue
+        seen[label].add((
+            cfg.get("optimizer_impl_revision"),
+            cfg.get("measurement_semantics_revision"),
+            cfg.get("data_pipeline_version"),
+        ))
+    return {label: len(revisions) for label, revisions in seen.items()}
+
+
+_DERIVE = object()
+
+
 def _records_figure(arms, workload, ref_label, suptitle, *,
-                    target_label="AdamW", semantic_view=None,
-                    measurement_semantics_revision=(
-                        _UNPINNED_MEASUREMENT_REVISION
-                    )):
-    """Render one live workload without converting records back to tuples."""
+                    target_label=_DERIVE, semantic_view=_DERIVE,
+                    measurement_semantics_revision=_DERIVE):
+    """Render one live workload without converting records back to tuples.
+
+    `target_label`, `semantic_view` and the revision pin all DERIVE from the
+    arms and the records by default, so declaring a panel is declaring its arms
+    and its title. Each was a separate thing an author had to know, and each
+    failed deep rather than at the call site: a missing `semantic_view` let
+    pre-fix runs supply a factorwise arm, a wrong one raised
+    SemanticRevisionConflictError out of `comparison`, and a `target_label`
+    naming an arm with no completed run raised UncertifiedBaselineError. Pass a
+    value explicitly only to override a derivation (`precond_beta2` is its own
+    sealed view and cannot be derived from the branches).
+    """
     with _held_logs_signature():
         from lora_playground.workloads import workload_records
+
+        if target_label is _DERIVE:
+            # The baseline is the arm named as one, when the panel declares it.
+            target_label = "AdamW" if "AdamW" in arms else None
+        if semantic_view is _DERIVE:
+            semantic_view = _default_slot_view(arms)
 
         records = workload_records(
             workload,
@@ -501,6 +581,28 @@ def _records_figure(arms, workload, ref_label, suptitle, *,
             records, excluded = project_paper_precond_cohort(
                 records,
                 view_id=semantic_view,
+            )
+            # Escalate when the ordinary view still leaves an arm straddling two
+            # revisions. `comparison` refuses that, and the author has no way to
+            # predict it: it depends on which runs exist for this workload.
+            if semantic_view == "precond" and any(
+                n > 1 for n in _arm_revision_spread(records, arms).values()
+            ):
+                records, excluded = project_paper_precond_cohort(
+                    workload_records(
+                        workload,
+                        catalog=_catalog_for_signature(_logs_signature_now()),
+                    ),
+                    view_id="precond_matched",
+                )
+                semantic_view = "precond_matched"
+        if measurement_semantics_revision is _DERIVE:
+            # The matched view's whole point is one revision across the compared
+            # branches, so it pins; the ordinary view does not.
+            measurement_semantics_revision = (
+                MEASUREMENT_SEMANTICS_REVISION
+                if semantic_view == "precond_matched"
+                else _UNPINNED_MEASUREMENT_REVISION
             )
         if measurement_semantics_revision is not _UNPINNED_MEASUREMENT_REVISION:
             # The pin keeps the COMPARED branches on one measurement revision.
@@ -658,7 +760,6 @@ def ablation_panel(rank=256):
         workload,
         _arms.POLORA_LABEL,
         f"Component ablation — Llama-3.2-1B openmath, r={rank}",
-        target_label=None,
     )
 
 
@@ -702,13 +803,9 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
         workload,
         _arms.PRECOND_PRODUCT_LABEL,
         rf"What fills $C_B$ and $C_A$ — {model_label} {data_key}, $r={rank}$",
-        target_label="AdamW",
-        semantic_view=("precond_matched" if matched_revision else "precond"),
-        measurement_semantics_revision=(
-            MEASUREMENT_SEMANTICS_REVISION
-            if matched_revision
-            else _UNPINNED_MEASUREMENT_REVISION
-        ),
+        # `matched_revision` now only FORCES the matched cohort; leaving it
+        # false derives the ordinary view and escalates if the data needs it.
+        semantic_view=("precond_matched" if matched_revision else _DERIVE),
     )
 
 
@@ -787,7 +884,8 @@ def precond_beta2_panel(rank=16):
         r"Identity, $\beta_2=0.99$",
         rf"Estimation noise in $C_B$, $C_A$ — "
         rf"$\beta_2$ by what fills them — Llama-3.2-1B openmath, $r={rank}$",
-        target_label="AdamW",
+        # Explicit: `precond_beta2` is its own sealed view and is not one of
+        # the branch-derived names.
         semantic_view="precond_beta2",
     )
 
@@ -1052,11 +1150,17 @@ def msign_by_precond_panel(rank=256):
         workload,
         r"Product, $\mathrm{msign}$",
         rf"Matrix sign by slot content — Llama-3.2-1B openmath, $r={rank}$",
-        semantic_view="precond",
     )
 
 
+# The freeze is read against the branches it is an ablation OF, not only against
+# its own control: if frozen factorwise lands on identity, the r x r estimate is
+# contributing nothing beyond the slot's shape, and that is only visible with
+# identity on the same axes. AdamW is the scale for all four.
 FREEZE_ARMS = {
+    "AdamW": _arms.ADAMW,
+    _arms.PRECOND_PRODUCT_LABEL: _arms.PROTO,
+    r"Identity: $C_B=C_A=I$": _arms.ONESIDED,
     r"Factorwise, slots live": _arms.NOPRODUCT,
     r"Factorwise, slots frozen at step 2000": _arms.NOPRODUCT_FROZEN,
 }
@@ -1079,10 +1183,4 @@ def factorwise_freeze_panel(rank=256, model="Qwen/Qwen2.5-1.5B",
         workload,
         r"Factorwise, slots live",
         rf"Freezing the $r\times r$ slots — {model_label} openmath, $r={rank}$",
-        target_label=None,
-        # Both arms are factorwise, so both are subject to the slot fix. Without
-        # the projection the live arm pooled pre-fix runs from
-        # `e2_precond_qwen25_openmath_r256_xl` with the post-fix control the
-        # frozen arm forked from, and `comparison` refused the mixed revisions.
-        semantic_view="precond",
     )

@@ -31,16 +31,13 @@ def test_adamw_beta2_panel_reference_is_a_declared_arm(monkeypatch):
         plots.adamw_beta2_panel(64)
 
 
-def test_matched_precond_panel_keeps_adamw_and_exempts_it_from_the_pin(monkeypatch):
-    """The matched view declares AdamW and pins the revision; AdamW is exempt.
+def test_matched_precond_panel_keeps_adamw_and_forces_the_matched_view(monkeypatch):
+    """The matched view declares AdamW; the pin and target derive.
 
-    The pin exists to make the three `precond` branches comparable. AdamW has
-    no such branch, and the factorwise-slot fix cannot touch it, so pinning it
-    only removed it: every AdamW run in the Qwen matched cells predates
-    `measurement_semantics_revision`, and the panel whose question is which
-    branch fills the r x r slots lost the scale those branches are read
-    against. The exemption is derived -- `effective_precond` returns None
-    outside the CurvatureWhitenLoRA family -- not a check on the name "AdamW".
+    Asserts the DERIVED outcome, not the kwargs `precond_panel` happens to
+    pass. The previous version pinned the exact kwargs dict, so simplifying the
+    call site broke a test about AdamW's presence -- the brittleness this
+    derivation exists to remove.
     """
     from lora_playground.plotting import paper_plots_lib as plots
 
@@ -55,11 +52,36 @@ def test_matched_precond_panel_keeps_adamw_and_exempts_it_from_the_pin(monkeypat
 
     assert set(captured["arms"]) == set(plots._arms.PRECOND_ARMS)
     assert "AdamW" in captured["arms"]
-    assert captured["kwargs"] == {
-        "target_label": "AdamW",
-        "semantic_view": "precond_matched",
-        "measurement_semantics_revision": plots.MEASUREMENT_SEMANTICS_REVISION,
-    }
+    # matched_revision only FORCES the cohort; everything else derives.
+    assert captured["kwargs"]["semantic_view"] == "precond_matched"
+    assert "target_label" not in captured["kwargs"]
+    assert "measurement_semantics_revision" not in captured["kwargs"]
+
+
+def test_the_panel_derives_its_target_and_slot_view_from_the_arms():
+    """Declaring a panel is declaring its arms and its title.
+
+    `target_label`, `semantic_view` and the revision pin each used to be a
+    separate thing an author had to know, and each failed deep rather than at
+    the call site: a missing view let pre-fix runs supply a factorwise arm, a
+    wrong one raised SemanticRevisionConflictError from `comparison`, and a
+    target naming an arm with no completed run raised UncertifiedBaselineError.
+    """
+    from lora_playground.plotting import arms as A
+    from lora_playground.plotting.paper_plots_lib import (
+        FREEZE_ARMS, _arm_branch, _default_slot_view,
+    )
+
+    # A factorwise arm needs the slot cohort projected; product-only does not.
+    assert _default_slot_view(A.PRECOND_ARMS) == "precond"
+    assert _default_slot_view(FREEZE_ARMS) == "precond"
+    assert _default_slot_view(A.ABLATION_ARMS) is None
+    assert _default_slot_view(A.DERIVATION_ARMS) is None
+
+    # The branch comes from the arm's pin, or the optimizer spec behind it.
+    assert _arm_branch(A.PRECOND_ARMS[A.PRECOND_PRODUCT_LABEL]) == "product"
+    assert _arm_branch(A.NOPRODUCT) == "factorwise"
+    assert _arm_branch(A.ADAMW) is None
 
 
 def test_the_revision_pin_still_binds_the_compared_branches(monkeypatch):
