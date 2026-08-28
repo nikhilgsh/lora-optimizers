@@ -34,6 +34,7 @@
 % --- macros -----------------------------------------------------------------
 \renewcommand{\vec}{\operatorname{vec}}
 \newcommand{\mat}[1]{\bm{#1}}
+\newcommand{\cD}{\mathcal{D}}
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\E}{\mathbb{E}}
 \DeclareMathOperator{\diag}{diag}
@@ -220,6 +221,7 @@ By \Cref{lem:whitened-spectral-lmo}, a solution to this LMO is
 \end{aligned}
 \end{equation}
 As in Muon, these factor updates are computed using momentum estimates of the gradients.
+
 \subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
 We now derive the base LMO that will be the starting point of \methodname{}.
 Let $\{x_1, \ldots, x_n\}$ be the input activations to the layer that $W$ encodes, and let $G_i = \nabla \ell_{x_i}(W)$ be the gradient of the loss on activation $x_i$. Abusing notation slightly, we write $\ell_{x_i}$ for the loss on a single activation rather than a full input.
@@ -440,7 +442,9 @@ The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling 
 \State $p\gets\beta_2\, p+(1-\beta_2)\diag\big(G_B\, C_A^{-1} G_B^\top\big)/r$  \label{ln:pmom}
 \end{algorithmic}
 \end{algorithm}
-% ===========================================================================
+% 
+
+%===========================================================================
 \section{Experiments}
 \label{sec:exp}
 
@@ -702,6 +706,11 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 \paragraph{Baseline implementations.} We run iMuon and LoRA-RITE through the authors' official implementations, with the hyperparameters in \Cref{tab:optim-config}. LoRA-RITE is invariant to reparameterizations of the LoRA factors \cite[Def.~1]{lorarite}. A global gradient-norm clip would break this invariance, so we run LoRA-RITE without it.
 
 \paragraph{Hardware.} Each run uses a single GPU. Wall-clock numbers (\Cref{sec:exp-walltime}) are measured on an NVIDIA RTX PRO 6000 (Blackwell) with \texttt{torch.compile} enabled. Reproducing all our experiments takes about $850$ GPU-hours.
+
+\newpage
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
 
 % ===========================================================================
 \section{Proofs}
