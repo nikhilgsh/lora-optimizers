@@ -96,3 +96,7 @@ previews/
 # Appendix E rewrite standalone build outputs (the .tex stay tracked)
 paper/manuscript/appendix_E_rewrites/*_standalone.pdf
 paper/manuscript/appendix_E_rewrites/figs/
+
+# disBatch smoke/bench output (575 MB and growing; regenerate by re-running
+# the bench, never a build input).
+scripts/results/
