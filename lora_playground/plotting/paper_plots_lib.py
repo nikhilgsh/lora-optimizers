@@ -47,6 +47,12 @@ from lora_playground.plotting.labels import (
 from lora_playground.plotting.paper_style import resolve_paper_styles
 from lora_playground.plotting.render import render_comparison
 from lora_playground.plotting.style import NOTEBOOK_RCPARAMS
+from lora_playground.plotting.traces import (
+    Trace,
+    TracePanel,
+    trace_figure,
+    two_key_legend,
+)
 from lora_playground.publication_paper import (
     publication_view_panel,
     publication_workload_view_panel,
@@ -904,10 +910,6 @@ def adamw_beta2_panel(rank=256):
 # selected by PREDICATE; the notebook cells these replaced listed group names and
 # re-implemented log discovery and JSON decoding by hand.
 
-_RESCALE_FIELDS = (
-    "step", "sigma_max_A_median", "sigma_max_B_median", "balance_resid_median",
-)
-
 # The protagonist cell these diagnostics were recorded in.
 _RESCALE_CELL = dict(
     model_name="meta-llama/Llama-3.2-1B",
@@ -915,146 +917,130 @@ _RESCALE_CELL = dict(
     data_dir=_dataset_predicate("openmath"),
 )
 
+_LIVE_CONTROLS = dict(cw_no_diag_curv=lambda v: not v,
+                      cw_unpinned=lambda v: not v)
 
-def _longest_diagnostic_run(where, fields=_RESCALE_FIELDS):
+
+def _diagnostic_fields(panels):
+    """Every recorded column ``panels`` reads, plus the step axis.
+
+    Only banded traces ask for ``_min``/``_max``. The loader keeps a step only
+    if EVERY requested column is present on it (`loading.py:395`), and a step
+    whose per-pair values were all NaN records ``_median`` alone
+    (`optim.py:961`) -- so requesting a band nobody draws would silently drop
+    those steps from the whole trace.
+    """
+    return ["step"] + [
+        f"{trace.field}_{suffix}"
+        for panel in panels for trace in panel.traces
+        for suffix in (("median", "min", "max") if trace.band else ("median",))
+    ]
+
+
+def _longest_diagnostic_run(where, panels):
     """The longest per-step diagnostic trace matching `where`, or None."""
     from lora_playground.plotting.loading import load_optim_step_diagnostics
 
-    found = load_optim_step_diagnostics(where, list(fields))
+    found = load_optim_step_diagnostics(where, _diagnostic_fields(panels))
     if not found:
         return None
     return max(found.values(), key=lambda arrays: len(arrays["step"]))
 
 
+def _diagnostic_series(arms, panels, **common):
+    """Resolve one diagnostic trace per arm, naming the arms that have none.
+
+    Each arm contributes the fields that distinguish it; ``common`` carries the
+    fields every arm shares, so the arms dict never repeats the cell.
+    """
+    series = {}
+    setting = ", ".join(f"{k}={v!r}" for k, v in common.items()
+                        if not callable(v))
+    for label, where in arms.items():
+        arrays = _longest_diagnostic_run(
+            {**_RESCALE_CELL, **common, **where}, panels)
+        if arrays is None:
+            print(f"no per-step diagnostics recorded for {label} ({setting})")
+            continue
+        series[label] = arrays
+    return series
+
+
+# sigma_ratio is sigma_max(A)/sigma_max(B) aggregated ACROSS LoRA pairs by the
+# optimizer (`optim_diagnostics.py:86`). Plotting it rather than dividing the two
+# medians matters: the comment at the definition says so in as many words --
+# ratio-of-medians is not median-of-ratios -- and this panel used to divide them,
+# and in the other orientation, so the two rescaling figures disagreed by a
+# reciprocal.
+_BY_RANK_PANELS = (
+    # Linear, unlike the banded version: the medians span 1.0--2.2, and a log
+    # axis under one decade prints "2.2 x 10^0" ticks for no gain.
+    TracePanel(r"median $\|A\|_2/\|B\|_2$",
+               (Trace("sigma_ratio", band=False),), ref=1.0),
+    TracePanel("median balance residual",
+               (Trace("balance_resid", band=False),), ylim=(0, 1.05)),
+)
+
+
 def factor_rescaling_by_rank_panel(ranks=(16, 256), lr=0.01):
     """Does the factors' operator-norm balance weaken at small rank?
 
-    Left: the median ratio sigma_max(B)/sigma_max(A) per step, against 1.
-    Right: the median BaLoRA balance residual. One curve per rank at a matched
-    learning rate, so rank is the only thing that varies.
+    Left: the median per-pair ratio sigma_max(A)/sigma_max(B) per step, against
+    1. Right: the median BaLoRA balance residual. One curve per rank at a
+    matched learning rate, so rank is the only thing that varies.
     """
-    colours = canonical_colors([f"r={r}" for r in ranks])
-    with plt.rc_context(NOTEBOOK_RCPARAMS):
-        fig, (ax_ratio, ax_resid) = plt.subplots(
-            1, 2, figsize=(13, 5.5), constrained_layout=True
-        )
-        ax_ratio.axhline(1, color="black", ls="--", lw=0.8, zorder=0)
-        for rank in ranks:
-            arrays = _longest_diagnostic_run({
-                **_RESCALE_CELL, "lora_r": rank, "lr": lr,
-                "cw_no_diag_curv": lambda v: not v,
-                "cw_unpinned": lambda v: not v,
-            })
-            if arrays is None:
-                print(f"no per-step diagnostics recorded at r={rank}, lr={lr:g}")
-                continue
-            colour = colours[f"r={rank}"]
-            ratio = arrays["sigma_max_B_median"] / arrays["sigma_max_A_median"]
-            ax_ratio.plot(arrays["step"], ratio, color=colour, label=f"$r={rank}$")
-            ax_resid.plot(arrays["step"], arrays["balance_resid_median"],
-                          color=colour, label=f"$r={rank}$")
-        ax_ratio.set_xlabel("Training step")
-        ax_ratio.set_ylabel(r"median $\|B\|_2/\|A\|_2$")
-        ax_resid.set_xlabel("Training step")
-        ax_resid.set_ylabel("median balance residual")
-        ax_resid.set_ylim(0, 1.05)
-        handles, labels = ax_ratio.get_legend_handles_labels()
-        if handles:
-            fig.legend(handles, labels, title=r"LoRA rank $r$",
-                       loc="outside lower center", ncol=len(labels),
-                       frameon=False)
-        fig.suptitle(
-            rf"Factor rescaling by rank — Llama-3.2-1B openmath, $\eta={lr:g}$"
-        )
-    plt.show()
+    series = _diagnostic_series(
+        {rf"$r={rank}$": {"lora_r": rank} for rank in ranks},
+        _BY_RANK_PANELS, lr=lr, **_LIVE_CONTROLS,
+    )
+    if not series:
+        return
+    return trace_figure(
+        series, _BY_RANK_PANELS, legend_title=r"LoRA rank $r$",
+        suptitle=rf"Factor rescaling by rank — Llama-3.2-1B openmath, "
+                 rf"$\eta={lr:g}$",
+    )
 
-
-_RESCALE_BAND_FIELDS = (
-    "step",
-    "sigma_ratio_median", "sigma_ratio_min", "sigma_ratio_max",
-    "sigma_max_A_median", "sigma_max_A_min", "sigma_max_A_max",
-    "sigma_max_B_median", "sigma_max_B_min", "sigma_max_B_max",
-    "balance_resid_median", "balance_resid_min", "balance_resid_max",
-    "norm_A_median", "norm_B_median",
-)
 
 # The two arms these diagnostics contrast, by the fields that define them
 # rather than by sweep name: PoLoRA against the arm with both the curvature
 # metric and the magnitude rule removed (`arms.DOUBLE`).
 _RESCALE_ARMS = {
-    "PoLoRA": dict(cw_no_diag_curv=lambda v: not v,
-                   cw_unpinned=lambda v: not v),
+    "PoLoRA": _LIVE_CONTROLS,
     r"Neither: $P=Q=I$, $\Delta A=-\eta W_A$": dict(
         cw_no_diag_curv=True, cw_unpinned=True),
 }
+
+_RESCALE_PANELS = (
+    TracePanel(r"$\|A\|_2/\|B\|_2$ per pair", (Trace("sigma_ratio"),),
+               ref=1.0, yscale="log"),
+    TracePanel(r"$\|A\|_2$ solid, $\|B\|_2$ dashed",
+               (Trace("sigma_max_A"), Trace("sigma_max_B", ls="--"))),
+    TracePanel("balance residual", (Trace("balance_resid"),), ref=0.0,
+               ylim=(0, 1.05)),
+    TracePanel(r"$\|A\|_F$ solid, $\|B\|_F$ dashed",
+               (Trace("norm_A", band=False),
+                Trace("norm_B", ls="--", band=False))),
+)
 
 
 def factor_rescaling_panel(rank=256):
     """How the two factors' scales evolve, with and without the two controls.
 
     Four panels, all per-pair medians with min-max bands over the LoRA pairs:
-    the operator-norm ratio against 1, PoLoRA's two operator norms, the BaLoRA
+    the operator-norm ratio against 1, the two operator norms, the BaLoRA
     balance residual, and the Frobenius norms. Exploratory -- these fields
     describe the factors' scale, not the loss, so they characterize the
     mechanism rather than testing it.
     """
-    traces = {}
-    for label, extra in _RESCALE_ARMS.items():
-        arrays = _longest_diagnostic_run(
-            {**_RESCALE_CELL, "lora_r": rank, **extra}, _RESCALE_BAND_FIELDS,
-        )
-        if arrays is None:
-            print(f"no per-step diagnostics recorded for {label!r} at r={rank}")
-            continue
-        traces[label] = arrays
-    if not traces:
-        print("no per-step diagnostics for either arm; nothing to draw.")
+    series = _diagnostic_series(_RESCALE_ARMS, _RESCALE_PANELS, lora_r=rank)
+    if not series:
         return
-    colours = canonical_colors(traces)
-
-    def _band(ax, arrays, colour, stem, label=None):
-        ax.fill_between(arrays["step"], arrays[f"{stem}_min"],
-                        arrays[f"{stem}_max"], color=colour, alpha=0.15,
-                        linewidth=0)
-        ax.plot(arrays["step"], arrays[f"{stem}_median"], color=colour,
-                label=label)
-
-    with plt.rc_context(NOTEBOOK_RCPARAMS):
-        fig, ax = plt.subplots(2, 2, figsize=(13, 8.5), constrained_layout=True)
-        for label, arrays in traces.items():
-            _band(ax[0, 0], arrays, colours[label], "sigma_ratio", label)
-            _band(ax[1, 0], arrays, colours[label], "balance_resid", label)
-            ax[1, 1].plot(arrays["step"], arrays["norm_A_median"],
-                          color=colours[label], label=label)
-            ax[1, 1].plot(arrays["step"], arrays["norm_B_median"],
-                          color=colours[label], ls="--", label="_nolegend_")
-        arm_handles, arm_labels = ax[0, 0].get_legend_handles_labels()
-        ax[0, 0].axhline(1, color="black", ls=":", lw=0.8, zorder=0)
-        ax[0, 0].set_yscale("log")
-        ax[0, 0].set_ylabel(r"$\|A\|_2/\|B\|_2$ per pair")
-
-        protagonist = traces.get("PoLoRA")
-        if protagonist is not None:
-            factor_colours = canonical_colors([r"$\|A\|_2$", r"$\|B\|_2$"])
-            for stem, name in (("sigma_max_A", r"$\|A\|_2$"),
-                               ("sigma_max_B", r"$\|B\|_2$")):
-                _band(ax[0, 1], protagonist, factor_colours[name], stem, name)
-            ax[0, 1].legend(frameon=False)
-        ax[0, 1].set_ylabel(r"PoLoRA $\|A\|_2$, $\|B\|_2$")
-
-        ax[1, 0].axhline(0, color="black", ls=":", lw=0.8, zorder=0)
-        ax[1, 0].set_ylim(0, 1.05)
-        ax[1, 0].set_ylabel("balance residual")
-        ax[1, 1].set_ylabel(r"$\|A\|_F$ solid, $\|B\|_F$ dashed")
-        for axis in ax.flat:
-            axis.set_xlabel("Training step")
-        if arm_handles:
-            fig.legend(arm_handles, arm_labels, loc="outside lower center",
-                       ncol=len(arm_labels), frameon=False)
-        fig.suptitle(
-            rf"Factor scale over training — Llama-3.2-1B openmath, $r={rank}$"
-        )
-    plt.show()
+    return trace_figure(
+        series, _RESCALE_PANELS,
+        suptitle=rf"Factor scale over training — Llama-3.2-1B openmath, "
+                 rf"$r={rank}$",
+    )
 
 
 def magnitude_rule_tracking_panel(rank=256):
@@ -1067,8 +1053,6 @@ def magnitude_rule_tracking_panel(rank=256):
     and re-implemented log discovery and JSON decoding, and its bound arm was
     missing four of the seven learning rates that exist.
     """
-    from matplotlib.lines import Line2D
-
     cell = {**_RESCALE_CELL, "lora_r": rank}
     rules = (
         ("Solved", {**cell, "cw_solved_rho": True}, "-"),
@@ -1099,18 +1083,14 @@ def magnitude_rule_tracking_panel(rank=256):
             for lr, points in sorted(by_lr.items()):
                 ax.plot([s for s, _ in points], [v for _, v in points],
                         ls=linestyle, color=colours[f"eta={lr:g}"])
-        eta_key = ax.legend(
-            handles=[Line2D([], [], color=colours[f"eta={lr:g}"],
-                            label=rf"$\eta={lr:g}$") for lr in learning_rates],
-            title=r"Learning rate $\eta$", loc="center left",
-            bbox_to_anchor=(1.02, 0.66), frameon=False,
-        )
-        ax.add_artist(eta_key)
-        ax.legend(
-            handles=[Line2D([], [], color="black", ls=linestyle, label=name)
-                     for name, (_by_lr, linestyle) in traces.items()],
-            title="Magnitude rule", loc="center left",
-            bbox_to_anchor=(1.02, 0.16), frameon=False,
+        two_key_legend(
+            ax,
+            colors={rf"$\eta={lr:g}$": colours[f"eta={lr:g}"]
+                    for lr in learning_rates},
+            color_title=r"Learning rate $\eta$",
+            styles={name: linestyle
+                    for name, (_by_lr, linestyle) in traces.items()},
+            style_title="Magnitude rule",
         )
         ax.set_xlabel("Training step")
         ax.set_ylabel("Evaluation loss")
