@@ -503,11 +503,28 @@ def _records_figure(arms, workload, ref_label, suptitle, *,
                 view_id=semantic_view,
             )
         if measurement_semantics_revision is not _UNPINNED_MEASUREMENT_REVISION:
+            # The pin keeps the COMPARED branches on one measurement revision.
+            # A run with no `precond` branch is not one of them -- it is the
+            # scale the branches are read against -- so pinning it buys nothing
+            # and only removes it: every AdamW run in the Qwen matched cells
+            # predates the field, so the baseline vanished from panels whose
+            # question is which branch fills the r x r slots. Exemption is
+            # derived from `effective_precond` returning None (outside the
+            # CurvatureWhitenLoRA family), not from the optimizer's name.
+            from lora_playground.plotting.paper_view_semantics import (
+                effective_precond,
+            )
+
+            def _revision_ok(record, index):
+                cfg = run_view(record, index).semantic_config
+                if effective_precond(cfg) is None:
+                    return True
+                return cfg.get("measurement_semantics_revision") == \
+                    measurement_semantics_revision
+
             records = tuple(
                 record for index, record in enumerate(records)
-                if run_view(record, index).semantic_config.get(
-                    "measurement_semantics_revision"
-                ) == measurement_semantics_revision
+                if _revision_ok(record, index)
             )
         variant_key = _canonical_variant_key({}, arms)
         specs = tuple(
@@ -533,10 +550,24 @@ def _records_figure(arms, workload, ref_label, suptitle, *,
             raise ValueError(
                 f"{workload.label} has no recorded reference arm {ref_label!r}"
             )
+        # A speed target only exists if its arm resolved a completed run. The
+        # panel used to demand one whenever the arm was DECLARED, so a cell
+        # that simply has no baseline on disk raised UncertifiedBaselineError
+        # out of `leaderboard_rows_from_comparison` instead of drawing the
+        # comparison it does have -- Qwen2.5/openmath/r16 records no AdamW run
+        # at any revision. Absence is a note, not an error.
+        has_target = (
+            target_label in arms
+            and target_label not in missing
+            and comparison.best_completed.get(target_label) is not None
+        )
+        if target_label in arms and not has_target:
+            print(f"no speed target: {target_label} has no completed run in "
+                  f"{workload.label}.")
         summary = _render_panel_comparison(
             comparison,
             reference_id=ref_label,
-            target_id=(target_label if target_label in arms else None),
+            target_id=(target_label if has_target else None),
             target_label=target_label,
             suptitle=suptitle,
             horizon=workload.horizon,
@@ -661,15 +692,17 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
     from lora_playground.workloads import find_workload
     workload = find_workload(model, data_key, rank)
     return _records_figure(
-        {
-            label: predicate
-            for label, predicate in _arms.PRECOND_ARMS.items()
-            if not matched_revision or label != "AdamW"
-        },
+        # AdamW stays in the matched view. It was dropped here on the grounds
+        # that its unversioned historical runs should not be mixed into a
+        # matched cohort, but the cohort exists to make the three `precond`
+        # branches comparable and the factorwise-slot fix cannot touch an
+        # optimizer with no such branch -- so dropping it removed the scale the
+        # branches are read against and left the panel with no baseline.
+        dict(_arms.PRECOND_ARMS),
         workload,
         _arms.PRECOND_PRODUCT_LABEL,
         rf"What fills $C_B$ and $C_A$ — {model_label} {data_key}, $r={rank}$",
-        target_label=(None if matched_revision else "AdamW"),
+        target_label="AdamW",
         semantic_view=("precond_matched" if matched_revision else "precond"),
         measurement_semantics_revision=(
             MEASUREMENT_SEMANTICS_REVISION

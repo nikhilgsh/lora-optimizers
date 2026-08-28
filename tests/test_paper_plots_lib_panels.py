@@ -31,7 +31,17 @@ def test_adamw_beta2_panel_reference_is_a_declared_arm(monkeypatch):
         plots.adamw_beta2_panel(64)
 
 
-def test_matched_precond_panel_excludes_unversioned_adamw(monkeypatch):
+def test_matched_precond_panel_keeps_adamw_and_exempts_it_from_the_pin(monkeypatch):
+    """The matched view declares AdamW and pins the revision; AdamW is exempt.
+
+    The pin exists to make the three `precond` branches comparable. AdamW has
+    no such branch, and the factorwise-slot fix cannot touch it, so pinning it
+    only removed it: every AdamW run in the Qwen matched cells predates
+    `measurement_semantics_revision`, and the panel whose question is which
+    branch fills the r x r slots lost the scale those branches are read
+    against. The exemption is derived -- `effective_precond` returns None
+    outside the CurvatureWhitenLoRA family -- not a check on the name "AdamW".
+    """
     from lora_playground.plotting import paper_plots_lib as plots
 
     captured = {}
@@ -43,16 +53,25 @@ def test_matched_precond_panel_excludes_unversioned_adamw(monkeypatch):
     monkeypatch.setattr(plots, "_records_figure", capture)
     plots.precond_panel(256, matched_revision=True)
 
-    assert set(captured["arms"]) == {
-        plots._arms.PRECOND_PRODUCT_LABEL,
-        r"Identity: $C_B=C_A=I$",
-        r"Factorwise: $C_B=P_A,\ C_A=Q_B$",
-    }
+    assert set(captured["arms"]) == set(plots._arms.PRECOND_ARMS)
+    assert "AdamW" in captured["arms"]
     assert captured["kwargs"] == {
-        "target_label": None,
+        "target_label": "AdamW",
         "semantic_view": "precond_matched",
         "measurement_semantics_revision": plots.MEASUREMENT_SEMANTICS_REVISION,
     }
+
+
+def test_the_revision_pin_still_binds_the_compared_branches(monkeypatch):
+    """Relaxing it for AdamW must not relax it for a `precond` branch."""
+    from lora_playground.plotting.paper_view_semantics import effective_precond
+
+    # The exemption's condition, stated directly: a branch run is not exempt.
+    assert effective_precond({"optimizer": "adamw"}) is None
+    for branch in ("product", "one-sided", "factorwise"):
+        cfg = {"optimizer": "kl-diag-polar-lora", "precond": branch}
+        assert effective_precond(cfg) == branch
+
 
 def test_priority_notebook_panels_execute_against_recorded_evidence(monkeypatch):
     """Exercise the exact Figure 14--16 calls that previously raised KeyError."""
