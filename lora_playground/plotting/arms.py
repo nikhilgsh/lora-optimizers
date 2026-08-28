@@ -165,18 +165,6 @@ def field_matches(cfg: dict, field: str, want) -> bool:
         # runs before the live/frozen arms were separated by label instead.
         if callable(want):
             return False
-        # `precond` is the one field whose absent value is not the dataclass
-        # default: `CurvatureWhitenLoRA.__init__` resolves it as
-        # `precond or ("product" if diag_metric else "factorwise")`
-        # (optim.py:1713), so a `kl-diag-polar-lora` run that predates the flag
-        # RAN product while the dataclass default is None. Asking the spec is
-        # what `paper_view_semantics.effective_precond` already does; without it
-        # the four `PROTO_BETA2_ARMS` curvature_beta arms matched none of their
-        # eight recorded runs and rendered as empty series.
-        if field == "precond":
-            from ..optim_specs import resolved_precond
-            resolved = resolved_precond(cfg)
-            return resolved is not None and _value_matches(resolved, want)
         if field not in (defaults := _config_defaults()):
             return False
         return _value_matches(defaults[field], want)
@@ -454,8 +442,21 @@ LORARITE = arm("lora-rite", max_steps=9000)
 # them. Stating it also makes the arm table read as the three-branch selection it
 # is: (C_B, C_A) = (B^T P B, A Q A^T) for product, (I, I) for one-sided,
 # (P_A, Q_B) for factorwise.
+# `precond=(None, "product")`, not `"product"`: a `kl-diag-polar-lora` run that
+# predates the flag records nothing, and `CurvatureWhitenLoRA.__init__` resolves
+# an absent value as `precond or ("product" if diag_metric else "factorwise")`
+# (optim.py:1713) -- with `diag_metric` pinned True by this spec, that IS
+# product. The membership form is the project idiom for "the optimizer ignores
+# the distinction" (see `ADAMW`'s `precond_method`). Pinning the bare string
+# left the four `PROTO_BETA2_ARMS` curvature_beta arms matching none of their
+# eight recorded runs.
+#
+# `NOPRODUCT` deliberately keeps the bare `"factorwise"`: resolving absence
+# there would admit the 13 pre-fix `kl-shampoo-polar-lora` runs that record no
+# `precond` -- exactly the runs `paper_view_semantics` excludes from the
+# factorwise arm -- and they collide with the explicit runs under one label.
 PROTO = arm("kl-diag-polar-lora", **CW_PRODUCTION, global_batch_size=16,
-            precond="product")
+            precond=(None, "product"))
 
 # E2 leave-one-out arms: the protagonist with one control removed.
 NOSHAMPOO = {**PROTO, "cw_no_diag_curv": True}      # w/o curvature control

@@ -28,6 +28,22 @@ def _cell_source(cell: dict) -> str:
     return "".join(cell.get("source", [])).strip()
 
 
+def _calls(expression: str):
+    """A cell that invokes ``expression`` on a line of its own.
+
+    Line-based, because matching the whole cell source is not stable against
+    edits that change nothing about what the cell calls: these three predicates
+    were `startswith` / `startswith` / `endswith`, and a trailing `;` added to
+    `P.rank_lr_panel();` -- plus the two comment lines above it -- made the
+    `endswith` form find zero cells. One rule for all three, and the same one
+    `_assert_executed` already uses below.
+    """
+    return lambda cell: any(
+        line.strip().startswith(expression)
+        for line in _cell_source(cell).splitlines()
+    )
+
+
 def _one_cell(cells: list[dict], *, description: str, predicate) -> dict:
     matches = [cell for cell in cells if predicate(cell)]
     assert len(matches) == 1, (
@@ -106,24 +122,10 @@ def test_paper_notebook_priority_cells_execute_in_real_kernel(tmp_path):
             description="setup",
             predicate=lambda cell: cell.get("id") == "setup",
         ),
-        _one_cell(
-            cells,
-            description="P.panel_n(0)",
-            predicate=lambda cell: _cell_source(cell).startswith("P.panel_n(0)"),
-        ),
-        _one_cell(
-            cells,
-            description="P.ablation_panel(256)",
-            predicate=lambda cell: _cell_source(cell).startswith(
-                "P.ablation_panel(256)"
-            ),
-        ),
-        _one_cell(
-            cells,
-            description="P.rank_lr_panel()",
-            predicate=lambda cell: _cell_source(cell).endswith(
-                "P.rank_lr_panel()"
-            ),
+        *(
+            _one_cell(cells, description=call, predicate=_calls(call))
+            for call in ("P.panel_n(0)", "P.ablation_panel(256)",
+                         "P.rank_lr_panel()")
         ),
     ]
     smoke_cells = deepcopy(selected)

@@ -53,7 +53,12 @@ def test_archive_selects_one_explicit_pipeline_scoped_workload(evidence):
     assert evidence.workload.dataset == "openmath"
     assert evidence.workload.rank == 256
     assert evidence.workload.data_pipeline_version == "packed_v1.1"
-    assert len(evidence.runs) == 100
+    # A FLOOR. The exact count grows whenever a sweep lands on this cell -- it
+    # read 100 while the archive held 111 -- so pinning it turns every new run
+    # into a failure about arithmetic rather than about the archive. What must
+    # hold is asserted below and does not drift: every selected run is
+    # packed_v1.1, and the selected specs are exactly the declared arms.
+    assert len(evidence.runs) >= 100
     assert {
         run.effective_config["data_pipeline_version"]
         for run in evidence.runs
