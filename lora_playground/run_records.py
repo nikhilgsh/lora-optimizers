@@ -33,7 +33,11 @@ RUNTIME_FIELDS: frozenset[str] = frozenset({
     "profile_steps", "profile_dir", "_optim_steps",
     "train_file", "eval_file",
     "checkpoint_dir", "resume_from", "checkpoint_every",
-    "checkpoint_keep_last", "picard_iters_override",
+    # `keep_checkpoints` only decides whether train.py rmtree's the checkpoint
+    # directory after a clean finish (train.py:2256-2264). It is retention
+    # bookkeeping like its four siblings above -- it cannot reach the optimizer
+    # or the loss -- so two runs that differ only on it are one series.
+    "checkpoint_keep_last", "keep_checkpoints", "picard_iters_override",
 })
 
 

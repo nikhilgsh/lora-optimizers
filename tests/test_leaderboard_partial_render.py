@@ -83,7 +83,10 @@ def test_aborted_highlr_does_not_hide_healthy_partial_trajectory():
               if not ln.get_label().startswith("_")]
     assert len(curves) == 1, "expected exactly one best-lr trajectory for AdamW"
     lab = curves[0].get_label()
-    assert "lr=0.0001" in lab, (
+    # Match the lr VALUE, not the prefix: `render_comparison` spells the
+    # trajectory legend's learning rate "$\eta$=..." (it used to be "lr=..."),
+    # and which arm was plotted is what this regression is about.
+    assert "=0.0001" in lab, (
         f"trajectory used the aborted high-lr instead of the healthy partial: {lab}")
     ys = list(curves[0].get_ydata())
     assert ys and all(math.isfinite(y) for y in ys), "healthy trajectory contains NaN"

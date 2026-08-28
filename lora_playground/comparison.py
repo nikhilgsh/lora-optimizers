@@ -280,6 +280,26 @@ def _aggregate_completed(
     )
 
 
+def _recorded_revision(cfg: Mapping[str, Any], field: str) -> Any:
+    """A run's revision counter, resolving "not recorded" to the first revision.
+
+    ``train.py`` stamps ``optimizer_impl_revision`` and
+    ``measurement_semantics_revision`` only from ``run_schema`` version 2 onward.
+    An older run therefore records neither, and comparing ``None`` against a
+    recorded ``1`` splits a comparison whose two halves ran under the SAME
+    semantics -- measured on Qwen2.5/openmath/r256, where 871 unversioned runs
+    and 15 versioned ones made every arm in the cell unrenderable. Revision 1 is
+    the first value of every counter in ``run_schema`` and the value
+    ``optimizer_implementation_revision`` returns for a class that declares
+    none, so it is what an unversioned run ran under. A LATER revision still
+    conflicts with an unversioned run, which is the boundary this guards.
+    """
+    from .run_schema import DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION
+    recorded = cfg.get(field)
+    return (DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION if recorded is None
+            else recorded)
+
+
 def _semantic_signature(
     spec: VariantSpec,
     cfg: Mapping[str, Any],
@@ -294,7 +314,7 @@ def _semantic_signature(
     optimizer_key = (
         spec.optimizer_semantic_key(cfg)
         if spec.optimizer_semantic_key is not None
-        else cfg.get("optimizer_impl_revision")
+        else _recorded_revision(cfg, "optimizer_impl_revision")
     )
     try:
         hash(optimizer_key)
@@ -305,7 +325,7 @@ def _semantic_signature(
         ) from exc
     return (
         optimizer_key,
-        cfg.get("measurement_semantics_revision"),
+        _recorded_revision(cfg, "measurement_semantics_revision"),
         cfg.get("data_pipeline_version"),
     )
 
@@ -336,7 +356,7 @@ def _require_one_comparison_signature(
     signatures: dict[tuple[Any, Any], list[str]] = {}
     for member in members:
         signature = (
-            member.cfg.get("measurement_semantics_revision"),
+            _recorded_revision(member.cfg, "measurement_semantics_revision"),
             member.cfg.get("data_pipeline_version"),
         )
         signatures.setdefault(signature, []).append(member.run_id)

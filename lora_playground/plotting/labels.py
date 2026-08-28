@@ -40,12 +40,24 @@ def _polar_quality_tag(cfg: dict) -> str:
     These optimizers hardcoded their polar step to Newton-Schulz at
     ``ns_steps`` (train.py default 5), so every existing run is a PARTIAL
     polar; without this tag a future full-polar (polar_express / ns>=8) run
-    would share a label with the ns=5 partial-polar runs. Reads the loader's
-    derived ``effective_polar_iters`` (step count) and ``effective_inner_polar``
-    (method); ``PE=N`` for polar_express, ``ns=N`` otherwise. Returns "" when
-    the step count couldn't be resolved (never silently implies a quality)."""
+    would share a label with the ns=5 partial-polar runs. Prefers the loader's
+    derived ``effective_polar_iters`` (step count) / ``effective_inner_polar``
+    (method), then falls back to the RECORDED ``muon_ns_steps`` /
+    ``polar_method`` those resolve from (the dependency set
+    ``publication_semantics._EFFECTIVE_DEPENDENCIES`` declares for
+    ``effective_polar_iters``); ``PE=N`` for polar_express, ``ns=N`` otherwise.
+    Returns "" only when neither is recorded.
+
+    The fallback is load-bearing, not belt-and-braces: no code populates
+    ``_derived`` any more, so reading it alone made this tag "" for all 886 runs
+    on disk and the polar-quality axis dropped silently out of every label —
+    ``diag_shampoo_polar_*_opc_blackwell`` (ns=5) and its ``_pe8_`` rerun
+    (polar_express=8) shared one label at four learning rates in three
+    leaderboard cells, which `dedup_by_canonical` then refused to collapse."""
     d = cfg.get("_derived", {})
     n = d.get("effective_polar_iters")
+    if n is None:
+        n = cfg.get("muon_ns_steps")
     if n is None:
         return ""
     method = d.get("effective_inner_polar") or cfg.get("polar_method")
@@ -141,6 +153,19 @@ def _shared_knobs(cfg: dict) -> str:
     rd = cfg.get("rdinv_delta")
     if _field_is_active(cfg, "rdinv_delta") and rd is not None:
         s += f" rdδ={_eps(rd)}"
+    # The optimizer's declared IMPLEMENTATION_REVISION. It exists precisely for
+    # "update semantics changed with no corresponding resolved-config change"
+    # (run_schema.optimizer_implementation_revision), so two revisions of one
+    # config are two series and must not average: the factorwise free-slot fix
+    # is revision 2, and `paper_view_semantics` EXCLUDES pre-fix factorwise runs
+    # from the paper's precond views rather than pooling them. Not reachable via
+    # `_residual_knobs` (that derives from PINNED_FIELDS, i.e. OptimizerConfig),
+    # so it is spelled out here; the default comes from run_schema, not a
+    # literal, so a bump there does not suffix every run.
+    if (rev := cfg.get("optimizer_impl_revision")) is not None:
+        from ..run_schema import DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION
+        if rev != DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION:
+            s += f" impl-rev={rev}"
     return (
         s
         + _residual_knobs(cfg)

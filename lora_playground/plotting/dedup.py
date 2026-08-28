@@ -14,6 +14,8 @@ Key contracts enforced here:
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 
 class LabelCollisionError(ValueError):
     """Raised when distinct series_ids share one display label.
@@ -51,41 +53,151 @@ def _hashable(v):
     return v
 
 
+@lru_cache(maxsize=1)
+def _shipped_defaults() -> dict:
+    """``{field: default}`` for every cfg field whose default the CURRENT code
+    declares: ``OptimizerConfig``, train.py's parser, and the two run-schema
+    revision counters.
+
+    DERIVED, never typed. A literal copy of a default goes stale the moment the
+    real default moves, and then every run looks off-default — that already cost
+    a leaderboard regeneration once (see the `cw_metric_init` note in
+    `labels._shared_knobs`).
+    """
+    from ..run_schema import DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION
+    from .arms import _cli_defaults, _config_defaults
+    return {
+        **_config_defaults(),
+        **_cli_defaults(),
+        # `train.py` stamps these two only from run_schema.RUN_SCHEMA_VERSION 2
+        # onward, so an older run records neither. Revision 1 is the first value
+        # of both counters and the value `optimizer_implementation_revision`
+        # returns for a class that declares none, i.e. what an unversioned run
+        # ran under -- so recording revision 1 and not recording it at all are
+        # the same series, while a LATER revision still splits.
+        # `comparison._recorded_revision` resolves the same two fields the same
+        # way for the measurement/pipeline conflict check.
+        "optimizer_impl_revision": DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION,
+        "measurement_semantics_revision": DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION,
+    }
+
+
+@lru_cache(maxsize=None)
+def _constructor_defaults(optimizer: str | None) -> dict:
+    """``{constructor kwarg: default}`` for the class the named optimizer builds.
+
+    The flattened cfg carries the run's recorded ``optimizer_config`` block, i.e.
+    the CONSTRUCTOR's kwargs — spellings like ``ns_steps`` or ``flat_outer`` that
+    are not ``OptimizerConfig`` fields and so have no default in
+    `_shipped_defaults`. The class signature is where their default lives, with
+    the spec's per-variant constants layered on top (those are what the variant
+    actually passes). ``{}`` for an unregistered name or a ``build``-callable
+    spec, which is conservative: nothing is normalized away.
+    """
+    import inspect
+    if not optimizer:
+        return {}
+    try:
+        from ..optim_specs import REGISTRY
+    except Exception:
+        return {}
+    spec = REGISTRY.get(optimizer)
+    if spec is None or spec.cls is None:
+        return {}
+    try:
+        sig = inspect.signature(spec.cls.__init__)
+    except (TypeError, ValueError):
+        return {}
+    defaults = {p.name: p.default for p in sig.parameters.values()
+                if p.default is not inspect.Parameter.empty}
+    defaults.update(spec.defaults or {})
+    defaults.update(spec.fixed or {})
+    return defaults
+
+
+def _recorded_block_keys(cfg: dict) -> frozenset:
+    """Keys the run recorded inside its own optimizer blocks.
+
+    ``run_records.logged_effective_config`` flattens ``optimizer_config`` and
+    ``optimizer_effective`` onto the cfg, so those blocks' keys arrive as
+    top-level scalars alongside train.py's CLI arguments.
+    """
+    keys: set[str] = set()
+    for block in ("optimizer_config", "optimizer_effective"):
+        b = cfg.get(block)
+        if isinstance(b, dict):
+            keys |= {k for k in b if isinstance(k, str)}
+    return frozenset(keys)
+
+
+def _series_items(cfg: dict, axis_fields: frozenset[str]):
+    """Yield the ``(field, hashable value)`` pairs that define a run's series.
+
+    A field contributes only when the run recorded a value that DIFFERS from
+    what the current code does by default. Three exclusions, in order:
+
+      1. ``None`` — "field not present": an older run whose schema didn't
+         include flag X is informationally equivalent to a newer run with
+         ``X=None``.
+      2. a value equal to the field's derived default — the same argument one
+         step further. The docstring's own justification for (1) is that both
+         "fall through to argparse default at runtime"; a run that RECORDS the
+         default did exactly that, so `X=<default>` and absent are one series.
+         Without this, every old-vs-new cfg pair splits purely on schema growth
+         (measured: 43 colliding buckets across 6 leaderboard cells, on fields
+         like `cw_solved_rho=False` and `rdinv_variant='A'`).
+      3. a field the run recorded only inside its optimizer blocks that the
+         run's optimizer constructor NO LONGER ACCEPTS — a retired or
+         side-branch knob (`cw_picard_mode`, `cw_no_rr_precond`,
+         `freeze_factorwise_slots`). It has no default to compare against and
+         names no behaviour the current code can express, so it is the record of
+         a code revision, not a choice: `arms._inert_fields`' rule that "a field
+         the constructor does not accept is provenance, not an axis".
+
+    Everything else is series-defining BY DEFAULT — an off-default value, and an
+    unrecognized field the current schema has never seen, both split the series.
+    Explicit off-default ``False`` / ``0`` / ``""`` are series-defining.
+    """
+    shipped = _shipped_defaults()
+    ctor = _constructor_defaults(cfg.get("optimizer"))
+    block_keys = None
+    for k, v in cfg.items():
+        # Underscore-prefixed keys are loader/parser namespaces (`_derived`,
+        # `_cli_args`, `_optim_steps`); dict values are the composite blocks.
+        # Both mirror source-of-truth scalars and would double-count.
+        if (k in axis_fields or k.startswith("_")
+                or isinstance(v, dict) or v is None):
+            continue
+        h = _hashable(v)
+        if k in shipped:
+            if h == _hashable(shipped[k]):
+                continue
+        elif k in ctor:
+            if h == _hashable(ctor[k]):
+                continue
+        else:
+            if block_keys is None:
+                block_keys = _recorded_block_keys(cfg)
+            if k in block_keys:
+                continue
+        yield k, h
+
+
 def series_id(cfg: dict, *, axis_fields: frozenset[str] | None = None) -> frozenset:
-    """Mechanical series identity = cfg minus SERIES_AXIS_FIELDS, with
-    ``None``-valued fields treated as absent.
+    """Mechanical series identity = cfg minus SERIES_AXIS_FIELDS, minus every
+    field that carries no information relative to the shipped default.
 
     Two cfgs with the same series_id are seeds / lr-grid points / horizon
     extensions of the same algorithm at the same model config and may be
     averaged together. Distinct series_ids cannot be averaged regardless
     of what a display-label function returns — see
-    `assert_label_discriminates`.
-
-    ``None`` is treated identically to "field not present": an older run
-    whose schema didn't include flag X is informationally equivalent to a
-    newer run with ``X=None`` (both fall through to argparse default at
-    runtime). Treating them as distinct would split every old-vs-new
-    cfg pair purely on schema growth. Explicit non-None values (``False``,
-    ``0``, ``0.0``, ``""``) ARE series-defining.
+    `assert_label_discriminates`. `_series_items` documents exactly which
+    fields are dropped and why.
     """
     if axis_fields is None:
         from lora_playground.manifest import SERIES_AXIS_FIELDS
         axis_fields = SERIES_AXIS_FIELDS
-    # Exclude:
-    #   - underscore-prefixed keys (loader enrichment namespaces:
-    #     `_derived`, `_cli_args`, `_optim_steps`, etc.) — these mirror
-    #     source-of-truth scalar fields and would double-count.
-    #   - dict-valued composites like `optimizer_config` (loader backfill
-    #     that mirrors a subset of scalar fields; older runs without it
-    #     get backfilled and may not round-trip exactly).
-    # Scalar top-level cfg fields ARE the source of truth.
-    return frozenset(
-        (k, _hashable(v)) for k, v in cfg.items()
-        if k not in axis_fields
-        and not k.startswith("_")
-        and not isinstance(v, dict)
-        and v is not None
-    )
+    return frozenset(_series_items(cfg, axis_fields))
 
 
 def _label_collision_report(runs, group_key_fn, *,
@@ -114,26 +226,14 @@ def _label_collision_report(runs, group_key_fn, *,
         if len(ids) == 1:
             continue
         # Identify the specific cfg fields that disagree across these runs.
-        # Mirror series_id's exclusion rule so the reported diff is the
-        # actual source-of-truth difference (not a derived/enriched field).
-        all_keys: set[str] = set()
-        for c in cfgs:
-            all_keys.update(k for k, v in c.items()
-                            if k not in axis_fields
-                            and not k.startswith("_")
-                            and not isinstance(v, dict))
+        # Read through `_series_items` — the SAME normalization series_id used —
+        # so the reported diff is a field that actually split the bucket, not a
+        # schema-growth artifact the identity already discounted.
+        norm = [dict(_series_items(c, axis_fields)) for c in cfgs]
+        all_keys: set[str] = set().union(*(set(n) for n in norm))
         differing: dict[str, set] = {}
         for k in all_keys:
-            vals = set()
-            for c in cfgs:
-                v = c.get(k)
-                if v is None:
-                    vals.add(None)
-                    continue
-                try:
-                    vals.add(_hashable(v))
-                except TypeError:
-                    vals.add(repr(v))
+            vals = {n.get(k) for n in norm}
             if len(vals) > 1:
                 differing[k] = vals
         reports.append({
@@ -418,14 +518,17 @@ def dedup_by_canonical(runs, *, keep_longest: bool = True):
 
 
 def _series_diff(a: dict, b: dict) -> str:
-    """Fields that make two cfgs different series, for the error message."""
+    """Fields that make two cfgs different series, for the error message.
+
+    Compares through `_series_items` so only fields that genuinely split the
+    identity are named, and prints the RECORDED values so the reader can see
+    what each run logged.
+    """
     from ..manifest import SERIES_AXIS_FIELDS
-    diffs = []
-    for k in sorted(set(a) | set(b)):
-        if k in SERIES_AXIS_FIELDS or k.startswith("_"):
-            continue
-        if a.get(k) != b.get(k):
-            diffs.append(f"{k}={a.get(k)!r} vs {b.get(k)!r}")
+    na = dict(_series_items(a, SERIES_AXIS_FIELDS))
+    nb = dict(_series_items(b, SERIES_AXIS_FIELDS))
+    diffs = [f"{k}={a.get(k)!r} vs {b.get(k)!r}"
+             for k in sorted(set(na) | set(nb)) if na.get(k) != nb.get(k)]
     return ", ".join(diffs[:6]) + ("..." if len(diffs) > 6 else "")
 
 
