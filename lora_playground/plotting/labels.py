@@ -131,6 +131,7 @@ _FEATURED_KNOBS: tuple[tuple[str, object], ...] = (
     # under one canonical label.
     ("precond", lambda cfg, v: (
         " one-sided" if v == "one-sided"
+        else " factorwise-diag" if v == "factorwise-diag"
         else " factorwise" if (v == "factorwise"
                                and not _branch_is_implied_by_the_optimizer(cfg))
         else "")),

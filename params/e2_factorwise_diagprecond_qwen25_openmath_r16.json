@@ -1,0 +1,14 @@
+{
+  "lr": [0.001, 0.003, 0.01, 0.017, 0.03],
+  "optimizer": ["kl-diag-polar-lora"],
+  "seed": [0],
+  "precond_delta": [0.0001],
+  "beta1": [0.9],
+  "model": ["Qwen/Qwen2.5-1.5B"],
+  "data_dir": ["data/openmath_instruct_2_2m_packed_seq2048_qwen25"],
+  "lora_r": [16],
+  "precond": ["factorwise-diag"],
+  "msign": ["full"],
+  "heavy_diagnostics": [0],
+  "diagnostics_every": [100]
+}

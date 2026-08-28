@@ -4,7 +4,8 @@
 
     product     C_B = B^T P B,  C_A = A Q A^T
     one-sided   C_B = C_A = I_r
-    factorwise  C_B = P_A,      C_A = U_B   (EMAs of G_A Q^-1 G_A^T / G_B^T P^-1 G_B)
+    factorwise  C_B = P_A,      C_A = Q_B   (EMAs of G_A Q^-1 G_A^T / G_B^T P^-1 G_B)
+    factorwise-diag  C_B = Diag(P_A), C_A = Diag(Q_B)
 
 ``msign`` picks how accurately the matrix sign is applied to the whitened momenta::
 
@@ -178,7 +179,7 @@ def test_one_sided_q_update_is_the_unwhitened_gram_diagonal():
             "p update did not whiten by the identity"
 
 
-def test_three_precond_branches_are_mutually_distinct():
+def test_precond_branches_are_mutually_distinct():
     outs = {}
     for p in sorted(PRECOND_CHOICES):
         m, x, tgt = _make(seed=9)
@@ -188,6 +189,34 @@ def test_three_precond_branches_are_mutually_distinct():
     for i, a in enumerate(names):
         for b in names[i + 1:]:
             assert _max_abs_diff(outs[a], outs[b]) > 1e-8, f"{a} and {b} are the same step"
+
+
+def test_factorwise_diag_keeps_only_the_ema_diagonal():
+    """The new arm must fit the diagonal recurrence itself, not form a dense
+    r x r EMA and merely use its diagonal later."""
+    m, x, tgt = _make(seed=19)
+    opt = CurvatureWhitenLoRA(m, precond="factorwise-diag", **_KW)
+    opt.zero_grad(set_to_none=False)
+    ((m(x) - tgt) ** 2).mean().backward()
+    before = [(st["P_A"].clone(), st["Q_B"].clone(), st["Q"].clone(), st["P"].clone())
+              for st in opt.pair_state.values()]
+    grads = [(A.grad.detach().float().clone(), B.grad.detach().float().clone())
+             for A, B in opt.pairs]
+    opt.step()
+    cb = opt.curvature_beta
+    for i, ((gA, gB), (pa0, qb0, q0, p0)) in enumerate(zip(grads, before)):
+        q_inv = opt._rdinv(q0, partner_trace=p0.sum()).square()
+        p_inv = opt._rdinv(p0, partner_trace=q0.sum()).square()
+        want_pa_diag = cb * pa0.diagonal() + (1.0 - cb) / gA.shape[1] * (
+            gA.square() * q_inv.unsqueeze(0)).sum(dim=1)
+        want_qb_diag = cb * qb0.diagonal() + (1.0 - cb) / gB.shape[0] * (
+            gB.square() * p_inv.unsqueeze(1)).sum(dim=0)
+        pa = opt.pair_state[i]["P_A"]
+        qb = opt.pair_state[i]["Q_B"]
+        assert torch.count_nonzero(pa - torch.diag_embed(pa.diagonal())) == 0
+        assert torch.count_nonzero(qb - torch.diag_embed(qb.diagonal())) == 0
+        assert torch.allclose(pa.diagonal(), want_pa_diag, atol=1e-8, rtol=1e-5)
+        assert torch.allclose(qb.diagonal(), want_qb_diag, atol=1e-8, rtol=1e-5)
 
 
 # ─── msign=diag is row/column normalization, and is orthogonal to precond ─────
@@ -306,6 +335,15 @@ def test_the_expensive_primitive_spy_is_not_vacuous(monkeypatch):
         f"the r x r inverse sqrt spy never fired on the expensive branch: {sorted(set(calls))}"
     assert "_polar_ns_guarded" in calls, \
         f"the polar spy never fired on the expensive branch: {sorted(set(calls))}"
+
+
+def test_factorwise_diag_skips_dense_slot_inverse_sqrt(monkeypatch):
+    calls = _spy_on_expensive_primitives(monkeypatch)
+    m, x, tgt = _make(seed=23)
+    opt = CurvatureWhitenLoRA(m, precond="factorwise-diag", **_KW)
+    _run(m, opt, x, tgt, steps=2)
+    assert "gram_ns_inv_sqrt" not in calls
+    assert "_polar_ns_guarded" in calls
 
 
 @pytest.mark.parametrize("precond", sorted(PRECOND_CHOICES))

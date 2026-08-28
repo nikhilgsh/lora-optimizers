@@ -1006,9 +1006,16 @@ def _emit_batched_optim_diagnostics(
         print(json.dumps(payload, sort_keys=True), flush=True)
 
 # What fills CurvatureWhitenLoRA's two r x r slots (C_B, C_A). See the `precond`
-# block in CurvatureWhitenLoRA.__init__ for the equations; the three branches share
+# block in CurvatureWhitenLoRA.__init__ for the equations; the four branches share
 # one (P, Q), one set of p/q updates, and one magnitude rule, and differ only here.
-PRECOND_CHOICES = {"product", "one-sided", "factorwise"}
+PRECOND_CHOICES = {"product", "one-sided", "factorwise", "factorwise-diag"}
+# "factorwise-diag" is "factorwise" with the two r x r slots held DIAGONAL: the
+# same EMA of the factor's own whitened gradients, but only its diagonal is
+# accumulated and inverted. It is the third point on the slot-structure axis --
+# full r x r (factorwise), diagonal (this), identity (one-sided) -- and strictly
+# cheaper than factorwise at both ends: the accumulation is a row-wise sum of
+# squares, O(r d), rather than an r x r outer product, O(r^2 d); and the inverse
+# square root is an elementwise rsqrt rather than a Gram Newton-Schulz.
 
 # Raw-EMA init for the FREE r x r Kronecker factors P_A, Q_B that `precond
 # ="factorwise"` fits (the `L_A`/`R_B` pair_state buffers on that branch only).
@@ -1702,7 +1709,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 f"(inherit the spec's diag_metric); got {precond!r}.")
         if precond == "product":
             diag_metric = True
-        elif precond == "factorwise":
+        elif precond in ("factorwise", "factorwise-diag"):
             diag_metric = False
         # one-sided leaves `diag_metric` as the spec pinned it: with both slots held
         # at identity neither slot-formation path runs, so it goes unread.
@@ -1954,9 +1961,9 @@ class CurvatureWhitenLoRA(Optimizer):
                 # buffer from A, B every step, so its init value is inert; it is
                 # kept zero-filled, as before.
                 # precond="one-sided": pinned to exactly I every step; init inert.
-                'P_A': (eye * RR_FREE_INIT_EPS if self.precond == "factorwise"
+                'P_A': (eye * RR_FREE_INIT_EPS if self.rr_factorwise
                         else torch.zeros((r, r), dtype=torch.float32, device=A.device)),
-                'Q_B': (eye * RR_FREE_INIT_EPS if self.precond == "factorwise"
+                'Q_B': (eye * RR_FREE_INIT_EPS if self.rr_factorwise
                         else torch.zeros((r, r), dtype=torch.float32, device=A.device)),
                 # large side: diagonal curvature = EMA of per-column / per-row
                 # gradient energy.
@@ -2299,6 +2306,21 @@ class CurvatureWhitenLoRA(Optimizer):
         (C_B, C_A) are held at the exact identity. Derived rather than stored so
         there is one definition of the branch, not two that can drift."""
         return self.precond == "one-sided"
+
+    @property
+    def rr_factorwise(self) -> bool:
+        """True on either factorwise branch: the r x r slots are filled from an
+        EMA of the factor's own gradients rather than from A, B (product) or
+        held at the identity (one-sided). Both variants share every code path
+        except how much of that EMA is kept -- see `rr_diagonal`."""
+        return self.precond in ("factorwise", "factorwise-diag")
+
+    @property
+    def rr_diagonal(self) -> bool:
+        """True on `precond="factorwise-diag"`, where the slots keep only their
+        diagonal. Derived rather than stored so there is one definition of the
+        branch."""
+        return self.precond == "factorwise-diag"
 
     def _direction_op(self, Z, states, key, side):
         """The LMO direction operator applied to a whitened momentum batch.
@@ -2825,9 +2847,15 @@ class CurvatureWhitenLoRA(Optimizer):
                 # fitted, so their scale is part of the pullback geometry and
                 # `app:damping` relative-damps them at true scale.
                 if timer: timer.start("op_rr_normalize")   # lambda_max(P_A), lambda_max(Q_B) for the free-factor normalization
-                from .spectral import lambda_max_power_iter_psd_batched as _lmax_b
-                lamLA, _ = _lmax_b(self._sym(PA), n_iters=8)
-                lamRB, _ = _lmax_b(self._sym(QB), n_iters=8)
+                if self.rr_diagonal:
+                    # For a diagonal PSD slot lambda_max is exactly its largest
+                    # diagonal entry; do not run a dense power iteration.
+                    lamLA = PA.diagonal(dim1=-2, dim2=-1).amax(dim=-1)
+                    lamRB = QB.diagonal(dim1=-2, dim2=-1).amax(dim=-1)
+                else:
+                    from .spectral import lambda_max_power_iter_psd_batched as _lmax_b
+                    lamLA, _ = _lmax_b(self._sym(PA), n_iters=8)
+                    lamRB, _ = _lmax_b(self._sym(QB), n_iters=8)
                 PA = PA / lamLA.reshape(-1, 1, 1).clamp_min(1e-30)
                 QB = QB / lamRB.reshape(-1, 1, 1).clamp_min(1e-30)
                 if timer: timer.stop()
@@ -2881,16 +2909,40 @@ class CurvatureWhitenLoRA(Optimizer):
                 # coupling that also reads PAinv_full=SAh² is off, so the only effect is the
                 # whitener magnitude; with curvature on it shifts the coupling damping negligibly.)
                 _wh_rel = not self.cw_unpinned
-                PAh = gram_ns_inv_sqrt(
-                    self._sym(PA), nsteps=self.higham_iters, eps=self.delta,
-                    eps_relative=_wh_rel)
-                QBh = gram_ns_inv_sqrt(
-                    self._sym(QB), nsteps=self.higham_iters, eps=self.delta,
-                    eps_relative=_wh_rel)
-                def _whA(x): return PAh @ x
-                def _whB(x): return x @ QBh
-                PAinv_full = PAh @ PAh
-                QBinv_full = QBh @ QBh
+                if self.rr_diagonal:
+                    # A diagonal slot inverts elementwise: no Gram Newton-Schulz,
+                    # and the whitening is a row (A) / column (B) rescale rather
+                    # than an r x r matmul. Damping matches the matrix path's
+                    # convention -- relative to the largest diagonal entry, which
+                    # for a diagonal matrix IS its largest eigenvalue.
+                    pa_d = PA.diagonal(dim1=-2, dim2=-1).clamp_min(0.0)
+                    qb_d = QB.diagonal(dim1=-2, dim2=-1).clamp_min(0.0)
+                    if _wh_rel:
+                        pa_d = pa_d + self.delta * pa_d.amax(dim=-1, keepdim=True)
+                        qb_d = qb_d + self.delta * qb_d.amax(dim=-1, keepdim=True)
+                    else:
+                        pa_d = pa_d + self.delta
+                        qb_d = qb_d + self.delta
+                    pa_h = pa_d.rsqrt()
+                    qb_h = qb_d.rsqrt()
+                    def _whA(x, _h=pa_h): return _h.unsqueeze(-1) * x
+                    def _whB(x, _h=qb_h): return x * _h.unsqueeze(-2)
+                    # The r x r forms the coupling path and the diagnostics read.
+                    PAh = torch.diag_embed(pa_h)
+                    QBh = torch.diag_embed(qb_h)
+                    PAinv_full = torch.diag_embed(pa_h * pa_h)
+                    QBinv_full = torch.diag_embed(qb_h * qb_h)
+                else:
+                    PAh = gram_ns_inv_sqrt(
+                        self._sym(PA), nsteps=self.higham_iters, eps=self.delta,
+                        eps_relative=_wh_rel)
+                    QBh = gram_ns_inv_sqrt(
+                        self._sym(QB), nsteps=self.higham_iters, eps=self.delta,
+                        eps_relative=_wh_rel)
+                    def _whA(x): return PAh @ x
+                    def _whB(x): return x @ QBh
+                    PAinv_full = PAh @ PAh
+                    QBinv_full = QBh @ QBh
                 if timer: timer.stop()
             else:  # "higham" — coupled Iannazzo/Denman–Beavers (needs ≥16 iters;
                    # under-converged at the default 10. Kept for the A/B retiming).
@@ -3130,11 +3182,28 @@ class CurvatureWhitenLoRA(Optimizer):
                 P_inv = P_isqrt.square()
                 PAinv = PAinv_full
                 QBinv = QBinv_full
-                if self.precond == "factorwise":
-                    PA_raw.mul_(cb).add_((gA * Q_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
-                                     alpha=(1.0 - cb) / d_in)
-                    QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * P_inv.unsqueeze(-1)),
-                                     alpha=(1.0 - cb) / d_out)
+                if self.rr_factorwise:
+                    if self.rr_diagonal:
+                        # Only the diagonal of the same outer products. Written
+                        # into the diagonal of the r x r buffer so the state
+                        # shape, and every checkpoint of it, is unchanged.
+                        #   diag((gA Q^-1) gA^T)_k = sum_j gA[k,j]^2 Q^-1[j]
+                        #   diag(gB^T (P^-1 gB))_k = sum_i gB[i,k]^2 P^-1[i]
+                        # O(r d) rather than the O(r^2 d) matmul, and the result
+                        # needs no Gram Newton-Schulz to invert.
+                        PA_raw.mul_(cb)
+                        QB_raw.mul_(cb)
+                        PA_diag = ((gA * gA) * Q_inv.unsqueeze(1)).sum(dim=2)
+                        QB_diag = ((gB * gB) * P_inv.unsqueeze(-1)).sum(dim=1)
+                        PA_raw.diagonal(dim1=-2, dim2=-1).add_(
+                            PA_diag, alpha=(1.0 - cb) / d_in)
+                        QB_raw.diagonal(dim1=-2, dim2=-1).add_(
+                            QB_diag, alpha=(1.0 - cb) / d_out)
+                    else:
+                        PA_raw.mul_(cb).add_((gA * Q_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
+                                         alpha=(1.0 - cb) / d_in)
+                        QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * P_inv.unsqueeze(-1)),
+                                         alpha=(1.0 - cb) / d_out)
                 if self.rr_identity:
                     # C_B = C_A = I, so PAinv/QBinv are the identity and the two
                     # bmms below are `I @ gA` and `gB @ I`. Skip them: at r=256 the
@@ -3144,15 +3213,32 @@ class CurvatureWhitenLoRA(Optimizer):
                     # non-coupled branch below, for the same reason.
                     Q.mul_(cb).add_((gA * gA).sum(dim=1), alpha=(1.0 - cb) / r)
                     P.mul_(cb).add_((gB * gB).sum(dim=2), alpha=(1.0 - cb) / r)
+                elif self.rr_diagonal:
+                    PAinv_diag = PAinv.diagonal(dim1=-2, dim2=-1)
+                    QBinv_diag = QBinv.diagonal(dim1=-2, dim2=-1)
+                    Q.mul_(cb).add_(
+                        (gA.square() * PAinv_diag.unsqueeze(-1)).sum(dim=1),
+                        alpha=(1.0 - cb) / r)
+                    P.mul_(cb).add_(
+                        (gB.square() * QBinv_diag.unsqueeze(1)).sum(dim=2),
+                        alpha=(1.0 - cb) / r)
                 else:
                     Q.mul_(cb).add_((gA * (PAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
                     P.mul_(cb).add_((gB * (gB @ QBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
             else:
                 # diag_metric recomputes PA/QB from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
-                if self.precond == "factorwise":
-                    PA_raw.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-                    QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
+                if self.rr_factorwise:
+                    if self.rr_diagonal:
+                        PA_raw.mul_(cb)
+                        QB_raw.mul_(cb)
+                        PA_raw.diagonal(dim1=-2, dim2=-1).add_(
+                            (gA * gA).sum(dim=2), alpha=1.0 - cb)
+                        QB_raw.diagonal(dim1=-2, dim2=-1).add_(
+                            (gB * gB).sum(dim=1), alpha=1.0 - cb)
+                    else:
+                        PA_raw.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
+                        QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
                 Q.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
                 P.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
             if timer: timer.stop()
@@ -3162,7 +3248,7 @@ class CurvatureWhitenLoRA(Optimizer):
             # every step). product: the Gram recomputed from A, B this step, so
             # the eigh eigenbasis refresh in step() tracks it. one-sided: the
             # pinned identity, idempotent.
-            PA_st, QB_st = ((PA_raw, QB_raw) if self.precond == "factorwise"
+            PA_st, QB_st = ((PA_raw, QB_raw) if self.rr_factorwise
                             else (PA, QB))
             for j, i in enumerate(idxs):
                 A_, B_ = pairs[i]

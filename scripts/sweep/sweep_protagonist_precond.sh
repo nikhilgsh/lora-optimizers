@@ -1,10 +1,12 @@
 #!/bin/bash
 # E2 ABLATION wrapper: the `precond` x `msign` arms on the protagonist config.
+# Last updated: 2026-08-28T03:28:00-04:00
 #
 # `precond` picks what fills the two r x r slots (C_B, C_A):
 #     product     C_B = B^T P B,  C_A = A Q A^T      (PoLoRA)
 #     one-sided   C_B = C_A = I_r
 #     factorwise  C_B = P_A,      C_A = Q_B
+#     factorwise-diag  C_B = Diag(diag P_A), C_A = Diag(diag Q_B)
 # `msign` picks how accurately the matrix sign is applied to the whitened momenta
 # Z_A = C_B^-1/2 Mhat_A Q^-1/2, Z_B = P^-1/2 Mhat_B C_A^-1/2:
 #     full   U = msign(Z)
@@ -23,7 +25,7 @@
 #
 # Positional args (must match params JSON key order):
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
-#   9: precond  (product | one-sided | factorwise)
+#   9: precond  (product | one-sided | factorwise | factorwise-diag)
 #  10: msign    (full | diag)
 #  11: heavy diagnostics (0 | 1)
 #  12: diagnostics cadence (positive integer)
@@ -43,7 +45,7 @@ diagnostics_every=${12:-${OPTIM_DIAGNOSTICS_EVERY:-100}}
 # Fail loudly on a bad cell rather than letting train.py's argparse reject it
 # 8 minutes into a model load, or worse, silently accept a typo'd branch.
 case "$precond" in
-    product|one-sided|factorwise) ;;
+    product|one-sided|factorwise|factorwise-diag) ;;
     *) echo "sweep_protagonist_precond: bad precond '$precond'" >&2; exit 2 ;;
 esac
 case "$msign" in

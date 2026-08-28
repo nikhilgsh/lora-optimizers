@@ -51,7 +51,10 @@ from lora_playground.publication_paper import (
     publication_view_panel,
     publication_workload_view_panel,
 )
-from lora_playground.plotting.paper_view_semantics import project_paper_precond_cohort
+from lora_playground.plotting.paper_view_semantics import (
+    FACTORWISE_SLOT_PRECONDS,
+    project_paper_precond_cohort,
+)
 from lora_playground.run_catalog import RunCatalog
 from lora_playground.run_records import run_view
 from lora_playground.run_schema import MEASUREMENT_SEMANTICS_REVISION
@@ -515,7 +518,7 @@ def _default_slot_view(arms):
     SemanticRevisionConflictError from deep inside `comparison`.
     """
     branches = {_arm_branch(predicate) for predicate in arms.values()}
-    return "precond" if "factorwise" in branches else None
+    return "precond" if branches & FACTORWISE_SLOT_PRECONDS else None
 
 
 def _arm_revision_spread(records, arms):
@@ -772,7 +775,7 @@ def derivation_ablation_panel(rank=256):
 def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
                   data_key="openmath", model_label="Llama-3.2-1B",
                   trusted_only=False, matched_revision=False):
-    """The three `precond` branches: what fills (C_B, C_A). All three share one
+    """The four `precond` branches: what fills (C_B, C_A). All four share one
     (P, Q), the same p, q updates and the same rho rule.
 
     Parameterized by cell so the same comparison can be read at another rank

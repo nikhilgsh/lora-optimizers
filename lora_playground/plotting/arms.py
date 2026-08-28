@@ -456,6 +456,15 @@ ONESIDED = {**PROTO, "precond": "one-sided"}     # C_B = C_A = I everywhere
 # is provenance.
 NOPRODUCT = {**arm("kl-diag-polar-lora", **CW_PRODUCTION, precond="factorwise"),
              "optimizer": ("kl-diag-polar-lora", "kl-shampoo-polar-lora")}
+# The diagonal slot: the same EMA of the factor's own whitened gradients as
+# NOPRODUCT, but only its diagonal is kept. Third point on the slot-structure
+# axis -- full r x r (NOPRODUCT), diagonal (this), identity (ONESIDED) -- and
+# cheaper than either factorwise end at both ends of the step: the accumulation
+# is a row-wise sum of squares, O(r d), rather than an r x r outer product,
+# O(r^2 d), and the inverse square root is an elementwise rsqrt rather than a
+# Gram Newton-Schulz (optim.py, the `rr_diagonal` branches).
+NOPRODUCT_DIAG = arm(
+    "kl-diag-polar-lora", **CW_PRODUCTION, precond="factorwise-diag")
 
 # The same arm with the slots frozen at a checkpoint: the ablation asking
 # whether the r x r ESTIMATE earns its place, or only its shape.
@@ -538,7 +547,8 @@ DERIVATION_ARMS = {
     # msign applied, outer un-whiten skipped (optim.py:3025-3027).
     r"$\mathrm{msign}(C_B^{-1/2}\widehat{M}_AQ^{-1/2})$": FLATOUT,
 }
-# The `precond` axis: three branches, not the four corners of a 2x2. All three
+# The `precond` axis: product, identity, and two resolutions of the fitted
+# factorwise slot. All four
 # share one (P, Q), the same p, q updates and the same magnitude rule, and differ
 # only in what fills (C_B, C_A).
 PRECOND_ARMS = {
@@ -546,6 +556,7 @@ PRECOND_ARMS = {
     PRECOND_PRODUCT_LABEL: PROTO,
     r"Identity: $C_B=C_A=I$": ONESIDED,
     r"Factorwise: $C_B=P_A,\ C_A=Q_B$": NOPRODUCT,
+    r"Diagonal factorwise: $C_B=\operatorname{Diag}(P_A),\ C_A=\operatorname{Diag}(Q_B)$": NOPRODUCT_DIAG,
 }
 
 # `curvature_beta` crossed with `precond`, for the estimation-noise question:

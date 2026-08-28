@@ -943,7 +943,7 @@ def make_parser():
                              "--cw_unpinned. Retired from the paper (2026-06-12), kept dormant.")
     parser.add_argument("--precond", choices=sorted(PRECOND_CHOICES),
                         default=None,
-                        help="What fills the two r x r slots (C_B, C_A) in the "
+                        help="What fills the two rank-side slots (C_B, C_A) in the "
                              "curvature-whiten family. product: C_B=B^T P B, C_A=A Q A^T "
                              "(PoLoRA). one-sided: C_B=C_A=I EVERYWHERE -- in the p,q "
                              "updates as well as the direction, so "
@@ -951,7 +951,9 @@ def make_parser():
                              "dA=msign(Mhat_A Q^-1/2)Q^-1/2. factorwise: C_B=P_A, C_A=Q_B, "
                              "two persistent r x r EMAs fitted from the factor gradients "
                              "(P_A <- b2 P_A + (1-b2)/d_in G_A Q^-1 G_A^T, mirror for Q_B). "
-                             "All three share one (P,Q), one set of p,q updates and the same "
+                             "factorwise-diag: the same fitted EMAs restricted to their "
+                             "r diagonal entries, with elementwise inverse roots. "
+                             "All four share one (P,Q), one set of p,q updates and the same "
                              "rho=eta/(smax(A)+smax(B)) rule. Default None = inherit the "
                              "optimizer's own setting (product for kl-diag*, factorwise for "
                              "kl-shampoo*).")

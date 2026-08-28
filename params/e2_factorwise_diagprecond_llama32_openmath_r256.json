@@ -1,0 +1,14 @@
+{
+  "lr": [0.001, 0.003, 0.01, 0.03, 0.1],
+  "optimizer": ["kl-diag-polar-lora"],
+  "seed": [0],
+  "precond_delta": [0.0001],
+  "beta1": [0.9],
+  "model": ["meta-llama/Llama-3.2-1B"],
+  "data_dir": ["data/openmath_instruct_2_2m_packed_seq2048_llama32"],
+  "lora_r": [256],
+  "precond": ["factorwise-diag"],
+  "msign": ["full"],
+  "heavy_diagnostics": [0],
+  "diagnostics_every": [100]
+}
