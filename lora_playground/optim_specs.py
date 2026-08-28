@@ -377,3 +377,54 @@ spec("imuon-lora", build=_build_imuon)
 # recipe knobs (clip_unmagnified_grad=1.0, apply_escape=False, ...) are the
 # class defaults, so no `fixed` is needed.
 spec("lora-rite", _optim.LoRARite)
+
+
+def spec_pinned_value(optimizer: str | None, field: str, default=None):
+    """The value a named optimizer's spec forces for ``field``, if any.
+
+    ``fixed`` wins over ``defaults`` because that is the precedence
+    ``build_from_spec`` applies when it assembles the constructor kwargs.
+    """
+    entry = REGISTRY.get(optimizer) if optimizer else None
+    if entry is None:
+        return default
+    for source in (entry.fixed, entry.defaults):
+        if source and field in source:
+            return source[field]
+    return default
+
+
+def resolved_precond(cfg) -> str | None:
+    """Which ``precond`` branch a recorded run actually ran, or None.
+
+    Mirrors `CurvatureWhitenLoRA.__init__` (optim.py:1713)::
+
+        self.precond = precond or ("product" if self.diag_metric else "factorwise")
+
+    so an older run that predates the ``--precond`` flag resolves the same way
+    the optimizer resolved it at the time. Runs under
+    ``kl-shampoo-lora`` / ``kl-shampoo-polar-lora`` are the live case: their
+    specs pin ``diag_metric=False``, which IS the factorwise branch, and they
+    record no ``precond``.
+
+    Derived from the registry rather than a list of optimizer names. That list
+    was hand-typed in four places -- `arms.NOPRODUCT`'s optimizer tuple,
+    `labels._shared_knobs`, `labels.canonical_label`'s template dispatch and
+    `paper_view_semantics` -- so adding a fifth KL-Shampoo variant meant
+    remembering all of them, and missing one made naming and cohort membership
+    disagree about which runs are factorwise. Returns None for an optimizer
+    outside the CurvatureWhitenLoRA family, where the field names nothing.
+    """
+    recorded = cfg.get("precond")
+    if isinstance(recorded, str) and recorded.strip():
+        return recorded
+    optimizer = cfg.get("optimizer")
+    entry = REGISTRY.get(optimizer) if optimizer else None
+    if entry is None or getattr(entry.cls, "__name__", "") != "CurvatureWhitenLoRA":
+        return None
+    diag_metric = cfg.get("diag_metric")
+    if diag_metric is None:
+        diag_metric = spec_pinned_value(optimizer, "diag_metric")
+    if diag_metric is None:
+        return None
+    return "product" if diag_metric else "factorwise"

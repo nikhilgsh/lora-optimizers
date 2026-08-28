@@ -38,11 +38,25 @@ from lora_playground.plotting.dedup import assert_label_discriminates
 
 _LOGS_ROOT = ROOT / "logs"
 
-# One bucket per (workload, lr): runs inside a bucket that carry one display
-# label must be the same algorithm. Model / dataset / rank / pipeline version
-# are workload identity, not a per-series axis, so they open separate buckets
-# rather than counting as collisions.
-BUCKET_KEYS = ("model_name", "data_dir", "lora_r", "data_pipeline_version", "lr")
+# One bucket per (workload, code revision, lr): runs inside a bucket that carry
+# one display label must be the same algorithm. Model / dataset / rank /
+# pipeline version are workload identity, not a per-series axis, so they open
+# separate buckets rather than counting as collisions.
+#
+# `optimizer_impl_revision` is here for the same reason. It is not an arm axis:
+# an arm names an algorithm CHOICE and no flag sets the revision, so
+# `labels.canonical_arm_label` deliberately ignores it. But `series_id` DOES
+# split on it (two revisions of one config must never be averaged), so a
+# pre-fix and a post-fix run of the same arm are two series under one label.
+# The paper panels never see that pair -- `paper_view_semantics
+# .project_paper_precond_cohort` drops the pre-fix side before rendering --
+# whereas this test reads every run in logs/ with no cohort projection, so it
+# compares within one revision instead. A collision INSIDE a revision, which is
+# what the guard exists to catch, still fails.
+BUCKET_KEYS = (
+    "model_name", "data_dir", "lora_r", "data_pipeline_version",
+    "optimizer_impl_revision", "lr",
+)
 
 
 # ── the derivation stays complete ───────────────────────────────────────────
@@ -211,3 +225,42 @@ def test_arm_dict_discriminates(name, all_runs):
         f"Most likely a field was pinned to a value no run carries."
     )
     assert_label_discriminates(guarded, key, bucket_keys=BUCKET_KEYS)
+
+
+@pytest.mark.parametrize("name", sorted(A.ALL_ARM_DICTS))
+def test_every_arm_in_a_dict_has_its_own_arm_label(name):
+    """Two arms in one dict must not resolve to the same arm label.
+
+    `paper_plots_lib._canonical_variant_key` maps a recorded cfg to an
+    editorial arm by `labels.canonical_arm_label`, so two arms sharing a label
+    is not a cosmetic clash: the second silently shadows the first, and every
+    run of both lands in whichever arm `by_canonical` kept.
+
+    This catches an arm keyed on a field the labeler cannot see. The live case:
+    `freeze_factorwise_slots` exists only on the factorwise-freeze branch, so
+    on this branch `arm()` refuses it ("a predicate on an unknown field pins
+    nothing") and `canonical_label` cannot spell it -- a frozen-slot arm added
+    here would be indistinguishable from its own dynamic control.
+    """
+    from lora_playground.plotting.labels import canonical_arm_label
+
+    by_label: dict[str, list[str]] = {}
+    for arm_label, predicate in A.ALL_ARM_DICTS[name].items():
+        optimizer = predicate["optimizer"]
+        optimizers = (optimizer
+                      if isinstance(optimizer, (list, set, tuple, frozenset))
+                      else (optimizer,))
+        for optimizer_name in optimizers:
+            resolved = canonical_arm_label(
+                {**predicate, "optimizer": optimizer_name}
+            )
+            if resolved is None:
+                continue
+            by_label.setdefault(resolved, []).append(arm_label)
+
+    collisions = {k: v for k, v in by_label.items() if len(set(v)) > 1}
+    assert not collisions, (
+        f"{name}: arms share one canonical_arm_label, so one shadows the "
+        f"other in _canonical_variant_key: "
+        + "; ".join(f"{k!r} <- {sorted(set(v))}" for k, v in collisions.items())
+    )

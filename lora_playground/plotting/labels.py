@@ -113,14 +113,12 @@ def _shared_knobs(cfg: dict) -> str:
     elif (
         _field_is_active(cfg, "precond")
         and cfg.get("precond") == "factorwise"
-        and cfg.get("optimizer") not in (
-            "kl-shampoo-lora", "kl-shampoo-polar-lora",
-        )
+        and not _branch_is_implied_by_the_optimizer(cfg)
     ):
-        # KL-Shampoo is the legacy factorwise implementation, so the family
-        # name already identifies this branch. Keeping the suffix off makes a
-        # recorded pre-flag KL-Shampoo run and an explicit
-        # ``--precond factorwise`` run share one canonical label.
+        # A family whose SPEC already forces this branch needs no suffix: the
+        # optimizer name identifies it. That keeps a recorded pre-flag
+        # KL-Shampoo run (no `precond`, `diag_metric=False` pinned) and an
+        # explicit `--precond factorwise` run under one canonical label.
         s += " factorwise"
     if _field_is_active(cfg, "msign") and cfg.get("msign") == "diag":
         s += " msign-diag"
@@ -170,6 +168,22 @@ def _shared_knobs(cfg: dict) -> str:
         + _residual_knobs(cfg)
         + lora_init_label_suffix(cfg.get("lora_init_b", "zero"))
     )
+
+
+def _branch_is_implied_by_the_optimizer(cfg: dict) -> bool:
+    """Whether the optimizer's own spec already forces this `precond` branch.
+
+    Derived from the spec registry rather than a list of optimizer names: that
+    list was hand-typed in four places and a missed copy makes naming and
+    cohort membership disagree about which runs are factorwise.
+    """
+    from ..optim_specs import resolved_precond
+
+    # From the OPTIMIZER NAME alone. Reading the run's recorded `diag_metric`
+    # is wrong: `--precond factorwise` on a kl-diag variant also records
+    # diag_metric=False, so the run would look "implied" and lose the suffix it
+    # needs to stay separate from that optimizer's product runs.
+    return resolved_precond({"optimizer": cfg.get("optimizer")}) == cfg.get("precond")
 
 
 def _field_is_active(cfg: dict, field: str) -> bool:

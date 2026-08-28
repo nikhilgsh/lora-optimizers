@@ -280,12 +280,30 @@ def test_post_fix_kl_shampoo_still_joins_the_factorwise_arm():
     assert len(kept) == 1
 
 
-def test_absent_precond_under_other_optimizers_is_not_inferred_as_product():
-    """Only the KL-Shampoo family gets a branch inferred from its name."""
+def test_the_branch_is_resolved_the_way_the_optimizer_resolves_it():
+    """`effective_precond` reproduces CurvatureWhitenLoRA's own resolution.
+
+    `CurvatureWhitenLoRA.__init__` (optim.py:1713) sets
+    ``precond or ("product" if diag_metric else "factorwise")``, and the spec
+    registry pins ``diag_metric`` per variant: False for the KL-Shampoo pair
+    (hence factorwise), True for the kl-diag family (hence product). Deriving
+    it from the registry replaced the same optimizer-name pair hand-typed in
+    four places, where a missed copy makes naming and cohort membership
+    disagree about which runs are factorwise.
+
+    Verified against the whole recorded tree before the switch: the seven
+    precond panels render an identical arm set either way.
+    """
     from lora_playground.plotting.paper_view_semantics import effective_precond
 
+    # Spec pins diag_metric=False -> factorwise, with no `precond` recorded.
     assert effective_precond({"optimizer": "kl-shampoo-polar-lora"}) == "factorwise"
-    assert effective_precond({"optimizer": "kl-diag-polar-lora"}) is None
+    assert effective_precond({"optimizer": "kl-shampoo-lora"}) == "factorwise"
+    # Spec pins diag_metric=True -> product.
+    assert effective_precond({"optimizer": "kl-diag-polar-lora"}) == "product"
+    # An explicitly recorded branch always wins over the spec default.
     assert effective_precond(
         {"optimizer": "kl-shampoo-polar-lora", "precond": "one-sided"}
     ) == "one-sided"
+    # Outside the CurvatureWhitenLoRA family the field names nothing.
+    assert effective_precond({"optimizer": "adamw"}) is None

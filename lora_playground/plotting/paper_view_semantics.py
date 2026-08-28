@@ -25,35 +25,25 @@ FACTORWISE_SLOT_VIEWS = frozenset({
     "precond", "precond_beta2", MATCHED_PRECOND_VIEW,
 })
 
-# Optimizer names that ARE the factorwise branch without recording
-# ``precond``: KL-Shampoo pins ``diag_metric=False``, which is factorwise, and
-# `arms.py` admits both names into one arm ("`precond` is what identifies the
-# branch; the optimizer name is provenance"). Runs under these names predate
-# the ``--precond`` flag, so their recorded ``precond`` is absent -- which is
-# exactly what let 13 pre-fix runs supply the whole factorwise arm of the
-# Llama-3.2-1B/openmath/r256 panel while the slot filter never examined them.
-LEGACY_FACTORWISE_OPTIMIZERS = frozenset({
-    "kl-shampoo-lora", "kl-shampoo-polar-lora",
-})
-
-
 def effective_precond(cfg: Mapping[str, Any]) -> str | None:
     """The ``precond`` branch a run actually ran, or None if undetermined.
 
-    Mirrors the rule `labels._shared_knobs` already applies when it suppresses
-    the " factorwise" suffix for the KL-Shampoo family, so naming and cohort
-    membership cannot disagree about which branch a run belongs to.
+    Delegates to `optim_specs.resolved_precond`, which reproduces
+    `CurvatureWhitenLoRA.__init__`'s own resolution
+    (``precond or ("product" if diag_metric else "factorwise")``, optim.py:1713)
+    from the spec registry rather than from a list of optimizer names.
 
-    An absent ``precond`` under any OTHER optimizer stays None rather than
-    being inferred as ``product``: that would newly subject pre-flag product
-    runs to the slot test, which the fix did not touch.
+    Reading the raw ``precond`` field instead is what let 13 pre-fix
+    `kl-shampoo-polar-lora` runs -- which record no ``precond`` but pin
+    ``diag_metric=False``, i.e. factorwise -- supply the entire factorwise arm
+    of the Llama-3.2-1B/openmath/r256 panel while the slot filter never
+    examined them. Kept as a name here because the cohort projection below and
+    its tests read it, and because which branch a run ran is a question the
+    view asks; the ANSWER belongs to the optimizer that resolved it.
     """
-    recorded = cfg.get("precond")
-    if isinstance(recorded, str) and recorded.strip():
-        return recorded
-    if cfg.get("optimizer") in LEGACY_FACTORWISE_OPTIMIZERS:
-        return "factorwise"
-    return None
+    from ..optim_specs import resolved_precond
+
+    return resolved_precond(cfg)
 
 
 class ViewSemanticMetadataError(ValueError):
