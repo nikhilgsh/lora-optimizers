@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from .run_records import freeze_value, thaw_value
@@ -29,21 +30,26 @@ class ParsedRunFile:
     init_override_event: Mapping[str, Any] | None
     log_filename: str
 
-    def raw_config(self) -> dict[str, Any] | None:
-        """Mutable raw config plus parser-owned audit event attachments."""
+    def frozen_raw_config(self) -> Mapping[str, Any] | None:
+        """Immutable raw config plus parser-owned audit event attachments."""
         if self.config is None:
             return None
-        cfg = thaw_value(self.config)
+        cfg = dict(self.config)
         cfg["_log_filename"] = self.log_filename
         if self.optim_steps_included:
-            cfg["_optim_steps"] = thaw_value(self.optim_steps)
+            cfg["_optim_steps"] = self.optim_steps
         if self.resume_event is not None:
-            cfg["_resume"] = thaw_value(self.resume_event)
+            cfg["_resume"] = self.resume_event
         if self.abort_event is not None:
-            cfg["_aborted"] = thaw_value(self.abort_event)
+            cfg["_aborted"] = self.abort_event
         if self.init_override_event is not None:
-            cfg["_lora_init_override"] = thaw_value(self.init_override_event)
-        return cfg
+            cfg["_lora_init_override"] = self.init_override_event
+        return MappingProxyType(cfg)
+
+    def raw_config(self) -> dict[str, Any] | None:
+        """Mutable raw config plus parser-owned audit event attachments."""
+        config = self.frozen_raw_config()
+        return None if config is None else thaw_value(config)
 
     def mutable_evals(self) -> list[dict[str, Any]]:
         return thaw_value(self.evals)
@@ -57,21 +63,43 @@ class ParsedRunHeader:
     resume_event: Mapping[str, Any] | None
     log_filename: str
 
-    def raw_config(self) -> dict[str, Any] | None:
+    def frozen_raw_config(self) -> Mapping[str, Any] | None:
         if self.config is None:
             return None
-        config = thaw_value(self.config)
+        config = dict(self.config)
         config["_log_filename"] = self.log_filename
         if self.resume_event is not None:
-            config["_resume"] = thaw_value(self.resume_event)
-        return config
+            config["_resume"] = self.resume_event
+        return MappingProxyType(config)
+
+    def raw_config(self) -> dict[str, Any] | None:
+        config = self.frozen_raw_config()
+        return None if config is None else thaw_value(config)
 
 
 _PARSE_CACHE: dict[tuple[str, bool], tuple[tuple[int, int], ParsedRunFile]] = {}
 _HEADER_CACHE: dict[str, tuple[tuple[int, int], ParsedRunHeader]] = {}
-_LEADING_OPTIM_STEP = re.compile(
-    r'^\s*\{\s*"event"\s*:\s*"optim_step"\s*[,}]'
-)
+_EVENT_MARKER = re.compile(r'"event"\s*:\s*"([^"\\]*)"')
+_ALWAYS_PARSED_EVENTS = frozenset({
+    "config",
+    "eval",
+    "resume",
+    "lora_init_override",
+})
+
+
+def _can_skip_event_line(line: str, *, include_optim_steps: bool) -> bool:
+    """Conservatively reject producer JSON rows this parser never returns."""
+    markers = _EVENT_MARKER.findall(line)
+    if not markers:
+        return False
+    wanted = _ALWAYS_PARSED_EVENTS
+    if include_optim_steps:
+        wanted = wanted | {"optim_step"}
+    return (
+        wanted.isdisjoint(markers)
+        and not any(marker.startswith("abort_on_") for marker in markers)
+    )
 
 
 def _file_signature(path: Path) -> tuple[int, int] | None:
@@ -142,8 +170,10 @@ def parse_run_file(
     """Parse one physical log without semantic reconstruction or stitching.
 
     ``include_optim_steps=False`` is the records/plotting fast path. It skips
-    producer-canonical diagnostic lines whose leading JSON field identifies an
-    ``optim_step`` event; unusual key orders still take the normal JSON path.
+    producer-canonical rows whose visible event markers are all irrelevant to
+    this parser before JSON decoding. The producer writes sorted JSON keys, so
+    marker discovery is intentionally independent of field order. Ambiguous
+    rows and every consumed event type still use the standard JSON decoder.
     Config, eval, resume, abort, and init-override events are unchanged.
     """
     path = Path(log_path)
@@ -164,7 +194,9 @@ def parse_run_file(
         line = raw_line.strip()
         if not line:
             continue
-        if not include_optim_steps and _LEADING_OPTIM_STEP.match(line):
+        if _can_skip_event_line(
+            line, include_optim_steps=include_optim_steps
+        ):
             continue
         try:
             event = json.loads(line)

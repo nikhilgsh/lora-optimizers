@@ -11,7 +11,7 @@ Scopes:
   cw_basis_proj  the inverse-sqrt itself (eigh: Rayleigh+QᵀsandwiCH; gram_ns: gram NS)
                  + SOAP/diagonal projections + Adam m,v EMAs
   cw_picard      whiten → polar (Gram NS msign) → unwhiten → σ_max operator-norm rescale
-  cw_curv_grams  curvature gram / diagonal EMAs (P_A, Q_B, D_in, D_out)
+  cw_curv_grams  curvature gram / diagonal EMAs (P_A, Q_B, Q, P)
 
 Run (Blackwell): python -m lora_playground.bench.section_breakdown \
     --model allenai/OLMo-2-0425-1B --lora_r 256 --methods eigh gram_ns
