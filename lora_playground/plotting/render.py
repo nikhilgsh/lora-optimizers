@@ -26,7 +26,7 @@ from .panels import (
     clamp_for_hollow,
     draw_lr_series,
 )
-from .style import LEGEND_BELOW_KW, STAR_MARKER_SIZE
+from .style import STAR_MARKER_SIZE, legend_below
 
 
 # No "^"/"v": `draw_lr_series` reserves a filled upward triangle for "finite
@@ -323,12 +323,7 @@ def render_comparison(
     ax_traj.set_xlim(0, max(horizon, longest) * 1.015)
     handles, legend_labels = ax_traj.get_legend_handles_labels()
     if handles:
-        fig.legend(
-            handles,
-            legend_labels,
-            loc="outside lower center",
-            **LEGEND_BELOW_KW,
-        )
+        legend_below(fig, handles, legend_labels)
 
     if traj_ylim is None and auto_ylim and selected:
         traj_ylim = auto_ylim_for_trajectory_panel(

@@ -146,3 +146,19 @@ def test_the_rank_panel_plots_the_aggregated_ratio_not_a_ratio_of_medians():
     for panel in ratio_panels:
         assert panel.ref == 1.0, "the balanced representative is the reference"
         assert r"\|A\|_2/\|B\|_2" in panel.ylabel, panel.ylabel
+
+
+def test_the_figure_legend_has_one_definition():
+    """Both call sites go through `legend_below`, not a repeated kwargs dict.
+
+    `render_comparison` and `figures.leaderboard_panel` each spelled out
+    `fig.legend(..., loc="outside lower center", **LEGEND_BELOW_KW)`.
+    """
+    import inspect
+
+    from lora_playground.plotting import figures, render
+
+    for module in (figures, render):
+        source = inspect.getsource(module)
+        assert "LEGEND_BELOW_KW" not in source, module.__name__
+        assert "legend_below(" in source, module.__name__

@@ -37,6 +37,25 @@ LEGEND_BELOW_KW = dict(
     columnspacing=1.4, labelspacing=0.5,
 )
 
+
+def legend_below(fig, handles, labels, **overrides):
+    """The figure-level legend under the panels, in one place.
+
+    A figure must be RASTERIZED under the same rcParams it was LAID OUT under.
+    The panels lay out inside ``rc_context(NOTEBOOK_RCPARAMS)``; a script that
+    then calls ``savefig`` outside that context draws the text in a different
+    font from the one the layout measured, and the legend runs off both edges
+    of the figure -- verified A/B on ``precond_panel(256,
+    model="Qwen/Qwen2.5-1.5B", data_key="opc")``, which clips without
+    :func:`apply_notebook_style` and renders clean with it. The notebook's setup
+    cell applies the style, so its figures are laid out and drawn the same way.
+    Any other renderer -- a preview script, an export -- has to call
+    :func:`apply_notebook_style` too. ``tests/test_every_panel_renders.py``
+    rasterizes every notebook call and fails on ink at a figure edge.
+    """
+    return fig.legend(handles, labels, loc="outside lower center",
+                      **{**LEGEND_BELOW_KW, **overrides})
+
 # Title / axis-label sizes — bumped throughout for readability.
 SUPTITLE_FONTSIZE = 18
 PANEL_TITLE_FONTSIZE = 15

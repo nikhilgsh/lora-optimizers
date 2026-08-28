@@ -25,7 +25,7 @@ from .panels import (
     plot_eta_vs_final,
 )
 from .style import (
-    CANONICAL_HORIZON, DEFAULT_FIGSIZE, DIVERGE_THRESHOLD, LEGEND_BELOW_KW,
+    CANONICAL_HORIZON, DEFAULT_FIGSIZE, DIVERGE_THRESHOLD, legend_below,
     SUPTITLE_FONTSIZE,
 )
 
@@ -821,8 +821,7 @@ def compare_variants_figure(
     ax_traj.grid(True, alpha=0.3)
     # Single figure-level legend below both panels (full width → long entries
     # fit across columns without colliding; never covers the data).
-    fig.legend(*ax_traj.get_legend_handles_labels(),
-               loc="outside lower center", **LEGEND_BELOW_KW)
+    legend_below(fig, *ax_traj.get_legend_handles_labels())
     # Only best-lr-per-variant curves are plotted here, so the diverged high-lr
     # runs are already absent; auto_ylim_for_trajectory_panel drops any
     # fully-diverged variant (final > divergent_ratio × best). warmup_frac=0
