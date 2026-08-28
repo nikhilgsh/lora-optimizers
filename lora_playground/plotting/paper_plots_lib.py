@@ -64,7 +64,7 @@ from lora_playground.plotting.paper_view_semantics import (
 from lora_playground.run_catalog import RunCatalog
 from lora_playground.run_records import run_view
 from lora_playground.run_schema import MEASUREMENT_SEMANTICS_REVISION
-from lora_playground.workloads import resolve_dataset
+from lora_playground.workloads import find_workload, resolve_dataset
 
 # File-relative, matching paper_figs.py:38 (same depth: plotting/ -> lora_playground/
 # -> repo root). This used to walk up from Path.cwd() with a bare `next()` and no
@@ -167,7 +167,6 @@ _CAPTION_MODEL = {"Meta-Llama-3-8B": "Llama-3-8B"}
 
 def _cell_from_registry(model_display, dataset, rank):
     """One `CELLS` entry, with existence checked against the workload registry."""
-    from lora_playground.workloads import find_workload
     wl = find_workload(model_display, dataset, rank)   # raises KeyError on a miss
     name = _CAPTION_MODEL.get(wl.model_display, wl.model_display)
     return (f"{name} {wl.dataset} r{wl.rank}", wl.model_name, wl.dataset, wl.rank)
@@ -484,6 +483,19 @@ def _archive_figure(view_id, suptitle=None):
     return summary
 
 
+def _sealed_figure(view_id, rank, suptitle, *, sealed_rank=256):
+    """Render a sealed view, refusing any rank it was not sealed at.
+
+    A sealed view names the exact reviewed runs, so there is nothing here that
+    could widen it to another rank -- the panel has to say no. Four panels each
+    wrote that refusal out longhand, with the rank spelled once in the guard and
+    again in the message.
+    """
+    if rank != sealed_rank:
+        raise ValueError(f"{view_id} is sealed only for rank {sealed_rank}")
+    return _archive_figure(view_id, suptitle)
+
+
 def _arm_branch(predicate):
     """The `precond` branch an arm selects, or None if it selects no branch.
 
@@ -709,7 +721,6 @@ def _speedup_text(rows, target, baseline_label, horizon=HORIZON):
 # --------------------------------------------------------------------------------------
 def panel(name, model, key, rank):
     """Archived primary optimizer comparison at one declared workload."""
-    from lora_playground.workloads import find_workload
     workload = find_workload(model, key, rank)
     archived = publication_workload_view_panel(
         "paper.e1_comparison.all_workloads.v1",
@@ -754,7 +765,6 @@ def rank_lr_panel(
 
 def ablation_panel(rank=256):
     """E2 leave-one-out at one rank."""
-    from lora_playground.workloads import find_workload
     workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
     return _records_figure(
         _arms.ABLATION_ARMS,
@@ -767,7 +777,6 @@ def ablation_panel(rank=256):
 def derivation_ablation_panel(rank=256):
     """Which derivation premise carries the method: the matrix sign, or the
     exponent the metric is applied at."""
-    from lora_playground.workloads import find_workload
     workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
     return _records_figure(
         _arms.DERIVATION_ARMS,
@@ -791,7 +800,6 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
     Cohort membership comes from recorded run semantics. The shared paper-view
     projection excludes pre-fix or unknown factorwise-slot implementations.
     """
-    from lora_playground.workloads import find_workload
     workload = find_workload(model, data_key, rank)
     return _records_figure(
         # AdamW stays in the matched view. It was dropped here on the grounds
@@ -813,20 +821,16 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
 def msign_panel(rank=256):
     """The `msign` axis at both ends of `precond`: can the matrix sign be replaced
     by its diagonal (rownorm / colnorm) with the slot present, and with it gone?"""
-    if rank != 256:
-        raise ValueError("paper.msign.v1 is sealed only for rank 256")
-    return _archive_figure(
-        "paper.msign.v1",
+    return _sealed_figure(
+        "paper.msign.v1", rank,
         "Diagonal matrix sign — Llama-3.2-1B openmath, $r=256$",
     )
 
 
 def magnitude_rule_panel(rank=256):
     """Naive rho = eta against the PoLoRA rule rho = eta/(smax(A)+smax(B))."""
-    if rank != 256:
-        raise ValueError("paper.magnitude_rule.v1 is sealed only for rank 256")
-    return _archive_figure(
-        "paper.magnitude_rule.v1",
+    return _sealed_figure(
+        "paper.magnitude_rule.v1", rank,
         "Magnitude rule — naive vs. PoLoRA — "
         "Llama-3.2-1B openmath, $r=256$",
     )
@@ -834,10 +838,8 @@ def magnitude_rule_panel(rank=256):
 
 def beta2_panel(rank=256):
     """Protagonist curvature_beta grid: the EMA horizon of the P, Q metric."""
-    if rank != 256:
-        raise ValueError("paper.polora_beta2.v1 is sealed only for rank 256")
-    return _archive_figure(
-        "paper.polora_beta2.v1",
+    return _sealed_figure(
+        "paper.polora_beta2.v1", rank,
         "PoLoRA $\\beta_2$ sweep — Llama-3.2-1B openmath, $r=256$",
     )
 
@@ -877,7 +879,6 @@ def precond_beta2_panel(rank=16):
     everything, so only a gap that shrinks MORE than the one-sided control moves
     isolates the r x r slot.
     """
-    from lora_playground.workloads import find_workload
     workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
     return _records_figure(
         _arms.PRECOND_BETA2_ARMS,
@@ -893,10 +894,8 @@ def precond_beta2_panel(rank=16):
 
 def adamw_beta2_panel(rank=256):
     """AdamW beta2 control -- the negative control for the protagonist beta2 grid."""
-    if rank != 256:
-        raise ValueError("paper.adamw_beta2.v1 is sealed only for rank 256")
-    return _archive_figure(
-        "paper.adamw_beta2.v1",
+    return _sealed_figure(
+        "paper.adamw_beta2.v1", rank,
         "AdamW $\\beta_2$ control — Llama-3.2-1B openmath, $r=256$",
     )
 
@@ -1132,7 +1131,6 @@ def factorwise_freeze_panel(rank=256, model="Qwen/Qwen2.5-1.5B",
     matrices keep updating. Shared history makes this a paired comparison --
     noise up to step 2000 cancels -- but it is one seed per learning rate.
     """
-    from lora_playground.workloads import find_workload
     workload = find_workload(model, "openmath", rank)
     return _records_figure(
         FREEZE_ARMS,
