@@ -578,8 +578,10 @@ PRECOND_ARMS = {
 # most of the effect is the shared diagonal metric.
 PRECOND_BETA2_ARMS = {
     "AdamW": ADAMW,
+    r"Factorwise, $\beta_2=0.9$": {**NOPRODUCT, "curvature_beta": 0.9},
     r"Factorwise, $\beta_2=0.99$": {**NOPRODUCT, "curvature_beta": 0.99},
     r"Factorwise, $\beta_2=0.999$": {**NOPRODUCT, "curvature_beta": 0.999},
+    r"Identity, $\beta_2=0.9$": {**ONESIDED, "curvature_beta": 0.9},
     r"Identity, $\beta_2=0.99$": {**ONESIDED, "curvature_beta": 0.99},
     r"Identity, $\beta_2=0.999$": {**ONESIDED, "curvature_beta": 0.999},
 }

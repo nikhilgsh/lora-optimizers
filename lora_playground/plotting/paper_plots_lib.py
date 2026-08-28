@@ -863,15 +863,14 @@ def precond_beta2_panel(rank=16):
     much real structure as the estimator manufactures from noise, against 3.6x at
     r=256.
 
-    NOT truncated, and AdamW is on the RIGHT panel only. The beta2=0.999 arms
-    ran 2000 steps against 9000-step beta2=0.99 comparands, so every arm draws
-    its own length and the legend carries each one's loss at step 2000 -- the
-    largest step all five reached -- so the comparison can be read step-matched
-    without the curves being cut. AdamW is dropped from the final-loss-vs-lr
-    panel because its grid runs 1e-4..1e-3 against the polar arms' 1e-2..1e-1;
-    including it stretches the log-x axis over three decades and squeezes every
-    compared arm's minimum into one corner. It stays on the trajectory panel,
-    where it is the scale the others are read against.
+    Every compared arm has completed 9000-step records. Older 2000-step
+    beta2=0.999 records remain on disk as physical history, but the comparison
+    builder classifies them as partial at this workload's 9000-step horizon and
+    selects the completed replacements. AdamW is dropped from the
+    final-loss-vs-lr panel because its grid runs 1e-4..1e-3 against the polar
+    arms' 1e-2..1e-1; including it stretches the log-x axis over three decades
+    and squeezes every compared arm's minimum into one corner. It stays on the
+    trajectory panel, where it is the scale the others are read against.
 
     The one-sided arms are the CONTROL, not padding: `curvature_beta` drives four
     EMAs, not one -- P_A/Q_B (factorwise only) at optim.py:2184-2186, 2200-2201,

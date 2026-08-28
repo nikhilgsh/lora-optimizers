@@ -31,6 +31,24 @@ def test_adamw_beta2_panel_reference_is_a_declared_arm(monkeypatch):
         plots.adamw_beta2_panel(64)
 
 
+def test_precond_beta2_panel_declares_the_completed_beta09_arms():
+    from lora_playground.plotting import arms
+
+    beta09 = {
+        label: predicate
+        for label, predicate in arms.PRECOND_BETA2_ARMS.items()
+        if predicate.get("curvature_beta") == 0.9
+    }
+
+    assert set(beta09) == {
+        r"Factorwise, $\beta_2=0.9$",
+        r"Identity, $\beta_2=0.9$",
+    }
+    assert {predicate["precond"] for predicate in beta09.values()} == {
+        "factorwise", "one-sided",
+    }
+
+
 def test_matched_precond_panel_keeps_adamw_and_forces_the_matched_view(monkeypatch):
     """The matched view declares AdamW; the pin and target derive.
 
