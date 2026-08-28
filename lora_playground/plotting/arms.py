@@ -577,11 +577,6 @@ PRECOND_BETA2_ARMS = {
 # by its diagonal (row/column normalization) with the slot present, and with it
 # gone? (one-sided, diag) is the O(rd) configuration — no r x r matmul or inverse
 # square root anywhere in the direction.
-# `msign` is ORTHOGONAL to `precond`, so the question "can the matrix sign be
-# cheapened" has one answer per slot content, not one answer overall. The
-# factorwise row was missing: `paper.msign.v1` is sealed over the product and
-# one-sided rows only, so the cross was 2x2 where the axes are 3x2.
-NOPRODUCT_DIAG = {**NOPRODUCT, "msign": "diag"}
 
 MSIGN_ARMS = {
     "AdamW": ADAMW,
@@ -591,17 +586,6 @@ MSIGN_ARMS = {
     "one-sided, diagonal msign": ONESIDED_DIAG,
 }
 
-# The full cross, for the live panel. Labels name the slot content and the
-# accuracy of the sign, in the same words the precond panels use.
-MSIGN_BY_PRECOND_ARMS = {
-    "AdamW": ADAMW,
-    r"Product, $\mathrm{msign}$": PROTO,
-    r"Product, diagonal sign": PROTO_DIAG,
-    r"Identity, $\mathrm{msign}$": ONESIDED,
-    r"Identity, diagonal sign": ONESIDED_DIAG,
-    r"Factorwise, $\mathrm{msign}$": NOPRODUCT,
-    r"Factorwise, diagonal sign": NOPRODUCT_DIAG,
-}
 MAGNITUDE_RULE_ARMS = {
     r"PoLoRA: $\rho=\eta/(\sigma_{\max}(A)+\sigma_{\max}(B))$": PROTO,
     r"Naive: $\rho=\eta$": NAIVEMAG,
@@ -616,7 +600,6 @@ ALL_ARM_DICTS = {
     "DERIVATION_ARMS": DERIVATION_ARMS,
     "PRECOND_ARMS": PRECOND_ARMS,
     "MSIGN_ARMS": MSIGN_ARMS,
-    "MSIGN_BY_PRECOND_ARMS": MSIGN_BY_PRECOND_ARMS,
     "MAGNITUDE_RULE_ARMS": MAGNITUDE_RULE_ARMS,
     "PROTO_BETA2_ARMS": PROTO_BETA2_ARMS,
     "ADAMW_BETA2_ARMS": ADAMW_BETA2_ARMS,

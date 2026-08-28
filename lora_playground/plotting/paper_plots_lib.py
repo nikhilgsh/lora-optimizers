@@ -1126,25 +1126,6 @@ def magnitude_rule_tracking_panel(rank=256):
               f"({len(by_lr)} learning rates)")
 
 
-def msign_by_precond_panel(rank=256):
-    """Can the matrix sign be cheapened, at each of the three slot contents?
-
-    `msign` is orthogonal to `precond`, so the answer can differ per slot:
-    `paper.msign.v1` is sealed over the product and one-sided rows only, which
-    makes the cross 2x2 where the axes are 3x2. This adds the factorwise row,
-    so "diagonal sign is/is not enough" is answered with the slot present, with
-    it gone, and with it filled from the factor gradients.
-    """
-    from lora_playground.workloads import find_workload
-    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
-    return _records_figure(
-        _arms.MSIGN_BY_PRECOND_ARMS,
-        workload,
-        r"Product, $\mathrm{msign}$",
-        rf"Matrix sign by slot content — Llama-3.2-1B openmath, $r={rank}$",
-    )
-
-
 # The freeze is read against the branches it is an ablation OF, not only against
 # its own control: if frozen factorwise lands on identity, the r x r estimate is
 # contributing nothing beyond the slot's shape, and that is only visible with
