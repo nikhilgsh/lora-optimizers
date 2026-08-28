@@ -1,11 +1,10 @@
 #!/bin/bash
-# Blackwell long-wall variant for r>=128 diagnostic reruns.
-# TIMING_MEASURED: logs/chord_tight_phase_L_lrsweep_r256_blackwell
-#   log_0/log_1 reached 9000 steps in ~4.5 h train time per task.
-# TIMING_BASIS: same model/data/rank/optimizer/diagnostic cadence; chord_slack
-#   now uses power iteration in the basic tier.
-#SBATCH -p gpu
-#SBATCH --constraint=rtxblackwell
+# Qwen preconditioner sweeps on H200. The execution root is the submitted
+# worktree, so clean isolated worktrees do not fall back to the main checkout.
+# TIMING_BASIS: extrapolated from the same Qwen/OpenMath/r=256 optimizer family
+# on gpuxl H200 (about 3.25 h through step 9000), with snapshot I/O headroom.
+#SBATCH -p gpuxl
+#SBATCH --constraint=h200
 #SBATCH --reservation=rocky9
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=8
@@ -26,13 +25,13 @@ echo "execution_commit=$(git rev-parse HEAD)"
     git status --short >&2
     exit 2
 }
-mkdir -p slurm_logs disbatch_logs
 
-source ~/miniforge3/etc/profile.d/conda.sh && conda activate ffcv-pl
-set -euo pipefail
+mkdir -p slurm_logs disbatch_logs
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate ffcv-pl
+set -eo pipefail
 export PYTHONUNBUFFERED=1
 export WANDB_MODE=offline
-export WANDB_PROJECT=lora-sweeps
 export TOKENIZERS_PARALLELISM=false
 
 module --ignore_cache load disBatch

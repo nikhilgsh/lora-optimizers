@@ -181,6 +181,70 @@ def test_train_launcher_identity_overrides_local_fallback(monkeypatch):
     }
 
 
+def _resume_state(*, checkpoint_identity="group/task-4", attempt_id="source"):
+    return {
+        "checkpoint_identity": checkpoint_identity,
+        "attempt_id": attempt_id,
+        "step": 2000,
+        "total_tokens": 123,
+        "resume_segment": 0,
+        "ckpt_path": "/checkpoints/ckpt_step2000",
+    }
+
+
+def test_frozen_checkpoint_fork_records_source_without_merging_lineages():
+    from lora_playground.train import _resume_lineage_event
+
+    event = _resume_lineage_event(
+        {
+            "attempt_id": "frozen-attempt",
+            "checkpoint_identity": "frozen/task-0",
+        },
+        _resume_state(),
+        allow_checkpoint_fork=True,
+    )
+
+    assert event["resume_parent_attempt_id"] is None
+    assert event["checkpoint_identity"] == "frozen/task-0"
+    assert event["resume_kind"] == "checkpoint_fork"
+    assert event["fork_parent_attempt_id"] == "source"
+    assert event["source_checkpoint_identity"] == "group/task-4"
+    assert event["resumed_from_step"] == 2000
+
+
+def test_checkpoint_fork_is_rejected_without_explicit_ablation_mode():
+    from lora_playground.train import _resume_lineage_event
+
+    with pytest.raises(ValueError, match="checkpoint lineage mismatch"):
+        _resume_lineage_event(
+            {
+                "attempt_id": "different-attempt",
+                "checkpoint_identity": "different/task-0",
+            },
+            _resume_state(),
+        )
+
+
+def test_retry_within_frozen_destination_remains_an_ordinary_resume():
+    from lora_playground.train import _resume_lineage_event
+
+    event = _resume_lineage_event(
+        {
+            "attempt_id": "frozen-attempt-2",
+            "checkpoint_identity": "frozen/task-0",
+        },
+        _resume_state(
+            checkpoint_identity="frozen/task-0",
+            attempt_id="frozen-attempt-1",
+        ),
+        allow_checkpoint_fork=True,
+    )
+
+    assert event["resume_parent_attempt_id"] == "frozen-attempt-1"
+    assert "resume_kind" not in event
+    assert "fork_parent_attempt_id" not in event
+
+
 def test_attempt_fields_are_runtime_but_scalar_revisions_define_series():
     from lora_playground.run_records import RUNTIME_FIELDS
 

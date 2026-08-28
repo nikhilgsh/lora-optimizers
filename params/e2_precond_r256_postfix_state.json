@@ -1,0 +1,6 @@
+{
+  "arm": [
+    "factorwise_eta1e-2",
+    "one-sided_eta3e-3"
+  ]
+}

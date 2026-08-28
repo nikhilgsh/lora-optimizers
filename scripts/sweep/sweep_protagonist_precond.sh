@@ -69,6 +69,7 @@ precond_args=()
 # inductor/AOTAutograd cache gets corrupted by concurrent compiles (JSONDecodeError
 # in AOTAutogradCache.load at startup). $$ (task PID) isolates each task's cache.
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/inductor_${USER:-u}_$$}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton_${USER:-u}_$$}"
 
 compile_args=()
 [ "${COMPILE:-1}" = "1" ] && compile_args=(--compile)
@@ -78,14 +79,31 @@ diag_args=(--log_basic_diagnostics)
 [ "$heavy_diagnostics" = "1" ] && diag_args+=(--log_heavy_diagnostics)
 [ "${OPTIM_HELDOUT_PROBE:-0}" = "1" ] && diag_args+=(--optim_heldout_probe)
 
+freeze_args=()
+if [ "${FREEZE_FACTORWISE_SLOTS:-0}" = "1" ]; then
+    freeze_args=(--freeze_factorwise_slots)
+fi
+
 ckpt_args=()
 if [ -n "${CHECKPOINT_DIR:-}" ]; then
+    checkpoint_every=${CHECKPOINT_EVERY:-}
+    checkpoint_keep_last=${CHECKPOINT_KEEP_LAST:-2}
+    keep_checkpoints=${KEEP_CHECKPOINTS:-0}
+    # The factorwise freeze ablation branches from valid learned P_A/Q_B
+    # states. Retain only those cells densely; product/one-sided keep the
+    # ordinary rolling resume checkpoints and clean them after success.
+    if [ "${KEEP_FACTORWISE_STATES:-0}" = "1" ] && [ "$precond" = "factorwise" ]; then
+        checkpoint_every=${STATE_CHECKPOINT_EVERY:-1000}
+        checkpoint_keep_last=0
+        keep_checkpoints=1
+    fi
     ckpt_args=(
         --checkpoint_dir "$CHECKPOINT_DIR"
         --resume_from "$CHECKPOINT_DIR"
-        --checkpoint_keep_last "${CHECKPOINT_KEEP_LAST:-2}"
+        --checkpoint_keep_last "$checkpoint_keep_last"
     )
-    [ -n "${CHECKPOINT_EVERY:-}" ] && ckpt_args+=(--checkpoint_every "$CHECKPOINT_EVERY")
+    [ -n "$checkpoint_every" ] && ckpt_args+=(--checkpoint_every "$checkpoint_every")
+    [ "$keep_checkpoints" = "1" ] && ckpt_args+=(--keep_checkpoints)
 fi
 
 python train_lora.py \
@@ -115,6 +133,7 @@ python train_lora.py \
     --cw_picard_iters 1 \
     --cw_nesterov \
     --precond "$precond" \
+    "${freeze_args[@]}" \
     --msign "$msign" \
     "${precond_args[@]}" \
     "${diag_args[@]}" \
