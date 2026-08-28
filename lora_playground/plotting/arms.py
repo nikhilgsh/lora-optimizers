@@ -507,16 +507,24 @@ PANEL_ARMS = {
 }
 ABLATION_ARMS = {
     POLORA_LABEL: PROTO,
-    "Without curvature control": NOSHAMPOO,
-    "Without magnitude rescale": NOMAG,
-    "Identity metric, no magnitude rescale": DOUBLE,
+    # cw_no_diag_curv sets Q_isqrt=P_isqrt=1 (optim.py:2777).
+    r"No curvature: $P=Q=I$": NOSHAMPOO,
+    # cw_unpinned: rho=eta AND the final sigma_max(W) rescale is skipped, so
+    # the raw whitened step is applied (optim.py:2979, :3041-3044).
+    r"No magnitude rule: $\Delta A=-\eta W_A$": NOMAG,
+    r"Neither: $P=Q=I$, $\Delta A=-\eta W_A$": DOUBLE,
 }
 DERIVATION_ARMS = {
     "AdamW": ADAMW,
     POLORA_LABEL: PROTO,
-    "No matrix sign; inverse metric": AVGLOSS,
-    "No matrix sign; inverse square-root metric": HALFPOW,
-    "Matrix sign only; no outer unwhitening": FLATOUT,
+    # No msign, and the metric therefore applies TWICE (inner half composes
+    # with the outer half) -- optim.py:1777-1782 spells this out.
+    r"No $\mathrm{msign}$: $C_B^{-1}\widehat{M}_AQ^{-1}$": AVGLOSS,
+    # No msign, outer un-whiten skipped, so the metric applies once at half
+    # power -- the standard Shampoo/Adafactor whitening (optim.py:1778-1780).
+    r"No $\mathrm{msign}$: $C_B^{-1/2}\widehat{M}_AQ^{-1/2}$": HALFPOW,
+    # msign applied, outer un-whiten skipped (optim.py:3025-3027).
+    r"$\mathrm{msign}(C_B^{-1/2}\widehat{M}_AQ^{-1/2})$": FLATOUT,
 }
 # The `precond` axis: three branches, not the four corners of a 2x2. All three
 # share one (P, Q), the same p, q updates and the same magnitude rule, and differ
@@ -565,8 +573,8 @@ MSIGN_ARMS = {
     "one-sided, diagonal msign": ONESIDED_DIAG,
 }
 MAGNITUDE_RULE_ARMS = {
-    "PoLoRA: rho = eta/(smax A + smax B)": PROTO,
-    "naive: rho = eta": NAIVEMAG,
+    r"PoLoRA: $\rho=\eta/(\sigma_{\max}(A)+\sigma_{\max}(B))$": PROTO,
+    r"Naive: $\rho=\eta$": NAIVEMAG,
     "AdamW": ADAMW,
 }
 

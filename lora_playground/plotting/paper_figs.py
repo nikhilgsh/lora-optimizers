@@ -111,11 +111,11 @@ STYLE = {
         "ls": "-", "lw": 1.6,
     },
     NAME_CURV: {
-        **PAPER_SERIES_STYLES["Without curvature control"],
+        **PAPER_SERIES_STYLES[r"No curvature: $P=Q=I$"],
         "ls": "-", "lw": 1.6,
     },
     NAME_MAGN: {
-        **PAPER_SERIES_STYLES["Without magnitude rescale"],
+        **PAPER_SERIES_STYLES[r"No magnitude rule: $\Delta A=-\eta W_A$"],
         "ls": ":", "lw": 1.6,
     },
 }

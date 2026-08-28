@@ -280,6 +280,32 @@ OPTIM_MARKERS = {
 }
 
 
+# ─── the qualitative palette figure series are drawn from ────────────────────
+
+# Okabe--Ito, minus its black (reserved for AdamW) and its #F0E442 yellow (too
+# light to read as a line on white). Ordered, so `distinct_palette` returns a
+# PREFIX of it and a given series keeps its color as other series are added.
+#
+# This exists because `canonical_colors` used to try "tab10", then "tab20",
+# "tab20b", "Set3" in turn: which map answered depended on how many arms the
+# panel had, so the same arm came out #2ca02c green in a five-arm panel and
+# #ff7f0e orange in a three-arm one. One ordered source removes that.
+SERIES_PALETTE = (
+    "#0072b2",   # blue
+    "#d55e00",   # vermillion
+    "#009e73",   # bluish green
+    "#cc79a7",   # reddish purple
+    "#e69f00",   # orange
+    "#8c564b",   # brown  (beyond Okabe--Ito, kept dark for contrast)
+    "#7c3aed",   # violet
+    # Last on purpose: sky blue clears the numeric distance check against the
+    # blue that PAPER_SERIES_STYLES pins to PoLoRA, but still reads as "blue"
+    # beside it. Kept in the palette for panels that need an eighth series,
+    # just never handed out while a darker hue is free.
+    "#56b4e9",   # sky blue
+)
+
+
 # ─── overlay palette safety: no-collision guard ──────────────────────────────
 
 class ColorCollisionError(ValueError):

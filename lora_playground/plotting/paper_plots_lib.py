@@ -631,14 +631,15 @@ def ablation_panel(rank=256):
 
 
 def derivation_ablation_panel(rank=256):
-    """Which derivation premise carries the method: orthogonalization, or metric power."""
+    """Which derivation premise carries the method: the matrix sign, or the
+    exponent the metric is applied at."""
     from lora_playground.workloads import find_workload
     workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
     return _records_figure(
         _arms.DERIVATION_ARMS,
         workload,
         _arms.POLORA_LABEL,
-        "Derivation ablations — matrix sign and metric power — "
+        "Matrix sign and metric exponent — "
         f"Llama-3.2-1B openmath, r={rank}",
     )
 
@@ -666,7 +667,7 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
         },
         workload,
         _arms.PRECOND_PRODUCT_LABEL,
-        rf"The $r\times r$ metric slot — {model_label} {data_key}, $r={rank}$",
+        rf"What fills $C_B$ and $C_A$ — {model_label} {data_key}, $r={rank}$",
         target_label=(None if matched_revision else "AdamW"),
         semantic_view=("precond_matched" if matched_revision else "precond"),
         measurement_semantics_revision=(
@@ -750,8 +751,8 @@ def precond_beta2_panel(rank=16):
         _arms.PRECOND_BETA2_ARMS,
         workload,
         r"Identity, $\beta_2=0.99$",
-        rf"Estimation noise in the $r\times r$ slot — "
-        rf"$\beta_2$ by metric structure — Llama-3.2-1B openmath, $r={rank}$",
+        rf"Estimation noise in $C_B$, $C_A$ — "
+        rf"$\beta_2$ by what fills them — Llama-3.2-1B openmath, $r={rank}$",
         target_label="AdamW",
         semantic_view="precond_beta2",
     )

@@ -8,6 +8,9 @@ from .colors import (
 )
 
 
+_CURVATURE_ABLATION = {"color": "#009E73", "marker": "D"}
+_MAGNITUDE_ABLATION = {"color": "#882255", "marker": "X"}
+
 PAPER_SERIES_STYLES = {
     "AdamW": {"color": "#000000", "marker": "o"},
     "PoLoRA": {"color": "#0072B2", "marker": "s"},
@@ -17,11 +20,15 @@ PAPER_SERIES_STYLES = {
     "No curvature or magnitude": {
         "color": "#CC79A7", "marker": "P",
     },
-    "Without curvature control": {
-        "color": "#009E73", "marker": "D",
-    },
-    "Without magnitude rescale": {
-        "color": "#882255", "marker": "X",
+    # Two names per style: the current label (which carries the equation) and
+    # the pre-rename one, still used by the sealed view in
+    # publication/paper_views.json. Same dict object, so they cannot drift.
+    "No curvature: $P=Q=I$": _CURVATURE_ABLATION,
+    "Without curvature control": _CURVATURE_ABLATION,
+    r"No magnitude rule: $\Delta A=-\eta W_A$": _MAGNITUDE_ABLATION,
+    "Without magnitude rescale": _MAGNITUDE_ABLATION,
+    r"Neither: $P=Q=I$, $\Delta A=-\eta W_A$": {
+        "color": "#CC79A7", "marker": "P",
     },
     r"Product: $C_B=B^\top P B,\ C_A=A Q A^\top$": {
         "color": "#0072B2", "marker": "s",
@@ -48,7 +55,12 @@ def resolve_paper_styles(tokens) -> dict[str, dict[str, str]]:
     if not remaining:
         return resolved
 
-    reserved = ["#000000", *(style["color"] for style in resolved.values())]
+    # Every registry color is reserved, not just the ones this panel drew. A
+    # color that means "PoLoRA" in one figure must not be handed to an ad-hoc
+    # series in the next, or the reader learns a key that then lies to them.
+    reserved = ["#000000", *(
+        style["color"] for style in PAPER_SERIES_STYLES.values()
+    )]
     # Take SERIES_PALETTE in order, keeping only entries clear of the colors
     # PAPER_SERIES_STYLES already spent. Order matters: the previous code tried
     # "tab10", then "tab20", "tab20b", "Set3", and inside each one
