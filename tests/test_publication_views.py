@@ -204,3 +204,9 @@ def test_checked_in_paper_view_resolves_against_checked_in_archive():
         "paper.adamw_beta2.v1",
         "paper.fig2_ablation.v1",
     }
+
+    styles_by_variant = {}
+    for view_id in views.views_by_id:
+        for spec in views.resolve(view_id, archive).variant_specs:
+            styles_by_variant.setdefault(spec.id, set()).add(spec.style_key)
+    assert all(len(style_keys) == 1 for style_keys in styles_by_variant.values())

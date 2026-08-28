@@ -19,7 +19,10 @@ Both derive from one field extractor (`_axes`) so they can never diverge.
 from __future__ import annotations
 
 from ..publication_identity import lora_init_label_suffix
-from .colors import OPTIM_COLORS, distinct_palette
+from .colors import (
+    OPTIM_COLORS, SERIES_PALETTE, _color_distance, _rgb_to_hex,
+    distinct_palette,
+)
 
 OPT_ADAMW = "adamw"
 OPT_CT = "adam-polar-product-lora-coupled-spectral-chord-tight"
@@ -90,17 +93,27 @@ def _shared_knobs(cfg: dict) -> str:
     but that aren't in any per-optimizer template. Only non-default values
     appear, so default runs keep their bare label."""
     s = ""
-    if cfg.get("cw_no_diag_curv"):
+    if _field_is_active(cfg, "cw_no_diag_curv") and cfg.get("cw_no_diag_curv"):
         s += " w/o-curv"
     # `precond` is the three-branch (C_B, C_A) selector; only the two non-default
     # branches get a suffix so product runs keep their bare label.
-    if cfg.get("precond") == "one-sided":
+    if _field_is_active(cfg, "precond") and cfg.get("precond") == "one-sided":
         s += " one-sided"
-    elif cfg.get("precond") == "factorwise":
+    elif (
+        _field_is_active(cfg, "precond")
+        and cfg.get("precond") == "factorwise"
+        and cfg.get("optimizer") not in (
+            "kl-shampoo-lora", "kl-shampoo-polar-lora",
+        )
+    ):
+        # KL-Shampoo is the legacy factorwise implementation, so the family
+        # name already identifies this branch. Keeping the suffix off makes a
+        # recorded pre-flag KL-Shampoo run and an explicit
+        # ``--precond factorwise`` run share one canonical label.
         s += " factorwise"
-    if cfg.get("msign") == "diag":
+    if _field_is_active(cfg, "msign") and cfg.get("msign") == "diag":
         s += " msign-diag"
-    if cfg.get("cw_unpinned"):
+    if _field_is_active(cfg, "cw_unpinned") and cfg.get("cw_unpinned"):
         s += " unpinned"
     # Each of these appends a suffix only when the run is OFF the default, so
     # the default run keeps a bare label. The default is DERIVED, never typed
@@ -113,22 +126,46 @@ def _shared_knobs(cfg: dict) -> str:
     # cells that the doc's own header explains as "never reached the target".
     # `_residual_knobs` below already derives from `_config_defaults()`; this
     # hand-written block now does too.
-    if (hi := _off_default(cfg, "higham_iters")) is not None:
+    if (_field_is_active(cfg, "higham_iters")
+            and (hi := _off_default(cfg, "higham_iters")) is not None):
         s += f" H={hi}"
-    if (b1 := _off_default(cfg, "beta1")) is not None:
+    if (_field_is_active(cfg, "beta1")
+            and (b1 := _off_default(cfg, "beta1")) is not None):
         s += f" β1={b1:g}"
-    if (cm := _off_default(cfg, "cw_metric_init")) is not None:
+    if (_field_is_active(cfg, "cw_metric_init")
+            and (cm := _off_default(cfg, "cw_metric_init")) is not None):
         s += f" minit={cm}"
-    if (rv := _off_default(cfg, "rdinv_variant")) is not None:
+    if (_field_is_active(cfg, "rdinv_variant")
+            and (rv := _off_default(cfg, "rdinv_variant")) is not None):
         s += f" rdinv={rv}"
     rd = cfg.get("rdinv_delta")
-    if rd is not None:
+    if _field_is_active(cfg, "rdinv_delta") and rd is not None:
         s += f" rdδ={_eps(rd)}"
     return (
         s
         + _residual_knobs(cfg)
         + lora_init_label_suffix(cfg.get("lora_init_b", "zero"))
     )
+
+
+def _field_is_active(cfg: dict, field: str) -> bool:
+    """Whether ``field`` can affect the configured optimizer.
+
+    Launchers historically logged many optimizer knobs for every optimizer.
+    Values an optimizer never receives are provenance, not variant identity:
+    including them split one algorithm into labels such as
+    ``AdamW precond_method=higham``.  ``arms.arm`` already derives this same
+    distinction from the optimizer factory; labels consume that result so
+    selection and naming cannot disagree about which fields matter.
+
+    Unknown optimizers conservatively report no inert fields, preserving the
+    previous fail-closed behavior.
+    """
+    optimizer = cfg.get("optimizer")
+    if not optimizer:
+        return True
+    from .arms import _inert_fields
+    return field not in _inert_fields(optimizer)
 
 
 def _off_default(cfg: dict, field: str):
@@ -188,10 +225,11 @@ def _residual_knobs(cfg: dict) -> str:
     Derived from `arms.PINNED_FIELDS()` (OptimizerConfig minus the per-series
     axes), not from a remembered list, so it cannot go stale as fields are added.
     """
-    from .arms import PINNED_FIELDS, _config_defaults
+    from .arms import PINNED_FIELDS, _config_defaults, _inert_fields
     defaults = _config_defaults()
     out = []
-    for f in sorted(PINNED_FIELDS() - _LABELLED_ELSEWHERE):
+    active = PINNED_FIELDS() - _inert_fields(cfg.get("optimizer"))
+    for f in sorted(active - _LABELLED_ELSEWHERE):
         if f not in cfg:
             continue
         v = cfg[f]
@@ -221,6 +259,16 @@ def canonical_label(cfg: dict) -> str | None:
     if cfg.get("optimizer") == OPT_ADAMW:
         return "AdamW" + _shared_knobs(cfg)
     opt = cfg.get("optimizer")
+    if opt == "imuon-lora":
+        return "iMuon" + _shared_knobs(cfg)
+    if opt == "lora-rite":
+        return "LoRA-RITE" + _shared_knobs(cfg)
+    if opt == "muon-lora":
+        steps = cfg.get("muon_ns_steps")
+        method = cfg.get("polar_method")
+        prefix = "PE" if method == "polar_express" else "ns"
+        quality = f" {prefix}={steps}" if steps is not None else ""
+        return f"Muon{quality}" + _shared_knobs(cfg)
     if opt in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
         is_polar = opt == "curvature-whiten-polar-lora"
         polar = (" +polar" + _polar_quality_tag(cfg)) if is_polar else ""
@@ -250,8 +298,11 @@ def canonical_label(cfg: dict) -> str | None:
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
         return f"KL-diag-flatout +polar{pq}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
-    if opt in ("kl-diag-lora", "kl-diag-polar-lora"):
+    if opt in (
+        "kl-diag-lora", "kl-diag-flatout-lora", "kl-diag-polar-lora",
+    ):
         polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "kl-diag-polar-lora" else ""
+        family = "KL-diag-halfpow" if opt == "kl-diag-flatout-lora" else "KL-diag"
         f = cfg.get("precond_refresh_every")
         cb = cfg.get("curvature_beta")
         bc = f", β_c={cb:g}" if cb is not None else ""
@@ -259,7 +310,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"KL-diag{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
+        return f"{family}{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
     if opt in ("diag-shampoo-lora", "diag-shampoo-polar-lora"):
         polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "diag-shampoo-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
@@ -329,6 +380,10 @@ PINNED_LABEL_COLORS = {
     "w/o magnitude control": "#e76f51",
     "w/o curvature+magnitude": "#8c510a",
     "Muon (naive)": "#e377c2",
+    # Paper-panel series (the protagonist, the baselines, the three `precond`
+    # branches) are NOT pinned here -- `paper_style.PAPER_SERIES_STYLES` owns
+    # them, and pins their marker alongside their color. Adding them here too
+    # would make two registries answer the same question, free to disagree.
 }
 PROTAGONIST_LABEL_PREFIX = "PoLoRA"
 PROTAGONIST_COLOR = OPTIM_COLORS["kl-diag-polar-lora"]
@@ -359,20 +414,29 @@ def canonical_colors(labels) -> dict:
     palette = []
     if rest:
         reserved = ["#000000"] + sorted(set(colors.values()))
-        for src in ("tab10", "tab20", "tab20b", "Set3"):
-            try:
-                palette = distinct_palette(len(rest), reserved=reserved, source=src)
-                break
-            except ColorCollisionError:
-                continue
-        else:  # >20 series: combine several qualitative maps into a larger pool
+        # Take SERIES_PALETTE IN ORDER, skipping only entries a pin already
+        # spent. Deliberately not `distinct_palette`'s greedy farthest-first:
+        # that maximises separation for the arm count it is handed, so the
+        # answer changes with the count and one arm's color moved between
+        # panels. In order, the nth series always gets the nth free color.
+        palette = [c for c in SERIES_PALETTE
+                   if all(_color_distance(c, r) > 0.15 for r in reserved)]
+        if len(palette) < len(rest):
+            # More series than the palette holds. Widen the pool by appending,
+            # so the series that already had colors keep them.
             import matplotlib.pyplot as plt
-            big = [c for cm in ("tab20", "tab20b", "tab20c")
+            big = [_rgb_to_hex(c) for cm in ("tab20", "tab20b", "tab20c")
                    for c in plt.get_cmap(cm).colors]
             try:
-                palette = distinct_palette(len(rest), reserved=reserved, source=big)
+                palette = palette + distinct_palette(
+                    len(rest) - len(palette),
+                    reserved=reserved + palette, source=big,
+                )
             except ColorCollisionError:  # still too tight — relax the spacing
-                palette = distinct_palette(len(rest), reserved=reserved,
-                                           source=big, min_distance=0.08)
+                palette = palette + distinct_palette(
+                    len(rest) - len(palette),
+                    reserved=reserved + palette, source=big,
+                    min_distance=0.08,
+                )
     colors.update({l: palette[i] for i, l in enumerate(rest)})
     return colors

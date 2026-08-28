@@ -24,11 +24,55 @@
         {
           "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
           "label": "Adam",
+          "style_key": "AdamW",
           "roles": ["reference", "target"]
         },
         {
           "variant_id": "publication.view.v1:kl-diag-polar-lora:d837ff8c700deedfe262d16f|lora_init_b=zero",
           "label": "PoLoRA",
+          "style_key": "PoLoRA",
+          "roles": []
+        }
+      ]
+    },
+    {
+      "id": "paper.e1_comparison.all_workloads.v1",
+      "title": "Primary optimizer comparison",
+      "arms": [
+        {
+          "variant_id": "publication.view.v1:adamw:97704dc018bbe0de5fc79a67|lora_init_b=zero",
+          "label": "AdamW",
+          "style_key": "AdamW",
+          "roles": ["reference", "target"]
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:d837ff8c700deedfe262d16f|lora_init_b=zero",
+          "label": "Polar-LoRA (kl-diag)",
+          "style_key": "PoLoRA",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:imuon-lora:3a81f5c939f7191282dbe1db|lora_init_b=zero",
+          "label": "iMuon",
+          "style_key": "iMuon",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:muon-lora:b95bba74531a312d8727d40d|lora_init_b=zero",
+          "label": "Muon (naive)",
+          "style_key": "Muon (naive)",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:lora-rite:ce3c0a79a5059fecafcd0c9e|lora_init_b=zero",
+          "label": "LoRA-RITE",
+          "style_key": "LoRA-RITE",
+          "roles": []
+        },
+        {
+          "variant_id": "publication.view.v1:kl-diag-polar-lora:c3815587c890bc2687af348b|lora_init_b=symmetric",
+          "label": "w/o curvature+magnitude (LoRA-Muon step)",
+          "style_key": "No curvature or magnitude",
           "roles": []
         }
       ]

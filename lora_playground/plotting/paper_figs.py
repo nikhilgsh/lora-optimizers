@@ -51,6 +51,7 @@ from lora_playground.publication_paper import (
 )
 from lora_playground.workloads import find_workload, iter_workloads, workload_runs
 from lora_playground.plotting import arms as _arms
+from lora_playground.plotting.paper_style import PAPER_SERIES_STYLES
 
 FIGS = ROOT / "paper" / "manuscript" / "figs"
 FIGS.mkdir(parents=True, exist_ok=True)
@@ -74,7 +75,7 @@ plt.rcParams.update({
 
 # Logical styling (Okabe-Ito, colorblind-safe):
 #   ours        -> saturated blue, SOLID, thick (the protagonist stands out)
-#   AdamW       -> neutral gray, SOLID, thin (the reference baseline)
+#   AdamW       -> black, SOLID (the reference baseline)
 #   Muon family -> distinct warm hues, DASHED (the spectral baselines: Muon, iMuon)
 #   ablation    -> green/pink, SOLID thin (w/o curvature; w/o curvature or magnitude)
 NAME_CURV = "w/o curvature"
@@ -96,14 +97,27 @@ NAME_LM = "w/o curvature or magnitude"
 # separated hues (gold / vermillion / purple); PoLoRA is the thickest blue. (The fig2
 # ablation arms are SOLID too, separated by colour + weight -- they are not in fig1.)
 STYLE = {
-    "Adam":      dict(color="#333333", marker="o", ls="-",  lw=2.0),
-    "PoLoRA": dict(color="#0072B2", marker="s", ls="-",  lw=2.4),
-    NAME_NAIVE:   dict(color="#CB5A4C", marker="v", ls="-",  lw=1.7),  # muted brick (warm)
-    "iMuon":      dict(color="#E0A33D", marker="^", ls="-",  lw=1.7),  # muted amber (warm)
-    "LoRA-RITE":  dict(color="#8E6BAE", marker=">", ls="-",  lw=1.7),  # muted purple (cool) -- distinct from Muon
-    NAME_LM:      dict(color="#CC79A7", marker="P", ls="-",  lw=1.6),
-    NAME_CURV:    dict(color="#009E73", marker="D", ls="-",  lw=1.6),
-    NAME_MAGN:    dict(color="#882255", marker="X", ls=":",  lw=1.6),
+    "Adam": {**PAPER_SERIES_STYLES["AdamW"], "ls": "-", "lw": 2.0},
+    "PoLoRA": {**PAPER_SERIES_STYLES["PoLoRA"], "ls": "-", "lw": 2.4},
+    NAME_NAIVE: {
+        **PAPER_SERIES_STYLES["Muon (naive)"], "ls": "-", "lw": 1.7,
+    },
+    "iMuon": {**PAPER_SERIES_STYLES["iMuon"], "ls": "-", "lw": 1.7},
+    "LoRA-RITE": {
+        **PAPER_SERIES_STYLES["LoRA-RITE"], "ls": "-", "lw": 1.7,
+    },
+    NAME_LM: {
+        **PAPER_SERIES_STYLES["No curvature or magnitude"],
+        "ls": "-", "lw": 1.6,
+    },
+    NAME_CURV: {
+        **PAPER_SERIES_STYLES["Without curvature control"],
+        "ls": "-", "lw": 1.6,
+    },
+    NAME_MAGN: {
+        **PAPER_SERIES_STYLES["Without magnitude rescale"],
+        "ls": ":", "lw": 1.6,
+    },
 }
 
 
@@ -633,6 +647,7 @@ def fig3(
     star_ms=11,
     figsize=(6.5, 2.6),
     ranks=(32, 64, 128, 256),
+    save=True,
 ):
     """LR basins on a requested openmath rank ladder (PoLoRA | AdamW),
     one curve per rank (color = rank, reversed viridis), shared y windowed to the
@@ -674,16 +689,17 @@ def fig3(
             ax.plot(lrs, [d[lr] for lr in lrs], "o-", color=rcol[rank], ms=4, lw=1.3)
             b = min(d, key=lambda lr: d[lr])
             ax.plot([b], [d[b]], "*", ms=star_ms, color=rcol[rank], mec="white", mew=0.5, zorder=5)
-        ax.set_xscale("log"); ax.set_xlabel("Learning Rate"); ax.set_title(a)
+        ax.set_xscale("log"); ax.set_xlabel(r"Learning rate $\eta$"); ax.set_title(a)
         ax.set_ylim(ylo, yhi)
-    axes[0].set_ylabel("Eval Loss")
+    axes[0].set_ylabel("Final evaluation loss")
     handles = [plt.Line2D([], [], color=rcol[r], marker="o", lw=1.3, label=f"$r = {r}$") for r in ranks]
     # Legend outside the right panel: the r=32 divergence fills the in-panel space,
     # so place it in genuinely clear space rather than over any curve (no box).
-    axes[1].legend(handles=handles, title="Rank", loc="center left",
+    axes[1].legend(handles=handles, title=r"LoRA rank $r$", loc="center left",
                    bbox_to_anchor=(1.02, 0.5), frameon=False)
-    fig.savefig(FIGS / "fig3_lr_transfer.pdf")
-    fig.savefig(FIGS / "fig3_lr_transfer.png", dpi=150)
+    if save:
+        fig.savefig(FIGS / "fig3_lr_transfer.pdf")
+        fig.savefig(FIGS / "fig3_lr_transfer.png", dpi=150)
     return fig
 
 

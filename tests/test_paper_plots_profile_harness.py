@@ -1,10 +1,15 @@
 """Tests for the notebook-derived paper-plot profiler."""
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+BASELINE = ROOT / "scripts" / "bench" / "baselines" / "paper_plots.json"
 
 
 def _load_profiler_module():
@@ -27,6 +32,30 @@ def test_profile_harness_discovers_current_notebook_entrypoints():
     assert "P.precond_panel(256)" in expressions
     assert "P.beta2_panel(256)" in expressions
     assert any(expression.endswith("P.rank_lr_panel()") for expression in expressions)
+
+
+def test_checked_profile_baseline_matches_current_notebook_entrypoints():
+    profiler = _load_profiler_module()
+    baseline = json.loads(BASELINE.read_text())
+
+    assert baseline["entrypoints"] == profiler.discover_entrypoints(
+        ROOT / "paper" / "paper_plots.ipynb"
+    )
+    assert baseline["elapsed_sec"] > 0
+
+
+def test_render_open_figures_encodes_png_bytes():
+    profiler = _load_profiler_module()
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(2, 1))
+    plt.plot([0, 1], [0, 1])
+    elapsed, png_bytes, figure_count = profiler.render_open_figures(plt)
+    plt.close("all")
+
+    assert elapsed > 0
+    assert png_bytes > 0
+    assert figure_count == 1
 
 
 def test_profile_comparison_detects_regression_for_same_entrypoints():
@@ -61,3 +90,27 @@ def test_profile_comparison_rejects_different_entrypoints():
         profiler.compare_results(
             current, baseline, max_regression_fraction=0.2
         )
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_PAPER_PLOT_PROFILE") != "1"
+    or not (ROOT / "logs").is_dir(),
+    reason="set RUN_PAPER_PLOT_PROFILE=1 with populated logs/ for the wall-time gate",
+)
+def test_paper_plot_profile_stays_within_checked_budget(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "bench" / "profile_paper_plots.py"),
+            "--out",
+            str(tmp_path / "paper_plots_profile.json"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, (
+        f"paper plot profile regressed\nstdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )

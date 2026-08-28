@@ -120,7 +120,7 @@ def test_completed_table_and_partial_trajectory_precedence():
     assert completed_line.get_xdata()[-1] == HORIZON
     assert "partial" not in completed_line.get_label()
     assert rescued_line.get_xdata()[-1] == 600
-    assert "lr=0.1" in rescued_line.get_label()
+    assert r"$\eta$=0.1" in rescued_line.get_label()
     assert "partial @600" in rescued_line.get_label()
     assert partial_line.get_xdata()[-1] == 600
     assert "partial @600" in partial_line.get_label()
@@ -187,6 +187,6 @@ def test_best_completed_mapping_drives_summary_and_trajectory():
     assert summary.loc[0, "best_lr"] == 0.2
     assert summary.loc[0, "final"] == 0.70
     selected = _trajectory(fig.axes[1], "base")
-    assert "lr=0.2" in selected.get_label()
+    assert r"$\eta$=0.2" in selected.get_label()
     np.testing.assert_allclose(selected.get_ydata(), [0.75, 0.70])
     plt.close(fig)

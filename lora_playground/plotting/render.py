@@ -26,10 +26,13 @@ from .panels import (
     clamp_for_hollow,
     draw_lr_series,
 )
-from .style import LEGEND_BELOW_KW
+from .style import LEGEND_BELOW_KW, STAR_MARKER_SIZE
 
 
-_MARKERS = ("o", "s", "^", "D", "v", "P", "X")
+# No "^"/"v": `draw_lr_series` reserves a filled upward triangle for "finite
+# observation above the visible range", so a series that also uses one makes
+# the two unreadable apart.
+_MARKERS = ("o", "s", "D", "P", "X", "h", "p")
 __all__ = ["render_comparison"]
 
 
@@ -108,7 +111,7 @@ def render_comparison(
     labels: Mapping[str, str] | None = None,
     colors: Mapping[str, str] | None = None,
     markers: Mapping[str, str] | None = None,
-    figsize: tuple[float, float] = (13, 5),
+    figsize: tuple[float, float] = (13, 6.2),
     suptitle: str | None = None,
     show_partials: bool = True,
     final_ylim: tuple[float, float] | None = None,
@@ -160,7 +163,6 @@ def render_comparison(
         )
         for index, spec in enumerate(specs)
     }
-
     all_lr = sorted({lr for spec in specs
                      for lr in result.completed.get(spec.id, {})})
     table_df = pd.DataFrame(
@@ -191,10 +193,13 @@ def render_comparison(
             "final": curve.final_loss,
             "delta": delta,
             "delta_sigma": delta / sigma_ref if delta is not None else None,
+            # Carried here because the legend no longer spells it: the legend
+            # names the arm and its eta, this table holds every number.
+            "n": curve.n_replicates,
         })
     summary_df = pd.DataFrame(
         summary_rows,
-        columns=("variant", "best_lr", "final", "delta", "delta_sigma"),
+        columns=("variant", "best_lr", "final", "delta", "delta_sigma", "n"),
     )
 
     fig, (ax_lr, ax_traj) = plt.subplots(
@@ -226,16 +231,27 @@ def render_comparison(
             color=resolved_colors[spec.id],
             marker=resolved_markers[spec.id],
             label=display[spec.id],
-            lw=1.4,
-            ms=6,
             zorder=4,
         )
 
+        best = min(
+            (curve for curve in by_lr.values()
+             if math.isfinite(curve.final_loss)),
+            key=lambda curve: curve.final_loss,
+            default=None,
+        )
+        if best is not None:
+            # The one deliberate size override: the star marks the optimum ON
+            # TOP of that lr's series marker, so it has to read as larger.
+            ax_lr.plot(
+                best.lr, best.final_loss, "*", ms=STAR_MARKER_SIZE,
+                color=resolved_colors[spec.id],
+                mec="white", mew=0.5, zorder=6,
+            )
+
     ax_lr.set_xscale("log")
-    ax_lr.set_xlabel("lr")
-    ax_lr.set_ylabel(f"final eval_loss @ {_horizon_label(horizon)}")
-    ax_lr.set_title("final loss vs lr")
-    ax_lr.grid(True, alpha=0.3)
+    ax_lr.set_xlabel(r"Learning rate $\eta$")
+    ax_lr.set_ylabel(f"Final evaluation loss at {_horizon_label(horizon)} steps")
     if final_ylim is not None:
         ax_lr.set_ylim(*final_ylim)
 
@@ -259,21 +275,26 @@ def render_comparison(
                 alpha=0.18,
                 linewidth=0,
             )
-        note = (
-            f"partial @{curve.last_step}: {curve.final_loss:.4f}"
+        # Every other number that used to ride along here -- the final loss,
+        # the replicate count -- is a column of `summary_df`, printed directly
+        # under the figure. Repeating them tripled each entry's width, which is
+        # what pushed the widest legends off both edges of the figure.
+        eta = f"$\\eta$={curve.lr:g}"
+        label = (
+            f"{display[spec.id]}  ({eta}, partial @{curve.last_step})"
             if not curve.completed
-            else f"final={curve.final_loss:.4f}"
+            else f"{display[spec.id]}  ({eta})"
         )
-        if curve.n_replicates > 1:
-            note += f", n={curve.n_replicates}"
+        # No marker. This curve is ~37 eval samples joined by straight
+        # segments, and a marker sitting on the stroke bulges it -- at line
+        # width 2 and marker size 5 the lumps read as kinks in the loss, which
+        # is a claim about the data. Markers belong on the left panel, where
+        # each point IS one discrete measurement. Colour carries identity here.
         line, = ax_traj.plot(
             steps,
             losses,
-            marker=resolved_markers[spec.id],
-            ms=3,
-            lw=1.4,
             color=resolved_colors[spec.id],
-            label=f"{display[spec.id]}  (lr={curve.lr:g}, {note})",
+            label=label,
         )
         line.set_gid(f"trajectory:{spec.id}")
 
@@ -288,18 +309,18 @@ def render_comparison(
             lw=1.2,
             alpha=0.8,
             zorder=0,
+            label=f"{display[target_id or reference_id]} at "
+                  f"{_horizon_label(horizon)} steps",
         )
 
-    ax_traj.set_xlabel("step")
-    ax_traj.set_ylabel("eval_loss")
-    ax_traj.set_title("best-lr trajectory")
+    ax_traj.set_xlabel("Training step")
+    ax_traj.set_ylabel(r"Evaluation loss at best $\eta$")
     longest = max(
         (max((event.get("step", 0) or 0 for event in curve.history), default=0)
          for curve in selected.values()),
         default=0,
     )
     ax_traj.set_xlim(0, max(horizon, longest) * 1.015)
-    ax_traj.grid(True, alpha=0.3)
     handles, legend_labels = ax_traj.get_legend_handles_labels()
     if handles:
         fig.legend(

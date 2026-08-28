@@ -101,6 +101,9 @@ def test_direct_records_use_explicit_variant_ids_without_legacy_loading(monkeypa
     partial = _trajectory(fig, "partial.v1")
     assert partial.get_xdata()[-1] == 600
     assert "partial @600" in partial.get_label()
+    assert fig.axes[0].get_xlabel() == r"Learning rate $\eta$"
+    assert fig.axes[0].get_ylabel() == "Final evaluation loss at 1k steps"
+    assert fig.axes[1].get_ylabel() == r"Evaluation loss at best $\eta$"
     plt.close(fig)
 
 

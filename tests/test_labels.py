@@ -68,6 +68,24 @@ def test_adamw_black_and_first():
     assert all(v != "#000000" for k, v in colors.items() if k != "AdamW")
 
 
+def test_adamw_label_ignores_optimizer_inert_wrapper_fields():
+    cfg = _cfg(
+        "adamw",
+        precond_method="higham",
+        higham_iters=8,
+        cw_nesterov=False,
+        muon_ns_steps=8,
+    )
+    assert canonical_label(cfg) == "AdamW"
+
+
+def test_adamw_label_keeps_fields_the_optimizer_consumes():
+    assert "beta2=0.95" in canonical_label(_cfg("adamw", beta2=0.95))
+    assert "lora_plus_multiplier=4" in canonical_label(
+        _cfg("adamw", lora_plus_multiplier=4.0)
+    )
+
+
 def test_canonical_key_compact_form():
     assert canonical_key(_cfg(OPT_CT, muon_ns_steps=5, polar_method="ns")) == "ct|ns5|k1|abs"
     # ns>=8 and polar_express both collapse to "full" in the aggregation key
@@ -91,3 +109,25 @@ def test_pinned_labels_stable_across_label_sets():
         assert colors[proto] == PROTAGONIST_COLOR
         # pins never collide with palette-assigned labels in the same figure
         assert len(set(colors.values())) == len(colors)
+
+
+def test_paper_series_styles_are_stable_and_collision_free():
+    from lora_playground.plotting.paper_style import resolve_paper_styles
+
+    product = r"Product: $C_B=B^\top P B,\ C_A=A Q A^\top$"
+    identity = r"Identity: $C_B=C_A=I$"
+    factorwise = r"Factorwise: $C_B=P_A,\ C_A=Q_B$"
+    sets = (
+        ("AdamW", "PoLoRA", "iMuon", "Muon (naive)", "LoRA-RITE"),
+        ("AdamW", product, identity, factorwise),
+        (product, identity, factorwise),
+    )
+    observed = {}
+    for tokens in sets:
+        styles = resolve_paper_styles(tokens)
+        assert len({style["color"] for style in styles.values()}) == len(tokens)
+        for token, style in styles.items():
+            current = (style["color"], style["marker"])
+            assert token not in observed or observed[token] == current
+            observed[token] = current
+    assert observed["AdamW"] == ("#000000", "o")

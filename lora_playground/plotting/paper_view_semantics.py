@@ -16,8 +16,14 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 
 FACTORWISE_SLOT_BOUNDARY = "7792797b28771e22c58a180fc2b6428ee6e37c8f"
 FACTORWISE_SLOT_COHORT = 2
-FACTORWISE_SLOT_VIEWS = frozenset({"precond", "precond_beta2"})
-FACTORWISE_SLOT_PRECONDS = frozenset({"factorwise", "one-sided"})
+FACTORWISE_SLOT_FIELD = "factorwise_slot_revision"
+FACTORWISE_SLOT_PROJECTION_ID = "paper.factorwise_slot.v1"
+FACTORWISE_SLOT_PRECONDS = frozenset({"factorwise"})
+PRODUCT_PRECOND = "product"
+MATCHED_PRECOND_VIEW = "precond_matched"
+FACTORWISE_SLOT_VIEWS = frozenset({
+    "precond", "precond_beta2", MATCHED_PRECOND_VIEW,
+})
 
 
 class ViewSemanticMetadataError(ValueError):
@@ -125,18 +131,89 @@ def factorwise_slot_decision(
     )
 
 
+def factorwise_slot_semantic_key(cfg: Mapping[str, Any]) -> Any:
+    """Optimizer-semantic key for the reviewed factorwise paper views."""
+    return cfg.get(FACTORWISE_SLOT_FIELD, cfg.get("optimizer_impl_revision"))
+
+
+def _decision_for_run_view(view, is_ancestor) -> ViewSemanticDecision:
+    decision_input = dict(view.semantic_config)
+    if view.semantic_revisions:
+        decision_input["semantic_revisions"] = view.semantic_revisions
+    git_commit = view.audit_config.get("git_commit")
+    if git_commit is not None:
+        decision_input["git_commit"] = git_commit
+    return factorwise_slot_decision(decision_input, is_ancestor=is_ancestor)
+
+
+def project_paper_precond_cohort(
+    runs: Sequence[Any],
+    *,
+    view_id: str,
+    is_ancestor: Callable[[str, str], bool | None] = git_is_ancestor,
+) -> tuple[tuple[Any, ...], tuple[tuple[Any, ViewSemanticDecision], ...]]:
+    """Project the reviewed cohort onto an explicit transient semantic field.
+
+    Eligible factorwise runs retain their physical and audit provenance
+    while gaining ``factorwise_slot_revision`` for ``VariantSpec``'s
+    view-specific optimizer key. Ordinary views leave product unchanged because
+    the slot bug did not affect it. The explicit ``precond_matched`` view instead
+    requires product, factorwise, and one-sided to share the reviewed optimizer
+    revision. Unknown and pre-fix records fail closed into ``excluded`` whenever
+    that reviewed cohort is required.  The ordinary view leaves one-sided runs
+    unchanged because the factorwise-slot fix did not alter that branch; the
+    matched view still requires all three branches to record revision 2.
+    """
+    if view_id not in FACTORWISE_SLOT_VIEWS:
+        raise ValueError(
+            f"unknown factorwise-slot view {view_id!r}; expected one of "
+            f"{sorted(FACTORWISE_SLOT_VIEWS)!r}"
+        )
+
+    from lora_playground.run_records import project_run_semantics, run_view
+
+    reviewed_preconds = (
+        FACTORWISE_SLOT_PRECONDS | {PRODUCT_PRECOND, "one-sided"}
+        if view_id == MATCHED_PRECOND_VIEW
+        else FACTORWISE_SLOT_PRECONDS
+    )
+
+    kept = []
+    excluded = []
+    for index, run in enumerate(runs):
+        view = run_view(run, index)
+        precond = view.semantic_config.get("precond")
+        if precond not in reviewed_preconds:
+            kept.append(run)
+            continue
+        decision = _decision_for_run_view(view, is_ancestor)
+        if not decision.eligible:
+            excluded.append((run, decision))
+            continue
+        if precond == PRODUCT_PRECOND:
+            kept.append(run)
+            continue
+        kept.append(project_run_semantics(
+            run,
+            {FACTORWISE_SLOT_FIELD: decision.revision},
+            projection_id=FACTORWISE_SLOT_PROJECTION_ID,
+            index=index,
+        ))
+    return tuple(kept), tuple(excluded)
+
+
 def filter_paper_precond_cohort(
     runs: Sequence[Any],
     *,
     view_id: str,
     is_ancestor: Callable[[str, str], bool | None] = git_is_ancestor,
 ) -> tuple[tuple[Any, ...], tuple[tuple[Any, ViewSemanticDecision], ...]]:
-    """Filter only the factorwise/matched-control arms in two paper views.
+    """Filter only the factorwise arm in ordinary paper views.
 
-    Product and AdamW runs pass unchanged because the known slot change is not
-    their view semantic.  Exclusions carry their exact decision so diagnostics
-    and missing-arm notes consume one policy result instead of reimplementing
-    it.  Input objects are returned unchanged and never mutated.
+    Product, one-sided, and AdamW runs pass unchanged because the known slot
+    change is not their view semantic.  Exclusions carry their exact decision so
+    diagnostics and missing-arm notes consume one policy result instead of
+    reimplementing it.  Input objects are returned unchanged and never mutated.
     """
     if view_id not in FACTORWISE_SLOT_VIEWS:
         raise ValueError(
@@ -153,18 +230,9 @@ def filter_paper_precond_cohort(
         if view.semantic_config.get("precond") not in FACTORWISE_SLOT_PRECONDS:
             kept.append(run)
             continue
-        # The policy needs optimizer semantics and one audit fact.  Construct a
-        # transient decision input without merging provenance into the run's
-        # semantic identity or exposing source hashes to the policy.
-        decision_input = dict(view.semantic_config)
-        if view.semantic_revisions:
-            decision_input["semantic_revisions"] = view.semantic_revisions
-        git_commit = view.audit_config.get("git_commit")
-        if git_commit is not None:
-            decision_input["git_commit"] = git_commit
-        decision = factorwise_slot_decision(
-            decision_input, is_ancestor=is_ancestor
-        )
+        # The policy reads optimizer semantics plus the one audit fact needed
+        # for unversioned history; source hashes never enter the decision.
+        decision = _decision_for_run_view(view, is_ancestor)
         if decision.eligible:
             kept.append(run)
         else:
@@ -175,11 +243,17 @@ def filter_paper_precond_cohort(
 __all__ = [
     "FACTORWISE_SLOT_BOUNDARY",
     "FACTORWISE_SLOT_COHORT",
+    "FACTORWISE_SLOT_FIELD",
     "FACTORWISE_SLOT_PRECONDS",
+    "FACTORWISE_SLOT_PROJECTION_ID",
     "FACTORWISE_SLOT_VIEWS",
+    "MATCHED_PRECOND_VIEW",
+    "PRODUCT_PRECOND",
     "ViewSemanticDecision",
     "ViewSemanticMetadataError",
     "factorwise_slot_decision",
+    "factorwise_slot_semantic_key",
     "filter_paper_precond_cohort",
     "git_is_ancestor",
+    "project_paper_precond_cohort",
 ]

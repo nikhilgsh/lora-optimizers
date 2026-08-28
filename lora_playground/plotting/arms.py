@@ -494,36 +494,38 @@ ADAMW_BETA2_ARMS = beta2_arms(
     "beta2", _BETA2_GRID + [0.999], 0.999, "AdamW (shipped, b2=0.999)")
 
 
-# Per-figure arm dicts (label -> predicate), in legend order.
+# Per-figure arm dicts (reader-facing label -> predicate), in legend order.
+POLORA_LABEL = "PoLoRA"
+PRECOND_PRODUCT_LABEL = r"Product: $C_B=B^\top P B,\ C_A=A Q A^\top$"
 PANEL_ARMS = {
     "AdamW": ADAMW,
-    "Polar-LoRA (kl-diag)": PROTO,
+    POLORA_LABEL: PROTO,
     "iMuon": IMUON,
     "Muon (naive)": MUON,
     "LoRA-RITE": LORARITE,
     "w/o curvature+magnitude (LoRA-Muon step)": DOUBLE,
 }
 ABLATION_ARMS = {
-    "Polar-LoRA (kl-diag)": PROTO,
-    "w/o curvature control": NOSHAMPOO,
-    "w/o magnitude control": NOMAG,
-    "w/o curvature+magnitude (LoRA-Muon step)": DOUBLE,
+    POLORA_LABEL: PROTO,
+    "Without curvature control": NOSHAMPOO,
+    "Without magnitude rescale": NOMAG,
+    "Identity metric, no magnitude rescale": DOUBLE,
 }
 DERIVATION_ARMS = {
     "AdamW": ADAMW,
-    "PoLoRA: rxr=B^T P B, shared P,Q": PROTO,
-    "no msign, metric^-1 (averaged loss)": AVGLOSS,
-    "no msign, metric^-1/2": HALFPOW,
-    "no outer un-whiten: msign only": FLATOUT,
+    POLORA_LABEL: PROTO,
+    "No matrix sign; inverse metric": AVGLOSS,
+    "No matrix sign; inverse square-root metric": HALFPOW,
+    "Matrix sign only; no outer unwhitening": FLATOUT,
 }
 # The `precond` axis: three branches, not the four corners of a 2x2. All three
 # share one (P, Q), the same p, q updates and the same magnitude rule, and differ
 # only in what fills (C_B, C_A).
 PRECOND_ARMS = {
     "AdamW": ADAMW,
-    "product: C_B=B^T P B, C_A=A Q A^T": PROTO,
-    "one-sided: C_B=C_A=I": ONESIDED,
-    "factorwise: C_B=P_A, C_A=Q_B": NOPRODUCT,
+    PRECOND_PRODUCT_LABEL: PROTO,
+    r"Identity: $C_B=C_A=I$": ONESIDED,
+    r"Factorwise: $C_B=P_A,\ C_A=Q_B$": NOPRODUCT,
 }
 
 # `curvature_beta` crossed with `precond`, for the estimation-noise question:
@@ -545,10 +547,10 @@ PRECOND_ARMS = {
 # most of the effect is the shared diagonal metric.
 PRECOND_BETA2_ARMS = {
     "AdamW": ADAMW,
-    "factorwise, b2=0.99": {**NOPRODUCT, "curvature_beta": 0.99},
-    "factorwise, b2=0.999": {**NOPRODUCT, "curvature_beta": 0.999},
-    "one-sided, b2=0.99": {**ONESIDED, "curvature_beta": 0.99},
-    "one-sided, b2=0.999": {**ONESIDED, "curvature_beta": 0.999},
+    r"Factorwise, $\beta_2=0.99$": {**NOPRODUCT, "curvature_beta": 0.99},
+    r"Factorwise, $\beta_2=0.999$": {**NOPRODUCT, "curvature_beta": 0.999},
+    r"Identity, $\beta_2=0.99$": {**ONESIDED, "curvature_beta": 0.99},
+    r"Identity, $\beta_2=0.999$": {**ONESIDED, "curvature_beta": 0.999},
 }
 
 # The `msign` axis, run at both ends of `precond`: can the matrix sign be replaced

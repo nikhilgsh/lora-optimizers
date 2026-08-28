@@ -31,6 +31,37 @@ def test_cross_workload_view_rejects_unknown_view():
         publication_workload_view_panel("paper.missing.v1", workload)
 
 
+def test_primary_panel_view_preserves_sparse_baseline_coverage():
+    view_id = "paper.e1_comparison.all_workloads.v1"
+    expected_order = [
+        "AdamW",
+        "Polar-LoRA (kl-diag)",
+        "iMuon",
+        "Muon (naive)",
+        "LoRA-RITE",
+        "w/o curvature+magnitude (LoRA-Muon step)",
+    ]
+
+    olmo = publication_workload_view_panel(
+        view_id, find_workload("OLMo-2-1B", "opc", 256)
+    )
+    assert [spec.label for spec in olmo.comparison.variants] == expected_order
+    assert {
+        spec.label
+        for spec in olmo.comparison.variants
+        if olmo.comparison.best_completed[spec.id] is not None
+    } == {"AdamW", "Polar-LoRA (kl-diag)", "iMuon", "Muon (naive)"}
+
+    llama = publication_workload_view_panel(
+        view_id, find_workload("Llama-3.2-1B", "openmath", 256)
+    )
+    assert {
+        spec.label
+        for spec in llama.comparison.variants
+        if llama.comparison.best_completed[spec.id] is not None
+    } == set(expected_order)
+
+
 @pytest.mark.parametrize(
     ("panel", "has_target"),
     (

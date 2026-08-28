@@ -64,6 +64,30 @@ def test_distinct_cells_share_one_catalog_snapshot(loader_probes):
     assert counts == {"logs_signature": 2, "catalog_discovery": 1, "load_runs": 2}
 
 
+def test_notebook_snapshot_checks_tree_once_across_distinct_cells(loader_probes):
+    plots, runs, counts = loader_probes
+
+    plots.begin_notebook_snapshot(refresh=True)
+    assert plots.cell_runs({"lora_r": 16}) is runs
+    assert plots.cell_runs({"lora_r": 64}) is runs
+    # Re-entering without an explicit refresh preserves the same snapshot.
+    plots.begin_notebook_snapshot()
+
+    assert counts == {
+        "logs_signature": 1,
+        "catalog_discovery": 1,
+        "load_runs": 2,
+    }
+
+    plots.end_notebook_snapshot()
+    assert plots.cell_runs({"lora_r": 128}) is runs
+    assert counts == {
+        "logs_signature": 2,
+        "catalog_discovery": 1,
+        "load_runs": 3,
+    }
+
+
 def test_rank_panel_reuses_canonical_figure_without_live_io(
     loader_probes, monkeypatch,
 ):
@@ -73,13 +97,13 @@ def test_rank_panel_reuses_canonical_figure_without_live_io(
     sentinel = object()
     seen = {}
 
-    def fig3(*, ranks, figsize):
-        seen.update(ranks=ranks, figsize=figsize)
+    def fig3(*, ranks, figsize, save):
+        seen.update(ranks=ranks, figsize=figsize, save=save)
         return sentinel
 
     monkeypatch.setattr(paper_figs, "fig3", fig3)
     assert plots.rank_lr_panel(ranks=(16, 64)) is sentinel
-    assert seen == {"ranks": (16, 64), "figsize": (10.5, 4.4)}
+    assert seen == {"ranks": (16, 64), "figsize": (13, 6.0), "save": False}
     assert counts == {
         "logs_signature": 0,
         "catalog_discovery": 0,

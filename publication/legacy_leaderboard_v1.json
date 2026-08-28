@@ -121183,6 +121183,2879 @@
           "physical_id": "solvedrho_kldiag_llama32_openmath_r256_lrext_bw/log_1.out"
         }
       ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.0001,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "imuon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:imuon-lora:d421d865bd0b47cbc185d4d6|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.5571878260304685,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.5288571335253751,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.5125895005048438,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.5010959450167768,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.4924806201552372,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.4850319172930547,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.47888418532053134,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.4736602567179308,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.46879524149419893,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.4650054896046739,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.4613717425101179,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.45825676771874874,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.4549535583528308,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.45231577556183145,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.4495329763835907,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.44708083221828093,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.44499721905255996,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.4425600289539363,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.4406170165635213,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.4387621196072063,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.43710321004909836,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.435049993050169,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.4334487603684201,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.431956455260591,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.430568425503693,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.4287901996208834,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.42787136996656633,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.4265635254644624,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.42517957851083643,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.4245098074007412,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.4235761310917135,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.42229431157127534,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.42125884325574864,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.42019264100176945,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.4187799173946478,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.41817310442524575,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_imuon_llama32_openmath_r256_bw/log_0.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_imuon_llama32_openmath_r256_bw/log_0.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.0003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "imuon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:imuon-lora:d421d865bd0b47cbc185d4d6|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.5232168275319729,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.4969072208046385,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.4825050811771765,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.4748166484572986,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.46844355846586,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.4635216551791106,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.45933372897374986,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.45677837820302536,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.45268995330497397,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.45055614326786886,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.44822367008932074,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.44538290778660106,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.44370472968181146,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.44117648053952746,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.4400827614939004,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.43857347553928755,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.4367416689164096,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.4344390296363904,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.4328689811767209,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.43118364419995714,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.4301137814362023,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.4284264870949362,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.4269678442838235,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.4261816463246728,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.42435122708778283,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.42390208049116307,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.4226945285887638,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.4222177754530617,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.4204485822434346,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.41910554713584486,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.4187052162883071,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.41723195656752904,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.4169435901072396,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.41601693025309683,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.4147809049864506,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.4135049442872707,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_imuon_llama32_openmath_r256_bw/log_1.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_imuon_llama32_openmath_r256_bw/log_1.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.001,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "imuon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:imuon-lora:d421d865bd0b47cbc185d4d6|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.5097660934737813,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.4951951195306266,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.4938424361059926,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.4939117536154094,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.49110402396010217,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.4883178049506416,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.48458812679087926,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.48111339292112965,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.4781092785820537,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.4746512231396897,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.47007368446280645,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.4665619667490583,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.46297692500601634,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.4597045336914973,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.4567449010458561,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.45422661960156024,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.45268990147325433,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.44911434210134804,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.44684583009853823,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.44315136461367444,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.4398417411264846,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.44022214528987824,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.43744276962215034,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.4350204102927783,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.4316692467085118,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.4300894462750405,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.42888750397477154,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.4275084042511462,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.4265069351245902,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.42480928485834474,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.4223538310529602,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.4206150473582612,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.41970719183661037,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.41815466190552103,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.4171559168563022,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.4158547349079886,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_imuon_llama32_openmath_r256_bw/log_2.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_imuon_llama32_openmath_r256_bw/log_2.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/opc_sft_stage2_all_packed_seq2048",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.0003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "allenai/OLMo-2-0425-1B",
+        "optimizer": "imuon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:imuon-lora:c59a96e52c5abf30a0a145b7|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.887334662656542,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.8654312842457498,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.8524453389634145,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.8426237955790584,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.8351624681664315,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.8291426147737225,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.8240838730238784,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.8194044640511191,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.8153518554655779,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.811763238147797,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.8084089281352371,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.8052989867249337,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.8027197412899293,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.8002864531047128,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.7976871646613024,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.7954880322134721,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.7933759626555769,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.7913740271085407,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.7895636851128196,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.7876666766253202,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.785463300302022,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.7846083148894321,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.7829515842878731,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.7817753115779851,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.7801561917330211,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.7783985211350084,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.7774640010699594,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.7758371837270904,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.7746936750483063,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.7734318601650294,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.7727611694156594,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.7714598510710919,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.770270064880371,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.7694452088696863,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.7681465852214131,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.7674323253724376,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_imuon_olmo_opc_r256_bw/log_0.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_imuon_olmo_opc_r256_bw/log_0.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/opc_sft_stage2_all_packed_seq2048",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.001,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "allenai/OLMo-2-0425-1B",
+        "optimizer": "imuon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:imuon-lora:c59a96e52c5abf30a0a145b7|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.8651308803484522,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.8438694650467649,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.832283740767396,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.822211597964627,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.8151323392557861,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.8096396638270851,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.8043512916640878,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.7999094381203482,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.7965548915107658,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.7924662742650177,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.7895980702037189,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.7867053414341864,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.7841933492012048,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.7820341943871876,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.779127983086632,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.7774732614440593,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.7757400976780787,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.7735923468353809,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.7720669937073412,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.7701988115011796,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.7678747245232368,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.7676544356864934,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.7662971708687856,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.7648109351479939,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.7632167005043398,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.7618346197102243,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.7609808036351199,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.7596182103024114,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.7589262564966174,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.758103476199997,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.7573934485165629,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.7560732694003863,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.7547981040125491,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.7542194356466423,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.7532289358070947,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.7520734391397116,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_imuon_olmo_opc_r256_bw/log_1.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_imuon_olmo_opc_r256_bw/log_1.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/opc_sft_stage2_all_packed_seq2048",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "allenai/OLMo-2-0425-1B",
+        "optimizer": "imuon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:imuon-lora:c59a96e52c5abf30a0a145b7|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.8749386903158891,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.8568326105177386,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.8460463485036228,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.837350022505751,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.8324548622581113,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.8275161810333777,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.8223432354004996,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.8195070282974983,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.816495163956295,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.811897396706614,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.8099404604284552,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.8073161388496236,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.8052590546241911,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.803942026768348,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.8017160938555711,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.8001435390316176,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.7989494710666253,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.7968899649494374,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.7957339705585422,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.7939657405516212,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.7921117124876156,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.7905279615539705,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.7905710785277561,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.7881740178568348,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.7870032488756921,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.7854221091617292,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.7849218670414856,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.7840987239641524,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.7831662412586987,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.782817925222601,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.7827089094378675,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.7808066064232613,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.7800630578675939,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.7804616031126965,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.7789981397692988,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.7775198834131269,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_imuon_olmo_opc_r256_bw/log_2.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_imuon_olmo_opc_r256_bw/log_2.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 3e-05,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "lora-rite",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:lora-rite:8843193874b56ecd40f63b96|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.5266002702295598,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.5040353087116693,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.49059447126776434,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.4773487512620725,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.46866612765005844,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.4598633259766343,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.45258277819950427,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.44807982085333425,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.4420574370828114,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.4365549466595334,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.4330206022968186,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.42834362987881347,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.4244513928239753,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.4215893644308714,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.4190747894522584,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.4167738420076999,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.4146629852469588,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.41251985139946296,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.41043403760349134,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.40902644140431177,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.4059589707350127,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.40463024792643415,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.4029493420283584,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.4028899814693866,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.40104609264475444,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.39835173738238333,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.3978549129816277,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.3956400017508707,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.39571052670940793,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.3934642794118514,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.3923907115629466,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.39151652424547867,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.3902577523510628,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.38927383019066625,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.3882151766683347,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.38693879279793153,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_lora_rite_llama32_openmath_r256/log_0.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_lora_rite_llama32_openmath_r256/log_0.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.0001,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "lora-rite",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:lora-rite:8843193874b56ecd40f63b96|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.5722535560156229,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.5360540926049429,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.5126795069014767,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.4983383738763345,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.4846088087412391,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.4781383550029538,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.46970447548940575,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.4629301183709978,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.4578349567397152,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.4521563420708409,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.44607283467234987,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.4426086200706552,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.43841878623912917,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.434588585995128,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.4341904638675674,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.43112760124950844,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.4279393284589284,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.42519919558803254,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.4222404124964877,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.41944214591565265,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.4183875372973399,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.4180279029602347,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.4154799962868588,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.41355973212318875,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.41142249814753246,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.4095052260931102,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.4085067345338839,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.4076329785145816,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.40718835194747083,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.40666278015783436,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.40516287829422687,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.40303016729462715,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.40154683420907383,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.3999679226569659,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.40005412433936494,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.39834883834360607,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_lora_rite_llama32_openmath_r256/log_1.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_lora_rite_llama32_openmath_r256/log_1.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.0003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "lora-rite",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:lora-rite:8843193874b56ecd40f63b96|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.6747898408511872,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.6093149511792533,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.5760330518889499,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.5552939436599357,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.5453479280047985,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.5316368909275511,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.5251051395571673,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.5164239583322557,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.5100437414284158,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.5029145547335281,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.4997790739681458,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.49477466827783934,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.4955371347374537,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.4876344299318616,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.4853588594623564,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.4812106168721599,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.4778864411032686,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.47304613278711294,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.4694934966131343,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.4698518003766619,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.46462627745925883,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.46330243339220767,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.4624102222264047,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.46011893045400504,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.45870342253432234,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.4545517442324863,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.45281586087501335,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.45397117457669656,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.44950700846346137,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.44921327862789534,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.44791142637977616,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.44691935085621737,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.44405703791572454,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.4420078218888222,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.44299484407067236,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.44122820097796295,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_lora_rite_llama32_openmath_r256/log_2.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_lora_rite_llama32_openmath_r256/log_2.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.001,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "lora-rite",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:lora-rite:8843193874b56ecd40f63b96|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 1.0533058778394677,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.8789866835109383,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.8143054172730557,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.7786396847740014,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.7611521032299143,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.7353178876347389,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.7093200683725891,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.6948664846856295,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.6819548431580282,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.6757191126158343,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.6654281817234786,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.6529000597088043,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.6506343281934226,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.639403113245072,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.632846430196412,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.6266081333432894,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.6173271521987779,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.6111606171353984,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.6061553248215029,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.6044803590278458,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.5959380880614228,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.5904488182424098,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.5889790165392305,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.5830976582279102,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.5796024507181184,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.57461403803814,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.5731361954941789,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.5695684416682182,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.5655347852533177,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.5633591591393445,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.5565755372277997,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.554785347777602,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.553483035641515,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.5493008477179454,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.547255246349952,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.544041907162873,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_lora_rite_llama32_openmath_r256/log_3.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_lora_rite_llama32_openmath_r256/log_3.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 1e-05,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "lora-rite",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:lora-rite:591339decb039c186e6c3f35|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.5275709630890142,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.5058022295181602,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.4909590062388384,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.4810979019904627,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.4722505834539862,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.4650044152075734,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.4589691798448985,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.4545409355018993,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.45084576471905913,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.44728351320964527,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.4440885953152183,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.4411920857446317,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.43805295514314524,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.4352066187551738,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.4328718486082627,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.4306302014241068,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.4286374233620771,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.4266513012015689,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.4246709706358895,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.42222340104658745,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.42089727802820126,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.41930070197196095,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.41703679172654434,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.4156584472637222,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.41430626502750983,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.4127064984966987,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.4111090714155705,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.41039624697742566,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.4090066292718388,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.4078606917136908,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.4066771392624837,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.40511577296841333,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.4039429245587716,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.40281012342415484,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.40112798333932653,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.40049203315369614,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_lora_rite_llama32_openmath_r256_lrext/log_0.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_lora_rite_llama32_openmath_r256_lrext/log_0.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.0003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "muon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:muon-lora:22e3edb6b882489cc938e2b7|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.5452369456689,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.5153998656633051,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.49789243049017073,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.48554608612031197,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.4757927936319135,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.4682783558022388,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.4610075232954547,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.4553495007206579,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.4499331188107629,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.4458263296603938,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.44185485824079457,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.4376526269480864,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.43432552493439597,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.43081798267411625,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.42814362634160663,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.42542691742577415,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.42314969640935457,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.4202027074151679,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.4180612534696094,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.41561116867742354,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.4135261902222272,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.4112542059628159,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.4096232343977517,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.4078348641649733,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.40558631786707566,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.40387238769567746,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.4026076611251,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.40105081766393397,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.399575342192443,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.3980920090239099,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.39708167873054667,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.39523834835748034,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.39435327720387303,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.3932772420386995,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.3914753568671692,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.3906336470865388,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_perfactor_polar_llama32_openmath_r256_bw/log_0.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_perfactor_polar_llama32_openmath_r256_bw/log_0.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.001,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "muon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:muon-lora:22e3edb6b882489cc938e2b7|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.514981519596546,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.4879216727685154,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.4725235459889774,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.462068155189799,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.4529172311277019,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.44607342115335236,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.43911182632246143,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.43533234611264204,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.4313407769255971,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.4272853956312013,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.4236758402127311,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.4202195538245464,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.417278707844803,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.4143133482906404,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.41299987469757893,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.4106474640502768,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.4094068463894031,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.40591558377746056,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.40493025735206195,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.40297036238890915,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.40098931812607896,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.3999760984674852,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.3974693896532493,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.3972713289480707,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.3943921329001188,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.3934906375363394,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.3929746975535695,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.3915029510876541,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.3907289670534063,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.3885475620965034,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.38762329014809466,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.3866306560054428,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.38686541909282474,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.38521290363774074,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.38410632053731614,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.38310745950277586,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_perfactor_polar_llama32_openmath_r256_bw/log_1.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_perfactor_polar_llama32_openmath_r256_bw/log_1.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/openmath_instruct_2_2m_packed_seq2048_llama32",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "meta-llama/Llama-3.2-1B",
+        "optimizer": "muon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:muon-lora:22e3edb6b882489cc938e2b7|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.528992403831574,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.5153258869423188,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.5040670380213137,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.4979642756004276,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.49222722166477395,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.48753107200252466,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.48469147008725555,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.480786761857862,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.4807194389376121,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.4775537988753599,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.4748343891366498,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.4738852076542945,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.473007130173123,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.47033647047332233,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.46964774179372376,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.46864756969164123,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.46764650918632755,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.46550113335067966,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.46325028773127225,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.4644594977061395,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.4610094267051793,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.46165872302971583,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.46060866790699917,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.4617117330337387,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.4608842699324295,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.4600200934959585,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.45836857658541796,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.4585712956996292,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.4578636298980828,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.457257827827059,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.4537856282502097,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.4547938159026421,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.4554893928493817,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.4548104088641338,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.45402971861252844,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.4534787867100552,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_perfactor_polar_llama32_openmath_r256_bw/log_2.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_perfactor_polar_llama32_openmath_r256_bw/log_2.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/opc_sft_stage2_all_packed_seq2048",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.0003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "allenai/OLMo-2-0425-1B",
+        "optimizer": "muon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:muon-lora:19c4396b386a9a0b1f5d437d|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.9075228606998919,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.8831413104147536,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.8686776229934995,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.8577730679622773,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.84932271297811,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.8424259489146035,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.8366208414068589,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.8312139495434303,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.826556246641819,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.8222851765406451,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.8185396191234028,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.8148415340865663,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.8117698021485177,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.809143815510775,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.8058169456797785,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.8033956351370742,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.800928864648552,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.7985335388171582,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.796454787332921,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.7941149762644658,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.7914278675387741,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.7904082168243701,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.7885709463116665,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.7871693620340068,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.7850144016746746,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.7828614452967281,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.7817409356357394,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.7798102945193492,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.7784679084245367,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.7771699563511012,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.77612025348461,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.77455731262263,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.7730377961169053,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.7720612883118062,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.770554489388369,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.7696337951664324,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_perfactor_polar_olmo_opc_r256_bw/log_0.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_perfactor_polar_olmo_opc_r256_bw/log_0.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/opc_sft_stage2_all_packed_seq2048",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.001,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "allenai/OLMo-2-0425-1B",
+        "optimizer": "muon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:muon-lora:19c4396b386a9a0b1f5d437d|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.874709511950284,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.8520496984395194,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.8389632324764426,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.8283744470117912,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.8203760211495731,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.8143312846893304,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.8086465646202806,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.803570320453125,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.8000416038385779,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.7954331763424121,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.7922078755419566,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.789302423804844,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.7863425648431815,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.7841067874059945,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.7811963296279845,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.7792436313298925,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.7776138345789274,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.774929508442584,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.7732280881010968,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.7711415783487535,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.7683685050855404,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.7678244957156907,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.7664750221790563,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.7646930446336173,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.7624838962164374,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.7611086598025134,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.7603415827509963,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.7584857200230809,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.7580453084434848,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.7567966904664418,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.7561635377380512,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.75507463256129,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.7530016979856715,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.7529275613615848,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.7514351225071491,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.7500327723751041,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_perfactor_polar_olmo_opc_r256_bw/log_1.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_perfactor_polar_olmo_opc_r256_bw/log_1.out"
+        }
+      ]
+    },
+    {
+      "config": {
+        "data_dir": "data/opc_sft_stage2_all_packed_seq2048",
+        "data_pipeline_version": "packed_v1.1",
+        "lora_init_b": "zero",
+        "lora_r": 256,
+        "lr": 0.003,
+        "max_steps": 9000,
+        "measurement_semantics_revision": "legacy_leaderboard.measurement.v1",
+        "model_name": "allenai/OLMo-2-0425-1B",
+        "optimizer": "muon-lora",
+        "seed": 0
+      },
+      "exact_id": "publication.exact.v1:muon-lora:19c4396b386a9a0b1f5d437d|lora_init_b=zero",
+      "history": [
+        {
+          "eval_loss": 0.8697054313642771,
+          "step": 250
+        },
+        {
+          "eval_loss": 0.8559246836483339,
+          "step": 500
+        },
+        {
+          "eval_loss": 0.8487218995946522,
+          "step": 750
+        },
+        {
+          "eval_loss": 0.8410446559783369,
+          "step": 1000
+        },
+        {
+          "eval_loss": 0.8382889576983683,
+          "step": 1250
+        },
+        {
+          "eval_loss": 0.8369113293573937,
+          "step": 1500
+        },
+        {
+          "eval_loss": 0.8319176238766794,
+          "step": 1750
+        },
+        {
+          "eval_loss": 0.8303799944767701,
+          "step": 2000
+        },
+        {
+          "eval_loss": 0.8280189467974399,
+          "step": 2250
+        },
+        {
+          "eval_loss": 0.8247985924034908,
+          "step": 2500
+        },
+        {
+          "eval_loss": 0.8239970286047995,
+          "step": 2750
+        },
+        {
+          "eval_loss": 0.8234513927366023,
+          "step": 3000
+        },
+        {
+          "eval_loss": 0.8222024884995213,
+          "step": 3250
+        },
+        {
+          "eval_loss": 0.8220498913301314,
+          "step": 3500
+        },
+        {
+          "eval_loss": 0.8210685844490291,
+          "step": 3750
+        },
+        {
+          "eval_loss": 0.8195716829483588,
+          "step": 4000
+        },
+        {
+          "eval_loss": 0.8204936297469738,
+          "step": 4250
+        },
+        {
+          "eval_loss": 0.8184419618671834,
+          "step": 4500
+        },
+        {
+          "eval_loss": 0.8173606245590189,
+          "step": 4750
+        },
+        {
+          "eval_loss": 0.8154452597761843,
+          "step": 5000
+        },
+        {
+          "eval_loss": 0.815731160015719,
+          "step": 5250
+        },
+        {
+          "eval_loss": 0.8166324785734622,
+          "step": 5500
+        },
+        {
+          "eval_loss": 0.8165482290145388,
+          "step": 5750
+        },
+        {
+          "eval_loss": 0.8137819699187411,
+          "step": 6000
+        },
+        {
+          "eval_loss": 0.8133329579427878,
+          "step": 6250
+        },
+        {
+          "eval_loss": 0.8132332861341434,
+          "step": 6500
+        },
+        {
+          "eval_loss": 0.8127502987301588,
+          "step": 6750
+        },
+        {
+          "eval_loss": 0.8123851143992961,
+          "step": 7000
+        },
+        {
+          "eval_loss": 0.8122406433599253,
+          "step": 7250
+        },
+        {
+          "eval_loss": 0.812649032680164,
+          "step": 7500
+        },
+        {
+          "eval_loss": 0.8128370459439641,
+          "step": 7750
+        },
+        {
+          "eval_loss": 0.8109057151307517,
+          "step": 8000
+        },
+        {
+          "eval_loss": 0.8103734368767552,
+          "step": 8250
+        },
+        {
+          "eval_loss": 0.8118278614556736,
+          "step": 8500
+        },
+        {
+          "eval_loss": 0.8087829431155938,
+          "step": 8750
+        },
+        {
+          "eval_loss": 0.8089915626566482,
+          "step": 9000
+        }
+      ],
+      "logical_id": "e1_perfactor_polar_olmo_opc_r256_bw/log_2.out",
+      "source_segments": [
+        {
+          "contributed_end_step": 9000,
+          "contributed_start_step": 250,
+          "physical_id": "e1_perfactor_polar_olmo_opc_r256_bw/log_2.out"
+        }
+      ]
     }
   ],
   "schema_version": 2,
@@ -122013,6 +124886,39 @@
       "optimizer_semantic_key": "publication.view.v1:diag-shampoo-polar-lora:87d616c64a9a7b94828978df",
       "style_key": "diag-Shampoo +polar ns=5 (f=10, β_c=0.99, δ=1e-4) -cw_nesterov",
       "view_key": "publication.view.v1:diag-shampoo-polar-lora:87d616c64a9a7b94828978df|lora_init_b=zero"
+    },
+    {
+      "exact_ids": [
+        "publication.exact.v1:lora-rite:591339decb039c186e6c3f35|lora_init_b=zero",
+        "publication.exact.v1:lora-rite:8843193874b56ecd40f63b96|lora_init_b=zero"
+      ],
+      "label": "LoRA-RITE",
+      "lora_init_b": "zero",
+      "optimizer_semantic_key": "publication.view.v1:lora-rite:ce3c0a79a5059fecafcd0c9e",
+      "style_key": "LoRA-RITE",
+      "view_key": "publication.view.v1:lora-rite:ce3c0a79a5059fecafcd0c9e|lora_init_b=zero"
+    },
+    {
+      "exact_ids": [
+        "publication.exact.v1:muon-lora:19c4396b386a9a0b1f5d437d|lora_init_b=zero",
+        "publication.exact.v1:muon-lora:22e3edb6b882489cc938e2b7|lora_init_b=zero"
+      ],
+      "label": "Muon PE=8",
+      "lora_init_b": "zero",
+      "optimizer_semantic_key": "publication.view.v1:muon-lora:b95bba74531a312d8727d40d",
+      "style_key": "Muon PE=8",
+      "view_key": "publication.view.v1:muon-lora:b95bba74531a312d8727d40d|lora_init_b=zero"
+    },
+    {
+      "exact_ids": [
+        "publication.exact.v1:imuon-lora:c59a96e52c5abf30a0a145b7|lora_init_b=zero",
+        "publication.exact.v1:imuon-lora:d421d865bd0b47cbc185d4d6|lora_init_b=zero"
+      ],
+      "label": "iMuon",
+      "lora_init_b": "zero",
+      "optimizer_semantic_key": "publication.view.v1:imuon-lora:3a81f5c939f7191282dbe1db",
+      "style_key": "iMuon",
+      "view_key": "publication.view.v1:imuon-lora:3a81f5c939f7191282dbe1db|lora_init_b=zero"
     }
   ]
 }

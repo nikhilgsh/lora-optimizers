@@ -61,11 +61,11 @@ def test_archive_generator_renders_archive_derived_workloads():
 def test_checked_in_archive_preserves_reviewed_evidence_counts():
     payload = json.loads(ARCHIVE.read_text())
 
-    assert len(payload["runs"]) == 717
-    assert sum(len(run["source_segments"]) for run in payload["runs"]) == 719
-    assert sum(len(run["history"]) for run in payload["runs"]) == 25_812
-    assert len(payload["variants"]) == 73
-    assert sum(len(variant["exact_ids"]) for variant in payload["variants"]) == 170
+    assert len(payload["runs"]) == 734
+    assert sum(len(run["source_segments"]) for run in payload["runs"]) == 736
+    assert sum(len(run["history"]) for run in payload["runs"]) == 26_424
+    assert len(payload["variants"]) == 76
+    assert sum(len(variant["exact_ids"]) for variant in payload["variants"]) == 176
 
 
 def test_olmo_opc_r64_pins_recorded_publication_pipeline():

@@ -3,6 +3,7 @@
 import inspect
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
 import pytest
 
 
@@ -43,9 +44,9 @@ def test_matched_precond_panel_excludes_unversioned_adamw(monkeypatch):
     plots.precond_panel(256, matched_revision=True)
 
     assert set(captured["arms"]) == {
-        "product: C_B=B^T P B, C_A=A Q A^T",
-        "one-sided: C_B=C_A=I",
-        "factorwise: C_B=P_A, C_A=Q_B",
+        plots._arms.PRECOND_PRODUCT_LABEL,
+        r"Identity: $C_B=C_A=I$",
+        r"Factorwise: $C_B=P_A,\ C_A=Q_B$",
     }
     assert captured["kwargs"] == {
         "target_label": None,
@@ -62,9 +63,21 @@ def test_priority_notebook_panels_execute_against_recorded_evidence(monkeypatch)
         ablation = plots.ablation_panel(256)
         derivation = plots.derivation_ablation_panel(256)
         preconditioner = plots.precond_panel(256)
+        trajectories = {
+            line.get_gid(): line for line in plt.gcf().axes[1].get_lines()
+        }
+        assert plt.gcf().axes[0].xaxis.label.get_fontsize() >= 14
+        assert min(
+            text.get_fontsize() for text in plt.gcf().legends[0].get_texts()
+        ) >= 11
+        assert to_rgba(trajectories["trajectory:AdamW"].get_color()) \
+            == to_rgba("black")
+        assert to_rgba(trajectories[
+            f"trajectory:{plots._arms.PRECOND_PRODUCT_LABEL}"
+        ].get_color()) != to_rgba("black")
     finally:
         plt.close("all")
 
-    assert "Polar-LoRA (kl-diag)" in set(ablation["variant"])
-    assert "PoLoRA: rxr=B^T P B, shared P,Q" in set(derivation["variant"])
-    assert "factorwise: C_B=P_A, C_A=Q_B" in set(preconditioner["variant"])
+    assert "PoLoRA" in set(ablation["variant"])
+    assert "PoLoRA" in set(derivation["variant"])
+    assert r"Factorwise: $C_B=P_A,\ C_A=Q_B$" in set(preconditioner["variant"])

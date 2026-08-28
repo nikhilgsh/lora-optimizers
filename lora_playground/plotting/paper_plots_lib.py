@@ -31,7 +31,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 from lora_playground.leaderboard import (
-    labeled_completed_runs, leaderboard_rows, leaderboard_rows_from_comparison,
+    leaderboard_rows_from_comparison,
     speedup_from_frac,
 )
 from lora_playground.comparison import VariantSpec, build_comparison
@@ -40,13 +40,12 @@ from lora_playground.loader import (
     logged_field_predicate,
     logs_signature,
 )
-from lora_playground.plotting import compare_variants_figure
-from lora_playground.plotting.labels import canonical_label
-from lora_playground.plotting.render import render_comparison
-from lora_playground.plotting.dedup import (
-    SourceCoherenceError,
-    assert_curve_source_coherent,
+from lora_playground.plotting.labels import (
+    canonical_label,
 )
+from lora_playground.plotting.paper_style import resolve_paper_styles
+from lora_playground.plotting.render import render_comparison
+from lora_playground.plotting.style import NOTEBOOK_RCPARAMS
 from lora_playground.publication_paper import (
     publication_view_panel,
     publication_workload_view_panel,
@@ -175,6 +174,7 @@ CELLS = [_cell_from_registry(*key) for key in _CELLS_ORDER]
 # at kernel start and cannot see a sweep that is still running.
 _RUNS_CACHE: dict[str, tuple] = {}   # where-fingerprint -> (logs signature, runs)
 _CATALOG_SNAPSHOT: tuple[str, RunCatalog] | None = None
+_NOTEBOOK_SIGNATURE: str | None = None
 
 
 def _fingerprint(v):
@@ -242,9 +242,10 @@ def cell_runs(where, refresh=False):
 
 def clear_runs_cache():
     """Drop the memo so the next panel re-reads from disk."""
-    global _CATALOG_SNAPSHOT
+    global _CATALOG_SNAPSHOT, _NOTEBOOK_SIGNATURE
     _RUNS_CACHE.clear()
     _CATALOG_SNAPSHOT = None
+    _NOTEBOOK_SIGNATURE = None
     _SIG_HOLD.clear()
 
 
@@ -277,6 +278,8 @@ _SIG_HOLD: dict[str, str] = {}
 
 
 def _logs_signature_now() -> str:
+    if _NOTEBOOK_SIGNATURE is not None:
+        return _NOTEBOOK_SIGNATURE
     if "sig" not in _SIG_HOLD:
         return logs_signature(str(ROOT / "logs"))
     return _SIG_HOLD["sig"]
@@ -285,6 +288,9 @@ def _logs_signature_now() -> str:
 @contextmanager
 def _held_logs_signature():
     """Freeze the tree signature for the duration of one panel."""
+    if _NOTEBOOK_SIGNATURE is not None:
+        yield
+        return
     outer = "sig" in _SIG_HOLD
     if not outer:
         _SIG_HOLD["sig"] = logs_signature(str(ROOT / "logs"))
@@ -295,16 +301,33 @@ def _held_logs_signature():
             _SIG_HOLD.pop("sig", None)
 
 
-@contextmanager
-def paper_plot_snapshot():
-    """Reuse one log-tree signature across a batch of related paper panels.
+def begin_notebook_snapshot(*, refresh: bool = False) -> str:
+    """Hold one physical log-tree snapshot across all notebook cells.
 
-    Individual notebook calls retain live-refresh behavior by default. Batch
-    renderers and regression profilers use this context so an active sweep
-    cannot invalidate the catalog midway through one measured operation list.
+    A paper render must not mix cells from different moments merely because an
+    unrelated sweep appended to ``logs/`` between cells.  Calling this from the
+    setup cell also avoids rescanning and rebuilding the entire catalog on each
+    such append.  Pass ``refresh=True`` when rerunning the setup cell to pick up
+    newly completed runs deliberately.
     """
-    with _held_logs_signature():
-        yield
+    global _CATALOG_SNAPSHOT, _NOTEBOOK_SIGNATURE
+    if _NOTEBOOK_SIGNATURE is None or refresh:
+        signature = logs_signature(str(ROOT / "logs"))
+        if signature != _NOTEBOOK_SIGNATURE:
+            _RUNS_CACHE.clear()
+            if (
+                _CATALOG_SNAPSHOT is not None
+                and _CATALOG_SNAPSHOT[0] != signature
+            ):
+                _CATALOG_SNAPSHOT = None
+        _NOTEBOOK_SIGNATURE = signature
+    return _NOTEBOOK_SIGNATURE
+
+
+def end_notebook_snapshot() -> None:
+    """Return panel calls to per-call live-tree freshness checks."""
+    global _NOTEBOOK_SIGNATURE
+    _NOTEBOOK_SIGNATURE = None
 
 
 def _dataset_predicate(key):
@@ -384,15 +407,34 @@ def _render_panel_comparison(
     horizon,
 ):
     """Render an already-built comparison without crossing a loader adapter."""
-    _fig, _table, summary = render_comparison(
-        comparison,
-        reference_id=reference_id,
-        target_id=target_id,
-        sigma_ref=SIGMA,
-        horizon=horizon,
-        show_partials=True,
-        suptitle=suptitle,
-    )
+    specs = tuple(comparison.variants)
+    style_tokens = {
+        spec.id: spec.style_key or spec.label
+        for spec in specs
+    }
+    styles_by_token = resolve_paper_styles(style_tokens.values())
+    colors = {
+        spec.id: styles_by_token[style_tokens[spec.id]]["color"]
+        for spec in specs
+    }
+    markers = {
+        spec.id: styles_by_token[style_tokens[spec.id]]["marker"]
+        for spec in specs
+    }
+    # Standard comparison panels have their own stable visual contract. Import
+    # order and long-lived notebook state must not restyle later panels.
+    with plt.rc_context(NOTEBOOK_RCPARAMS):
+        _fig, _table, summary = render_comparison(
+            comparison,
+            reference_id=reference_id,
+            target_id=target_id,
+            colors=colors,
+            markers=markers,
+            sigma_ref=SIGMA,
+            horizon=horizon,
+            show_partials=True,
+            suptitle=suptitle,
+        )
     plt.show()
 
     if target_id is None:
@@ -507,322 +549,6 @@ def _records_figure(arms, workload, ref_label, suptitle, *,
         return summary
 
 
-def has(where, common):
-    """Is there any run for this arm in this cell? Used to drop empty arms."""
-    pred = {**where, **common}
-    return any(pred_matches(cfg, pred) for cfg, _h in cell_runs(common))
-
-
-def _max_step(where, common):
-    """Furthest step any run of this arm reached, or None if the arm has no runs.
-
-    `has()` answers "does a run match"; this answers "did one FINISH", which is
-    the question the loss-vs-lr panel and the summary table actually ask.
-    """
-    pred = {**where, **common}
-    steps = [h[-1]["step"] for cfg, h in cell_runs(common)
-             if h and pred_matches(cfg, pred)]
-    return max(steps) if steps else None
-
-
-def _truncate(runs, horizon, keep_full=None):
-    """Cut every history at `horizon` steps, dropping runs that never reach it.
-
-    A panel comparing arms run to DIFFERENT horizons has to read them at a
-    matched step or it compares one arm's step-9000 loss against another's
-    step-2000 loss and calls the difference an effect. `train.py` defaults to
-    `lr_scheduler_type=constant` with `warmup_steps=0` (`train.py:452-453`) and
-    the sweep wrappers override neither, so the first N steps of a longer run
-    ARE an N-step run and this truncation is exact rather than approximate.
-    Re-check that if a schedule is ever introduced.
-
-    `keep_full` is a predicate on cfg naming runs to leave UNCUT. It exists for
-    the reference arm: AdamW is not one of the things being compared, it is the
-    scale the reader reads the others against, and cutting it at 2000 throws away
-    the part of its curve that says where the run ends up. Its full trajectory is
-    drawn while every COMPARED arm stays matched at `horizon`.
-
-    The cost of that is real and is why this is opt-in: the reference's own
-    `final` in the summary table is then its step-9000 loss while the compared
-    arms report step-`horizon`, so the speed target is computed against a longer
-    run. `_figure` therefore says so in the panel rather than leaving the reader
-    to infer it from the legend.
-    """
-    out = []
-    for cfg, hist in runs:
-        if keep_full is not None and keep_full(cfg):
-            out.append((cfg, hist))
-            continue
-        cut = [e for e in hist if e.get("step") is not None and e["step"] <= horizon]
-        if cut and max(e["step"] for e in cut) >= horizon:
-            out.append((cfg, cut))
-    return out
-
-
-def _figure(arms, common, ref_label, suptitle, target_label="AdamW", drop_empty=True,
-            horizon=None, trajectory_only=False, left_exclude=()):
-    """Every panel in this module funnels through here.
-
-    Passing prefetched_runs AND variant_key is what arms the ``assert_label_discriminates``
-    guard inside compare_variants_figure -- the per-variant loading path does not run it,
-    and that is how two arms silently merged for weeks. Do not add a panel that skips it.
-    """
-    with _held_logs_signature():
-        return _figure_inner(arms, common, ref_label, suptitle, target_label,
-                             drop_empty, horizon, trajectory_only,
-                             left_exclude)
-
-
-def _figure_inner(arms, common, ref_label, suptitle, target_label, drop_empty, horizon,
-                  trajectory_only=False, left_exclude=(), panel_runs=None):
-    panel_runs = cell_runs(common) if panel_runs is None else panel_runs
-    base_key = _canonical_variant_key(common, arms)
-    if drop_empty:
-        present = {base_key(cfg) for cfg, hist in panel_runs if hist}
-        missing = [label for label in arms if label not in present]
-        if missing:
-            print("no data yet (omitted):", ", ".join(missing))
-        arms = {k: v for k, v in arms.items() if k not in missing}
-        base_key = _canonical_variant_key(common, arms)
-
-    # Explicitly rejected sources have been removed above. Every remaining arm
-    # must be coherent; an unpinned mixed-source curve fails rather than being
-    # joined or silently selecting one source.
-    # REPORTED, not raised. The property it checks is real -- joining lr points
-    # measured under different code snapshots into one line is a genuine hazard,
-    # and the reader should be told. But raising kills the figure, and on this
-    # corpus that is nearly every figure: measured just now, 6 of 7 panels
-    # (precond_panel at 256/64, precond_beta2_panel, msign_panel, panel_n(12),
-    # ablation_panel) failed with SourceCoherenceError, because arms here
-    # accumulate over weeks and a 7-point lr grid routinely spans several
-    # commits. A guard that fires on 6 of 7 healthy panels is not separating
-    # good from bad; it stops the notebook.
-    #
-    # So the mixing is printed with the offending label and its source hashes,
-    # and the figure still renders. Archive-backed panels do not pass through
-    # this compatibility path; their named projection already owns cohort
-    # membership and stable optimizer identities.
-    try:
-        assert_curve_source_coherent(
-            panel_runs, base_key, bucket_keys=("lora_r",),
-        )
-    except SourceCoherenceError as exc:
-        print(f"mixed execution sources (figure still drawn): {exc}")
-    # An arm whose runs all stopped short of max_steps is the SILENT case, and it
-    # is not covered by `missing` above: `has()` only asks whether any run matches
-    # the predicate, so an arm with five in-flight runs looks present. But
-    # `allow_partial` files those into compare_variants_figure's
-    # `per_variant_partial`, which reaches the trajectory panel ONLY -- the
-    # final-loss-vs-lr panel and the returned summary_df are built from complete
-    # runs alone. Measured before this print existed: precond_panel declared 4 arms
-    # and returned 3 rows, msign_panel declared 5 and returned 2, with no output at
-    # all. A reader could not tell "not run here" from "still running".
-    h = HORIZON if horizon is None else horizon
-    in_flight = {}
-    for label in arms:
-        steps = [hist[-1]["step"] for cfg, hist in panel_runs
-                 if hist and base_key(cfg) == label]
-        if steps and max(steps) < h:
-            in_flight[label] = max(steps)
-    if in_flight:
-        print(f"in flight (trajectory panel only, absent from the loss-vs-lr panel "
-              f"and the summary table until {h} steps): "
-              + ", ".join(f"{k} @{n}" for k, n in in_flight.items()))
-    runs = panel_runs
-    if horizon is not None:
-        # The reference arm keeps its full trajectory. It is the scale the other
-        # arms are read against, not one of the things being compared, and
-        # cutting it at `horizon` discards exactly the part that says where the
-        # workload ends up. Say so in the panel: its `final` in the table below
-        # is then a longer run's than the compared arms'.
-        keep_full = ((lambda c: base_key(c) == target_label)
-                     if target_label in arms else None)
-        runs = _truncate(runs, horizon, keep_full=keep_full)
-        if keep_full is not None:
-            print(f"read at step {horizon}; {target_label!r} is the reference and "
-                  f"keeps its full {HORIZON}-step curve, so its 'final' below is "
-                  f"not step-matched to the other arms.")
-        else:
-            print(f"read at step {horizon} (every arm truncated).")
-    fig, _t, sdf = compare_variants_figure(
-        arms, common_where=common, ref_label=ref_label,
-        logs_root=str(ROOT / "logs"), sigma_ref=SIGMA, max_steps=h,
-        allow_partial=True, allow_custom_labels=True, target_label=target_label,
-        suptitle=suptitle,
-        prefetched_runs=runs, variant_key=base_key)
-    plt.show()
-    if target_label in arms:
-        print(speedup_table(
-            arms, common, baseline_label=target_label, horizon=h,
-            runs=panel_runs, variant_key=base_key,
-        )[0])
-    else:
-        print(f"no speedup table: '{target_label}' is not one of this panel's arms, "
-              f"so there is no speed target. Pass target_label=<an arm> to get one.")
-    return sdf
-
-
-# --------------------------------------------------------------------------------------
-# Coverage: runs that exist in a cell but that no arm claimed
-# --------------------------------------------------------------------------------------
-# Every arm predicate fails the same way -- by matching FEWER runs, silently. An
-# arm that pins a field the runs disagree on is indistinguishable, in a rendered
-# panel, from an arm that legitimately has no data yet. Three instances of that
-# in one session:
-#
-#   arms.ADAMW pinned `cw_nesterov=True`, a flag LoRAPlusAdamW never reads, and
-#   every adamw run at 5 of the 13 CELLS logs False -- so those cells rendered
-#   with NO baseline and leaderboard_rows returned a NaN speed target.
-#
-#   arms.NOPRODUCT has to admit two optimizer names for one branch
-#   (kl-diag-polar-lora and kl-shampoo-polar-lora); pinning one dropped half the
-#   arm, and the r16 factorwise cells matched nothing while the figure showed the
-#   arm as absent.
-#
-#   logs/e2_precond_r16_postfix_xl had no run_info/meta.json, so its 4 completed
-#   runs were dropped by load_manifests(strict=False) before any predicate ran.
-#
-# The first two are invisible to a manifest check and the third is invisible to a
-# predicate check, so the panel reports both: what exists in this cell, and which
-# pinned field kept each unclaimed run out.
-_COVERAGE_MAX_ROWS = 10
-# Fields worth naming in the report. A run differs from an arm on dozens of
-# fields it was never meant to match, so the diagnostic is only useful if it
-# names the arm that is CLOSEST and only the fields that separate them.
-_COVERAGE_IDENT = ("optimizer", "precond", "msign", "lr", "lora_r", "max_steps")
-
-
-def _closest_arm(cfg, arms):
-    """``(arm_label, [mismatching field descriptions])`` for the nearest arm.
-
-    "Nearest" is fewest mismatching pinned fields. That is what turns "this run
-    matched nothing" into "this run matched nothing because ADAMW pins
-    cw_nesterov=True and the run logs False", which is the actionable form.
-    """
-    best = None
-    for label, pred in arms.items():
-        diffs = []
-        for k, want in pred.items():
-            # `arms.field_matches` is THE definition of what a pin means. This
-            # used to re-implement the three branches, and the two drifted: a
-            # list-vs-list equality branch was added to the matcher and not to
-            # the copy here, so this reported `arm wants [], run has []` as a
-            # mismatch on a field that matches -- a diagnostic contradicting the
-            # predicate it exists to explain.
-            # No blanket try/except here. A bare `except Exception: ok = False`
-            # turned a NameError on `field_matches` into "every pinned field
-            # mismatches", i.e. the diagnostic blamed all ~130 pins instead of
-            # failing. Only a CALLABLE pin can legitimately raise on a value it
-            # was not written for; everything else must surface.
-            if callable(want):
-                try:
-                    ok = field_matches(cfg, k, want)
-                except Exception:
-                    ok = False
-            else:
-                ok = field_matches(cfg, k, want)
-            if not ok:
-                diffs.append(f"{k}: arm wants {want!r}, run has {cfg.get(k, '<absent>')!r}")
-        if best is None or len(diffs) < len(best[1]):
-            best = (label, diffs)
-    return best if best else ("<no arms>", [])
-
-
-def coverage_report(
-    arms,
-    common,
-    *,
-    horizon=HORIZON,
-    detail=False,
-    runs=None,
-):
-    """Text naming the runs in this cell that no arm's predicate claimed.
-
-    Returns "" when every run is claimed, so a clean cell prints nothing.
-
-    TERSE BY DEFAULT — one line — because most unclaimed runs are not a bug.
-    A paper panel is SELECTIVE: `Llama-3.2-1B/openmath/r256` holds 139 completed
-    runs spanning about 35 distinct configurations (every ablation ever run at
-    that rank), and `PANEL_ARMS` deliberately plots four of them. Printing ten
-    rows plus "and 114 more" under every such panel buries the cells where the
-    omission IS a bug, which is the whole point of the check: the signal is a
-    cell whose count jumps after a sweep lands, not a cell with a large count.
-
-    `detail=True` restores the per-run diagnosis — the closest arm and the
-    fields separating it — which is what to reach for once a count looks wrong.
-    """
-    runs = cell_runs(common) if runs is None else runs
-    unclaimed = [(cfg, hist) for cfg, hist in runs
-                 if not any(pred_matches(cfg, {**common, **pred})
-                            for pred in arms.values())]
-    if not unclaimed:
-        return ""
-    head = (f"{len(unclaimed)} of {len(runs)} runs in this cell are outside the "
-            f"{len(arms)} plotted arm(s)")
-    if not detail:
-        return (f"{head} — `coverage_report(arms, common, detail=True)` names them "
-                f"and the field that excluded each.")
-    lines = [f"UNCLAIMED: {head}. Each is absent from the figure and the table above."]
-    for cfg, hist in unclaimed[:_COVERAGE_MAX_ROWS]:
-        ident = " ".join(f"{k}={cfg.get(k)!r}" for k in _COVERAGE_IDENT if k in cfg)
-        last = max(hist, key=lambda e: e.get("step", 0)).get("step", 0) if hist else 0
-        label, diffs = _closest_arm(cfg, arms)
-        why = ("; ".join(diffs[:3]) + (f"; +{len(diffs) - 3} more" if len(diffs) > 3 else "")
-               if diffs else "no field mismatch -- check the dedup, not the predicate")
-        lines.append(f"  step {last}  {ident}")
-        lines.append(f"     closest arm {label!r}: {why}")
-    if len(unclaimed) > _COVERAGE_MAX_ROWS:
-        lines.append(f"  ... and {len(unclaimed) - _COVERAGE_MAX_ROWS} more unclaimed runs "
-                     f"(raise _COVERAGE_MAX_ROWS to see them)")
-    return "\n".join(lines)
-
-
-# --------------------------------------------------------------------------------------
-# Speed-to-target table
-# --------------------------------------------------------------------------------------
-def speedup_table(arms, common, *, baseline_label="AdamW", horizon=HORIZON,
-                  runs=None, variant_key=None):
-    """``(text, rows, target)`` for one cell's arms, keyed on speedup-vs-baseline.
-
-    This is the metric optimizer decisions are made on -- HORIZON / (steps to
-    reach the baseline arm's best final loss), per ``docs/notes/leaderboard.md``
-    -- and `_figure` prints it under every panel so a panel is never read off
-    final loss alone. Reading loss instead understates the effect by a lot: at
-    the Llama-3.2-1B / openmath / r16 cell the `factorwise` precond arm is
-    0.0034 above `one-sided` in final loss, which is 1.10x against 1.26x in
-    speedup -- a 2.6x cut in the gain over AdamW.
-
-    Every arm, the baseline included, must come from ``arms.py``: it pins all of
-    `OptimizerConfig`, whereas a hand-typed ``{"optimizer": "adamw"}`` admits the
-    deliberate `beta2` grid alongside the shipped baseline (6 distinct AdamW
-    `series_id`s at one lr) and `labeled_completed_runs` raises
-    `LabelCollisionError`. Loading goes through `cell_runs`, so the panel above
-    and this table always read the same snapshot.
-    """
-    if baseline_label not in arms:
-        raise ValueError(
-            f"baseline_label={baseline_label!r} is not in arms {sorted(arms)}; "
-            f"the speed target is the baseline arm's best final loss, so the "
-            f"baseline has to be one of the arms being loaded.")
-    # Truncated to `horizon` for the same reason `_figure` truncates: a table
-    # comparing arms run to different lengths must read them at a matched step,
-    # or it quotes one arm's step-9000 loss beside another's step-2000 loss.
-    runs = cell_runs(common) if runs is None else runs
-    if horizon != HORIZON:
-        runs = _truncate(runs, horizon)
-    variant_key = variant_key or variant_key_fn(common, arms)
-    labeled = labeled_completed_runs(
-        runs, variant_key, horizon=horizon)
-    rows, target = leaderboard_rows(
-        labeled, horizon=horizon, baseline_label=baseline_label)
-    for r in rows:
-        r["speedup"] = speedup_from_frac(r["frac_best_lr"])
-        r["speedup_lr_avg"] = speedup_from_frac(r["frac_lr_avg"])
-    # NaN speedup means "never reached the target", which sorts last, not first.
-    rows.sort(key=lambda r: math.inf if math.isnan(r["speedup"]) else -r["speedup"])
-    return _speedup_text(rows, target, baseline_label, horizon), rows, target
-
-
 def _fmt_x(v):
     return "—" if v is None or math.isnan(v) else f"{v:.2f}x"
 
@@ -847,18 +573,18 @@ def _speedup_text(rows, target, baseline_label, horizon=HORIZON):
 # Panels
 # --------------------------------------------------------------------------------------
 def panel(name, model, key, rank):
-    """Archived AdamW-vs-PoLoRA comparison at one declared workload."""
+    """Archived primary optimizer comparison at one declared workload."""
     from lora_playground.workloads import find_workload
     workload = find_workload(model, key, rank)
     archived = publication_workload_view_panel(
-        "paper.adamw_polora.all_workloads.v1",
+        "paper.e1_comparison.all_workloads.v1",
         workload,
     )
     return _render_panel_comparison(
         archived.comparison,
         reference_id=archived.reference_id,
         target_id=archived.target_id,
-        target_label="Adam",
+        target_label="AdamW",
         suptitle=name,
         horizon=workload.horizon,
     )
@@ -880,8 +606,15 @@ def rank_lr_panel(
     if model != "meta-llama/Llama-3.2-1B" or data_key != "openmath":
         raise ValueError("the publication rank figure is defined for Llama/openmath")
     from lora_playground.plotting.paper_figs import fig3
+    from lora_playground.plotting.style import apply_notebook_style
 
-    return fig3(ranks=tuple(ranks), figsize=(10.5, 4.4))
+    # paper_figs installs manuscript-sized rcParams when imported. Restore the
+    # intentional notebook style before drawing, and do not overwrite the
+    # manuscript's checked-in figure as a side effect of viewing this panel.
+    apply_notebook_style()
+    fig = fig3(ranks=tuple(ranks), figsize=(13, 6.0), save=False)
+    plt.show()
+    return fig
 
 
 def ablation_panel(rank=256):
@@ -891,8 +624,8 @@ def ablation_panel(rank=256):
     return _records_figure(
         _arms.ABLATION_ARMS,
         workload,
-        "Polar-LoRA (kl-diag)",
-        f"E2 ablation - Llama-3.2-1B openmath r{rank}",
+        _arms.POLORA_LABEL,
+        f"Component ablation — Llama-3.2-1B openmath, r={rank}",
         target_label=None,
     )
 
@@ -904,9 +637,9 @@ def derivation_ablation_panel(rank=256):
     return _records_figure(
         _arms.DERIVATION_ARMS,
         workload,
-        "PoLoRA: rxr=B^T P B, shared P,Q",
-        f"Derivation: orthogonalization and metric power - "
-        f"Llama-3.2-1B openmath r{rank}",
+        _arms.POLORA_LABEL,
+        "Derivation ablations — matrix sign and metric power — "
+        f"Llama-3.2-1B openmath, r={rank}",
     )
 
 
@@ -932,8 +665,8 @@ def precond_panel(rank=256, model="meta-llama/Llama-3.2-1B",
             if not matched_revision or label != "AdamW"
         },
         workload,
-        "product: C_B=B^T P B, C_A=A Q A^T",
-        f"The r x r metric slot - {model_label} {data_key} r{rank}",
+        _arms.PRECOND_PRODUCT_LABEL,
+        rf"The $r\times r$ metric slot — {model_label} {data_key}, $r={rank}$",
         target_label=(None if matched_revision else "AdamW"),
         semantic_view=("precond_matched" if matched_revision else "precond"),
         measurement_semantics_revision=(
@@ -951,7 +684,7 @@ def msign_panel(rank=256):
         raise ValueError("paper.msign.v1 is sealed only for rank 256")
     return _archive_figure(
         "paper.msign.v1",
-        "Diagonal msign - Llama-3.2-1B openmath r256",
+        "Diagonal matrix sign — Llama-3.2-1B openmath, $r=256$",
     )
 
 
@@ -961,7 +694,8 @@ def magnitude_rule_panel(rank=256):
         raise ValueError("paper.magnitude_rule.v1 is sealed only for rank 256")
     return _archive_figure(
         "paper.magnitude_rule.v1",
-        "Magnitude rule: naive vs PoLoRA - Llama-3.2-1B openmath r256",
+        "Magnitude rule — naive vs. PoLoRA — "
+        "Llama-3.2-1B openmath, $r=256$",
     )
 
 
@@ -971,7 +705,7 @@ def beta2_panel(rank=256):
         raise ValueError("paper.polora_beta2.v1 is sealed only for rank 256")
     return _archive_figure(
         "paper.polora_beta2.v1",
-        "Protagonist beta2 sweep - Llama-3.2-1B openmath r256",
+        "PoLoRA $\\beta_2$ sweep — Llama-3.2-1B openmath, $r=256$",
     )
 
 
@@ -1015,9 +749,9 @@ def precond_beta2_panel(rank=16):
     return _records_figure(
         _arms.PRECOND_BETA2_ARMS,
         workload,
-        "one-sided, b2=0.99",
-        f"Estimation noise in the r x r slot: curvature_beta x precond "
-        f"- Llama-3.2-1B openmath r{rank}",
+        r"Identity, $\beta_2=0.99$",
+        rf"Estimation noise in the $r\times r$ slot — "
+        rf"$\beta_2$ by metric structure — Llama-3.2-1B openmath, $r={rank}$",
         target_label="AdamW",
         semantic_view="precond_beta2",
     )
@@ -1029,5 +763,5 @@ def adamw_beta2_panel(rank=256):
         raise ValueError("paper.adamw_beta2.v1 is sealed only for rank 256")
     return _archive_figure(
         "paper.adamw_beta2.v1",
-        "AdamW beta2 control - Llama-3.2-1B openmath r256",
+        "AdamW $\\beta_2$ control — Llama-3.2-1B openmath, $r=256$",
     )
