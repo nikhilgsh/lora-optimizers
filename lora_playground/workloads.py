@@ -240,6 +240,26 @@ WORKLOADS: list[Workload] = [
     Workload("Qwen/Qwen3-0.6B-Base", "openwebmath", 64, "Qwen3-0.6B", _OPENWEBMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
 ]
 
+# Cells used by live mechanism panels but intentionally absent from the E1
+# leaderboard returned by iter_workloads(). They still use the canonical
+# Workload predicates and are resolved by find_workload().
+ANALYSIS_WORKLOADS: list[Workload] = [
+    Workload("Qwen/Qwen2.5-1.5B", "openmath", 16, "Qwen2.5-1.5B", _OPENMATH_DISPLAY, 9000, _SIGMA, True, _PUBLICATION_PIPELINE),
+]
+
+
+def all_workloads() -> tuple[Workload, ...]:
+    """Every DECLARED workload, leaderboard and analysis-only alike.
+
+    The distinction the two lists draw is about the E1 leaderboard, not about
+    what the codebase knows: `iter_workloads()` answers "which cells does the
+    leaderboard publish", and this answers "which cells are declared at all".
+    Anything asking the second question -- `find_workload`, and the disk-audit
+    that fails on an undeclared cell -- has to see both, or an analysis-only
+    cell reads as a finished campaign nobody declared.
+    """
+    return (*WORKLOADS, *ANALYSIS_WORKLOADS)
+
 
 def discover_cells(logs_root: str | None = None) -> dict[tuple[str, str, int], int]:
     """``{(model_name, dataset, rank): completed_run_count}`` found in logs/.
@@ -314,7 +334,7 @@ def find_workload(
     """
     matches = [
         wl
-        for wl in WORKLOADS
+        for wl in all_workloads()
         if (
             model_name in (wl.model_name, wl.model_display)
             and wl.dataset == dataset

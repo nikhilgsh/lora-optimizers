@@ -163,7 +163,21 @@ def field_matches(cfg: dict, field: str, want) -> bool:
         # inspect a recorded value, and calling it on a default it has never
         # seen is a guess. This is the `lambda v: not v` case that excluded 46
         # runs before the live/frozen arms were separated by label instead.
-        if callable(want) or field not in (defaults := _config_defaults()):
+        if callable(want):
+            return False
+        # `precond` is the one field whose absent value is not the dataclass
+        # default: `CurvatureWhitenLoRA.__init__` resolves it as
+        # `precond or ("product" if diag_metric else "factorwise")`
+        # (optim.py:1713), so a `kl-diag-polar-lora` run that predates the flag
+        # RAN product while the dataclass default is None. Asking the spec is
+        # what `paper_view_semantics.effective_precond` already does; without it
+        # the four `PROTO_BETA2_ARMS` curvature_beta arms matched none of their
+        # eight recorded runs and rendered as empty series.
+        if field == "precond":
+            from ..optim_specs import resolved_precond
+            resolved = resolved_precond(cfg)
+            return resolved is not None and _value_matches(resolved, want)
+        if field not in (defaults := _config_defaults()):
             return False
         return _value_matches(defaults[field], want)
     return _value_matches(cfg[field], want)

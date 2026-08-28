@@ -21,9 +21,17 @@ repo_root=$(git rev-parse --show-toplevel)
 }
 echo "execution_root=$repo_root"
 echo "execution_commit=$(git rev-parse HEAD)"
-[[ -z "$(git status --short)" ]] || {
-    echo "execution worktree is dirty" >&2
-    git status --short >&2
+# Scope the dirty check to the LOAD-BEARING closure, not the whole tree. A bare
+# `git status --short` aborts on any untracked scratch file -- a preview PNG, a
+# half-written note -- none of which the run reads, and this tree is rarely
+# empty by that measure (38 entries when this was written).
+# `scripts/check_clean_tree.sh` delegates to
+# `lora_playground.execution_scope check-clean`, the same import-closure logic
+# the loader uses at analysis time, with the contract that anything it accepts
+# produces a cfg with execution_source_dirty=False and therefore loads.
+# FORCE_DIRTY=1 is its documented override.
+scripts/check_clean_tree.sh || {
+    echo "execution worktree is dirty in load-bearing paths" >&2
     exit 2
 }
 mkdir -p slurm_logs disbatch_logs

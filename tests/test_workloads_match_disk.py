@@ -19,6 +19,7 @@ import pytest
 
 import lora_playground.plotting.paper_plots_lib as P
 from lora_playground.workloads import (
+    all_workloads,
     LEADERBOARD_CORPORA,
     discover_cells,
     iter_workloads,
@@ -34,7 +35,15 @@ def discovered():
 
 
 def _declared():
-    return {(w.model_name, w.dataset, w.rank) for w in iter_workloads()}
+    """Every declared cell, leaderboard and analysis-only alike.
+
+    `iter_workloads()` is the E1 LEADERBOARD set; a cell declared only in
+    `ANALYSIS_WORKLOADS` (Qwen2.5-1.5B/openmath/r16, used by the live
+    mechanism panels) is still declared, and `find_workload` resolves it.
+    Reading the leaderboard set alone reported its 30 completed runs as a
+    finished campaign nobody declared.
+    """
+    return {(w.model_name, w.dataset, w.rank) for w in all_workloads()}
 
 
 def test_every_cell_on_disk_is_declared(discovered):

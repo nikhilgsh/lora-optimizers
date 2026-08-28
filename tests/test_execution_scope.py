@@ -184,7 +184,11 @@ _DYNAMIC_IMPORT_PATTERNS = [
     # getattr(some_mod, "lora_playground_member")
     re.compile(r"getattr\s*\([^)]*['\"]lora_playground"),
     # Bare string literals that LOOK like dotted module paths into the project.
-    re.compile(r"['\"]lora_playground\.[a-zA-Z_]"),
+    # The literal must CLOSE on the path: `"lora_playground.optim"` is an
+    # import target, whereas `"lora_playground.lmo_diagnostics to score cheap
+    # substitutes "` is an argparse help string that happens to name a module,
+    # and flagging it reported prose as a dynamic import forever.
+    re.compile(r"['\"]lora_playground\.[A-Za-z_][A-Za-z0-9_.]*['\"]"),
 ]
 
 
@@ -294,8 +298,12 @@ def test_compute_execution_provenance_smoke():
     root = project_root()
     snapshot = {}
     snapshot_sha = {}
-    # Build a snapshot from disk (test-time only).
-    for p in (root / "lora_playground").glob("*.py"):
+    # Build a snapshot from disk (test-time only). RECURSIVE, matching
+    # `_source_snapshot`'s own disk fallback: the import closure reaches
+    # `lora_playground/third_party/imuon_muon.py` (the vendored iMuon optimizer
+    # that `imuon-lora` runs verbatim), and a non-recursive glob left those two
+    # files out of the snapshot while the closure still demanded them.
+    for p in (root / "lora_playground").rglob("*.py"):
         rel = str(p.relative_to(root))
         content = p.read_bytes()
         snapshot[rel] = content

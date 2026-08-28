@@ -77,17 +77,21 @@ def best_at_m1(runs, optimizer: str, lora_r: int) -> float | None:
 # Headline numbers (m=1, step=2000, seed=0). The r=16 values reflect the
 # current loader's view: newest-wins across every live group, including
 # diagnostics reruns of the same configs that produced slightly different
-# final losses (~0.002 deltas). The pre-loader-migration synthesis cited
-# the lr_sweep_2k values for r=16 (0.7579/0.7564/0.7572/0.7546); under the
-# new dedup rule the diagnostics groups (h1_pre_probe_2k etc.) win on
-# submitted_at. r=64 values are unchanged.
+# final losses (~0.002 deltas). Three r=16 entries were once set to the
+# diagnostics groups' values (0.7601/0.7581/0.7590) on the reasoning that those
+# groups win the dedup tiebreak on `submitted_at`. They cannot: `submitted_at`
+# is None on every one of the 22 legacy adamw r=16 2k runs, because those
+# predate the manifest `submit.sh` writes, so `best_at_m1` returns the MINIMUM
+# and that is the lr_sweep_2k value. The r=16 entries are back to
+# 0.7579/0.7564/0.7572/0.7546, which is what `optimizer_synthesis.md` and the
+# repo CLAUDE.md both cite. r=64 values were never changed.
 # Format: (optimizer, lora_r, expected_final, source_section)
 HEADLINE_NUMBERS = [
-    ("adamw",                     16, 0.7601, "AdamW r=16 baseline"),
+    ("adamw",                     16, 0.7579, "AdamW r=16 baseline"),
     ("adamw",                     64, 0.7550, "AdamW r=64 baseline"),
-    ("adam-lin-lora",             16, 0.7581, "pre-Adam Sylvester r=16"),
+    ("adam-lin-lora",             16, 0.7564, "pre-Adam Sylvester r=16"),
     ("adam-lin-lora",             64, 0.7527, "pre-Adam Sylvester r=64"),
-    ("adam-scaled-lora",          16, 0.7590, "pre-Adam Gram r=16"),
+    ("adam-scaled-lora",          16, 0.7572, "pre-Adam Gram r=16"),
     ("adam-scaled-lora",          64, 0.7506, "pre-Adam Gram r=64"),
     ("adam-polar-product-lora",   16, 0.7546, "AdamPolarProduct r=16"),
     ("adam-polar-product-lora",   64, 0.7454, "AdamPolarProduct r=64 (HEADLINE)"),

@@ -64,6 +64,29 @@ def _polar_quality_tag(cfg: dict) -> str:
     return f" {prefix}={n}"
 
 
+def effective_picard_iters(cfg: dict) -> int:
+    """The Picard cross-coupling count ``k`` the run actually used.
+
+    Four spellings, in decreasing authority. ``_derived`` carries what the
+    optimizer itself emitted (``optim.py:6447`` logs ``int(self.picard_iters)``),
+    so it is the ground truth where present; ``picard_iters_override`` and
+    ``picard_iters`` are constructor inputs and can lag it; 1 is the default.
+
+    Named because two callers resolved it differently and disagreed: a caller
+    that stopped at ``picard_iters_override`` and fell back to the string
+    ``"?"`` labelled six `chord-direction` runs ``k=?`` -- their recorded
+    ``picard_iters`` was 3 or absent -- while series identity kept them
+    distinct, giving 20 label collisions on one panel.
+    """
+    derived = cfg.get("_derived") or {}
+    for value in (derived.get("effective_picard_iters"),
+                  cfg.get("picard_iters_override"),
+                  cfg.get("picard_iters")):
+        if value is not None:
+            return int(value)
+    return 1
+
+
 def _axes(cfg: dict) -> dict | None:
     """Extract the distinguishing axes from a run cfg. Returns None for
     optimizers outside the chord-tight family (and AdamW handled by callers).
@@ -76,8 +99,7 @@ def _axes(cfg: dict) -> dict | None:
         return None
     ns = cfg.get("muon_ns_steps")
     pm = cfg.get("polar_method")
-    k = cfg.get("_derived", {}).get(
-        "effective_picard_iters", cfg.get("picard_iters_override")) or 1
+    k = effective_picard_iters(cfg)
     if cfg.get("precond_delta_relative"):
         damp_kind, damp_val = "epsrel", cfg.get("precond_delta")
     elif cfg.get("ssc_kappa") is not None:
