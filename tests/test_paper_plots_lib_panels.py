@@ -91,3 +91,31 @@ def test_priority_notebook_panels_execute_against_recorded_evidence(monkeypatch)
     reported = set(preconditioner["variant"])
     assert reported <= declared, reported - declared
     assert {"AdamW", plots._arms.PRECOND_PRODUCT_LABEL} <= reported
+
+
+def test_arm_matching_ignores_the_optimizer_impl_revision():
+    """An arm names an algorithm choice, not the code revision that ran it.
+
+    `labels._shared_knobs` suffixes ` impl-rev=N` so that two revisions of one
+    config stay two series. Arm predicates come from `arms.arm()`, which pins
+    OptimizerConfig fields; `optimizer_impl_revision` is not one (no CLI flag
+    sets it -- `run_schema` stamps it from the optimizer class), so the
+    predicate side can never carry the suffix. Comparing FULL labels therefore
+    matched no arm for any run recording revision 2, which emptied the
+    reference arm of the Qwen2.5/openmath/r16 matched panel and raised
+    "has no recorded reference arm".
+    """
+    from lora_playground.plotting.labels import (
+        canonical_arm_label, canonical_label,
+    )
+
+    cfg = {"optimizer": "kl-diag-polar-lora", "precond": "product",
+           "diag_metric": True, "use_polar": True}
+    versioned = {**cfg, "optimizer_impl_revision": 2}
+
+    assert canonical_label(versioned) != canonical_label(cfg), (
+        "series identity must still see the revision"
+    )
+    assert canonical_arm_label(versioned) == canonical_arm_label(cfg), (
+        "arm identity must not see the revision"
+    )

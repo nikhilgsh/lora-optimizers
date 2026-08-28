@@ -40,9 +40,7 @@ from lora_playground.loader import (
     logged_field_predicate,
     logs_signature,
 )
-from lora_playground.plotting.labels import (
-    canonical_label,
-)
+from lora_playground.plotting.labels import canonical_arm_label
 from lora_playground.plotting.paper_style import resolve_paper_styles
 from lora_playground.plotting.render import render_comparison
 from lora_playground.plotting.style import NOTEBOOK_RCPARAMS
@@ -376,7 +374,7 @@ def _canonical_variant_key(common, arms):
             else (optimizer,)
         )
         for optimizer_name in optimizers:
-            label = canonical_label({**predicate, "optimizer": optimizer_name})
+            label = canonical_arm_label({**predicate, "optimizer": optimizer_name})
             if label is None:
                 continue
             previous = by_canonical.setdefault(label, editorial_label)
@@ -389,7 +387,7 @@ def _canonical_variant_key(common, arms):
     def variant_key(cfg):
         if not pred_matches(cfg, common):
             return None
-        return by_canonical.get(canonical_label(cfg))
+        return by_canonical.get(canonical_arm_label(cfg))
 
     return variant_key
 

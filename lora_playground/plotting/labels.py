@@ -18,6 +18,8 @@ Both derive from one field extractor (`_axes`) so they can never diverge.
 """
 from __future__ import annotations
 
+import re
+
 from ..publication_identity import lora_init_label_suffix
 from .colors import OPTIM_COLORS, series_colors
 
@@ -264,6 +266,30 @@ def _residual_knobs(cfg: dict) -> str:
         else:
             out.append(f"{f}={_fmt(v)}")
     return (" " + " ".join(out)) if out else ""
+
+
+_IMPL_REV_TOKEN = re.compile(r" impl-rev=\d+")
+
+
+def canonical_arm_label(cfg: dict) -> str | None:
+    """`canonical_label` minus the code-revision token, for ARM matching.
+
+    An arm names an algorithm CHOICE -- which branch fills the r x r slots,
+    which magnitude rule -- and `arms.arm()` pins exactly the config fields
+    that express one. `optimizer_impl_revision` is not such a field: no CLI
+    flag sets it, `run_schema` stamps it from the optimizer class. So an arm
+    predicate can never carry it, and comparing FULL labels made every run
+    recording revision 2 match no arm at all -- which emptied the reference
+    arm of the Qwen2.5/openmath/r16 matched panel and raised
+    "has no recorded reference arm".
+
+    The revision still splits SERIES identity: `dedup.series_id` is mechanical
+    and does not read this, and a panel that would mix two revisions inside one
+    arm raises from `comparison`'s semantic-signature check instead of
+    averaging them.
+    """
+    label = canonical_label(cfg)
+    return None if label is None else _IMPL_REV_TOKEN.sub("", label)
 
 
 def canonical_label(cfg: dict) -> str | None:
