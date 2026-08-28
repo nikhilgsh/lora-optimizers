@@ -88,6 +88,12 @@ def test_find_workload_roundtrip_and_miss():
         find_workload("allenai/OLMo-2-0425-1B", "opc", 1234)
 
 
+def test_qwen_r16_analysis_workload_is_not_an_e1_leaderboard_cell():
+    wl = find_workload("Qwen/Qwen2.5-1.5B", "openmath", 16)
+    assert wl.rank == 16 and wl.horizon == 9000
+    assert wl not in iter_workloads()
+
+
 def test_label_and_title():
     wl = find_workload("allenai/OLMo-2-0425-1B", "opc", 64)
     assert wl.label == "OLMo/opc/r64"

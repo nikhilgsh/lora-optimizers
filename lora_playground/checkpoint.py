@@ -87,31 +87,47 @@ def _pair_state_aliases(optimizer) -> dict:
     return dict(getattr(optimizer, "PAIR_STATE_ALIASES", None) or {})
 
 
+def _pair_state_alias_stages(optimizer) -> tuple:
+    """Ordered old-name -> new-name maps for multi-generation migrations.
+
+    Most optimizers need one simultaneous rename and therefore only declare
+    ``PAIR_STATE_ALIASES``.  An optimizer with colliding names across multiple
+    historical schemas may additionally declare ``PAIR_STATE_ALIAS_STAGES``;
+    each stage is then recognized and applied independently in chronological
+    order.
+    """
+    stages = getattr(optimizer, "PAIR_STATE_ALIAS_STAGES", None)
+    if stages is None:
+        aliases = _pair_state_aliases(optimizer)
+        return (aliases,) if aliases else ()
+    return tuple(dict(stage) for stage in stages)
+
+
 def _apply_pair_state_renames(entry, live_keys, aliases):
     """Map a loaded pair_state entry's keys onto the current schema.
 
-    `aliases` is the optimizer's own old -> new map, from
-    `_pair_state_aliases`. An empty map means this optimizer never renamed a
-    key, so the entry passes through.
+    ``aliases`` is either one old -> new map or chronological maps from
+    ``_pair_state_alias_stages``. An empty value passes the entry through.
 
-    The rename is applied as ONE SIMULTANEOUS PERMUTATION, never key by key,
+    Each active stage is applied as one simultaneous permutation, never key by key,
     because a name can be retired and current at the same time: the old
     eigenbasis `Q_B` became `U_B` while `Q_B` is now the free Kronecker factor.
     A key-at-a-time "translate it only if the live state lacks it" rule would
     leave that tensor in the wrong slot.
 
-    Whether the ENTRY is on the old schema is decided by the alias keys that
-    are NOT live — derived from the map and the live optimizer rather than
-    listed in a second table that can go stale. If no alias key is retired,
-    nothing distinguishes the two schemas, so the entry passes through
-    untouched.
+    A stage is active when the entry contains one of that stage's alias keys
+    that is absent from the live schema. Separating generations is necessary
+    when a live key such as ``Q_B`` had another meaning in an older schema.
     """
-    if not aliases:
-        return entry
-    old_only = set(aliases) - set(live_keys)
-    if not old_only or not (old_only & set(entry)):
-        return entry
-    return {aliases.get(k, k): v for k, v in entry.items()}
+    stages = (aliases,) if isinstance(aliases, dict) else tuple(aliases)
+    out = entry
+    for stage in stages:
+        if not stage:
+            continue
+        old_only = set(stage) - set(live_keys)
+        if old_only and old_only & set(out):
+            out = {stage.get(k, k): v for k, v in out.items()}
+    return out
 
 
 def _adapter_dir(ckpt_dir: Path) -> Path:
@@ -367,7 +383,7 @@ def load_checkpoint(
             pass
 
     if "pair_state" in payload and getattr(optimizer, "pair_state", None) is not None:
-        aliases = _pair_state_aliases(optimizer)
+        aliases = _pair_state_alias_stages(optimizer)
         for i, entry in payload["pair_state"].items():
             dst = optimizer.pair_state.get(i)
             if dst is None:

@@ -426,6 +426,292 @@ def _finite_step_product_diagnostics(A_f, B_f, dA, dB, eps=1e-30):
     return out
 
 
+def _skinny_product_fro_inner(X, Y, U, V):
+    """Batched Frobenius inner product ``<X @ Y, U @ V>`` without dense products."""
+    return ((X.transpose(-2, -1) @ U) * (Y @ V.transpose(-2, -1))).sum(
+        dim=(-2, -1))
+
+
+def _skinny_tangent_fro_inner(B, A, dA_x, dB_x, dA_y, dB_y):
+    """``<B dA_x + dB_x A, B dA_y + dB_y A>`` from r x r cores."""
+    return (
+        _skinny_product_fro_inner(B, dA_x, B, dA_y)
+        + _skinny_product_fro_inner(B, dA_x, dB_y, A)
+        + _skinny_product_fro_inner(dB_x, A, B, dA_y)
+        + _skinny_product_fro_inner(dB_x, A, dB_y, A)
+    )
+
+
+def _skinny_tangent_fro_norm(B, A, dA, dB):
+    """Frobenius norm of the first-order product update, without forming it."""
+    return _skinny_tangent_fro_inner(B, A, dA, dB, dA, dB).clamp_min(0.0).sqrt()
+
+
+def _skinny_tangent_cosine(B, A, dA_x, dB_x, dA_y, dB_y, eps=1e-30):
+    """Cosine between two first-order LoRA product updates."""
+    inner = _skinny_tangent_fro_inner(B, A, dA_x, dB_x, dA_y, dB_y)
+    nx = _skinny_tangent_fro_norm(B, A, dA_x, dB_x)
+    ny = _skinny_tangent_fro_norm(B, A, dA_y, dB_y)
+    return (inner / (nx * ny).clamp_min(eps)).clamp(-1.0, 1.0)
+
+
+def _skinny_tangent_singular_values(B, A, dA, dB):
+    """Exact nonzero spectrum of ``B dA + dB A`` from a rank-2r core.
+
+    A full SVD is intentional here because the diagnostic needs the complete
+    allocation, not only the top singular value. The dense product update is
+    never materialized.
+    """
+    left = torch.cat((B, dB), dim=-1)
+    right_t = torch.cat((dA, A), dim=-2)
+    _, left_r = torch.linalg.qr(left, mode="reduced")
+    _, right_r = torch.linalg.qr(right_t.transpose(-2, -1), mode="reduced")
+    return torch.linalg.svdvals(left_r @ right_r.transpose(-2, -1))
+
+
+def _factor_update_cosine(dA_x, dB_x, dA_y, dB_y, eps=1e-30):
+    """Cosine in the direct-sum factor space ``(dA, dB)``."""
+    inner = (dA_x * dA_y).sum(dim=(-2, -1)) + (dB_x * dB_y).sum(dim=(-2, -1))
+    nx2 = (dA_x * dA_x).sum(dim=(-2, -1)) + (dB_x * dB_x).sum(dim=(-2, -1))
+    ny2 = (dA_y * dA_y).sum(dim=(-2, -1)) + (dB_y * dB_y).sum(dim=(-2, -1))
+    return (inner / (nx2 * ny2).clamp_min(eps).sqrt()).clamp(-1.0, 1.0)
+
+
+def _effective_factor_step(A_pre, B_pre, dA, dB, A_dtype, B_dtype):
+    """Replay the exact production cast/add and return FP32 endpoint deltas."""
+    A_native = A_pre.to(dtype=A_dtype)
+    B_native = B_pre.to(dtype=B_dtype)
+    A_post = A_native.clone()
+    B_post = B_native.clone()
+    # Mirror _cw_apply_grouped exactly: cast the update first, then perform the
+    # in-place add in parameter dtype.  Subtract FP32 endpoints only afterward.
+    A_post.add_(dA.to(dtype=A_dtype))
+    B_post.add_(dB.to(dtype=B_dtype))
+    return A_post.float() - A_native.float(), B_post.float() - B_native.float()
+
+
+def _effective_step_shadow_stats(
+        A_pre, B_pre, directions, A_dtype, B_dtype,
+        heldout_gA=None, heldout_gB=None, eps=1e-30):
+    """Compare ideal FP32 shadow steps with parameter-dtype effective steps."""
+    stats = {}
+    effective_directions = {}
+    n_A = A_pre.shape[-2] * A_pre.shape[-1]
+    n_B = B_pre.shape[-2] * B_pre.shape[-1]
+    for label, (dA, dB) in directions.items():
+        dA_eff, dB_eff = _effective_factor_step(
+            A_pre, B_pre, dA, dB, A_dtype, B_dtype)
+        effective_directions[label] = (dA_eff, dB_eff)
+        changed_A = (dA_eff != 0).sum(dim=(-2, -1))
+        changed_B = (dB_eff != 0).sum(dim=(-2, -1))
+        ideal_factor_norm = (
+            dA.square().sum(dim=(-2, -1))
+            + dB.square().sum(dim=(-2, -1))
+        ).clamp_min(0.0).sqrt()
+        effective_factor_norm = (
+            dA_eff.square().sum(dim=(-2, -1))
+            + dB_eff.square().sum(dim=(-2, -1))
+        ).clamp_min(0.0).sqrt()
+        ideal_tangent_norm = _skinny_tangent_fro_norm(B_pre, A_pre, dA, dB)
+        effective_tangent_norm = _skinny_tangent_fro_norm(
+            B_pre, A_pre, dA_eff, dB_eff)
+        stats.update({
+            f"shadow_effective_changed_frac_A_{label}": changed_A.float() / n_A,
+            f"shadow_effective_changed_frac_B_{label}": changed_B.float() / n_B,
+            f"shadow_effective_changed_frac_factor_{label}": (
+                (changed_A + changed_B).float() / (n_A + n_B)),
+            f"shadow_effective_factor_cos_{label}": _factor_update_cosine(
+                dA_eff, dB_eff, dA, dB, eps=eps),
+            f"shadow_effective_factor_norm_ratio_{label}": (
+                effective_factor_norm / ideal_factor_norm.clamp_min(eps)),
+            f"shadow_effective_tangent_cos_{label}": _skinny_tangent_cosine(
+                B_pre, A_pre, dA_eff, dB_eff, dA, dB, eps=eps),
+            f"shadow_effective_tangent_norm_ratio_{label}": (
+                effective_tangent_norm / ideal_tangent_norm.clamp_min(eps)),
+        })
+        if heldout_gA is not None and heldout_gB is not None:
+            stats[f"shadow_heldout_predicted_loss_change_effective_{label}"] = (
+                (heldout_gA * dA_eff).sum(dim=(-2, -1))
+                + (heldout_gB * dB_eff).sum(dim=(-2, -1))
+            )
+    return stats, effective_directions
+
+
+def _latent_mode_shadow_stats(A, B, gA, gB, directions,
+                              heldout_gA=None, heldout_gB=None, eps=1e-30):
+    """Decompose gradient demand and candidate updates in factor singular modes.
+
+    The weak modes are the bottom half of the current singular spectrum of
+    each factor.  The decomposition is exact in factor space: ``U_A.T @ X``
+    for A-shaped tensors and ``X @ V_B`` for B-shaped tensors preserve both
+    Frobenius energy and inner products.
+    """
+    eig_A, U_A = torch.linalg.eigh(A @ A.transpose(-2, -1))
+    eig_B, V_B = torch.linalg.eigh(B.transpose(-2, -1) @ B)
+    n_weak = max(1, A.shape[-2] // 2)
+
+    def _A_modes(X):
+        return U_A.transpose(-2, -1) @ X
+
+    def _B_modes(X):
+        return X @ V_B
+
+    def _weak_fraction(X, *, side):
+        modes = _A_modes(X) if side == "A" else _B_modes(X)
+        weak = (modes[:, :n_weak] if side == "A"
+                else modes[..., :n_weak])
+        return weak.square().sum(dim=(-2, -1)) / modes.square().sum(
+            dim=(-2, -1)).clamp_min(eps)
+
+    stats = {
+        "shadow_factor_energy_weak_frac_A": (
+            eig_A[:, :n_weak].sum(dim=-1) / eig_A.sum(dim=-1).clamp_min(eps)),
+        "shadow_factor_energy_weak_frac_B": (
+            eig_B[:, :n_weak].sum(dim=-1) / eig_B.sum(dim=-1).clamp_min(eps)),
+        "shadow_train_grad_weak_frac_A": _weak_fraction(gA, side="A"),
+        "shadow_train_grad_weak_frac_B": _weak_fraction(gB, side="B"),
+    }
+    if heldout_gA is not None and heldout_gB is not None:
+        stats.update({
+            "shadow_heldout_grad_weak_frac_A": _weak_fraction(
+                heldout_gA, side="A"),
+            "shadow_heldout_grad_weak_frac_B": _weak_fraction(
+                heldout_gB, side="B"),
+        })
+        heldout_A = _A_modes(heldout_gA)
+        heldout_B = _B_modes(heldout_gB)
+
+    for label, (dA, dB) in directions.items():
+        stats[f"shadow_update_weak_frac_A_{label}"] = _weak_fraction(
+            dA, side="A")
+        stats[f"shadow_update_weak_frac_B_{label}"] = _weak_fraction(
+            dB, side="B")
+        if heldout_gA is not None and heldout_gB is not None:
+            update_A = _A_modes(dA)
+            update_B = _B_modes(dB)
+            weak = (
+                (heldout_A[:, :n_weak] * update_A[:, :n_weak]).sum(
+                    dim=(-2, -1))
+                + (heldout_B[..., :n_weak] * update_B[..., :n_weak]).sum(
+                    dim=(-2, -1))
+            )
+            total = ((heldout_A * update_A).sum(dim=(-2, -1))
+                     + (heldout_B * update_B).sum(dim=(-2, -1)))
+            stats[f"shadow_heldout_predicted_loss_change_weak_{label}"] = weak
+            stats[f"shadow_heldout_predicted_loss_change_strong_{label}"] = (
+                total - weak)
+    return stats
+
+
+def _small_slot_microbatch_moments(gA_micro, gB_micro, Q_inv, P_inv,
+                                   eps=1e-30):
+    """Direct equal-microbatch P_A/Q_B moments for a read-only shadow.
+
+    ``gA_micro`` has shape ``(G, N, r, d_in)`` and ``gB_micro`` has shape
+    ``(G, N, d_out, r)``.  The production accumulation convention gives every
+    one of the G microbatch slots weight 1/G; skipped zero-token slots are
+    represented by zero gradients rather than removed.  Q/P are held fixed at
+    their stored lagged values, isolating only the two small-side targets.
+    """
+    if gA_micro.ndim != 4 or gB_micro.ndim != 4:
+        raise ValueError("microbatch factor gradients must have four dimensions")
+    if gA_micro.shape[:2] != gB_micro.shape[:2]:
+        raise ValueError("A/B microbatch gradient axes do not match")
+    if gA_micro.shape[0] < 1:
+        raise ValueError("at least one microbatch gradient is required")
+
+    mean_A = gA_micro.mean(dim=0)
+    mean_B = gB_micro.mean(dim=0)
+    centered_A = gA_micro - mean_A.unsqueeze(0)
+    centered_B = gB_micro - mean_B.unsqueeze(0)
+    d_in = gA_micro.shape[-1]
+    d_out = gB_micro.shape[-2]
+
+    def _PA(moment_grads):
+        return (
+            (moment_grads * Q_inv.unsqueeze(0).unsqueeze(2))
+            @ moment_grads.transpose(-2, -1)
+        ).mean(dim=0) / d_in
+
+    def _QB(moment_grads):
+        return (
+            moment_grads.transpose(-2, -1)
+            @ (moment_grads * P_inv.unsqueeze(0).unsqueeze(-1))
+        ).mean(dim=0) / d_out
+
+    PA_uncentered = _PA(gA_micro)
+    QB_uncentered = _QB(gB_micro)
+    PA_centered = _PA(centered_A)
+    QB_centered = _QB(centered_B)
+    PA_mean_outer = (
+        (mean_A * Q_inv.unsqueeze(1)) @ mean_A.transpose(-2, -1)
+    ) / d_in
+    QB_mean_outer = (
+        mean_B.transpose(-2, -1) @ (mean_B * P_inv.unsqueeze(-1))
+    ) / d_out
+
+    def _identity_stats(uncentered, centered, mean_outer):
+        residual = uncentered - centered - mean_outer
+        residual_abs = residual.flatten(1).norm(dim=1)
+        residual_rel = (
+            residual_abs / uncentered.flatten(1).norm(dim=1).clamp_min(eps)
+        )
+        trace_share = (
+            mean_outer.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+            / uncentered.diagonal(dim1=-2, dim2=-1).sum(dim=-1).clamp_min(eps)
+        )
+        return residual_abs, residual_rel, trace_share
+
+    PA_abs, PA_rel, PA_share = _identity_stats(
+        PA_uncentered, PA_centered, PA_mean_outer)
+    QB_abs, QB_rel, QB_share = _identity_stats(
+        QB_uncentered, QB_centered, QB_mean_outer)
+    return {
+        "mean_A": mean_A,
+        "mean_B": mean_B,
+        "P_A_uncentered": PA_uncentered,
+        "P_A_centered": PA_centered,
+        "P_A_mean_outer": PA_mean_outer,
+        "Q_B_uncentered": QB_uncentered,
+        "Q_B_centered": QB_centered,
+        "Q_B_mean_outer": QB_mean_outer,
+        "small_slot_P_A_moment_identity_abs_residual": PA_abs,
+        "small_slot_P_A_moment_identity_rel_residual": PA_rel,
+        "small_slot_P_A_mean_outer_trace_share": PA_share,
+        "small_slot_Q_B_moment_identity_abs_residual": QB_abs,
+        "small_slot_Q_B_moment_identity_rel_residual": QB_rel,
+        "small_slot_Q_B_mean_outer_trace_share": QB_share,
+    }
+
+
+def _skinny_quadratic_stats(dA, dB, n_iters=16, eps=1e-30):
+    """Frobenius norm, sigma estimate and stable rank of ``dB @ dA``.
+
+    This is the same target as ``finite_step_stable_rank`` above.  The explicit
+    ``d_out x d_in`` product is never materialized.
+    """
+    from .spectral import lambda_max_power_iter_psd_batched
+
+    # QR reduces the product to an r x r core with the same nonzero singular
+    # values.  The shared PSD estimator uses a bundle of deterministic starts;
+    # unlike the single-start factored PI, it cannot fail merely because
+    # dB @ dA annihilates an all-ones start.  No d_out x d_in matrix or full
+    # SVD/eigh is formed.
+    _, rB = torch.linalg.qr(dB, mode="reduced")
+    _, rA = torch.linalg.qr(dA.transpose(-2, -1), mode="reduced")
+    core = rB @ rA.transpose(-2, -1)
+    fro_sq = core.square().sum(dim=(-2, -1)).clamp_min(0.0)
+    sigma_sq, _ = lambda_max_power_iter_psd_batched(
+        core.transpose(-2, -1) @ core, n_iters=n_iters, eps=eps)
+    sigma = sigma_sq.clamp_min(0.0).sqrt()
+    sigma = torch.where(fro_sq <= eps, torch.zeros_like(sigma), sigma)
+    rank_bound = min(core.shape[-2], core.shape[-1])
+    stable_rank_raw = fro_sq / sigma_sq.clamp_min(eps)
+    rank_bound_hit = stable_rank_raw > float(rank_bound) * (1.0 + 1e-5)
+    stable_rank = stable_rank_raw.clamp(max=float(rank_bound))
+    return fro_sq.sqrt(), sigma, stable_rank, rank_bound_hit
+
+
 def _chord_update_opnorm_power_iter(A_f, B_f, dA, dB, n_iters=8):
     """Estimate ‖(B+dB)(A+dA) - BA‖₂ without materializing the dense update.
 
@@ -657,7 +943,7 @@ def _emit_optimizer_pair_stats(step_count, group_id, group_global_indices,
     print(json.dumps(payload, sort_keys=True, default=float), flush=True)
 
 
-def _emit_optim_diagnostics(step_count, per_pair_records):
+def _emit_optim_diagnostics(step_count, per_pair_records, event="optim_step", metadata=None):
     """Aggregate per-pair diagnostic records and emit one JSONL `optim_step` event.
 
     Each record is a flat dict of float-valued stats; we report median/min/max
@@ -666,7 +952,9 @@ def _emit_optim_diagnostics(step_count, per_pair_records):
     if not per_pair_records:
         return
     keys = list(per_pair_records[0].keys())
-    payload = {"event": "optim_step", "step": int(step_count), "n_pairs": len(per_pair_records)}
+    payload = {"event": str(event), "step": int(step_count), "n_pairs": len(per_pair_records)}
+    if metadata:
+        payload.update(metadata)
     for k in keys:
         vals = [r[k] for r in per_pair_records if r[k] == r[k]]  # drop NaN
         if not vals:
@@ -675,6 +963,45 @@ def _emit_optim_diagnostics(step_count, per_pair_records):
         payload[k + "_median"] = statistics.median(vals)
         payload[k + "_min"] = min(vals)
         payload[k + "_max"] = max(vals)
+    if _is_main_process():
+        print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def _emit_batched_optim_diagnostics(
+        step_count, stat_batches, event, metadata=None, sum_keys=()):
+    """Aggregate batched device tensors with one host synchronization.
+
+    Heavy diagnostics can carry tens of fields over 100+ LoRA pairs. Calling
+    ``float(cuda_tensor)`` per field and pair serializes the GPU thousands of
+    times, so concatenate all shape groups and copy one field-by-pair matrix.
+    """
+    if not stat_batches:
+        return
+    keys = list(stat_batches[0].keys())
+    if any(set(batch) != set(keys) for batch in stat_batches):
+        raise ValueError("diagnostic shape groups emitted different field sets")
+    matrix = torch.cat(
+        [torch.stack([batch[key].reshape(-1) for key in keys], dim=0)
+         for batch in stat_batches],
+        dim=1,
+    ).detach().to(torch.float32).cpu()
+    payload = {
+        "event": str(event),
+        "step": int(step_count),
+        "n_pairs": int(matrix.shape[1]),
+    }
+    if metadata:
+        payload.update(metadata)
+    for row, key in enumerate(keys):
+        vals = [float(v) for v in matrix[row].tolist() if v == v]
+        if not vals:
+            payload[key + "_median"] = float("nan")
+            continue
+        payload[key + "_median"] = statistics.median(vals)
+        payload[key + "_min"] = min(vals)
+        payload[key + "_max"] = max(vals)
+        if key in sum_keys:
+            payload[key + "_sum"] = sum(vals)
     if _is_main_process():
         print(json.dumps(payload, sort_keys=True), flush=True)
 
@@ -1160,15 +1487,15 @@ class CurvatureWhitenLoRA(Optimizer):
     is affordable) and a DIAGONAL on the large side (d×d is not). Each index is
     preconditioned exactly once — "most powerful affordable, non-redundant":
 
-        z_A  =  SOAP(m_A; S_rA ⊗ D_in)               (A: r×d_in)
-        z_B  =  SOAP(m_B; D_out ⊗ S_rB)              (B: d_out×r)
-        ΔA   ∝  S_rA^{-1/2} · z_A · D_in^{-1/2}
-        ΔB   ∝  D_out^{-1/2} · z_B · S_rB^{-1/2}
+        z_A  =  SOAP(m_A; C_B ⊗ Q)               (A: r×d_in)
+        z_B  =  SOAP(m_B; P ⊗ C_A)               (B: d_out×r)
+        ΔA   ∝  C_B^{-1/2} · z_A · Q^{-1/2}
+        ΔB   ∝  P^{-1/2} · z_B · C_A^{-1/2}
 
     where m̂ is bias-corrected momentum and the curvature factors are EMAs
     (decay ``curvature_beta``):
-        S_rA = EMA(g_A g_Aᵀ) ∈ ℝ^{r×r}     D_in  = EMA(diag(g_Aᵀ g_A)) ∈ ℝ^{d_in}
-        S_rB = EMA(g_Bᵀ g_B) ∈ ℝ^{r×r}     D_out = EMA(diag(g_B g_Bᵀ)) ∈ ℝ^{d_out}
+        C_B = EMA(g_A g_Aᵀ) ∈ ℝ^{r×r}     Q = EMA(diag(g_Aᵀ g_A)) ∈ ℝ^{d_in}
+        C_A = EMA(g_Bᵀ g_B) ∈ ℝ^{r×r}     P = EMA(diag(g_B g_Bᵀ)) ∈ ℝ^{d_out}
 
     The small-side inverse-sqrt ``S_r^{-1/2} = Q Λ^{-1/2} Qᵀ`` is formed from the
     eigenbasis Q of S_r, maintained CHEAPLY by SOAP's warm-started power-iteration
@@ -1189,7 +1516,7 @@ class CurvatureWhitenLoRA(Optimizer):
     ``eigh``. Do NOT read a nonzero ``precond_refresh_every`` in a production config
     (or in a sweep wrapper's ``--precond_refresh_every 10``) as evidence that this
     optimizer reuses a stale preconditioner — see ``_cw_apply_grouped`` for the
-    state that IS stale (the diagonal metric ``D_in``/``D_out``, by one step).
+    state that is stale (the diagonal metric ``Q``/``P``, by one step).
 
     Both inverse-sqrts use RELATIVE damping ``(λ/λ_max + δ)^{-1/2}`` with
     δ=``delta`` (caps conditioning at ~1/δ, controlling weak-direction
@@ -1242,7 +1569,24 @@ class CurvatureWhitenLoRA(Optimizer):
         'R_B': 'Q_B',   # r x r slot, now the free Kronecker factor Q_B
         'Q_A': 'U_A',   # eigh eigenbasis
         'Q_B': 'U_B',   # eigh eigenbasis
+        'D_in': 'Q',    # input-side diagonal metric
+        'D_out': 'P',   # output-side diagonal metric
     }
+    # The `Q_B` key changed meaning in the first rename.  Keep the later P/Q
+    # rename in a separate stage so a checkpoint from the intermediate schema
+    # does not mistake its live free-factor Q_B for the retired eigenbasis Q_B.
+    PAIR_STATE_ALIAS_STAGES = (
+        {
+            'L_A': 'P_A',
+            'R_B': 'Q_B',
+            'Q_A': 'U_A',
+            'Q_B': 'U_B',
+        },
+        {
+            'D_in': 'Q',
+            'D_out': 'P',
+        },
+    )
 
     # Revision 2 is the post-7792797 factorwise free-slot initialization and
     # normalization semantics recorded by the versioned run schema.
@@ -1334,13 +1678,13 @@ class CurvatureWhitenLoRA(Optimizer):
         self.kl_coupled = bool(kl_coupled)
         self.soap_v = bool(soap_v)
         # Option (b) of kl_shampoo_polar_derivation.md §"Cross-coupling": commit to
-        # the single global diagonal metric (P,Q)=(D_out, D_in). The small-side
+        # the single global diagonal metric (P, Q). The small-side
         # curvature is then the conjugate-diagonal-weighted geometric Gram,
-        # M_A = Bᵀ diag(D_out) B and M_B = A diag(D_in) Aᵀ (recomputed each step),
+        # matrices are C_B = Bᵀ P B and C_A = A Q Aᵀ (recomputed each step),
         # in place of the dense KL S_curv. The diagonal KL coupling is unchanged
         # but now whitens by M⁻¹, so the whole step is a consistent single-metric
         # two-sided program with an exact cross term (vs the mixed-metric option a).
-        # Requires kl_coupled=True (it reuses the D_in/D_out EMAs).
+        # Requires kl_coupled=True (it reuses the Q/P EMAs).
         # `precond` (see the block below for the three branches) resolves to
         # `diag_metric` HERE, before the validations that read it — otherwise an
         # explicit `--precond factorwise` on a spec that pins diag_metric=True would
@@ -1382,7 +1726,7 @@ class CurvatureWhitenLoRA(Optimizer):
             raise ValueError(f"rdinv_variant must be 'A', 'B', or 'VN', got {rdinv_variant!r}")
         if rdinv_variant == "VN" and not diag_metric:
             raise ValueError("rdinv_variant='VN' (partner-trace damping) requires "
-                             "diag_metric=True (the D_in/D_out diagonal metric whose "
+                             "diag_metric=True (the Q/P diagonal metric whose "
                              "partner traces it references).")
         self.rdinv_variant = str(rdinv_variant)
         # rdinv_delta DECOUPLES the _rdinv (P,Q diagonal-metric) damping floor from
@@ -1390,8 +1734,8 @@ class CurvatureWhitenLoRA(Optimizer):
         # None -> use self.delta (coupled, original behavior). Set it to vary the
         # diagonal floor (e.g. VN's δ·Tr) while holding the curvature-inverse floor fixed.
         self.rdinv_delta = None if rdinv_delta is None else float(rdinv_delta)
-        # cw_metric_init selects the init of the diagonal metric EMAs D_in (=Q) and
-        # D_out (=P). All choices give an identical step-1 update; they differ only in warmup.
+        # cw_metric_init selects the init of the diagonal metric EMAs Q and P.
+        # All choices give an identical step-1 update; they differ only in warmup.
         #   <float ε> (DEFAULT "1e-12"): P₀=Q₀=εI. The shipped init. ε is DECOUPLED from the
         #     damping δ and lives on the RAW curvature scale (~1e-7 in production), so a tiny
         #     ε ≪ that is prior-free AND branch-free (xmax=ε>1e-30, so the _rdinv step-one
@@ -1416,15 +1760,15 @@ class CurvatureWhitenLoRA(Optimizer):
                 raise ValueError(f"cw_metric_init ε must be ≥ 0, got {self._metric_init_eps}")
         else:
             self._metric_init_eps = None  # resolved from the named mode at the pair loop
-        # diag_metric reuses the D_in/D_out EMAs as the single global diagonal metric.
+        # diag_metric reuses the Q/P EMAs as the single global diagonal metric.
         # With kl_coupled=True those diagonals are the KL coupled fixed point (Prop 4);
         # with kl_coupled=False they are plain grad-energy EMAs (the diag-shampoo arm).
-        # Both are valid — the small side M_A = Bᵀ diag(D_out) B is recomputed each step
+        # Both are valid — C_B = Bᵀ P B is recomputed each step
         # either way; only the diagonal accumulation rule differs.
         # Picard block-coordinate depth (cross-coupling). k=1 is the single-block
         # step (no cross-term). k>=2 corrects the simultaneous-step coupling via the
         # diagonal cross-term (kl_shampoo_polar_derivation.md §Cross-coupling) and is
-        # only defined for the kl path (the cross-term uses the D_in/D_out diagonals).
+        # only defined for the kl path (the cross-term uses the Q/P diagonals).
         # flat_outer: skip the un-whiten, so the direction is whatever the inner
         # whitening produced rather than C^{-1/2}(.)Q^{-1/2} applied to it a second
         # time. Both polar settings are meaningful arms:
@@ -1467,7 +1811,7 @@ class CurvatureWhitenLoRA(Optimizer):
         # (2026-06-12); kept dormant for back-compat. Default False = protagonist.
         self.cw_no_radius = bool(cw_no_radius)
         # ABLATION (−Shampoo / no diagonal curvature): force the relative-damped input/
-        # output diagonals to identity (dinA=doutB=1). On the diag_metric path this makes
+        # output diagonals to identity (Q_isqrt=P_isqrt=1). On the diag_metric path this makes
         # C_A=BᵀB, C_B=AAᵀ (the bare partner-Grams, i.e. P=Q=I in skeleton Alg 1) and drops
         # the input/output diagonal whitening — a partner-Gram-whitened polar (iMuon-like).
         # Tests whether the two-sided diagonal Shampoo curvature helps. Requires diag_metric.
@@ -1561,7 +1905,7 @@ class CurvatureWhitenLoRA(Optimizer):
         # used in (Alg 3 updates L/R/Q after the weight step). First eigh seed
         # happens after step 1. Grams are zero-initialized (Alg 3 EMA).
         self._q_initialized = False
-        # Diagonal-metric (D_in/D_out) initial fill value — see cw_metric_init above.
+        # Diagonal-metric (Q/P) initial fill value — see cw_metric_init above.
         if self._metric_init_eps is not None:
             _minit_val = self._metric_init_eps          # explicit float ε → P₀=Q₀=εI
         elif self.cw_metric_init == "ones":
@@ -1616,8 +1960,8 @@ class CurvatureWhitenLoRA(Optimizer):
                         else torch.zeros((r, r), dtype=torch.float32, device=A.device)),
                 # large side: diagonal curvature = EMA of per-column / per-row
                 # gradient energy.
-                'D_in': torch.full((d_in,), _minit_val, dtype=torch.float32, device=A.device),
-                'D_out': torch.full((d_out,), _minit_val, dtype=torch.float32, device=B.device),
+                'Q': torch.full((d_in,), _minit_val, dtype=torch.float32, device=A.device),
+                'P': torch.full((d_out,), _minit_val, dtype=torch.float32, device=B.device),
                 'U_A': eye.clone(),
                 'U_B': eye.clone(),
                 'step': 0,
@@ -1717,7 +2061,7 @@ class CurvatureWhitenLoRA(Optimizer):
           "A" (shipped/paper): (x/x_max + δ)^{-1/2}  — floor δ·x_max (op-norm).
           "B" (raw/unbiased KL gauge): (x + δ·x_max)^{-1/2}  — same op-norm floor,
               raw representation (= A·x_max^{-1/2}; diverges from A only via the slow
-              D_in/D_out EMA, which carries the partner factor's time-varying max).
+              Q/P EMA, which carries the partner factor's time-varying max).
           "VN" (von Neumann = matrix Adafactor): (x + δ·Tr(partner))^{-1/2}  — floor
               δ·Tr(partner), the trace-scaled projection of Wu Lin et al. Table 2
               (S_a = E[GGᵀ]/Tr(S_b)). Needs ``partner_trace`` (the partner factor's
@@ -1771,6 +2115,7 @@ class CurvatureWhitenLoRA(Optimizer):
 
     @torch.no_grad()
     def step(self, closure=None):
+        self._validate_factorwise_shadow_config()
         if closure is not None:
             with torch.enable_grad():
                 closure()
@@ -1794,40 +2139,11 @@ class CurvatureWhitenLoRA(Optimizer):
         # so they agree to batched-vs-looped float reduction order
         # (tests/test_curvature_whiten_batched.py); the grouped pass is the fast one.
         self._last_cw_diag_records = []
+        self._last_cw_shadow_batches = []
+        self._last_cw_heldout_directions = {}
         _timer = getattr(self, "_step_timer", None)
         if _timer: _timer.start("cw_pairstep")
-        if getattr(self, "_batched_step", True):
-            self._cw_apply_grouped(lr, cb, b1, eps)
-        else:
-            # `_cw_apply_per_pair` is a SECOND implementation of the same step,
-            # and it silently implements a DIFFERENT algorithm outside
-            # precond_method="eigh": it never reads `precond_method`,
-            # `cw_unpinned`, or LORA_MULTIMOMENT_RESCALE (verified by grep over
-            # both function bodies; the grouped path reads all three at 2262/2356,
-            # 2376/2428/2490 and 2215). Under gram_ns or higham it applies the
-            # frozen identity eigenbasis, i.e. only the DIAGONAL of the r x r
-            # curvature, discarding every off-diagonal entry the production
-            # inverse-sqrt uses. `_batched_step` is set nowhere but tests, so this
-            # never fires in production -- but every equivalence test that flips it
-            # leaves precond_method at its "eigh" default, so the "oracle" has
-            # never validated a production config. Refuse rather than quietly
-            # measure a different optimizer.
-            if self.precond_method != "eigh":
-                raise NotImplementedError(
-                    f"_batched_step=False selects the per-pair reference path, which "
-                    f"only implements precond_method='eigh'; got "
-                    f"{self.precond_method!r}. It ignores precond_method, "
-                    f"cw_unpinned and LORA_MULTIMOMENT_RESCALE, so it would run a "
-                    f"different algorithm than the grouped path and any equivalence "
-                    f"check would be vacuous. Compare grouped-vs-grouped, or use "
-                    f"precond_method='eigh'.")
-            if self.cw_unpinned:
-                raise NotImplementedError(
-                    "_batched_step=False does not implement cw_unpinned: the "
-                    "per-pair path neither flattens rho nor skips the sigma_max(W) "
-                    "rescale, so it silently runs the PINNED step (measured: 5.3% "
-                    "parameter divergence after 6 steps). Use the grouped path.")
-            self._cw_apply_per_pair(lr, cb, b1, eps)
+        self._cw_apply_grouped(lr, cb, b1, eps)
         if _timer: _timer.stop()
 
         # ── Refresh the eigenbasis for the NEXT step. First refresh = ONE eigh
@@ -1875,6 +2191,26 @@ class CurvatureWhitenLoRA(Optimizer):
             if not records:
                 records = [factor_diagnostics(A, B) for (A, B) in self.pairs]
             _emit_optim_diagnostics(step_count, records)
+        if self._last_cw_shadow_batches:
+            heldout_keys = tuple(
+                key
+                for key in self._last_cw_shadow_batches[0]
+                if key.startswith("shadow_heldout_predicted_loss_change_")
+            )
+            _emit_batched_optim_diagnostics(
+                step_count,
+                self._last_cw_shadow_batches,
+                event="cw_shadow_step",
+                metadata={
+                    "fresh_semantics": "P_A/Q_B include g_t using Q_(t-1),P_(t-1); Q/P history unchanged",
+                    "identity_semantics": "P_A=Q_B=I with factorwise Q/P history; not a one-sided trajectory",
+                    "small_slot_semantics": (
+                        "direct equal-microbatch P_A/Q_B moments using stored lagged "
+                        "Q/P; no EMA blend and not a coherent centered full-metric optimizer"
+                    ),
+                },
+                sum_keys=heldout_keys,
+            )
 
     def _factor_scales(self, r, d_in, d_out):
         """Per-factor shape coefficients (c_A, c_B) from the (a, b) exponents.
@@ -2060,229 +2396,326 @@ class CurvatureWhitenLoRA(Optimizer):
             out[bad] = self._polar_poly_batched(Xf)
         return out
 
-    def _cw_apply_per_pair(self, lr, cb, b1, eps):
-        """Reference per-pair update. Independent code from the grouped path but
-        the SAME blessed primitives (sigma_max_power_iter_batched on a 1-batch +
-        _newton_schulz_batched), so it is the equivalence oracle for
-        _cw_apply_grouped and the n==1 fallback. Step counters already bumped."""
+    def _validate_factorwise_shadow_config(self):
+        """Fail closed when the heavy factorwise shadow is not the paper path.
+
+        The shadow deliberately mirrors one fixed production branch instead of
+        becoming a second general optimizer implementation.  Keep this guard at
+        the beginning of ``step`` so an unsupported probe cannot partially
+        mutate optimizer state before failing.
+        """
+        if not (self.log_heavy_diagnostics and self.precond == "factorwise"):
+            return
+        required = {
+            "kl_coupled": self.kl_coupled,
+            "soap_v=False": not self.soap_v,
+            "precond_method=gram_ns": self.precond_method == "gram_ns",
+            "polar_method=polar_express": self.polar_method == "polar_express",
+            "use_polar": self.use_polar,
+            "msign=full": self.msign == "full",
+            "cw_picard_iters=1": self.cw_picard_iters == 1,
+            "cw_nesterov": self.cw_nesterov,
+            "flat_outer=False": not self.flat_outer,
+            "cw_unpinned=False": not self.cw_unpinned,
+            "cw_solved_rho=False": not self.cw_solved_rho,
+            "cw_no_radius=False": not self.cw_no_radius,
+            "cw_no_diag_curv=False": not self.cw_no_diag_curv,
+            "multimoment_rescale=False": os.environ.get("LORA_MULTIMOMENT_RESCALE", "0") != "1",
+        }
+        failed = [name for name, ok in required.items() if not ok]
+        if failed:
+            raise ValueError(
+                "factorwise heavy diagnostics are a fixed production-path shadow; "
+                "unsupported settings: " + ", ".join(failed))
+
+    def _cw_shadow_direction(self, *, PAh, QBh, mhatA, mhatB, Q_isqrt, P_isqrt,
+                             cA, cB, rho, v_sigma_WA, v_sigma_WB):
+        """Pure fixed-path counterfactual direction for the factorwise probe."""
         from .spectral import sigma_max_power_iter_batched as _smax_b
-        beta2 = self.beta2
-        for i, (A, B) in enumerate(self.pairs):
-            st = self.pair_state[i]
-            gA = A.grad.float(); gB = B.grad.float()
-            st['m_A'].mul_(b1).add_(gA, alpha=1.0 - b1)
-            st['m_B'].mul_(b1).add_(gB, alpha=1.0 - b1)
-            bc1 = 1.0 - b1 ** st['step']
-            bc2 = 1.0 - beta2 ** st['step']
-            UA, UB, PA, QB = st['U_A'], st['U_B'], st['P_A'], st['Q_B']
-            UAt = UA.transpose(-2, -1); UBt = UB.transpose(-2, -1)
-            # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
-            # SINGLE metric the diag arm commits to — used by the self small-side
-            # Gram, the whitening, and the Picard cross, coherently.
-            #
-            # ── st['D_in'] / st['D_out'] ARE STALE BY ONE STEP. ───────────────
-            # Read here as the curvature EMA over g_1..g_{t-1} ONLY: this step's
-            # g_t is folded in at the END of the loop body, lines 1853-1854
-            # (kl_coupled branch) and 1861-1862 (else branch), after the update
-            # has been formed and applied. So the metric the step-t update sees
-            # EXCLUDES g_t — unlike the momentum at line 1702, which is updated
-            # with g_t before use. Same one-step lag as the grouped path (see the
-            # matching note in _cw_apply_grouped); it is the real staleness in
-            # this optimizer, whereas `precond_refresh_every` is dead outside
-            # precond_method="eigh".
-            # ─────────────────────────────────────────────────────────────────
-            if self.cw_no_diag_curv:  # −Shampoo: M_in=M_out=I → C_A=BᵀB, C_B=AAᵀ
-                dinA = torch.ones_like(st['D_in']); doutB = torch.ones_like(st['D_out'])
-            else:
-                dinA = self._rdinv(st['D_in'], partner_trace=st['D_out'].sum(dim=-1, keepdim=True))
-                doutB = self._rdinv(st['D_out'], partner_trace=st['D_in'].sum(dim=-1, keepdim=True))
-            Din_m = (dinA * dinA).reciprocal()
-            Dout_m = (doutB * doutB).reciprocal()
-            if self.rr_identity:
-                # precond="one-sided": C_B = C_A = I_r. Mirror of the grouped path —
-                # pin the slots to the identity and skip the whitening outright. lamA/
-                # lamB are set to EXACT ones rather than _rdinv(1): the damped value
-                # is a harmless scalar in the direction (msign is scale-invariant and
-                # the ρ/σ_max rescale removes it) but PAinv/QBinv below feed the p, q
-                # updates unnormalized, where a scalar would ride into the metric.
-                PA = torch.eye(st['P_A'].shape[-1], dtype=st['P_A'].dtype,
-                               device=st['P_A'].device)
-                QB = torch.eye(st['Q_B'].shape[-1], dtype=st['Q_B'].dtype,
-                               device=st['Q_B'].device)
-                st['P_A'].copy_(PA); st['Q_B'].copy_(QB)
-                lamA = torch.ones(PA.shape[-1], dtype=PA.dtype, device=PA.device)
-                lamB = torch.ones(QB.shape[-1], dtype=QB.dtype, device=QB.device)
-            else:
-                if self.diag_metric:
-                    # Option (b): M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the
-                    # SAME damped diagonals the cross uses (metric coherence), recomputed
-                    # and stored so the eigenbasis refresh tracks it.
-                    Bf = B.detach().float(); Af = A.detach().float()
-                    PA = Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bf)
-                    QB = (Af * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)
-                    st['P_A'].copy_(PA); st['Q_B'].copy_(QB)
-                else:
-                    # precond="factorwise": normalize the FREE Kronecker factors
-                    # P_A, Q_B to lambda_max = 1 at consume. Mirror of the
-                    # grouped path — see the long note there for why (the
-                    # paper's Normalization paragraph) and why it is done here
-                    # rather than in place on the buffer (an in-place rescale
-                    # would reweight the EMA history every step). `PA`/`QB` were
-                    # bound to the live buffers above, so these must be new
-                    # tensors: the EMA update at the end of this loop body still
-                    # accumulates into st['P_A']/st['Q_B'] at raw scale.
-                    from .spectral import lambda_max_power_iter_psd_batched as _lmax_b
-                    lamPA, _ = _lmax_b(self._sym(PA).unsqueeze(0), n_iters=8)
-                    lamQB, _ = _lmax_b(self._sym(QB).unsqueeze(0), n_iters=8)
-                    PA = PA / lamPA[0].clamp_min(1e-30)
-                    QB = QB / lamQB[0].clamp_min(1e-30)
-                    # NO write-back here: the buffer must stay raw. The product
-                    # branch above writes its recomputed Gram back so the eigh
-                    # eigenbasis refresh in step() tracks it; there is nothing to
-                    # write back on this branch, whose buffer the EMA at the end
-                    # of this loop body owns.
-                evA = (UA * (PA @ UA)).sum(dim=0)
-                evB = (UB * (QB @ UB)).sum(dim=0)
-                lamA = self._rdinv(evA); lamB = self._rdinv(evB)
-            # SOAP v̂ EMA (state) once; mhat for the kl path.
-            if self.soap_v:
-                gA_basis = UAt @ gA
-                gB_basis = gB @ UB
-                st['v_A'].mul_(beta2).addcmul_(gA_basis, gA_basis, value=1.0 - beta2)
-                st['v_B'].mul_(beta2).addcmul_(gB_basis, gB_basis, value=1.0 - beta2)
-            else:
-                if self.cw_nesterov:
-                    # Lookahead: β₁·m + (1−β₁)·g (m already updated this step) — the
-                    # EMA analog of Muon's ĝ + β·buf. Only direction matters downstream.
-                    # No bias correction: 1/bc1 is a positive scalar, annihilated
-                    # exactly by the polar map + σ_max(W) rescale (Alg 1; verified
-                    # bit-identical), so it is omitted here and in Alg 1.
-                    mhatA = st['m_A'].mul(b1).add(gA, alpha=1.0 - b1)
-                    mhatB = st['m_B'].mul(b1).add(gB, alpha=1.0 - b1)
-                else:
-                    mhatA = st['m_A'] / bc1; mhatB = st['m_B'] / bc1
-            Af = A.detach().float(); Bf = B.detach().float()
-            sA = self._smax_warm(Af.unsqueeze(0), [st], 'v_sigma_A')[0]
-            sB = self._smax_warm(Bf.unsqueeze(0), [st], 'v_sigma_B')[0]
-            # c_A, c_B fold the per-factor shape scaling into ρ; merged cap
-            # ρ(c_A·σmax(B) + c_B·σmax(A)) = η preserved (=current when c=1).
-            cA, cB = self._factor_scales(Af.shape[0], Af.shape[1], Bf.shape[0])
-            rho = lr if self.cw_no_radius else lr / (cA * sB + cB * sA)
-            # No §2.5 pre-rescale: σ_max momentum-normalization diluted the cross by
-            # √(stable_rank) of the whitened momentum, making k≥2 a no-op. Cross is
-            # added to the raw momentum (mirror of _cw_apply_grouped).
-            # Picard block-coordinate loop (mirror of _cw_apply_grouped). k=1 ⇒
-            # cross-term never formed ⇒ bit-identical to the pre-Picard step.
-            dA = torch.zeros_like(gA)
-            dB = torch.zeros_like(gB)
-            for _pic in range(self.cw_picard_iters):
-                if self.soap_v:
-                    zA = UA @ ((UAt @ (st['m_A'] / bc1)) / ((st['v_A'] / bc2).sqrt() + self.eps))
-                    zB = (((st['m_B'] / bc1) @ UB) / ((st['v_B'] / bc2).sqrt() + self.eps)) @ UBt
-                else:
-                    if _pic == 0:
-                        inA = mhatA; inB = mhatB
-                    else:
-                        cross_A = ((Bf.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Af) * Din_m.unsqueeze(0)
-                        cross_B = Dout_m.unsqueeze(-1) * (Bf @ ((dA * Din_m.unsqueeze(0)) @ Af.transpose(-2, -1)))
-                        inA = mhatA + (1.0 / lr) * cross_A
-                        inB = mhatB + (1.0 / lr) * cross_B
-                    zA = (UA @ ((UAt @ inA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                    zB = (((inB @ UB) * lamB.unsqueeze(0)) @ UBt) * doutB.unsqueeze(-1)
-                if _pic == 0:
-                    # Mirror of the grouped path's dump (see _maybe_dump_pre_polar);
-                    # zA/zB are 2-D here, so add the leading axis it indexes.
-                    self._maybe_dump_pre_polar(
-                        st['step'], [i], zA.unsqueeze(0), zB.unsqueeze(0))
-                if self.use_polar:
-                    zA = self._direction_op(zA.unsqueeze(0), [st], 'v_sigma_zA', 'A')[0]
-                    zB = self._direction_op(zB.unsqueeze(0), [st], 'v_sigma_zB', 'B')[0]
-                if self.flat_outer:
-                    # Robustness probe (heuristic, NOT the curvature-metric LMO):
-                    # skip the un-whiten. dX ∝ φ(z) is flat-spectrum (chord-tight
-                    # basin) with a curvature-chosen frame — trust curvature for
-                    # direction, not magnitude. σmax(φ(z))≈1, so the rescale → ρ.
-                    WA, WB = zA, zB
-                else:
-                    WA = (UA @ ((UAt @ zA) * lamA.unsqueeze(-1))) * dinA.unsqueeze(0)
-                    WB = (((zB @ UB) * lamB.unsqueeze(0)) @ UBt) * doutB.unsqueeze(-1)
-                sWA = self._smax_warm(WA.unsqueeze(0), [st], 'v_sigma_WA')[0]
-                sWB = self._smax_warm(WB.unsqueeze(0), [st], 'v_sigma_WB')[0]
-                dA = -(cA * rho / sWA.clamp_min(self.alg1_magnitude_floor)) * WA
-                dB = -self.lora_plus_multiplier * (cB * rho / sWB.clamp_min(self.alg1_magnitude_floor)) * WB
-            if self.cw_solved_rho:
-                # Solved magnitude — mirror of _cw_apply_grouped (see there); the
-                # SAME blessed prodsum estimator on a 1-batch keeps this path the
-                # equivalence oracle.
-                from .spectral import sigma_max_power_iter_prodsum_batched as _smax_ps
-                vi = st.get('v_L')
-                s_lin, v_L = _smax_ps(Bf.unsqueeze(0), dA.unsqueeze(0),
-                                      dB.unsqueeze(0), Af.unsqueeze(0),
-                                      v_init=None if vi is None else vi.unsqueeze(0),
-                                      n_iters=8)
-                st['v_L'] = v_L[0].detach()
-                s_lin = s_lin[0]
-                q_bar = (self.lora_plus_multiplier * cA * cB) * rho * rho
-                c_sc = (2.0 * lr) / (s_lin + (s_lin * s_lin + 4.0 * q_bar * lr).sqrt()
-                                     ).clamp_min(self.eps)
-                dA = dA * c_sc
-                dB = dB * c_sc
-                rho = rho * c_sc
-            emit_diag = self.log_basic_diagnostics and st['step'] % self.diagnostics_every == 0
-            if emit_diag:
-                A_pre = A.detach().float()
-                B_pre = B.detach().float()
-            A.add_(dA.to(dtype=A.dtype, device=A.device))
-            B.add_(dB.to(dtype=B.dtype, device=B.device))
-            if emit_diag:
-                self._last_cw_diag_records.append(self._cw_diag_record(
-                    A_post=A,
-                    B_post=B,
-                    A_pre=A_pre,
-                    B_pre=B_pre,
-                    dA=dA,
-                    dB=dB,
-                    lr=lr,
-                    rho=rho,
-                    sigma_A=sA,
-                    sigma_B=sB,
-                    sigma_WA=sWA,
-                    sigma_WB=sWB,
-                ))
-            if self.kl_coupled:
-                # Coupled KL fixed point (Prop 4); mirror of _cw_apply_grouped.
-                r = gA.shape[0]; d_in = gA.shape[1]; d_out = gB.shape[0]
-                Din_inv = dinA * dinA
-                Dout_inv = doutB * doutB
-                PAinv = UA @ ((lamA * lamA).unsqueeze(-1) * UAt)
-                QBinv = UB @ ((lamB * lamB).unsqueeze(-1) * UBt)
-                if self.precond == "factorwise":
-                    st['P_A'].mul_(cb).add_((gA * Din_inv.unsqueeze(0)) @ gA.transpose(-2, -1),
-                                            alpha=(1.0 - cb) / d_in)
-                    st['Q_B'].mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
-                                            alpha=(1.0 - cb) / d_out)
-                if self.rr_identity:
-                    # Mirror of the grouped path: PAinv/QBinv are the identity, so
-                    # skip the matmul rather than compute `I @ gA`.
-                    st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=(1.0 - cb) / r)
-                    st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=(1.0 - cb) / r)
-                else:
-                    st['D_in'].mul_(cb).add_((gA * (PAinv @ gA)).sum(dim=0), alpha=(1.0 - cb) / r)
-                    st['D_out'].mul_(cb).add_((gB * (gB @ QBinv)).sum(dim=1), alpha=(1.0 - cb) / r)
-            else:
-                # diag_metric recomputes P_A/Q_B from the diagonals each step (above), so
-                # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
-                if self.precond == "factorwise":
-                    st['P_A'].mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
-                    st['Q_B'].mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
-                st['D_in'].mul_(cb).add_((gA * gA).sum(dim=0), alpha=1.0 - cb)
-                st['D_out'].mul_(cb).add_((gB * gB).sum(dim=1), alpha=1.0 - cb)
-            A.grad.zero_(); B.grad.zero_()
+
+        zA = (PAh @ mhatA) * Q_isqrt.unsqueeze(1)
+        zB = (mhatB @ QBh) * P_isqrt.unsqueeze(-1)
+
+        # Exact production PolarExpress input normalization, without the
+        # cache-warming _smax_warm call whose value PolarExpress does not use.
+        def _polar_express(Z):
+            fro = Z.flatten(1).norm(dim=1).view(-1, 1, 1)
+            out = self._polar_poly_batched(Z / (fro + self.eps))
+            bad = ~torch.isfinite(out.flatten(1)).all(dim=1)
+            if bool(bad.any()):
+                out = out.clone()
+                out[bad] = self._polar_poly_batched(Z[bad] / (fro[bad] + self.eps))
+            return out
+
+        zA = _polar_express(zA)
+        zB = _polar_express(zB)
+        WA = (PAh @ zA) * Q_isqrt.unsqueeze(1)
+        WB = (zB @ QBh) * P_isqrt.unsqueeze(-1)
+        n_iters = int(os.environ.get("LORA_SMAX_NITERS", "8"))
+        sWA, _ = _smax_b(WA, v_init=v_sigma_WA, n_iters=n_iters)
+        sWB, _ = _smax_b(WB, v_init=v_sigma_WB, n_iters=n_iters)
+        dA = -(cA * rho / sWA.clamp_min(self.alg1_magnitude_floor)).view(
+            -1, 1, 1) * WA
+        dB = -self.lora_plus_multiplier * (
+            cB * rho / sWB.clamp_min(self.alg1_magnitude_floor)
+        ).view(-1, 1, 1) * WB
+        return dA, dB
+
+    def _cw_shadow_factorwise_records(
+            self, *, t, cb, PA_raw, QB_raw, PA_lag, QB_lag, PAh_lag, QBh_lag,
+            gA, gB, Aw, Bw, mhatA, mhatB, Q_isqrt, P_isqrt, cA, cB, rho,
+            dA_lag, dB_lag, v_sigma_WA, v_sigma_WB,
+            A_dtype, B_dtype,
+            heldout_gA=None, heldout_gB=None,
+            microbatch_gA=None, microbatch_gB=None,
+            captured_aggregate_gA=None, captured_aggregate_gB=None):
+        """Compare lagged, current-gradient and identity small-side metrics.
+
+        ``identity`` is a one-step counterfactual under factorwise-trained
+        Q/P history.  It is not a trajectory-equivalent one-sided run.
+        Everything here is out-of-place and all spectral cache outputs are
+        discarded.
+        """
+        from .spectral import lambda_max_power_iter_psd_batched as _lmax_b
+
+        r, d_in, d_out = gA.shape[1], gA.shape[2], gB.shape[1]
+        Q_inv = Q_isqrt.square()
+        P_inv = P_isqrt.square()
+        PA_fresh_raw = (
+            cb * PA_raw
+            + ((1.0 - cb) / d_in)
+            * ((gA * Q_inv.unsqueeze(1)) @ gA.transpose(-2, -1))
+        )
+        QB_fresh_raw = (
+            cb * QB_raw
+            + ((1.0 - cb) / d_out)
+            * (gB.transpose(-2, -1) @ (gB * P_inv.unsqueeze(-1)))
+        )
+        eye = torch.eye(r, dtype=PA_raw.dtype, device=PA_raw.device).expand_as(PA_raw)
+        if t == 1:
+            PA_fresh = eye
+            QB_fresh = eye
+        else:
+            lam_PA, _ = _lmax_b(self._sym(PA_fresh_raw), n_iters=8)
+            lam_QB, _ = _lmax_b(self._sym(QB_fresh_raw), n_iters=8)
+            PA_fresh = PA_fresh_raw / lam_PA.view(-1, 1, 1).clamp_min(1e-30)
+            QB_fresh = QB_fresh_raw / lam_QB.view(-1, 1, 1).clamp_min(1e-30)
+
+        PAh_fresh = gram_ns_inv_sqrt(
+            self._sym(PA_fresh), nsteps=self.higham_iters,
+            eps=self.delta, eps_relative=True)
+        QBh_fresh = gram_ns_inv_sqrt(
+            self._sym(QB_fresh), nsteps=self.higham_iters,
+            eps=self.delta, eps_relative=True)
+        dA_fresh, dB_fresh = self._cw_shadow_direction(
+            PAh=PAh_fresh, QBh=QBh_fresh, mhatA=mhatA, mhatB=mhatB,
+            Q_isqrt=Q_isqrt, P_isqrt=P_isqrt, cA=cA, cB=cB, rho=rho,
+            v_sigma_WA=v_sigma_WA, v_sigma_WB=v_sigma_WB)
+        dA_identity, dB_identity = self._cw_shadow_direction(
+            PAh=eye, QBh=eye, mhatA=mhatA, mhatB=mhatB,
+            Q_isqrt=Q_isqrt, P_isqrt=P_isqrt, cA=cA, cB=cB, rho=rho,
+            v_sigma_WA=v_sigma_WA, v_sigma_WB=v_sigma_WB)
+
+        small_slot_directions = {}
+        small_slot_stats = {}
+        if microbatch_gA is not None or microbatch_gB is not None:
+            if microbatch_gA is None or microbatch_gB is None:
+                raise ValueError("incomplete factor microbatch-gradient payload")
+            moments = _small_slot_microbatch_moments(
+                microbatch_gA, microbatch_gB, Q_inv, P_inv)
+
+            def _normalized_direct_slot(slot):
+                lam, _ = _lmax_b(self._sym(slot), n_iters=8)
+                normalized = slot / lam.view(-1, 1, 1).clamp_min(1e-30)
+                return torch.where(
+                    (lam > 1e-30).view(-1, 1, 1), normalized, eye)
+
+            PA_uncentered = _normalized_direct_slot(moments["P_A_uncentered"])
+            QB_uncentered = _normalized_direct_slot(moments["Q_B_uncentered"])
+            PA_centered = _normalized_direct_slot(moments["P_A_centered"])
+            QB_centered = _normalized_direct_slot(moments["Q_B_centered"])
+            PAh_uncentered = gram_ns_inv_sqrt(
+                self._sym(PA_uncentered), nsteps=self.higham_iters,
+                eps=self.delta, eps_relative=True)
+            QBh_uncentered = gram_ns_inv_sqrt(
+                self._sym(QB_uncentered), nsteps=self.higham_iters,
+                eps=self.delta, eps_relative=True)
+            PAh_centered = gram_ns_inv_sqrt(
+                self._sym(PA_centered), nsteps=self.higham_iters,
+                eps=self.delta, eps_relative=True)
+            QBh_centered = gram_ns_inv_sqrt(
+                self._sym(QB_centered), nsteps=self.higham_iters,
+                eps=self.delta, eps_relative=True)
+            small_slot_directions["small_slot_uncentered"] = (
+                self._cw_shadow_direction(
+                    PAh=PAh_uncentered, QBh=QBh_uncentered,
+                    mhatA=mhatA, mhatB=mhatB,
+                    Q_isqrt=Q_isqrt, P_isqrt=P_isqrt,
+                    cA=cA, cB=cB, rho=rho,
+                    v_sigma_WA=v_sigma_WA, v_sigma_WB=v_sigma_WB)
+            )
+            small_slot_directions["small_slot_centered"] = (
+                self._cw_shadow_direction(
+                    PAh=PAh_centered, QBh=QBh_centered,
+                    mhatA=mhatA, mhatB=mhatB,
+                    Q_isqrt=Q_isqrt, P_isqrt=P_isqrt,
+                    cA=cA, cB=cB, rho=rho,
+                    v_sigma_WA=v_sigma_WA, v_sigma_WB=v_sigma_WB)
+            )
+            small_slot_stats.update({
+                key: value for key, value in moments.items()
+                if key.startswith("small_slot_")
+            })
+            if captured_aggregate_gA is not None and captured_aggregate_gB is not None:
+                small_slot_stats.update({
+                    "small_slot_microbatch_mean_A_rel_error": (
+                        (moments["mean_A"] - captured_aggregate_gA).flatten(1).norm(dim=1)
+                        / captured_aggregate_gA.flatten(1).norm(dim=1).clamp_min(1e-30)
+                    ),
+                    "small_slot_microbatch_mean_B_rel_error": (
+                        (moments["mean_B"] - captured_aggregate_gB).flatten(1).norm(dim=1)
+                        / captured_aggregate_gB.flatten(1).norm(dim=1).clamp_min(1e-30)
+                    ),
+                })
+
+        tangent_norms = {
+            "lagged": _skinny_tangent_fro_norm(Bw, Aw, dA_lag, dB_lag),
+            "fresh": _skinny_tangent_fro_norm(Bw, Aw, dA_fresh, dB_fresh),
+            "identity": _skinny_tangent_fro_norm(Bw, Aw, dA_identity, dB_identity),
+        }
+        quadratic = {
+            "lagged": _skinny_quadratic_stats(dA_lag, dB_lag),
+            "fresh": _skinny_quadratic_stats(dA_fresh, dB_fresh),
+            "identity": _skinny_quadratic_stats(dA_identity, dB_identity),
+        }
+        tangent_spectra = {
+            "lagged": _skinny_tangent_singular_values(Bw, Aw, dA_lag, dB_lag),
+            "fresh": _skinny_tangent_singular_values(Bw, Aw, dA_fresh, dB_fresh),
+            "identity": _skinny_tangent_singular_values(
+                Bw, Aw, dA_identity, dB_identity),
+        }
+        for label, (dA_probe, dB_probe) in small_slot_directions.items():
+            tangent_norms[label] = _skinny_tangent_fro_norm(
+                Bw, Aw, dA_probe, dB_probe)
+            quadratic[label] = _skinny_quadratic_stats(dA_probe, dB_probe)
+            tangent_spectra[label] = _skinny_tangent_singular_values(
+                Bw, Aw, dA_probe, dB_probe)
+
+        amp_PA_lag, _ = _lmax_b(self._sym(PAh_lag), n_iters=8)
+        amp_QB_lag, _ = _lmax_b(self._sym(QBh_lag), n_iters=8)
+        amp_PA_fresh, _ = _lmax_b(self._sym(PAh_fresh), n_iters=8)
+        amp_QB_fresh, _ = _lmax_b(self._sym(QBh_fresh), n_iters=8)
+        rel_PA = ((PA_fresh - PA_lag).flatten(1).norm(dim=1)
+                  / PA_lag.flatten(1).norm(dim=1).clamp_min(1e-30))
+        rel_QB = ((QB_fresh - QB_lag).flatten(1).norm(dim=1)
+                  / QB_lag.flatten(1).norm(dim=1).clamp_min(1e-30))
+        factor_cos_fresh = _factor_update_cosine(
+            dA_fresh, dB_fresh, dA_lag, dB_lag)
+        factor_cos_identity = _factor_update_cosine(
+            dA_identity, dB_identity, dA_lag, dB_lag)
+        tangent_cos_fresh = _skinny_tangent_cosine(
+            Bw, Aw, dA_fresh, dB_fresh, dA_lag, dB_lag)
+        tangent_cos_identity = _skinny_tangent_cosine(
+            Bw, Aw, dA_identity, dB_identity, dA_lag, dB_lag)
+        factor_cos_fresh_identity = _factor_update_cosine(
+            dA_fresh, dB_fresh, dA_identity, dB_identity)
+        tangent_cos_fresh_identity = _skinny_tangent_cosine(
+            Bw, Aw, dA_fresh, dB_fresh, dA_identity, dB_identity)
+
+        stats = {
+            "shadow_factor_cos_fresh_lagged": factor_cos_fresh,
+            "shadow_factor_cos_identity_lagged": factor_cos_identity,
+            "shadow_factor_cos_fresh_identity": factor_cos_fresh_identity,
+            "shadow_tangent_cos_fresh_lagged": tangent_cos_fresh,
+            "shadow_tangent_cos_identity_lagged": tangent_cos_identity,
+            "shadow_tangent_cos_fresh_identity": tangent_cos_fresh_identity,
+            "shadow_factor_identity_cos_gain_fresh_minus_lagged": (
+                factor_cos_fresh_identity - factor_cos_identity),
+            "shadow_tangent_identity_cos_gain_fresh_minus_lagged": (
+                tangent_cos_fresh_identity - tangent_cos_identity),
+            "shadow_tangent_fro_ratio_fresh_lagged": (
+                tangent_norms["fresh"] / tangent_norms["lagged"].clamp_min(1e-30)),
+            "shadow_tangent_fro_ratio_identity_lagged": (
+                tangent_norms["identity"] / tangent_norms["lagged"].clamp_min(1e-30)),
+            "shadow_PA_consumed_fresh_rel_change": rel_PA,
+            "shadow_QB_consumed_fresh_rel_change": rel_QB,
+            "shadow_PA_invroot_amp_est_lagged": amp_PA_lag,
+            "shadow_PA_invroot_amp_est_fresh": amp_PA_fresh,
+            "shadow_PA_invroot_amp_ratio_fresh_lagged": (
+                amp_PA_fresh / amp_PA_lag.clamp_min(1e-30)),
+            "shadow_QB_invroot_amp_est_lagged": amp_QB_lag,
+            "shadow_QB_invroot_amp_est_fresh": amp_QB_fresh,
+            "shadow_QB_invroot_amp_ratio_fresh_lagged": (
+                amp_QB_fresh / amp_QB_lag.clamp_min(1e-30)),
+        }
+        stats.update(small_slot_stats)
+        for label, (dA_probe, dB_probe) in small_slot_directions.items():
+            stats[f"small_slot_factor_cos_{label.removeprefix('small_slot_')}_lagged"] = (
+                _factor_update_cosine(dA_probe, dB_probe, dA_lag, dB_lag))
+            stats[f"small_slot_tangent_cos_{label.removeprefix('small_slot_')}_lagged"] = (
+                _skinny_tangent_cosine(
+                    Bw, Aw, dA_probe, dB_probe, dA_lag, dB_lag))
+            stats[f"small_slot_tangent_fro_ratio_{label.removeprefix('small_slot_')}_lagged"] = (
+                tangent_norms[label] / tangent_norms["lagged"].clamp_min(1e-30))
+        for side, amp_lag, amp_fresh in (
+                ("PA", amp_PA_lag, amp_PA_fresh),
+                ("QB", amp_QB_lag, amp_QB_fresh)):
+            stats[f"shadow_{side}_lambda_min_normalized_est_lagged"] = (
+                amp_lag.square().reciprocal() - self.delta).clamp_min(0.0)
+            stats[f"shadow_{side}_lambda_min_normalized_est_fresh"] = (
+                amp_fresh.square().reciprocal() - self.delta).clamp_min(0.0)
+        for label in tangent_norms:
+            _, sigma, stable_rank, rank_bound_hit = quadratic[label]
+            tangent_sv_sq = tangent_spectra[label].square()
+            stats[f"shadow_tangent_fro_{label}"] = tangent_norms[label]
+            stats[f"shadow_tangent_stable_rank_{label}"] = (
+                tangent_sv_sq.sum(dim=-1)
+                / tangent_sv_sq[..., 0].clamp_min(1e-30))
+            stats[f"shadow_quadratic_sigma_block_pi_{label}"] = sigma
+            stats[f"shadow_quadratic_stable_rank_block_pi_{label}"] = stable_rank
+            stats[f"shadow_quadratic_rank_bound_guard_hit_{label}"] = rank_bound_hit
+        sr_lagged = quadratic["lagged"][2]
+        sr_fresh = quadratic["fresh"][2]
+        sr_identity = quadratic["identity"][2]
+        stats["shadow_quadratic_sr_identity_distance_delta_fresh_minus_lagged"] = (
+            (sr_fresh - sr_identity).abs() - (sr_lagged - sr_identity).abs())
+        directions = {
+            "lagged": (dA_lag, dB_lag),
+            "fresh": (dA_fresh, dB_fresh),
+            "identity": (dA_identity, dB_identity),
+            **small_slot_directions,
+        }
+        effective_stats, _ = _effective_step_shadow_stats(
+            Aw, Bw, directions, A_dtype, B_dtype,
+            heldout_gA=heldout_gA, heldout_gB=heldout_gB)
+        stats.update(effective_stats)
+        if heldout_gA is not None and heldout_gB is not None:
+            for label, (dA_probe, dB_probe) in directions.items():
+                stats[f"shadow_heldout_predicted_loss_change_{label}"] = (
+                    (heldout_gA * dA_probe).sum(dim=(-2, -1))
+                    + (heldout_gB * dB_probe).sum(dim=(-2, -1))
+                )
+        stats.update(_latent_mode_shadow_stats(
+            Aw, Bw, gA, gB, directions,
+            heldout_gA=heldout_gA, heldout_gB=heldout_gB))
+        return stats, directions
 
     def _cw_apply_grouped(self, lr, cb, b1, eps):
-        """Grouped batched update: one set of bmm / batched-NS / batched-σ_max
-        per (d_in, d_out) shape group. Same math as _cw_apply_per_pair (Q/L/R are
-        r×r for every pair, so the eigenbasis refresh in step() stays global)."""
+        """The curvature-whiten update: one set of bmm / batched-NS /
+        batched-σ_max per (d_in, d_out) shape group. P_A/Q_B are r×r for every
+        pair, so the eigenbasis refresh in step() stays global.
+
+        The ONLY implementation. A second, per-pair one used to sit beside this
+        as "the equivalence oracle", and it silently implemented a different
+        algorithm: it read neither `precond_method` nor `cw_unpinned` nor
+        LORA_MULTIMOMENT_RESCALE, so under the production `gram_ns` inverse-sqrt
+        it applied only the DIAGONAL of the r×r curvature. Every equivalence
+        test left `precond_method` at its `eigh` default, so the oracle had
+        never validated a production config. Batching correctness is now
+        checked directly, by `tests/conftest.assert_companion_independent`:
+        a pair's update must be bit-identical alone and beside a
+        shape-identical companion, which is the property a stray reduction
+        across the batch axis actually breaks."""
         from collections import defaultdict
         from .spectral import sigma_max_power_iter_batched as _smax_b
         beta2 = self.beta2
@@ -2316,9 +2749,9 @@ class CurvatureWhitenLoRA(Optimizer):
             if self.soap_v:
                 vA = torch.stack([S[i]['v_A'] for i in idxs])
                 vB = torch.stack([S[i]['v_B'] for i in idxs])
-            # ── D_in / D_out ARE STALE BY ONE STEP. ──────────────────────────
-            # These two diagonals are the metric (P, Q) that builds the ENTIRE
-            # update below: dinA/doutB -> Din_m/Dout_m -> the small-side Grams
+            # ── Q / P ARE STALE BY ONE STEP. ──────────────────────────
+            # These two diagonals build the entire update below:
+            # Q_isqrt/P_isqrt -> Q_dmp/P_dmp -> the small-side Grams
             # PA/QB on the diag_metric path, the whitening, and the Picard cross.
             # What is read here is the curvature EMA over g_1..g_{t-1} ONLY. The
             # current step's gradient g_t is folded in at the very END of this
@@ -2329,27 +2762,25 @@ class CurvatureWhitenLoRA(Optimizer):
             # g_t before they are used. The lag is on the metric only, and it is
             # the real staleness in this optimizer — `precond_refresh_every` is
             # NOT (it is dead outside precond_method="eigh"; see step()).
-            # Mirrored in _cw_apply_per_pair (read at 1726-1727, accumulated at
-            # 1853-1854 / 1861-1862).
             # ─────────────────────────────────────────────────────────────────
-            Din = torch.stack([S[i]['D_in'] for i in idxs])
-            Dout = torch.stack([S[i]['D_out'] for i in idxs])
+            Q = torch.stack([S[i]['Q'] for i in idxs])
+            P = torch.stack([S[i]['P'] for i in idxs])
             if timer: timer.stop()
             _eigh = (self.precond_method == "eigh")
             if _eigh:
                 UA = torch.stack([S[i]['U_A'] for i in idxs])
                 UB = torch.stack([S[i]['U_B'] for i in idxs])
                 UAt = UA.transpose(-2, -1); UBt = UB.transpose(-2, -1)
-            # Relative-damped diagonals M_in = dinA^(-2), M_out = doutB^(-2): the
-            # SINGLE metric the diag arm commits to — used by the self small-side
+            # Relative-damped inverse square roots of the single diagonal metric,
+            # used by the self small-side
             # Gram, the whitening, and the Picard cross, coherently.
-            if self.cw_no_diag_curv:  # −Shampoo: M_in=M_out=I → C_A=BᵀB, C_B=AAᵀ
-                dinA = torch.ones_like(Din); doutB = torch.ones_like(Dout)
+            if self.cw_no_diag_curv:  # −Shampoo: Q=P=I → C_A=AAᵀ, C_B=BᵀB
+                Q_isqrt = torch.ones_like(Q); P_isqrt = torch.ones_like(P)
             else:
-                dinA = self._rdinv(Din, partner_trace=Dout.sum(dim=-1, keepdim=True))
-                doutB = self._rdinv(Dout, partner_trace=Din.sum(dim=-1, keepdim=True))
-            Din_m = (dinA * dinA).reciprocal()
-            Dout_m = (doutB * doutB).reciprocal()
+                Q_isqrt = self._rdinv(Q, partner_trace=P.sum(dim=-1, keepdim=True))
+                P_isqrt = self._rdinv(P, partner_trace=Q.sum(dim=-1, keepdim=True))
+            Q_dmp = Q_isqrt.square().reciprocal()
+            P_dmp = P_isqrt.square().reciprocal()
             if self.rr_identity:
                 # precond="one-sided": C_B = C_A = I_r. Nothing forms the slots and
                 # nothing EMAs them (see the KL update below); PA/QB are pinned to
@@ -2362,14 +2793,14 @@ class CurvatureWhitenLoRA(Optimizer):
             elif self.diag_metric:
                 # Option (b): small-side curvature = conjugate-diagonal-weighted
                 # geometric Gram, recomputed each step (replaces the dense S_curv
-                # EMA). M_A = Bᵀ diag(M_out) B, M_B = A diag(M_in) Aᵀ from the SAME
+                # EMA). C_B = Bᵀ P B and C_A = A Q Aᵀ from the same
                 # damped diagonals the cross uses (metric coherence). Downstream
                 # Rayleigh eigenvalues / QR refresh / whitening and the diagonal KL
                 # coupling are unchanged; the write-back of P_A/Q_B below stores M so
                 # the eigenbasis refresh tracks it.
-                if timer: timer.start("op_curv_gram")   # small-side curvature Grams M_A=Bᵀdiag(D_out)B, M_B=A diag(D_in)Aᵀ
-                PA = Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * Bw)
-                QB = (Aw * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)
+                if timer: timer.start("op_curv_gram")   # C_B=BᵀPB, C_A=AQAᵀ
+                PA = Bw.transpose(-2, -1) @ (P_dmp.unsqueeze(-1) * Bw)
+                QB = (Aw * Q_dmp.unsqueeze(1)) @ Aw.transpose(-2, -1)
                 if timer: timer.stop()
             else:
                 # precond="factorwise": PA/QB hold the FREE Kronecker factors
@@ -2489,6 +2920,50 @@ class CurvatureWhitenLoRA(Optimizer):
                 else:
                     mhatA = mA / bc1; mhatB = mB / bc1
             grp = [S[i] for i in idxs]
+            shadow_due = (
+                self.log_heavy_diagnostics
+                and self.precond == "factorwise"
+                and t % self.diagnostics_every == 0
+            )
+            if shadow_due:
+                A_dtypes = {pairs[i][0].dtype for i in idxs}
+                B_dtypes = {pairs[i][1].dtype for i in idxs}
+                if len(A_dtypes) != 1 or len(B_dtypes) != 1:
+                    raise ValueError(
+                        "factorwise shadow shape group mixes parameter dtypes")
+                shadow_A_dtype = next(iter(A_dtypes))
+                shadow_B_dtype = next(iter(B_dtypes))
+                cached_WA = [st.get('v_sigma_WA') for st in grp]
+                cached_WB = [st.get('v_sigma_WB') for st in grp]
+                shadow_v_WA = (torch.stack(cached_WA).detach().clone()
+                               if all(v is not None for v in cached_WA) else None)
+                shadow_v_WB = (torch.stack(cached_WB).detach().clone()
+                               if all(v is not None for v in cached_WB) else None)
+                heldout_grads = getattr(self, "_heldout_factor_grads", None)
+                heldout_gA = (torch.stack([heldout_grads[i][0] for i in idxs])
+                              if heldout_grads is not None else None)
+                heldout_gB = (torch.stack([heldout_grads[i][1] for i in idxs])
+                              if heldout_grads is not None else None)
+                microbatch_payload = getattr(
+                    self, "_factor_microbatch_grads", None)
+                if microbatch_payload is not None:
+                    microbatch_records = microbatch_payload["grads"]
+                    microbatch_gA = torch.stack([
+                        torch.stack([record[i][0] for i in idxs])
+                        for record in microbatch_records
+                    ])
+                    microbatch_gB = torch.stack([
+                        torch.stack([record[i][1] for i in idxs])
+                        for record in microbatch_records
+                    ])
+                    aggregate_records = microbatch_payload["aggregate_grads"]
+                    captured_aggregate_gA = torch.stack([
+                        aggregate_records[i][0] for i in idxs])
+                    captured_aggregate_gB = torch.stack([
+                        aggregate_records[i][1] for i in idxs])
+                else:
+                    microbatch_gA = microbatch_gB = None
+                    captured_aggregate_gA = captured_aggregate_gB = None
             # σ_max(A), σ_max(B) and ρ are loop-invariant (factors don't move until
             # the update is applied after the loop), so compute them once.
             if timer: timer.start("op_sigmax_radius")   # σ_max(A),σ_max(B) for the operator-norm radius ρ
@@ -2511,9 +2986,9 @@ class CurvatureWhitenLoRA(Optimizer):
             # ── Picard block-coordinate loop (cw_picard_iters). k=1 ⇒ the cross-term
             # is never formed (iter 0) ⇒ bit-identical to the pre-Picard step. For
             # k≥2 each iter adds the cross-coupling correction (Jacobi)
-            #   g̃_A = m̂_A + (1/η)·Bᵀ diag(D_out) dB A diag(D_in)   (mirror for B)
+            #   g̃_A = m̂_A + (1/η)·Bᵀ P dB A Q   (mirror for B)
             # from kl_shampoo_polar_derivation.md §Cross-coupling (Prop 3): the
-            # full-space diagonals D_out,D_in at power 1 — exact for diag_metric
+            # full-space diagonals P,Q at power 1 — exact for diag_metric
             # (option b), mixed-metric for dense kl (option a). Reassociated to stay
             # in the skinny r×d factors (no dense d_out×d_in). Magnitude is re-pinned
             # (ρ-rescale) every iter, so each dA/dB fed forward is at physical scale
@@ -2529,13 +3004,13 @@ class CurvatureWhitenLoRA(Optimizer):
                     if _pic == 0:
                         inA = mhatA; inB = mhatB
                     else:
-                        cross_A = ((Bw.transpose(-2, -1) @ (Dout_m.unsqueeze(-1) * dB)) @ Aw) * Din_m.unsqueeze(1)
-                        cross_B = Dout_m.unsqueeze(-1) * (Bw @ ((dA * Din_m.unsqueeze(1)) @ Aw.transpose(-2, -1)))
+                        cross_A = ((Bw.transpose(-2, -1) @ (P_dmp.unsqueeze(-1) * dB)) @ Aw) * Q_dmp.unsqueeze(1)
+                        cross_B = P_dmp.unsqueeze(-1) * (Bw @ ((dA * Q_dmp.unsqueeze(1)) @ Aw.transpose(-2, -1)))
                         inA = mhatA + (1.0 / lr) * cross_A
                         inB = mhatB + (1.0 / lr) * cross_B
                     if timer: timer.start("op_whiten")      # z = S^{-1/2} m̂ D^{-1/2}
-                    zA = _whA(inA) * dinA.unsqueeze(1)
-                    zB = _whB(inB) * doutB.unsqueeze(-1)
+                    zA = _whA(inA) * Q_isqrt.unsqueeze(1)
+                    zB = _whB(inB) * P_isqrt.unsqueeze(-1)
                     if timer: timer.stop()
                 if _pic == 0:
                     # H for the approximate-LMO scores: the matrix msign is about
@@ -2548,12 +3023,12 @@ class CurvatureWhitenLoRA(Optimizer):
                     zB = self._direction_op(zB, grp, 'v_sigma_zB', 'B')
                     if timer: timer.stop()
                 if self.flat_outer:
-                    # See _cw_apply_per_pair: skip the un-whiten (flat-spectrum probe).
+                    # flat_outer: skip the un-whiten (flat-spectrum probe).
                     WA, WB = zA, zB
                 else:
                     if timer: timer.start("op_unwhiten")    # W = S^{-1/2} φ(z) D^{-1/2}
-                    WA = _whA(zA) * dinA.unsqueeze(1)
-                    WB = _whB(zB) * doutB.unsqueeze(-1)
+                    WA = _whA(zA) * Q_isqrt.unsqueeze(1)
+                    WB = _whB(zB) * P_isqrt.unsqueeze(-1)
                     if timer: timer.stop()
                 if timer: timer.start("op_sigmax_rescale")  # σ_max(W_A),σ_max(W_B) for the ρ/σ_max operator-norm rescale
                 if mm_rescale:
@@ -2596,23 +3071,69 @@ class CurvatureWhitenLoRA(Optimizer):
                 dB = dB * c_sc.view(-1, 1, 1)
                 rho = rho * c_sc  # diagnostics record the solved ρ
                 if timer: timer.stop()
+            if shadow_due:
+                shadow_stats, shadow_directions = self._cw_shadow_factorwise_records(
+                        t=t,
+                        cb=cb,
+                        PA_raw=PA_raw,
+                        QB_raw=QB_raw,
+                        PA_lag=PA,
+                        QB_lag=QB,
+                        PAh_lag=PAh,
+                        QBh_lag=QBh,
+                        gA=gA,
+                        gB=gB,
+                        Aw=Aw,
+                        Bw=Bw,
+                        mhatA=mhatA,
+                        mhatB=mhatB,
+                        Q_isqrt=Q_isqrt,
+                        P_isqrt=P_isqrt,
+                        cA=cA,
+                        cB=cB,
+                        rho=rho,
+                        dA_lag=dA,
+                        dB_lag=dB,
+                        v_sigma_WA=shadow_v_WA,
+                        v_sigma_WB=shadow_v_WB,
+                        A_dtype=shadow_A_dtype,
+                        B_dtype=shadow_B_dtype,
+                        heldout_gA=heldout_gA,
+                        heldout_gB=heldout_gB,
+                        microbatch_gA=microbatch_gA,
+                        microbatch_gB=microbatch_gB,
+                        captured_aggregate_gA=captured_aggregate_gA,
+                        captured_aggregate_gB=captured_aggregate_gB,
+                    )
+                self._last_cw_shadow_batches.append(shadow_stats)
+                if heldout_gA is not None:
+                    for j, i in enumerate(idxs):
+                        self._last_cw_heldout_directions[i] = {
+                            "A_pre": Aw[j].detach(),
+                            "B_pre": Bw[j].detach(),
+                            **{
+                                label: (dA_probe[j].detach(), dB_probe[j].detach())
+                                for label, (dA_probe, dB_probe)
+                                in shadow_directions.items()
+                            },
+                        }
             if timer: timer.start("cw_curv_grams")
             if self.kl_coupled:
                 # Coupled KL fixed point (Prop 4): each Gram whitens g by the
                 # OTHER factor's relative-damped inverse before forming, with 1/d
                 # normalizers — the streaming flip-flop toward the matrix-normal
-                # MLE. dinA²/lamA² are the power-(-1) factors; PAinv = Q diag(λ⁻¹) Qᵀ.
+                # MLE. Q_isqrt² and P_isqrt² are the diagonal inverses.
                 # At warmup the factors are zero ⇒ _rdinv returns ones ⇒ identity
                 # whitening ⇒ first alternation is one-sided Shampoo.
                 r = gA.shape[1]; d_in = gA.shape[2]; d_out = gB.shape[1]
-                Din_inv = dinA * dinA
-                Dout_inv = doutB * doutB
+                Q_inv = Q_isqrt.square()
+                P_inv = P_isqrt.square()
                 PAinv = PAinv_full
                 QBinv = QBinv_full
                 if self.precond == "factorwise":
-                    PA_raw.mul_(cb).add_((gA * Din_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
+                    PA_raw.mul_(cb).add_((gA * Q_inv.unsqueeze(1)) @ gA.transpose(-2, -1),
                                      alpha=(1.0 - cb) / d_in)
-                    QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * Dout_inv.unsqueeze(-1)),
+                    QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ (gB * P_inv.unsqueeze(-1)),
                                      alpha=(1.0 - cb) / d_out)
                 if self.rr_identity:
                     # C_B = C_A = I, so PAinv/QBinv are the identity and the two
@@ -2621,19 +3142,19 @@ class CurvatureWhitenLoRA(Optimizer):
                     # N·r·(d_in+d_out) for the sum of squares — an r-fold waste on
                     # every step of every one-sided run. Same expression as the
                     # non-coupled branch below, for the same reason.
-                    Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=(1.0 - cb) / r)
-                    Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=(1.0 - cb) / r)
+                    Q.mul_(cb).add_((gA * gA).sum(dim=1), alpha=(1.0 - cb) / r)
+                    P.mul_(cb).add_((gB * gB).sum(dim=2), alpha=(1.0 - cb) / r)
                 else:
-                    Din.mul_(cb).add_((gA * (PAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
-                    Dout.mul_(cb).add_((gB * (gB @ QBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
+                    Q.mul_(cb).add_((gA * (PAinv @ gA)).sum(dim=1), alpha=(1.0 - cb) / r)
+                    P.mul_(cb).add_((gB * (gB @ QBinv)).sum(dim=2), alpha=(1.0 - cb) / r)
             else:
                 # diag_metric recomputes PA/QB from the diagonals each step (above), so
                 # do NOT clobber them with a Gram EMA — only accumulate the plain diagonals.
                 if self.precond == "factorwise":
                     PA_raw.mul_(cb).add_(gA @ gA.transpose(-2, -1), alpha=1.0 - cb)
                     QB_raw.mul_(cb).add_(gB.transpose(-2, -1) @ gB, alpha=1.0 - cb)
-                Din.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
-                Dout.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
+                Q.mul_(cb).add_((gA * gA).sum(dim=1), alpha=1.0 - cb)
+                P.mul_(cb).add_((gB * gB).sum(dim=2), alpha=1.0 - cb)
             if timer: timer.stop()
             # What goes back into the P_A/Q_B buffers. factorwise: the RAW EMA
             # just accumulated above (never the lambda_max-normalized copy the
@@ -2666,7 +3187,7 @@ class CurvatureWhitenLoRA(Optimizer):
                 if self.soap_v:
                     S[i]['v_A'].copy_(vA[j]); S[i]['v_B'].copy_(vB[j])
                 S[i]['P_A'].copy_(PA_st[j]); S[i]['Q_B'].copy_(QB_st[j])
-                S[i]['D_in'].copy_(Din[j]); S[i]['D_out'].copy_(Dout[j])
+                S[i]['Q'].copy_(Q[j]); S[i]['P'].copy_(P[j])
                 A_.grad.zero_(); B_.grad.zero_()
 
 

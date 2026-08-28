@@ -68,3 +68,28 @@ def test_run_one_train_step_rejects_all_zero_token_macrostep():
         )
 
     assert model.forward_calls == 0
+
+
+def test_pre_step_callback_sees_grad_and_transient_state_is_removed():
+    model = TinyLossModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    valid = _batch(torch.tensor([[-100, 1, 2, -100]], dtype=torch.long))
+    seen = []
+
+    def callback():
+        seen.append(model.weight.grad.clone())
+        optimizer._heldout_factor_grads = [(torch.ones(1), torch.ones(1))]
+
+    run_one_train_step(
+        model,
+        optimizer,
+        iter([valid]),
+        [valid],
+        grad_accum_steps=1,
+        max_grad_norm=None,
+        device=torch.device("cpu"),
+        pre_step_callback=callback,
+    )
+
+    assert len(seen) == 1
+    assert not hasattr(optimizer, "_heldout_factor_grads")

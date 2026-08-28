@@ -386,7 +386,7 @@ def test_p_and_q_updates_carry_the_one_over_r_normaliser():
     A, B = _factors(model)
     st = opt.pair_state[0]
 
-    q0, p0 = st["D_in"].clone(), st["D_out"].clone()
+    q0, p0 = st["Q"].clone(), st["P"].clone()
     assert torch.allclose(q0, torch.full_like(q0, 1e-12))
     assert torch.allclose(p0, torch.full_like(p0, 1e-12))
 
@@ -415,13 +415,13 @@ def test_p_and_q_updates_carry_the_one_over_r_normaliser():
     want_q = b2 * q0 + (1.0 - b2) / R * (gA * (C_B_inv @ gA)).sum(dim=0)
     want_p = b2 * p0 + (1.0 - b2) / R * (gB * (gB @ C_A_inv)).sum(dim=1)
     # Measured relative residual ~7e-8 (fp32 on a chain of r x r matmuls).
-    assert st["D_in"] == pytest.approx(want_q, rel=1e-5, abs=0.0)
-    assert st["D_out"] == pytest.approx(want_p, rel=1e-5, abs=0.0)
+    assert st["Q"] == pytest.approx(want_q, rel=1e-5, abs=0.0)
+    assert st["P"] == pytest.approx(want_p, rel=1e-5, abs=0.0)
 
     # Discrimination: r=8 against d_in=64 is a factor of 8, so a wrong
     # normaliser is nowhere near this tolerance.
     wrong = b2 * q0 + (1.0 - b2) / D_IN * (gA * (C_B_inv @ gA)).sum(dim=0)
-    assert not torch.allclose(st["D_in"], wrong, rtol=1e-3, atol=0.0)
+    assert not torch.allclose(st["Q"], wrong, rtol=1e-3, atol=0.0)
 
 
 def test_factorwise_recursion_normalises_by_d_in_and_d_out():
@@ -452,7 +452,7 @@ def test_factorwise_recursion_normalises_by_d_in_and_d_out():
     A, B = _factors(model)
     st = opt.pair_state[0]
 
-    q0, p0 = st["D_in"].clone(), st["D_out"].clone()
+    q0, p0 = st["Q"].clone(), st["P"].clone()
     PA0, QB0 = st["P_A"].clone(), st["Q_B"].clone()
     # The free r x r factors start at eps * I, not zero: the lambda_max
     # normalization at consume maps that to exactly the identity metric on step

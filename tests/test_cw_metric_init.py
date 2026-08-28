@@ -1,5 +1,5 @@
 """cw_metric_init={zero,ones} for CurvatureWhitenLoRA's diagonal metric EMAs
-D_in (=Q) / D_out (=P).
+Q/P.
 
 Algebra (see notebooks/cw_metric_init_analysis.ipynb): both inits make step 1 use
 the identity metric — zero hits the _rdinv xmax≈0 fallback, ones normalizes the
@@ -95,7 +95,7 @@ def test_float_eps_init_value():
     m = _Model(b_zero=True)
     o = CurvatureWhitenLoRA(m, cw_metric_init="1e-10", **_PROD)
     st = o.pair_state[0]
-    assert torch.all(st["D_in"] == 1e-10) and torch.all(st["D_out"] == 1e-10)
+    assert torch.all(st["Q"] == 1e-10) and torch.all(st["P"] == 1e-10)
 
 
 def test_default_is_eps():
@@ -103,21 +103,21 @@ def test_default_is_eps():
     m = _Model(b_zero=True)
     o = CurvatureWhitenLoRA(m, **_PROD)
     assert o.cw_metric_init == "1e-12"
-    assert torch.all(o.pair_state[0]["D_in"] == 1e-12)
+    assert torch.all(o.pair_state[0]["Q"] == 1e-12)
 
 
 def test_ones_init_value():
     m = _Model(b_zero=True)
     o = CurvatureWhitenLoRA(m, cw_metric_init="ones", **_PROD)
     st = o.pair_state[0]
-    assert torch.all(st["D_in"] == 1.0) and torch.all(st["D_out"] == 1.0)
+    assert torch.all(st["Q"] == 1.0) and torch.all(st["P"] == 1.0)
 
 
 def test_delta_init_value():
     m = _Model(b_zero=True)
     o = CurvatureWhitenLoRA(m, cw_metric_init="delta", **_PROD)
     st = o.pair_state[0]
-    assert torch.all(st["D_in"] == _PROD["delta"]) and torch.all(st["D_out"] == _PROD["delta"])
+    assert torch.all(st["Q"] == _PROD["delta"]) and torch.all(st["P"] == _PROD["delta"])
 
 
 def test_bad_value_raises():

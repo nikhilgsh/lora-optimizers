@@ -714,6 +714,28 @@ def test_old_pair_state_names_load_into_the_renamed_optimizer(tmp_path):
     _equal_state(src_opt, dst_opt)
 
 
+def test_intermediate_pair_state_names_load_without_qb_collision(tmp_path):
+    """The D_in/D_out-only predecessor preserves its current free-factor Q_B."""
+    from lora_playground.optim import CurvatureWhitenLoRA
+
+    _src_model, src_opt, ckpt, _aliases = _save_cw_checkpoint(tmp_path)
+    path = Path(ckpt) / "optimizer.pt"
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    small_side_stage = CurvatureWhitenLoRA.PAIR_STATE_ALIAS_STAGES[0]
+    for i, entry in payload["pair_state"].items():
+        payload["pair_state"][i] = {
+            small_side_stage.get(k, k): v for k, v in entry.items()
+        }
+    torch.save(payload, path)
+
+    torch.manual_seed(99)
+    dst_model = _PeftLikeWrapper(_ToyModel())
+    dst_opt = _make_optimizer(dst_model.inner, _CW_OPT)
+    info = load_checkpoint(ckpt, bare_model=dst_model, optimizer=dst_opt)
+    assert info is not None
+    _equal_state(src_opt, dst_opt)
+
+
 def test_the_alias_map_is_what_makes_the_old_checkpoint_load(tmp_path, monkeypatch):
     """Negative control: with the alias table emptied, the same load leaves the
     curvature state at its init value instead of erroring. That silence is
@@ -741,6 +763,8 @@ def test_the_alias_map_is_what_makes_the_old_checkpoint_load(tmp_path, monkeypat
     # temporary module-level fallback, so this really does disable translation.
     monkeypatch.setattr(
         CurvatureWhitenLoRA, "PAIR_STATE_ALIASES", {}, raising=False)
+    monkeypatch.setattr(
+        CurvatureWhitenLoRA, "PAIR_STATE_ALIAS_STAGES", (), raising=False)
 
     torch.manual_seed(99)
     dst_model = _PeftLikeWrapper(_ToyModel())

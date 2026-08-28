@@ -106,9 +106,9 @@ def test_curvature_whiten_matches_soap_sxd_chord_tight_formula(use_polar):
 
     No-polar:
         z_A = U_A [(Q_Aᵀ m_A) / sqrt(v_A)]
-        W_A = S_A^{-1/2} z_A D_in^{-1/2}
+        W_A = S_A^{-1/2} z_A Q^{-1/2}
     Polar:
-        W_A = S_A^{-1/2} polar(z_A) D_in^{-1/2}
+        W_A = S_A^{-1/2} polar(z_A) Q^{-1/2}
 
     B uses the transposed orientation. The final applied update is the
     chord-tight spectral rescale, σ_max(Δfactor)=ρ.
@@ -154,8 +154,8 @@ def test_curvature_whiten_matches_soap_sxd_chord_tight_formula(use_polar):
     st["U_B"].copy_(UB)
     st["P_A"].copy_(UA @ torch.diag(lam_A) @ UA.T)
     st["Q_B"].copy_(UB @ torch.diag(lam_B) @ UB.T)
-    st["D_in"].copy_(torch.tensor([9.0, 1.0, 4.0]))
-    st["D_out"].copy_(torch.tensor([1.0, 4.0, 9.0, 16.0]))
+    st["Q"].copy_(torch.tensor([9.0, 1.0, 4.0]))
+    st["P"].copy_(torch.tensor([1.0, 4.0, 9.0, 16.0]))
     opt._q_initialized = True
 
     lamA_is = _rdinv_like(lam_A, delta)

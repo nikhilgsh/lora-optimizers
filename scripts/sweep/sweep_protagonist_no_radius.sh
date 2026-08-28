@@ -24,7 +24,7 @@ model=${6:-allenai/OLMo-2-0425-1B}
 data_dir=${7:-data/opc_sft_stage2_all_packed_seq2048}
 lora_r=${8:-256}
 precond_method=${9:-gram_ns}            # protagonist inverse-sqrt: Polar-Express Gram NS (was eigh)
-cw_metric_init=${10:-1e-12}             # diagonal-metric (D_in/D_out) init: εI=1e-12 (default, branch-free, ≡zero); zero/ones/delta are ablations
+cw_metric_init=${10:-1e-12}             # diagonal-metric (Q/P) init: εI=1e-12 (default, branch-free, ≡zero); zero/ones/delta are ablations
 cw_solved_rho=${11:-0}                  # "1" = solved magnitude rule (ρ·t+ρ²=η, GPT-opt solved_rho port)
 
 solved_args=()

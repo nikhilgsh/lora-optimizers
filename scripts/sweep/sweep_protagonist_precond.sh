@@ -25,6 +25,8 @@
 #   1: lr  2: optimizer  3: seed  4: precond_delta  5: beta1  6: model  7: data_dir  8: lora_r
 #   9: precond  (product | one-sided | factorwise)
 #  10: msign    (full | diag)
+#  11: heavy diagnostics (0 | 1)
+#  12: diagnostics cadence (positive integer)
 lr=${1:-3e-2}
 optimizer=${2:-kl-diag-polar-lora}      # paper protagonist
 seed=${3:-0}
@@ -35,6 +37,8 @@ data_dir=${7:-data/openmath_instruct_2_2m_packed_seq2048_llama32}
 lora_r=${8:-256}
 precond=${9:-product}
 msign=${10:-full}
+heavy_diagnostics=${11:-${LOG_HEAVY_DIAGNOSTICS:-0}}
+diagnostics_every=${12:-${OPTIM_DIAGNOSTICS_EVERY:-100}}
 
 # Fail loudly on a bad cell rather than letting train.py's argparse reject it
 # 8 minutes into a model load, or worse, silently accept a typo'd branch.
@@ -45,6 +49,14 @@ esac
 case "$msign" in
     full|diag) ;;
     *) echo "sweep_protagonist_precond: bad msign '$msign'" >&2; exit 2 ;;
+esac
+case "$heavy_diagnostics" in
+    0|1) ;;
+    *) echo "sweep_protagonist_precond: bad heavy diagnostics '$heavy_diagnostics'" >&2; exit 2 ;;
+esac
+case "$diagnostics_every" in
+    ''|*[!0-9]*|0) echo "sweep_protagonist_precond: bad diagnostics cadence '$diagnostics_every'" >&2; exit 2 ;;
+    *) ;;
 esac
 
 precond_method=${PRECOND_METHOD:-gram_ns}   # protagonist inverse-sqrt: Polar-Express Gram NS
@@ -61,6 +73,8 @@ compile_args=()
 
 diag_args=(--log_basic_diagnostics)
 [ "${LOG_DIAGNOSTICS:-1}" = "0" ] && diag_args=(--no-log_basic_diagnostics)
+[ "$heavy_diagnostics" = "1" ] && diag_args+=(--log_heavy_diagnostics)
+[ "${OPTIM_HELDOUT_PROBE:-0}" = "1" ] && diag_args+=(--optim_heldout_probe)
 
 ckpt_args=()
 if [ -n "${CHECKPOINT_DIR:-}" ]; then
@@ -102,5 +116,5 @@ python train_lora.py \
     --msign "$msign" \
     "${precond_args[@]}" \
     "${diag_args[@]}" \
-    --optim_diagnostics_every 100 \
+    --optim_diagnostics_every "$diagnostics_every" \
     "${ckpt_args[@]}"

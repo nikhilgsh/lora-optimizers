@@ -7,6 +7,7 @@ See docs/execution_scope.md / ~/.claude/plans/the-data-loading-in-wobbly-pelican
 # snapshot — defeating the race protection. The bootstrap is the very first
 # code that runs in the process; only after it completes do we import main.
 import hashlib
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -30,14 +31,41 @@ SOURCE_SNAPSHOT: dict[str, bytes] = {}
 SOURCE_SNAPSHOT_SHA: dict[str, str] = {}
 
 
+def _iter_snapshot_python_paths(root: Path):
+    """Yield snapshot-eligible Python paths, tolerating vanished subtrees.
+
+    ``Path.rglob`` propagates an ``OSError`` raised while descending into a
+    directory that disappears after its parent was scanned.  ``os.walk``
+    treats that race as an unreadable subtree and continues with its siblings;
+    top-down pruning preserves the directory exclusions used by the snapshot.
+    """
+    def handle_walk_error(error: OSError) -> None:
+        # Match pathlib's existing tolerance for inaccessible directories and
+        # add only the transient-disappearance case. Other traversal failures
+        # remain fatal rather than silently weakening the source snapshot.
+        if not isinstance(error, (FileNotFoundError, PermissionError)):
+            raise error
+
+    for dirpath, dirnames, filenames in os.walk(
+        root, topdown=True, onerror=handle_walk_error
+    ):
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if dirname not in _SNAPSHOT_EXCLUDED_DIRS
+        ]
+        base = Path(dirpath)
+        for filename in filenames:
+            if filename.endswith(".py"):
+                yield base / filename
+
+
 def _bootstrap_source_snapshot() -> None:
     """Walk all .py under ROOT (minus excluded dirs) and stash bytes + sha256.
     Called immediately at module load time, before any lora_playground import.
     """
-    for p in ROOT.rglob("*.py"):
+    for p in _iter_snapshot_python_paths(ROOT):
         rel = p.relative_to(ROOT)
-        if any(part in _SNAPSHOT_EXCLUDED_DIRS for part in rel.parts):
-            continue
         # Skip ourselves — train_lora.py is the entry, not project library code.
         # (We still record train_lora.py because compute_closure starts here.)
         try:

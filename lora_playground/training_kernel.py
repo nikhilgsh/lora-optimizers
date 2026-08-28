@@ -23,7 +23,7 @@ loop in `train.py::main` so a single change to the per-step path
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Callable, Iterator
 
 import torch
 import torch.nn as nn
@@ -257,6 +257,8 @@ def run_one_train_step(
     grad_accum_steps: int,
     max_grad_norm: float | None,
     device: torch.device,
+    pre_step_callback: Callable[[], None] | None = None,
+    capture_factor_microbatch_grads: bool = False,
 ) -> tuple[float, int, Iterator, dict]:
     """One macro-step of training (train.py only).
 
@@ -276,6 +278,16 @@ def run_one_train_step(
     its specialized timing harness is in scripts/bench/bench_optimizer_step.py.
     """
     optimizer.zero_grad(set_to_none=True)
+    factor_pairs = getattr(optimizer, "pairs", None)
+    if capture_factor_microbatch_grads and not factor_pairs:
+        raise ValueError(
+            "factor microbatch-gradient capture requires optimizer.pairs")
+    captured_microbatch_grads = [] if capture_factor_microbatch_grads else None
+    previous_factor_grads = (
+        [(torch.zeros_like(A, dtype=torch.float32),
+          torch.zeros_like(B, dtype=torch.float32)) for A, B in factor_pairs]
+        if capture_factor_microbatch_grads else None
+    )
     step_loss = 0.0
     step_tokens = 0
     skipped_zero_token_microbatches = 0
@@ -292,9 +304,31 @@ def run_one_train_step(
             # causal-LM heads. It contributes no supervised objective, so skip
             # the forward/backward pass instead of poisoning the loss window.
             skipped_zero_token_microbatches += 1
+            if capture_factor_microbatch_grads:
+                captured_microbatch_grads.append([
+                    (torch.zeros_like(gA), torch.zeros_like(gB))
+                    for gA, gB in previous_factor_grads
+                ])
             continue
         outputs = train_model(**batch)
         (outputs.loss / grad_accum_steps).backward()
+        if capture_factor_microbatch_grads:
+            current_factor_grads = [
+                (A.grad.detach().float().clone(), B.grad.detach().float().clone())
+                for A, B in factor_pairs
+            ]
+            # The production backward scales every microbatch loss by 1/G.
+            # Difference consecutive accumulated-grad snapshots, then undo that
+            # scale so the arithmetic mean of these G records is the aggregate
+            # train gradient.  A skipped zero-token microbatch contributes an
+            # explicit zero record above and therefore keeps the same 1/G weight.
+            captured_microbatch_grads.append([
+                (grad_accum_steps * (gA - prevA),
+                 grad_accum_steps * (gB - prevB))
+                for (gA, gB), (prevA, prevB)
+                in zip(current_factor_grads, previous_factor_grads)
+            ])
+            previous_factor_grads = current_factor_grads
         step_loss += float(outputs.loss.detach()) * tokens
         step_tokens += tokens
 
@@ -313,9 +347,34 @@ def run_one_train_step(
         norm_stats = dict(norm_stats)
         norm_stats["skipped_zero_token_microbatches"] = skipped_zero_token_microbatches
 
+    if capture_factor_microbatch_grads:
+        # Diagnostic-only transient payload.  Keep the exact pre-clip aggregate
+        # beside the individual microbatch records so tests and diagnostics can
+        # audit the capture without reading a subsequently clipped gradient.
+        optimizer._factor_microbatch_grads = {
+            "grads": captured_microbatch_grads,
+            "aggregate_grads": [
+                (A.grad.detach().float().clone(), B.grad.detach().float().clone())
+                for A, B in factor_pairs
+            ],
+            "microbatch_count": int(grad_accum_steps),
+            "valid_microbatch_count": int(
+                grad_accum_steps - skipped_zero_token_microbatches),
+        }
+
     if max_grad_norm and max_grad_norm > 0:
         torch.nn.utils.clip_grad_norm_(train_model.parameters(), max_grad_norm)
-    optimizer.step()
+    if pre_step_callback is not None:
+        pre_step_callback()
+    try:
+        optimizer.step()
+    finally:
+        # Diagnostic-only transient state must not survive a step or enter a
+        # checkpoint. The optimizer consumes it while emitting its shadow event.
+        for transient_name in (
+                "_heldout_factor_grads", "_factor_microbatch_grads"):
+            if hasattr(optimizer, transient_name):
+                delattr(optimizer, transient_name)
     return step_loss, step_tokens, train_iter, norm_stats
 
 

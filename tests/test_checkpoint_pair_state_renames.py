@@ -25,6 +25,7 @@ import torch
 
 from lora_playground.checkpoint import (
     _apply_pair_state_renames,
+    _pair_state_alias_stages,
     _pair_state_aliases,
 )
 from lora_playground.optim import AdamSOAPPolarProductLoRA, CurvatureWhitenLoRA
@@ -33,6 +34,7 @@ R, D_IN, D_OUT = 8, 64, 32
 # The retired schema, as an old checkpoint's pair_state entry would carry it.
 OLD_ENTRY = {"L_A": torch.ones(R, R), "R_B": torch.full((R, R), 2.0),
              "Q_A": torch.eye(R) * 3, "Q_B": torch.eye(R) * 4,
+             "D_in": torch.arange(D_IN), "D_out": torch.arange(D_OUT),
              "m_A": torch.zeros(R, D_IN)}
 
 
@@ -58,8 +60,8 @@ def _live_keys(opt):
 def test_curvature_whiten_live_keys_are_the_new_schema():
     """Guards the premise of the two tests below."""
     live = _live_keys(CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise"))
-    assert {"P_A", "Q_B", "U_A", "U_B"} <= live
-    assert not ({"L_A", "R_B", "Q_A"} & live)
+    assert {"P_A", "Q_B", "U_A", "U_B", "Q", "P"} <= live
+    assert not ({"L_A", "R_B", "Q_A", "D_in", "D_out"} & live)
     # The trap: `Q_B` is live on the NEW schema too, so it cannot discriminate.
     assert "Q_B" in live
 
@@ -67,14 +69,36 @@ def test_curvature_whiten_live_keys_are_the_new_schema():
 def test_old_checkpoint_renames_onto_curvature_whiten():
     cw = CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise")
     out = _apply_pair_state_renames(
-        dict(OLD_ENTRY), _live_keys(cw), _pair_state_aliases(cw))
-    assert set(out) == {"P_A", "Q_B", "U_A", "U_B", "m_A"}
+        dict(OLD_ENTRY), _live_keys(cw), _pair_state_alias_stages(cw))
+    assert set(out) == {"P_A", "Q_B", "U_A", "U_B", "Q", "P", "m_A"}
     # The permutation is simultaneous: old L_A -> P_A and old Q_B -> U_B, so the
     # value that was under `Q_B` must land under `U_B`, not stay under `Q_B`.
     assert torch.equal(out["P_A"], OLD_ENTRY["L_A"])
     assert torch.equal(out["Q_B"], OLD_ENTRY["R_B"])
     assert torch.equal(out["U_A"], OLD_ENTRY["Q_A"])
     assert torch.equal(out["U_B"], OLD_ENTRY["Q_B"])
+    assert torch.equal(out["Q"], OLD_ENTRY["D_in"])
+    assert torch.equal(out["P"], OLD_ENTRY["D_out"])
+
+
+def test_intermediate_checkpoint_preserves_free_factor_qb():
+    """The immediate predecessor used current Q_B plus legacy D_in/D_out."""
+    cw = CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise")
+    entry = {
+        "P_A": torch.ones(R, R),
+        "Q_B": torch.eye(R) * 2,
+        "U_A": torch.eye(R) * 3,
+        "U_B": torch.eye(R) * 4,
+        "D_in": torch.arange(D_IN),
+        "D_out": torch.arange(D_OUT),
+    }
+    out = _apply_pair_state_renames(
+        dict(entry), _live_keys(cw), _pair_state_alias_stages(cw))
+    assert set(out) == {"P_A", "Q_B", "U_A", "U_B", "Q", "P"}
+    assert torch.equal(out["Q_B"], entry["Q_B"])
+    assert torch.equal(out["U_B"], entry["U_B"])
+    assert torch.equal(out["Q"], entry["D_in"])
+    assert torch.equal(out["P"], entry["D_out"])
 
 
 def test_soap_optimizer_keeps_its_own_old_names():
@@ -94,9 +118,11 @@ def test_soap_optimizer_keeps_its_own_old_names():
 def test_new_schema_entry_is_left_alone():
     """A current-schema checkpoint carries no old-only key, so nothing happens."""
     cw = CurvatureWhitenLoRA(_FakeLoRALinear(), precond="factorwise")
-    entry = {"P_A": torch.ones(R, R), "Q_B": torch.eye(R), "U_A": torch.eye(R)}
+    entry = {"P_A": torch.ones(R, R), "Q_B": torch.eye(R),
+             "U_A": torch.eye(R), "Q": torch.arange(D_IN),
+             "P": torch.arange(D_OUT)}
     assert _apply_pair_state_renames(
-        dict(entry), _live_keys(cw), _pair_state_aliases(cw)) == entry
+        dict(entry), _live_keys(cw), _pair_state_alias_stages(cw)) == entry
 
 
 # ── the map is scoped to the optimizer class ────────────────────────────────
@@ -136,7 +162,8 @@ def test_the_declared_map_covers_every_renamed_slot():
     old-schema entry.
     """
     assert CurvatureWhitenLoRA.PAIR_STATE_ALIASES == {
-        "L_A": "P_A", "R_B": "Q_B", "Q_A": "U_A", "Q_B": "U_B"}
+        "L_A": "P_A", "R_B": "Q_B", "Q_A": "U_A", "Q_B": "U_B",
+        "D_in": "Q", "D_out": "P"}
 
 
 def test_soap_is_untouched_although_curvature_whiten_declares_its_own_map():

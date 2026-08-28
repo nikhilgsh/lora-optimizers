@@ -82,7 +82,7 @@ class OptimizerConfig:
     # (the large-side diagonal metric). "A" = own op-norm (shipped/paper:
     # (x/x_max+δ)^{-1/2}, floor δ·x_max); "B" = raw/unbiased KL gauge
     # (x+δ·x_max)^{-1/2}, same op-norm floor (= A up to a per-step gauge, but the
-    # D_in/D_out EMA diverges because SAinv carries the partner factor's
+    # Q/P EMA diverges because SAinv carries the partner factor's
     # time-varying max); "VN" = von Neumann / matrix Adafactor (x+δ·Tr(partner))^{-1/2},
     # the trace-scaled projection (Wu Lin et al. Table 2, S_a=E[GGᵀ]/Tr(S_b)). δ is
     # NOT comparable across variants (op-norm-relative for A/B, trace-relative for
@@ -93,7 +93,7 @@ class OptimizerConfig:
     # precond_delta (coupled). Set it to sweep the diagonal floor alone (e.g. VN's
     # trace-relative δ) while holding the curvature-inverse floor fixed.
     rdinv_delta: float | None = None
-    # Init of the diagonal metric EMAs D_in (=Q) / D_out (=P). "zero" (shipped/paper):
+    # Init of the diagonal metric EMAs Q/P. "zero" (shipped/paper):
     # step 1 uses the _rdinv identity fallback (the step-one rule). "ones": step 1
     # normalizes to the same identity without the special case, but the EMA carries a
     # decaying β₂ᵗ identity prior through warmup. Identical step-1 update; differs only

@@ -50,8 +50,8 @@ from .optim import (
     optimizer_config_dict,
     optimizer_effective_config,
 )
-from .publication_identity import LORA_INIT_B_CHOICES
 from .publication_semantics import build_optimizer_variant_semantics_payload
+from .publication_identity import LORA_INIT_B_CHOICES
 from .run_schema import (
     ATTEMPT_ID_ENV,
     CHECKPOINT_IDENTITY_ENV,
@@ -318,6 +318,159 @@ def evaluate(model, dataloader, device):
     loss_t = torch.tensor(total_loss, device=device, dtype=torch.float64)
     toks_t = torch.tensor(total_tokens, device=device, dtype=torch.float64)
     return all_reduce_mean(loss_t, toks_t)
+
+
+def attach_heldout_factor_grads(model, optimizer, batch, device):
+    """Attach token-weighted held-out gradients without changing the train step.
+
+    The optimizer reads the transient gradients during its shadow diagnostic.
+    Train gradients, model mode, and random-number-generator state are restored
+    exactly before the optimizer step.
+    """
+    pairs = getattr(optimizer, "pairs", None)
+    if not pairs:
+        raise ValueError("held-out optimizer probe requires LoRA factor pairs")
+    batches = [batch] if isinstance(batch, dict) else list(batch)
+    heldout_batches = [batch_to_device(b, device) for b in batches]
+    batch_tokens = [count_tokens(b) for b in heldout_batches]
+    if not heldout_batches or any(n == 0 for n in batch_tokens):
+        raise ValueError("held-out optimizer probe batch has no supervised tokens")
+    total_tokens = sum(batch_tokens)
+    saved_grads = [(A.grad.detach().clone(), B.grad.detach().clone())
+                   for A, B in pairs]
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = (torch.cuda.get_rng_state_all()
+                if device.type == "cuda" and torch.cuda.is_available() else None)
+    was_training = model.training
+    try:
+        optimizer.zero_grad(set_to_none=True)
+        model.eval()
+        for heldout_batch, n_tokens in zip(heldout_batches, batch_tokens):
+            weighted_loss = model(**heldout_batch).loss * (n_tokens / total_tokens)
+            weighted_loss.backward()
+        optimizer._heldout_factor_grads = [
+            (A.grad.detach().float().clone(), B.grad.detach().float().clone())
+            for A, B in pairs
+        ]
+    finally:
+        optimizer.zero_grad(set_to_none=True)
+        for (A, B), (gA, gB) in zip(pairs, saved_grads):
+            A.grad = gA
+            B.grad = gB
+        model.train(was_training)
+        torch.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
+
+
+@torch.no_grad()
+def measure_heldout_factor_directions(
+    model, optimizer, batch, device, *, identity_scale=None,
+):
+    """Evaluate complete shadow factor steps on held-out probe batches.
+
+    The optimizer has already applied the lagged direction.  Its heavy
+    diagnostic retains the pre-step factors and the three candidate factor
+    directions, so each candidate can be evaluated at the actual step size and
+    the applied parameters can then be restored exactly.  A single batch dict
+    remains accepted; an iterable is aggregated with the same token weighting
+    as :func:`evaluate`.
+    """
+    pairs = getattr(optimizer, "pairs", None)
+    directions = getattr(optimizer, "_last_cw_heldout_directions", None)
+    if not pairs or directions is None or len(directions) != len(pairs):
+        raise ValueError("held-out loss probe is missing complete shadow directions")
+    batches = [batch] if isinstance(batch, dict) else list(batch)
+    heldout_batches = [batch_to_device(b, device) for b in batches]
+    batch_tokens = [count_tokens(b) for b in heldout_batches]
+    if not heldout_batches or any(n == 0 for n in batch_tokens):
+        raise ValueError("held-out loss probe batch has no supervised tokens")
+    post_factors = [(A.detach().clone(), B.detach().clone()) for A, B in pairs]
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = (torch.cuda.get_rng_state_all()
+                if device.type == "cuda" and torch.cuda.is_available() else None)
+    was_training = model.training
+
+    direction_key_sets = [
+        set(record) - {"A_pre", "B_pre"} for record in directions.values()
+    ]
+    if any(keys != direction_key_sets[0] for keys in direction_key_sets[1:]):
+        raise ValueError("held-out shadow direction labels differ across pairs")
+    preferred_order = (
+        "lagged", "fresh", "identity",
+        "small_slot_uncentered", "small_slot_centered",
+    )
+    direction_labels = [
+        label for label in preferred_order if label in direction_key_sets[0]
+    ]
+    direction_labels.extend(sorted(direction_key_sets[0] - set(direction_labels)))
+    labels = ["pre", *direction_labels]
+    if identity_scale is not None:
+        if not math.isfinite(identity_scale) or identity_scale <= 0:
+            raise ValueError("identity_scale must be finite and positive")
+        labels.append("identity_scaled")
+
+    def set_factors(label):
+        for i, (A, B) in enumerate(pairs):
+            record = directions[i]
+            A_pre = record["A_pre"].to(dtype=A.dtype, device=A.device)
+            B_pre = record["B_pre"].to(dtype=B.dtype, device=B.device)
+            if label == "pre":
+                A.copy_(A_pre)
+                B.copy_(B_pre)
+            else:
+                direction_label = "identity" if label == "identity_scaled" else label
+                dA, dB = record[direction_label]
+                scale = identity_scale if label == "identity_scaled" else 1.0
+                A.copy_(A_pre + scale * dA.to(dtype=A.dtype, device=A.device))
+                B.copy_(B_pre + scale * dB.to(dtype=B.dtype, device=B.device))
+
+    losses = {}
+    losses_by_batch = {}
+    try:
+        model.eval()
+        for label in labels:
+            set_factors(label)
+            batch_losses = [float(model(**b).loss.detach()) for b in heldout_batches]
+            losses_by_batch[label] = batch_losses
+            losses[label] = sum(
+                loss * n for loss, n in zip(batch_losses, batch_tokens)
+            ) / sum(batch_tokens)
+        set_factors("pre")
+        repeated_pre_batch_losses = [
+            float(model(**b).loss.detach()) for b in heldout_batches
+        ]
+        repeated_pre_loss = sum(
+            loss * n for loss, n in zip(repeated_pre_batch_losses, batch_tokens)
+        ) / sum(batch_tokens)
+    finally:
+        for (A, B), (A_post, B_post) in zip(pairs, post_factors):
+            A.copy_(A_post)
+            B.copy_(B_post)
+        model.train(was_training)
+        torch.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
+        optimizer._last_cw_heldout_directions = {}
+
+    result = {f"heldout_loss_{label}": loss for label, loss in losses.items()}
+    result["heldout_probe_batches"] = len(heldout_batches)
+    result["heldout_loss_pre_repeat"] = repeated_pre_loss
+    result["heldout_loss_pre_repeat_abs_diff"] = abs(
+        repeated_pre_loss - losses["pre"])
+    result.update({
+        f"heldout_loss_change_{label}": losses[label] - losses["pre"]
+        for label in labels if label != "pre"
+    })
+    result.update({
+        f"heldout_loss_change_{label}_per_batch": [
+            loss - pre_loss
+            for loss, pre_loss in zip(
+                losses_by_batch[label], losses_by_batch["pre"])
+        ]
+        for label in labels if label != "pre"
+    })
+    return result
 
 
 def git_commit():
@@ -595,6 +748,39 @@ def make_parser():
     parser.add_argument("--optim_diagnostics_every", type=int, default=20,
                         help="Cadence (in optimizer steps) for both --log_basic_diagnostics and "
                              "--log_heavy_diagnostics.")
+    parser.add_argument(
+        "--optim_heldout_probe",
+        action="store_true",
+        help="Diagnostic only: on the heavy-diagnostics cadence, evaluate each "
+             "factorwise shadow direction against one disjoint eval-batch gradient.",
+    )
+    parser.add_argument(
+        "--optim_heldout_probe_batches",
+        type=int,
+        default=1,
+        help="Number of held-out batches over which to average the exact shadow "
+             "loss (default: 1). The first batch also supplies the linear probe gradient.",
+    )
+    parser.add_argument(
+        "--optim_heldout_probe_exit",
+        action="store_true",
+        help="Diagnostic only: exit immediately after writing the held-out shadow "
+             "event, without scheduler, eval, or checkpoint work.",
+    )
+    parser.add_argument(
+        "--optim_heldout_identity_scale",
+        type=float,
+        default=None,
+        help="Diagnostic only: also evaluate the identity-slot shadow direction "
+             "multiplied by this fixed scale. This does not alter the optimizer step.",
+    )
+    parser.add_argument(
+        "--optim_small_slot_microbatch_probe",
+        action="store_true",
+        help="Diagnostic only: capture the existing training microbatch backwards "
+             "and compare direct uncentered versus centered P_A/Q_B small-slot "
+             "moments on the held-out factorwise shadow. No optimizer state is changed.",
+    )
     parser.add_argument("--debug_higham_residual", action="store_true",
                         help="Debug-only: every higham `_spd_inv_half` call emits a JSONL "
                              "`higham_residual` event with ‖Z H Z − I‖_F per matrix and "
@@ -1402,6 +1588,36 @@ def main():
         beta1=args.beta1,
         beta2=args.beta2,
     )
+    if args.optim_heldout_probe:
+        if get_world_size() != 1:
+            raise ValueError("--optim_heldout_probe currently requires one process")
+        if args.optim_heldout_probe_batches < 1:
+            raise ValueError("--optim_heldout_probe_batches must be at least 1")
+        if not args.log_heavy_diagnostics or getattr(optimizer, "precond", None) != "factorwise":
+            raise ValueError(
+                "--optim_heldout_probe requires --log_heavy_diagnostics and "
+                "--precond factorwise"
+            )
+        if (args.optim_heldout_identity_scale is not None
+                and (not math.isfinite(args.optim_heldout_identity_scale)
+                     or args.optim_heldout_identity_scale <= 0)):
+            raise ValueError("--optim_heldout_identity_scale must be finite and positive")
+    elif args.optim_heldout_probe_exit or args.optim_heldout_identity_scale is not None:
+        raise ValueError(
+            "--optim_heldout_probe_exit and --optim_heldout_identity_scale "
+            "require --optim_heldout_probe"
+        )
+    if args.optim_small_slot_microbatch_probe:
+        if not args.optim_heldout_probe:
+            raise ValueError(
+                "--optim_small_slot_microbatch_probe requires --optim_heldout_probe")
+        if args.lora_r != 16:
+            raise ValueError(
+                "--optim_small_slot_microbatch_probe is the checkpoint-local r=16 probe")
+        if args.grad_accum_steps < 2:
+            raise ValueError(
+                "--optim_small_slot_microbatch_probe requires grad_accum_steps >= 2 "
+                "to distinguish centered and uncentered microbatch moments")
     scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optimizer,
@@ -1555,13 +1771,6 @@ def main():
             "precond_delta_relative": getattr(optimizer, "precond_delta_relative", args.precond_delta_relative),
             "curvature_whitening": getattr(optimizer, "curvature_whitening", args.curvature_whitening),
             "curvature_beta": args.curvature_beta,
-            "optimizer_config": optimizer_config_dict(optimizer),
-            # Short-circuit-resolved effective behavior, emitted by the
-            # optimizer instance itself (the authority on what its math
-            # actually does). Empty {} for optimizers without short-circuit
-            # precedence; populated for the polar-product family with
-            # `effective_inner_polar` and `effective_picard_iters`.
-            "optimizer_effective": optimizer_effective_config(optimizer),
             # Diagnostics flags under canonical names. The loader's read-side
             # alias chain (log_optim_diagnostics → log_basic_diagnostics,
             # log_diagnostics → log_basic_diagnostics, diagnostics_every →
@@ -1571,6 +1780,12 @@ def main():
                 "basic": bool(args.log_basic_diagnostics),
                 "heavy": bool(args.log_heavy_diagnostics),
                 "every": int(args.optim_diagnostics_every),
+                "heldout_probe": bool(args.optim_heldout_probe),
+                "heldout_probe_batches": int(args.optim_heldout_probe_batches),
+                "heldout_probe_exit": bool(args.optim_heldout_probe_exit),
+                "heldout_identity_scale": args.optim_heldout_identity_scale,
+                "small_slot_microbatch_probe": bool(
+                    args.optim_small_slot_microbatch_probe),
             },
             # Future-proofing: blanket dump of every CLI flag so analysis
             # never has to wait for a manual cfg event update when a new
@@ -1690,6 +1905,7 @@ def main():
     if train_sampler is not None:
         train_sampler.set_epoch(sampler_epoch)
     train_iter = iter(train_loader)
+    heldout_probe_iter = iter(eval_loader) if args.optim_heldout_probe else None
     if resume_state is not None and resume_replay_original_dataloader:
         microbatches_to_skip = resume_state["step"] * args.grad_accum_steps
         skipped = 0
@@ -1788,12 +2004,44 @@ def main():
                 optimizer.snapshot_pair_tensors = True
                 snapshot_label = 0
 
+        pre_step_callback = None
+        heldout_batch = None
+        if args.optim_heldout_probe and step % args.optim_diagnostics_every == 0:
+            heldout_batch = []
+            for _ in range(args.optim_heldout_probe_batches):
+                try:
+                    heldout_batch.append(next(heldout_probe_iter))
+                except StopIteration:
+                    heldout_probe_iter = iter(eval_loader)
+                    heldout_batch.append(next(heldout_probe_iter))
+
+            def pre_step_callback(batch=heldout_batch):
+                attach_heldout_factor_grads(model, optimizer, batch, device)
+
         step_loss, step_tokens, train_iter, norm_stats = run_one_train_step(
             model, optimizer, train_iter, train_loader,
             grad_accum_steps=args.grad_accum_steps,
             max_grad_norm=args.max_grad_norm,
             device=device,
+            pre_step_callback=pre_step_callback,
+            capture_factor_microbatch_grads=(
+                args.optim_small_slot_microbatch_probe
+                and heldout_batch is not None
+            ),
         )
+        if heldout_batch is not None:
+            heldout_direction_losses = measure_heldout_factor_directions(
+                model, optimizer, heldout_batch, device,
+                identity_scale=args.optim_heldout_identity_scale,
+            )
+            log_event({
+                "event": "cw_shadow_heldout_loss",
+                "step": step,
+                **heldout_direction_losses,
+            })
+            if args.optim_heldout_probe_exit:
+                log_event({"event": "optim_heldout_probe_exit", "step": step})
+                break
         scheduler.step()
         total_tokens += step_tokens
         window_loss_sum += step_loss
