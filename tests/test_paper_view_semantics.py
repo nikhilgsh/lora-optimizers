@@ -236,3 +236,56 @@ def test_matched_view_requires_reviewed_product_but_ordinary_view_does_not():
     assert [run for run, _decision in matched_excluded] == [
         old_product, old_one_sided,
     ]
+
+
+def test_legacy_kl_shampoo_is_tested_as_factorwise_without_a_precond_field():
+    """A pre-flag KL-Shampoo run is the factorwise branch and must be judged.
+
+    `kl-shampoo-polar-lora` pins `diag_metric=False`, which IS factorwise, and
+    `arms.NOPRODUCT` admits it into the factorwise arm alongside
+    `--precond factorwise`. Those runs predate the flag, so they record no
+    `precond`. Reading the raw field therefore skipped the slot test for them:
+    13 pre-fix runs supplied the entire factorwise arm of the
+    Llama-3.2-1B/openmath/r256 panel while three sibling panels correctly
+    showed none.
+    """
+    pre_fix_legacy = ({"optimizer": "kl-shampoo-polar-lora",
+                       "git_commit": "pre"}, [])
+    unrelated = ({"optimizer": "kl-diag-polar-lora", "precond": "product",
+                  "git_commit": "pre"}, [])
+
+    kept, excluded = project_paper_precond_cohort(
+        [pre_fix_legacy, unrelated],
+        view_id="precond",
+        is_ancestor=lambda _boundary, _commit: False,
+    )
+
+    assert kept == (unrelated,), "product is untouched by the ordinary view"
+    assert [run for run, _decision in excluded] == [pre_fix_legacy]
+    assert not excluded[0][1].eligible
+
+
+def test_post_fix_kl_shampoo_still_joins_the_factorwise_arm():
+    """Closing the hole must not exclude the legacy name when it IS post-fix."""
+    post_fix_legacy = ({"optimizer": "kl-shampoo-polar-lora",
+                        "git_commit": "post"}, [])
+
+    kept, excluded = project_paper_precond_cohort(
+        [post_fix_legacy],
+        view_id="precond",
+        is_ancestor=lambda _boundary, _commit: True,
+    )
+
+    assert excluded == ()
+    assert len(kept) == 1
+
+
+def test_absent_precond_under_other_optimizers_is_not_inferred_as_product():
+    """Only the KL-Shampoo family gets a branch inferred from its name."""
+    from lora_playground.plotting.paper_view_semantics import effective_precond
+
+    assert effective_precond({"optimizer": "kl-shampoo-polar-lora"}) == "factorwise"
+    assert effective_precond({"optimizer": "kl-diag-polar-lora"}) is None
+    assert effective_precond(
+        {"optimizer": "kl-shampoo-polar-lora", "precond": "one-sided"}
+    ) == "one-sided"

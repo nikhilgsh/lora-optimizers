@@ -25,6 +25,36 @@ FACTORWISE_SLOT_VIEWS = frozenset({
     "precond", "precond_beta2", MATCHED_PRECOND_VIEW,
 })
 
+# Optimizer names that ARE the factorwise branch without recording
+# ``precond``: KL-Shampoo pins ``diag_metric=False``, which is factorwise, and
+# `arms.py` admits both names into one arm ("`precond` is what identifies the
+# branch; the optimizer name is provenance"). Runs under these names predate
+# the ``--precond`` flag, so their recorded ``precond`` is absent -- which is
+# exactly what let 13 pre-fix runs supply the whole factorwise arm of the
+# Llama-3.2-1B/openmath/r256 panel while the slot filter never examined them.
+LEGACY_FACTORWISE_OPTIMIZERS = frozenset({
+    "kl-shampoo-lora", "kl-shampoo-polar-lora",
+})
+
+
+def effective_precond(cfg: Mapping[str, Any]) -> str | None:
+    """The ``precond`` branch a run actually ran, or None if undetermined.
+
+    Mirrors the rule `labels._shared_knobs` already applies when it suppresses
+    the " factorwise" suffix for the KL-Shampoo family, so naming and cohort
+    membership cannot disagree about which branch a run belongs to.
+
+    An absent ``precond`` under any OTHER optimizer stays None rather than
+    being inferred as ``product``: that would newly subject pre-flag product
+    runs to the slot test, which the fix did not touch.
+    """
+    recorded = cfg.get("precond")
+    if isinstance(recorded, str) and recorded.strip():
+        return recorded
+    if cfg.get("optimizer") in LEGACY_FACTORWISE_OPTIMIZERS:
+        return "factorwise"
+    return None
+
 
 class ViewSemanticMetadataError(ValueError):
     """Recorded scalar and structured semantic metadata disagree."""
@@ -182,7 +212,7 @@ def project_paper_precond_cohort(
     excluded = []
     for index, run in enumerate(runs):
         view = run_view(run, index)
-        precond = view.semantic_config.get("precond")
+        precond = effective_precond(view.semantic_config)
         if precond not in reviewed_preconds:
             kept.append(run)
             continue
