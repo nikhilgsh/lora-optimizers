@@ -159,11 +159,39 @@ def _hashed_defaults(producer, *args) -> dict:
     return {k: _hashable(v) for k, v in producer(*args).items()}
 
 
+@lru_cache(maxsize=8)
+def _non_series_fields(axis_fields: frozenset[str]) -> frozenset[str]:
+    """Fields that cannot contribute to a series identity, for one caller's
+    ``axis_fields``.
+
+    The union of the caller's declared axes with every field whose
+    `field_roles` ROLE says it carries no algorithm identity — ``SWEEP`` (lr,
+    seed, horizon, eval cadence) and ``PROVENANCE`` (commits, paths, device,
+    diagnostics cadence, checkpoint bookkeeping). Both role sets are subsets of
+    ``manifest.SERIES_AXIS_FIELDS`` (asserted in ``tests/test_field_roles.py``),
+    so for the default caller this union IS ``axis_fields`` and the role lookup
+    changes nothing; it is what keeps a caller who passes a NARROWER axis set
+    from accidentally promoting a provenance field to a series axis.
+
+    Cached on ``axis_fields`` rather than unioned per cfg: `_series_items` runs
+    once per run over the whole catalog, and rebuilding a 47-element frozenset
+    per run is measurable there.
+    """
+    from ..field_roles import PROVENANCE, SWEEP, fields_with_roles
+    return frozenset(axis_fields) | fields_with_roles(SWEEP, PROVENANCE)
+
+
 def _series_items(cfg: dict, axis_fields: frozenset[str]):
     """Yield the ``(field, hashable value)`` pairs that define a run's series.
 
-    A field contributes only when the run recorded a value that DIFFERS from
-    what the current code does by default. Three exclusions, in order:
+    A projection over `lora_playground.field_roles`: a field contributes when
+    its ROLE says it distinguishes runs — ``ALGORITHM``, ``WORKLOAD``,
+    ``REVISION``, or no role at all (unknown, therefore series-defining: a
+    field the registry has never seen is exactly the case that silently merged
+    two arms, so it must split) — AND the run recorded a value that DIFFERS
+    from what the current code does by default.
+
+    Three exclusions carry that second half, in order:
 
       1. ``None`` — "field not present": an older run whose schema didn't
          include flag X is informationally equivalent to a newer run with
@@ -175,16 +203,17 @@ def _series_items(cfg: dict, axis_fields: frozenset[str]):
          Without this, every old-vs-new cfg pair splits purely on schema growth
          (measured: 43 colliding buckets across 6 leaderboard cells, on fields
          like `cw_solved_rho=False` and `rdinv_variant='A'`).
-      3. a field the run recorded only inside its optimizer blocks that the
-         run's optimizer constructor NO LONGER ACCEPTS — a retired or
-         side-branch knob (`cw_picard_mode`, `cw_no_rr_precond`,
-         `freeze_factorwise_slots`). It has no default to compare against and
-         names no behaviour the current code can express, so it is the record of
-         a code revision, not a choice: `arms._inert_fields`' rule that "a field
-         the constructor does not accept is provenance, not an axis".
+      3. a field the run recorded only inside its optimizer blocks for which the
+         CURRENT code declares no default at all — a retired or side-branch knob
+         (`cw_picard_mode`, `cw_no_rr_precond`). There is nothing to compare
+         against and it names no behaviour the current code can express, so it
+         is the record of a code revision, not a choice: `arms._inert_fields`'
+         rule that "a field the constructor does not accept is provenance, not
+         an axis". This tier is about a MISSING DEFAULT, not about the role — an
+         ``ALGORITHM`` field with no derivable default (``freeze_factorwise_slots``)
+         still lands here for series identity, while its role is what puts it in
+         the display label.
 
-    Everything else is series-defining BY DEFAULT — an off-default value, and an
-    unrecognized field the current schema has never seen, both split the series.
     Explicit off-default ``False`` / ``0`` / ``""`` are series-defining.
     """
     # Pre-hashed: the two default maps are per-process constants, so hashing
@@ -193,12 +222,13 @@ def _series_items(cfg: dict, axis_fields: frozenset[str]):
     # against 91.9 ms per pass), essentially all of it recoverable here.
     shipped = _hashed_defaults(_shipped_defaults)
     ctor = _hashed_defaults(_constructor_defaults, cfg.get("optimizer"))
+    excluded = _non_series_fields(axis_fields)
     block_keys = None
     for k, v in cfg.items():
         # Underscore-prefixed keys are loader/parser namespaces (`_derived`,
         # `_cli_args`, `_optim_steps`); dict values are the composite blocks.
         # Both mirror source-of-truth scalars and would double-count.
-        if (k in axis_fields or k.startswith("_")
+        if (k in excluded or k.startswith("_")
                 or isinstance(v, dict) or v is None):
             continue
         h = _hashable(v)
@@ -218,7 +248,8 @@ def _series_items(cfg: dict, axis_fields: frozenset[str]):
 
 def series_id(cfg: dict, *, axis_fields: frozenset[str] | None = None) -> frozenset:
     """Mechanical series identity = cfg minus SERIES_AXIS_FIELDS, minus every
-    field that carries no information relative to the shipped default.
+    field whose `field_roles` role says it does not distinguish runs, minus
+    every field that carries no information relative to the shipped default.
 
     Two cfgs with the same series_id are seeds / lr-grid points / horizon
     extensions of the same algorithm at the same model config and may be
@@ -542,9 +573,10 @@ def dedup_by_canonical(runs, *, keep_longest: bool = True):
                 f"DIFFERENT series, so collapsing them would discard a result.\n"
                 f"  differing fields: {_series_diff(cfg, best[key][0])}\n"
                 f"Fix: make canonical_label discriminate on one of those fields "
-                f"(labels._residual_knobs derives the suffix from "
-                f"arms.PINNED_FIELDS(), so a field it misses is one listed in "
-                f"labels._LABELLED_ELSEWHERE), OR add the field to "
+                f"(labels._residual_knobs derives the suffix from the "
+                f"field_roles ALGORITHM + REVISION roles, so a field it misses "
+                f"either carries no role -- add it to field_roles -- or is one "
+                f"listed in labels._LABELLED_ELSEWHERE), OR add the field to "
                 f"manifest.SERIES_AXIS_FIELDS if it is a true per-series axis."
             )
         if keep_longest and _last_step(evals) > _last_step(best[key][1]):

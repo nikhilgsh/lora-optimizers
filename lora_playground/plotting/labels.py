@@ -18,7 +18,7 @@ Both derive from one field extractor (`_axes`) so they can never diverge.
 """
 from __future__ import annotations
 
-import re
+from functools import lru_cache
 
 from ..publication_identity import lora_init_label_suffix
 from .colors import OPTIM_COLORS, series_colors
@@ -99,88 +99,98 @@ def _axes(cfg: dict) -> dict | None:
     }
 
 
-def _shared_knobs(cfg: dict) -> str:
-    """Suffix for cross-optimizer axes that canonical_label must discriminate
-    but that aren't in any per-optimizer template. Only non-default values
-    appear, so default runs keep their bare label."""
-    s = ""
-    if _field_is_active(cfg, "cw_no_diag_curv") and cfg.get("cw_no_diag_curv"):
-        s += " w/o-curv"
+# Cross-optimizer axes with a SPELLING of their own in the label, in the order
+# they appear in it. Each entry is `(field, render)`; `render(cfg, value)` is
+# called only for a value that reached the label — see `_label_value` for the
+# three gates — and may still return "" for a value that needs no suffix.
+#
+# This table replaced ten hand-written `if cfg.get(<field>) ...` lines that each
+# re-implemented the same gate. The gate is the fact this module kept getting
+# wrong: `cw_metric_init` compared against a literal "zero" after the real
+# default moved to "1e-12" (`optim_config.py:101`, `train.py:790`), so
+# `canonical_label` appended ` minit=1e-12` to EVERY run, bare "AdamW" resolved
+# in 0 of 19 workload cells, and `docs/notes/leaderboard.md` regenerated with
+# 168 "—" cells that the doc's own header explains as "never reached the
+# target". One gate, derived defaults, and a per-field renderer that decides
+# only how to SPELL a value it is already told is worth spelling.
+#
+# Every field name here must carry a `field_roles` LABELLED_ROLES role, or the
+# knob is invisible to `canonical_arm_label`'s role exclusion and to
+# `_residual_knobs`' duplicate suppression. `tests/test_field_roles.py` asserts
+# it; `_declared_default` raises on a roleless name at call time. (The check is
+# a test rather than an import-time assertion in this module: `loader` imports
+# `plotting`, so a module-level `field_roles` import here would close an import
+# cycle through `arms.PINNED_FIELDS()` -> `manifest` -> `loader` -> `plotting`.)
+_FEATURED_KNOBS: tuple[tuple[str, object], ...] = (
+    ("cw_no_diag_curv", lambda cfg, v: " w/o-curv" if v else ""),
     # `precond` is the three-branch (C_B, C_A) selector; only the two non-default
-    # branches get a suffix so product runs keep their bare label.
-    if _field_is_active(cfg, "precond") and cfg.get("precond") == "one-sided":
-        s += " one-sided"
-    elif (
-        _field_is_active(cfg, "precond")
-        and cfg.get("precond") == "factorwise"
-        and not _branch_is_implied_by_the_optimizer(cfg)
-    ):
-        # A family whose SPEC already forces this branch needs no suffix: the
-        # optimizer name identifies it. That keeps a recorded pre-flag
-        # KL-Shampoo run (no `precond`, `diag_metric=False` pinned) and an
-        # explicit `--precond factorwise` run under one canonical label.
-        s += " factorwise"
-    if _field_is_active(cfg, "msign") and cfg.get("msign") == "diag":
-        s += " msign-diag"
-    if _field_is_active(cfg, "cw_unpinned") and cfg.get("cw_unpinned"):
-        s += " unpinned"
-    # Each of these appends a suffix only when the run is OFF the default, so
-    # the default run keeps a bare label. The default is DERIVED, never typed
-    # here: a literal copy goes stale the moment the real default moves, and
-    # then every run looks off-default and gets a suffix. That happened —
-    # `cw_metric_init`'s default became "1e-12" (`optim_config.py:101`,
-    # `train.py:790`) while this file still said "zero", so `canonical_label`
-    # appended ` minit=1e-12` to EVERY run, bare "AdamW" resolved in 0 of 19
-    # workload cells, and `docs/notes/leaderboard.md` regenerated with 168 "—"
-    # cells that the doc's own header explains as "never reached the target".
-    # `_residual_knobs` below already derives from `_config_defaults()`; this
-    # hand-written block now does too.
-    if (_field_is_active(cfg, "higham_iters")
-            and (hi := _off_default(cfg, "higham_iters")) is not None):
-        s += f" H={hi}"
-    if (_field_is_active(cfg, "beta1")
-            and (b1 := _off_default(cfg, "beta1")) is not None):
-        s += f" β1={b1:g}"
-    if (_field_is_active(cfg, "cw_metric_init")
-            and (cm := _off_default(cfg, "cw_metric_init")) is not None):
-        s += f" minit={cm}"
-    if (_field_is_active(cfg, "rdinv_variant")
-            and (rv := _off_default(cfg, "rdinv_variant")) is not None):
-        s += f" rdinv={rv}"
-    rd = cfg.get("rdinv_delta")
-    if _field_is_active(cfg, "rdinv_delta") and rd is not None:
-        s += f" rdδ={_eps(rd)}"
+    # branches get a suffix so product runs keep their bare label. A family whose
+    # SPEC already forces a branch needs no suffix: the optimizer name identifies
+    # it. That keeps a recorded pre-flag KL-Shampoo run (no `precond`,
+    # `diag_metric=False` pinned) and an explicit `--precond factorwise` run
+    # under one canonical label.
+    ("precond", lambda cfg, v: (
+        " one-sided" if v == "one-sided"
+        else " factorwise" if (v == "factorwise"
+                               and not _branch_is_implied_by_the_optimizer(cfg))
+        else "")),
+    ("msign", lambda cfg, v: " msign-diag" if v == "diag" else ""),
+    ("cw_unpinned", lambda cfg, v: " unpinned" if v else ""),
+    ("higham_iters", lambda cfg, v: f" H={v}"),
+    ("beta1", lambda cfg, v: f" β1={v:g}"),
+    ("cw_metric_init", lambda cfg, v: f" minit={v}"),
+    ("rdinv_variant", lambda cfg, v: f" rdinv={v}"),
+    ("rdinv_delta", lambda cfg, v: f" rdδ={_eps(v)}"),
+    # The factorwise-slot freeze. Not an `OptimizerConfig` field on this branch
+    # -- it exists only where the ablation is implemented -- so it reaches the
+    # label through `field_roles._RECORDED_ONLY_ALGORITHM`, which is what makes it
+    # visible here at all. Without it a frozen-slot continuation and the dynamic
+    # run it forked from share one label while `series_id` splits them on the
+    # fork's `resume_debug_replay`, so they collide in one bucket instead of
+    # being two arms.
+    # `is True`, not truthiness: the run may record False, and there is no
+    # declared default for the gate to compare that against.
+    ("freeze_factorwise_slots", lambda cfg, v: " frozen-slots" if v is True else ""),
     # The optimizer's declared IMPLEMENTATION_REVISION. It exists precisely for
     # "update semantics changed with no corresponding resolved-config change"
     # (run_schema.optimizer_implementation_revision), so two revisions of one
     # config are two series and must not average: the factorwise free-slot fix
     # is revision 2, and `paper_view_semantics` EXCLUDES pre-fix factorwise runs
-    # from the paper's precond views rather than pooling them. Not reachable via
-    # `_residual_knobs` (that derives from PINNED_FIELDS, i.e. OptimizerConfig),
-    # so it is spelled out here; the default comes from run_schema, not a
-    # literal, so a bump there does not suffix every run.
-    # The factorwise-slot freeze. Not an `OptimizerConfig` field on this
-    # branch -- it exists only where the ablation is implemented -- so
-    # `_residual_knobs` (which derives from PINNED_FIELDS, i.e. the config
-    # dataclass) cannot see it, exactly like `optimizer_impl_revision` below.
-    # Without it a frozen-slot continuation and the dynamic run it forked from
-    # share one label while `series_id` splits them on the fork's
-    # `resume_debug_replay`, so they collide in one bucket instead of being two
-    # arms.
-    # `is True`, not truthiness: this function is fed BOTH recorded configs and
-    # arm PREDICATE dicts, and a predicate may pin a field with a callable
-    # ("any value satisfying this"). A callable is truthy, so testing
-    # truthiness made the slots-live arm -- pinned `lambda v: not v` -- label
-    # itself as frozen and collide with the slots-frozen arm.
-    if cfg.get("freeze_factorwise_slots") is True:
-        s += " frozen-slots"
-    if (rev := cfg.get("optimizer_impl_revision")) is not None:
-        from ..run_schema import DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION
-        if rev != DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION:
-            s += f" impl-rev={rev}"
+    # from the paper's precond views rather than pooling them. Its default comes
+    # from `run_schema` via the derived default map, not a literal, so a bump
+    # there does not suffix every run. `canonical_arm_label` drops it by ROLE.
+    ("optimizer_impl_revision", lambda cfg, v: f" impl-rev={v}"),
+)
+
+_FEATURED_FIELDS = frozenset(field for field, _ in _FEATURED_KNOBS)
+
+
+def _shared_knobs(cfg: dict, *, skip: frozenset = frozenset()) -> str:
+    """Suffix for cross-optimizer axes that canonical_label must discriminate
+    but that aren't in any per-optimizer template.
+
+    One loop over the fields whose `field_roles` role puts them in the label
+    (``ALGORITHM`` and ``REVISION``), keeping only values that are off their
+    derived default, so default runs keep their bare label. `_FEATURED_KNOBS`
+    spells the ones with a name of their own, in its declared order;
+    `_residual_knobs` appends the rest generically, so a field added to
+    ``OptimizerConfig`` keeps discriminating without being named here.
+
+    ``skip`` drops whole roles' fields — `canonical_arm_label` passes the
+    ``REVISION`` role's fields, which is how "the label minus the code-revision
+    token" is expressed as a role exclusion rather than a regex over the string.
+    """
+    s = ""
+    for field, render in _FEATURED_KNOBS:
+        if field in skip:
+            continue
+        v = _label_value(cfg, field)
+        if v is None:
+            continue
+        s += render(cfg, v)
     return (
         s
-        + _residual_knobs(cfg)
+        + _residual_knobs(cfg, skip=skip)
         + lora_init_label_suffix(cfg.get("lora_init_b", "zero"))
     )
 
@@ -221,48 +231,107 @@ def _field_is_active(cfg: dict, field: str) -> bool:
     return field not in _inert_fields(optimizer)
 
 
-def _off_default(cfg: dict, field: str):
-    """`cfg[field]` when it differs from the SHIPPED default, else None.
+def _declared_default(cfg: dict, field: str) -> tuple[bool, object]:
+    """``(declared, default)`` for one field, from the code rather than a literal.
 
-    The default comes from `OptimizerConfig` / the train.py CLI rather than a
-    literal in this file, so a default that moves cannot silently turn every run
-    into an off-default one. An absent field reads as on-default: a run logged
-    before the flag existed ran the default by definition.
+    ``OptimizerConfig`` / the train.py CLI / `run_schema`'s revision counters
+    first (`dedup._shipped_defaults`), then the run's own optimizer constructor
+    (`dedup._constructor_defaults`, which layers the variant's spec constants on
+    the signature). A literal copy of a default in this file goes stale the
+    moment the real default moves, and then every run looks off-default and gets
+    a suffix — see `_FEATURED_KNOBS`' note on ``cw_metric_init``.
 
-    Raises on an unknown field name, matching `arms.arm()` — a typo here would
-    otherwise mean "never off default", i.e. a knob that stops appearing in
-    labels and starts collapsing distinct sweeps onto one.
+    ``declared=False`` for a field the current code gives no default at all
+    (``freeze_factorwise_slots``, whose ablation exists only where it is
+    implemented). Its renderer decides what a recorded value means; there is
+    nothing to compare against.
+
+    Raises on a field in no `field_roles` role, matching `arms.arm()`'s refusal
+    of an unknown override — a typo here would otherwise mean "never off
+    default", i.e. a knob that stops appearing in labels and starts collapsing
+    distinct sweeps onto one.
     """
-    from .arms import _cli_defaults, _config_defaults
-    defaults = {**_config_defaults(), **_cli_defaults()}
-    if field not in defaults:
+    from ..field_roles import role_of
+    from .dedup import _constructor_defaults, _shipped_defaults
+    shipped = _shipped_defaults()
+    if field in shipped:
+        return True, shipped[field]
+    ctor = _constructor_defaults(cfg.get("optimizer"))
+    if field in ctor:
+        return True, ctor[field]
+    if role_of(field) is None:
         raise KeyError(
-            f"{field!r} is not an OptimizerConfig field or a train.py CLI flag, "
-            f"so it has no default to compare against. Fix the name — a typo "
-            f"here silently stops the knob from appearing in any label.")
+            f"{field!r} has no `field_roles` role and no declared default, so "
+            f"there is nothing to compare a recorded value against. Fix the "
+            f"name — a typo here silently stops the knob from appearing in any "
+            f"label.")
+    return False, None
+
+
+def _label_value(cfg: dict, field: str):
+    """`cfg[field]` when it should reach the label, else None. Three gates:
+
+      1. **absent or ``None``** — a run logged before the flag existed ran the
+         default by definition, so it is not a distinguishing value. This is
+         load-bearing for `field_roles._EXTRA_ALGORITHM`: those flags are absent
+         from most cfgs on disk (``freeze_factorwise_slots`` from 2458 of 2498),
+         and reading absence as a value would suffix every one of them.
+      2. **not a scalar** — this function is fed arm PREDICATE dicts as well as
+         recorded configs (`paper_plots_lib._canonical_variant_key` derives an
+         arm's expected label from its predicate), and a predicate may pin a
+         field with a CALLABLE or a membership tuple, both meaning "any value
+         satisfying this". Neither names one value to spell, and a callable is
+         TRUTHY: testing truthiness made the slots-live arm — pinned
+         ``lambda v: not v`` — label itself as frozen and collide with the
+         slots-frozen arm.
+      3. **inert, or equal to the derived default** — `_field_is_active` drops
+         what this optimizer cannot read, and `_declared_default` drops what the
+         run left alone, so a default run keeps its bare label.
+    """
     v = cfg.get(field)
-    return None if v is None or v == defaults[field] else v
+    if v is None:
+        return None
+    if callable(v) or isinstance(v, (list, set, tuple, frozenset, dict)):
+        return None
+    if not _field_is_active(cfg, field):
+        return None
+    declared, default = _declared_default(cfg, field)
+    if declared and v == default:
+        return None
+    return v
 
 
-# Fields the per-optimizer templates and the hand-written suffix above already put
-# in the label. Everything else that is off its default is appended generically by
-# `_residual_knobs`, so the FAILURE MODE INVERTS: a field added to OptimizerConfig
-# is absent from this set, so it is appended automatically and the label keeps
-# discriminating. Before, a new field was absent from the hand-written suffix and
-# so was silently dropped -- which is how six buckets on the hero workload came to
-# share one label, `AdamW minit=1e-12` at lr=1e-4 covering six distinct series
-# (the beta2 grid), five of which dedup_by_canonical then discarded.
-_LABELLED_ELSEWHERE = frozenset({
-    # per-optimizer templates (the headline name)
+# Fields the per-optimizer templates put in the label under a name of their own.
+# `_FEATURED_KNOBS`' fields are added below rather than repeated here, and the
+# CONSTRUCTOR spellings of both (`optim_config.ALIAS`) with them: `ns_steps` is
+# the same knob as `muon_ns_steps` and is recorded alongside it on 1677 runs, so
+# without the alias the polar-quality axis would be spelled twice per label.
+#
+# Everything else that is off its default is appended generically by
+# `_residual_knobs`, so the FAILURE MODE INVERTS: a field added to
+# OptimizerConfig is absent from this set, so it is appended automatically and
+# the label keeps discriminating. Before, a new field was absent from the
+# hand-written suffix and so was silently dropped -- which is how six buckets on
+# the hero workload came to share one label, `AdamW minit=1e-12` at lr=1e-4
+# covering six distinct series (the beta2 grid), five of which
+# dedup_by_canonical then discarded.
+_TEMPLATE_LABELLED = frozenset({
     "precond_refresh_every", "curvature_beta", "precond_delta",
     "precond_delta_relative", "polar_method", "muon_ns_steps", "ns_form",
     "polar_norm_dir", "polar_sigma_power", "cw_picard_iters",
     "picard_iters_override", "picard_alpha", "curvature_whitening",
     "ssc_c", "ssc_nsteps", "ssc_kappa",
-    # the hand-written suffix above
-    "cw_no_diag_curv", "precond", "msign", "cw_unpinned", "higham_iters",
-    "beta1", "cw_metric_init", "rdinv_variant", "rdinv_delta",
 })
+
+
+def _labelled_elsewhere() -> frozenset:
+    from ..optim_config import ALIAS
+    named = _TEMPLATE_LABELLED | _FEATURED_FIELDS
+    return named | frozenset(ctor for ctor, field in ALIAS.items()
+                             if field in named)
+
+
+_LABELLED_ELSEWHERE = _labelled_elsewhere()
 
 
 def _fmt(v):
@@ -271,22 +340,50 @@ def _fmt(v):
     return str(v)
 
 
-def _residual_knobs(cfg: dict) -> str:
-    """`k=v` for every pinnable config field that is off its default and is not
+@lru_cache(maxsize=1)
+def _tail_fields() -> frozenset:
+    """The fields `_residual_knobs` may append generically.
+
+    `field_roles`' label-bearing roles (``ALGORITHM`` ∪ ``REVISION``) restricted
+    to fields whose default ``OptimizerConfig`` or `run_schema` DECLARES. The
+    restriction is the same argument `dedup._series_items`' third tier makes: a
+    value can only be called off-default against a default the current code
+    states. Two kinds of ALGORITHM field have none —
+
+      * constructor spellings that live only inside a run's recorded
+        ``optimizer_config`` block (``magnitude_rule``, ``picard_iters``,
+        ``eps``, ``diag_metric``, …), whose only "default" is a per-variant
+        constant the spec pins, so comparing against it says nothing about the
+        run's choices;
+      * train.py harness flags that are not optimizer knobs
+        (``training_mode``, ``target_modules``, ``max_grad_norm``), which the
+        caller's cell selection and `arms.arm()`'s explicit overrides carry.
+
+    — and appending them would put a `k=v` token on runs that chose nothing.
+    This keeps the tail's actual contract, which is the one its predecessor
+    documented: a field added to ``OptimizerConfig`` is appended automatically,
+    so the label keeps discriminating without being named here.
+    """
+    from ..field_roles import LABELLED_ROLES, fields_with_roles
+    from ..run_schema import REVISION_FIELDS
+    from .arms import _config_defaults
+    declared = frozenset(_config_defaults()) | frozenset(REVISION_FIELDS)
+    return fields_with_roles(*LABELLED_ROLES) & declared
+
+
+def _residual_knobs(cfg: dict, *, skip: frozenset = frozenset()) -> str:
+    """`k=v` for every label-bearing field that is off its default and is not
     already shown in the label.
 
-    Derived from `arms.PINNED_FIELDS()` (OptimizerConfig minus the per-series
-    axes), not from a remembered list, so it cannot go stale as fields are added.
+    The field set is `_tail_fields()` — derived from `field_roles`, not a
+    remembered list, so it cannot go stale as fields are added.
     """
-    from .arms import PINNED_FIELDS, _config_defaults, _inert_fields
-    defaults = _config_defaults()
+    from .arms import _inert_fields
     out = []
-    active = PINNED_FIELDS() - _inert_fields(cfg.get("optimizer"))
-    for f in sorted(active - _LABELLED_ELSEWHERE):
-        if f not in cfg:
-            continue
-        v = cfg[f]
-        if v == defaults.get(f):
+    active = _tail_fields() - _inert_fields(cfg.get("optimizer"))
+    for f in sorted(active - _LABELLED_ELSEWHERE - skip):
+        v = _label_value(cfg, f)
+        if v is None:
             continue
         # `+flag` / `-flag` rather than `flag=True` -- booleans dominate this
         # suffix and "=True" carries no information the name does not.
@@ -297,11 +394,8 @@ def _residual_knobs(cfg: dict) -> str:
     return (" " + " ".join(out)) if out else ""
 
 
-_IMPL_REV_TOKEN = re.compile(r" impl-rev=\d+")
-
-
 def canonical_arm_label(cfg: dict) -> str | None:
-    """`canonical_label` minus the code-revision token, for ARM matching.
+    """`canonical_label` minus the ``REVISION`` role's fields, for ARM matching.
 
     An arm names an algorithm CHOICE -- which branch fills the r x r slots,
     which magnitude rule -- and `arms.arm()` pins exactly the config fields
@@ -312,16 +406,22 @@ def canonical_arm_label(cfg: dict) -> str | None:
     arm of the Qwen2.5/openmath/r16 matched panel and raised
     "has no recorded reference arm".
 
+    Implemented by EXCLUDING the role from the label, not by regexing the
+    rendered string: a regex has to be extended for every new revision
+    counter's spelling (`run_schema.REVISION_FIELDS` already carries two), and
+    a counter whose token the pattern did not match would silently be compared.
+
     The revision still splits SERIES identity: `dedup.series_id` is mechanical
     and does not read this, and a panel that would mix two revisions inside one
     arm raises from `comparison`'s semantic-signature check instead of
     averaging them.
     """
-    label = canonical_label(cfg)
-    return None if label is None else _IMPL_REV_TOKEN.sub("", label)
+    from ..field_roles import REVISION, fields_with_roles
+    return canonical_label(cfg, skip_fields=fields_with_roles(REVISION))
 
 
-def canonical_label(cfg: dict) -> str | None:
+def canonical_label(cfg: dict, *,
+                    skip_fields: frozenset = frozenset()) -> str | None:
     """Human-readable, fully-discriminating variant label (or None to exclude).
 
     Every distinguishing axis is present, so distinct configs never share a
@@ -332,20 +432,24 @@ def canonical_label(cfg: dict) -> str | None:
       chord-tight ns=8 k=1 (ε_rel=1e-2)
       chord-tight-clean ns=8 k=2 (abs)
       chord-tight-clean ns=8 k=2 (κ_sr=0.75)
+
+    ``skip_fields`` withholds named cfg fields from the suffix. Callers pass a
+    `field_roles` ROLE's fields rather than a field list — `canonical_arm_label`
+    is the one caller, dropping ``REVISION``.
     """
     if cfg.get("optimizer") == OPT_ADAMW:
-        return "AdamW" + _shared_knobs(cfg)
+        return "AdamW" + _shared_knobs(cfg, skip=skip_fields)
     opt = cfg.get("optimizer")
     if opt == "imuon-lora":
-        return "iMuon" + _shared_knobs(cfg)
+        return "iMuon" + _shared_knobs(cfg, skip=skip_fields)
     if opt == "lora-rite":
-        return "LoRA-RITE" + _shared_knobs(cfg)
+        return "LoRA-RITE" + _shared_knobs(cfg, skip=skip_fields)
     if opt == "muon-lora":
         steps = cfg.get("muon_ns_steps")
         method = cfg.get("polar_method")
         prefix = "PE" if method == "polar_express" else "ns"
         quality = f" {prefix}={steps}" if steps is not None else ""
-        return f"Muon{quality}" + _shared_knobs(cfg)
+        return f"Muon{quality}" + _shared_knobs(cfg, skip=skip_fields)
     if opt in ("curvature-whiten-lora", "curvature-whiten-polar-lora"):
         is_polar = opt == "curvature-whiten-polar-lora"
         polar = (" +polar" + _polar_quality_tag(cfg)) if is_polar else ""
@@ -354,7 +458,7 @@ def canonical_label(cfg: dict) -> str | None:
         bc = f", β_c={cb:g}" if cb is not None else ""
         dl = cfg.get("precond_delta")
         dd = f", δ={_eps(dl)}" if dl is not None else ""
-        return f"SOAP-curv{polar} (f={f}{bc}{dd})" + _shared_knobs(cfg)
+        return f"SOAP-curv{polar} (f={f}{bc}{dd})" + _shared_knobs(cfg, skip=skip_fields)
     if opt in ("kl-shampoo-lora", "kl-shampoo-polar-lora"):
         polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "kl-shampoo-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
@@ -364,7 +468,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"KL-Shampoo{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
+        return f"KL-Shampoo{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg, skip=skip_fields)
     if opt == "kl-diag-polar-flatout-lora":
         pq = _polar_quality_tag(cfg)
         f = cfg.get("precond_refresh_every")
@@ -374,7 +478,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"KL-diag-flatout +polar{pq}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
+        return f"KL-diag-flatout +polar{pq}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg, skip=skip_fields)
     if opt in (
         "kl-diag-lora", "kl-diag-flatout-lora", "kl-diag-polar-lora",
     ):
@@ -387,7 +491,7 @@ def canonical_label(cfg: dict) -> str | None:
         dd = f", δ={_eps(dl)}" if dl is not None else ""
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
-        return f"{family}{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
+        return f"{family}{polar}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg, skip=skip_fields)
     if opt in ("diag-shampoo-lora", "diag-shampoo-polar-lora"):
         polar = (" +polar" + _polar_quality_tag(cfg)) if opt == "diag-shampoo-polar-lora" else ""
         f = cfg.get("precond_refresh_every")
@@ -398,7 +502,7 @@ def canonical_label(cfg: dict) -> str | None:
         pic = cfg.get("cw_picard_iters", 1) or 1
         ks = f" k{pic}" if pic > 1 else ""
         nes = " +nesterov" if cfg.get("cw_nesterov") else ""
-        return f"diag-Shampoo{polar}{nes}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg)
+        return f"diag-Shampoo{polar}{nes}{ks} (f={f}{bc}{dd})" + _shared_knobs(cfg, skip=skip_fields)
     a = _axes(cfg)
     if a is None:
         return None
@@ -413,7 +517,7 @@ def canonical_label(cfg: dict) -> str | None:
     else:
         damp = f"abs={_eps(a['damp_val'])}" if a["damp_val"] is not None else "abs"
     curv = " +curv" if a["curv"] else ""
-    return f"{fam} {polar} k={a['k']} ({damp}){curv}" + _shared_knobs(cfg)
+    return f"{fam} {polar} k={a['k']} ({damp}){curv}" + _shared_knobs(cfg, skip=skip_fields)
 
 
 def canonical_key(cfg: dict) -> str | None:
