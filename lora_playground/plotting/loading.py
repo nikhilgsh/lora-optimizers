@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator, NamedTuple
+from typing import Iterator, NamedTuple, Sequence
 
 from ..run_parsing import clear_run_file_cache, parse_run_file
 
@@ -53,47 +53,6 @@ def parse_flag(command: str, flag: str) -> str | None:
         if p == flag and i + 1 < len(parts):
             return parts[i + 1]
     return None
-
-
-def _coerce_value(v: str):
-    """String → int/float/bool when possible; otherwise leave as str.
-    Used by parse_cli_command and CLI backfill so analysis code can filter
-    on numeric values without per-flag handling."""
-    if v in ("True", "true"): return True
-    if v in ("False", "false"): return False
-    if v in ("None", "none", "null"): return None
-    try: return int(v)
-    except ValueError: pass
-    try: return float(v)
-    except ValueError: pass
-    return v
-
-
-def parse_cli_command(command: str) -> dict:
-    """Parse a logged ``--flag value`` (and ``--bool-flag``) command into a dict.
-
-    Generic backfill source for the loader: turns the full launcher command
-    line into ``{flag_name: typed_value}``. Boolean flags (``store_true`` /
-    ``store_false`` argparse actions) become ``True`` when present. Values are
-    coerced via :func:`_coerce_value`.
-    """
-    parts = shlex.split(command)
-    out: dict = {}
-    i = 0
-    while i < len(parts):
-        tok = parts[i]
-        if tok.startswith("--"):
-            key = tok[2:]
-            nxt = parts[i + 1] if i + 1 < len(parts) else None
-            if nxt is None or nxt.startswith("--"):
-                out[key] = True
-                i += 1
-            else:
-                out[key] = _coerce_value(nxt)
-                i += 2
-        else:
-            i += 1
-    return out
 
 
 def load_run(log_path: Path) -> tuple[dict | None, list[dict]]:
@@ -377,3 +336,66 @@ def has_runs(group: str, logs_root: str = "../logs") -> bool:
     """True if the group has at least one populated `log_NN.out` (or any
     `log_NN.out.resume_K` sibling)."""
     return scan_group(group, logs_root).nonempty
+
+
+def load_optim_step_diagnostics(
+    where: dict,
+    fields: Sequence[str] | None = None,
+    *,
+    logs_root: str | Path | None = None,
+    catalog=None,
+):
+    """Per-step optimizer diagnostics for the runs a predicate selects.
+
+    Returns ``{run_id: {field: numpy array}}``, one entry per selected run that
+    logged ``optim_step`` events, aligned on the rows that carry every
+    requested field. ``fields=None`` returns every scalar field present, plus
+    ``step``.
+
+    Why this exists. ``run_catalog`` parses with ``include_optim_steps=False``
+    (`run_catalog.py:337`) because the leaderboard and figure paths never read
+    those rows and skipping them is the fast path, so ``load_runs`` never
+    yields ``cfg["_optim_steps"]``. Notebook cells therefore reached past the
+    loader entirely and re-implemented log discovery with ``glob``, JSON-line
+    decoding, and per-learning-rate assembly -- three things the library
+    already does -- keyed on HAND-TYPED group names, which drift from the
+    manifest and silently miss data.
+
+    Selection here is by predicate, exactly as `loader.load_runs` takes it, so
+    a renamed or added sweep is picked up rather than missed. Only the selected
+    logs are re-parsed with the diagnostic rows included, so the fast path
+    stays fast for everything else.
+    """
+    import numpy as np
+
+    from ..loader import load_runs
+
+    runs = load_runs(where=where, catalog=catalog, quiet=True,
+                     warn_cross_commit=False)
+    root = Path(logs_root) if logs_root is not None else \
+        Path(__file__).resolve().parents[2] / "logs"
+
+    out = {}
+    for cfg, _history in runs:
+        group, filename = cfg.get("log_group"), cfg.get("_log_filename")
+        if not group or not filename:
+            continue
+        path = root / group / "run_info" / "logs" / filename
+        if not path.is_file():
+            continue
+        rows = parse_run_file(path, include_optim_steps=True).optim_steps
+        if not rows:
+            continue
+        wanted = list(fields) if fields else sorted(
+            {k for row in rows for k, v in row.items()
+             if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        )
+        if "step" not in wanted:
+            wanted = ["step", *wanted]
+        usable = [r for r in rows if all(r.get(f) is not None for f in wanted)]
+        if not usable:
+            continue
+        out[cfg.get("run_id") or f"{group}/{filename}"] = {
+            f: np.array([r[f] for r in usable], dtype=float) for f in wanted
+        }
+    return out

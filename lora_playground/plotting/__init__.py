@@ -65,7 +65,6 @@ from .loading import (
     iter_sweep_raw,
     load_run,
     load_sweep,
-    parse_cli_command,
     parse_flag,
     parallel_map,
     prescan_groups,
