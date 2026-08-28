@@ -80,4 +80,14 @@ def test_priority_notebook_panels_execute_against_recorded_evidence(monkeypatch)
 
     assert "PoLoRA" in set(ablation["variant"])
     assert "PoLoRA" in set(derivation["variant"])
-    assert r"Factorwise: $C_B=P_A,\ C_A=Q_B$" in set(preconditioner["variant"])
+    # Every reported arm resolves to a declared one -- this is the KeyError
+    # regression the test exists for. Factorwise is deliberately NOT asserted
+    # present: whether it appears is a fact about the runs on disk, not about
+    # this code. Every KL-Shampoo run in this cell predates the
+    # factorwise-slot fix, so the cohort filter excludes them all and the arm
+    # is legitimately empty until post-fix runs land. Asserting its presence
+    # is what kept the pre-fix arm rendering.
+    declared = set(plots._arms.PRECOND_ARMS)
+    reported = set(preconditioner["variant"])
+    assert reported <= declared, reported - declared
+    assert {"AdamW", plots._arms.PRECOND_PRODUCT_LABEL} <= reported
