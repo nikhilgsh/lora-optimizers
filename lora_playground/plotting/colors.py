@@ -306,6 +306,40 @@ SERIES_PALETTE = (
 )
 
 
+def series_colors(n: int, *, reserved) -> list[str]:
+    """`n` series colors: SERIES_PALETTE in order, then a widened pool.
+
+    Entries within 0.15 of anything in `reserved` are skipped, and the rest are
+    taken IN ORDER, so the nth series always gets the nth free color whatever
+    else is on the panel. `distinct_palette`'s greedy farthest-first is
+    deliberately not used for the first `len(SERIES_PALETTE)` picks: it
+    maximizes separation for the count it is handed, so the answer changed with
+    the number of series and one arm came out #2ca02c in a five-arm panel and
+    #ff7f0e in a three-arm one.
+
+    Beyond the palette the pool is WIDENED by appending from tab20/tab20b/tab20c
+    rather than reordering, so series that already had a color keep it; a pool
+    too tight even for that relaxes the spacing rather than raising.
+    """
+    import matplotlib.pyplot as plt
+
+    palette = [c for c in SERIES_PALETTE
+               if all(_color_distance(c, r) > 0.15 for r in reserved)]
+    if len(palette) >= n:
+        return palette[:n]
+    wide = [_rgb_to_hex(c) for cmap in ("tab20", "tab20b", "tab20c")
+            for c in plt.get_cmap(cmap).colors]
+    for min_distance in (0.30, 0.08):
+        try:
+            return palette + distinct_palette(
+                n - len(palette), reserved=list(reserved) + palette,
+                source=wide, min_distance=min_distance,
+            )
+        except ColorCollisionError:
+            continue
+    raise ColorCollisionError(f"no collision-free palette for {n} series")
+
+
 # ─── overlay palette safety: no-collision guard ──────────────────────────────
 
 class ColorCollisionError(ValueError):

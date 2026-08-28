@@ -1,15 +1,12 @@
 """Semantic series styles shared by notebook and manuscript figures."""
 from __future__ import annotations
 
-from matplotlib.pyplot import get_cmap as _get_cmap
-
-from .colors import (
-    SERIES_PALETTE, _color_distance, _rgb_to_hex, distinct_palette,
-)
+from .colors import series_colors
 
 
 _CURVATURE_ABLATION = {"color": "#009E73", "marker": "D"}
 _MAGNITUDE_ABLATION = {"color": "#882255", "marker": "X"}
+_DOUBLE_ABLATION = {"color": "#CC79A7", "marker": "P"}
 
 PAPER_SERIES_STYLES = {
     "AdamW": {"color": "#000000", "marker": "o"},
@@ -17,9 +14,7 @@ PAPER_SERIES_STYLES = {
     "iMuon": {"color": "#E0A33D", "marker": "^"},
     "Muon (naive)": {"color": "#CB5A4C", "marker": "v"},
     "LoRA-RITE": {"color": "#8E6BAE", "marker": ">"},
-    "No curvature or magnitude": {
-        "color": "#CC79A7", "marker": "P",
-    },
+    "No curvature or magnitude": _DOUBLE_ABLATION,
     # Two names per style: the current label (which carries the equation) and
     # the pre-rename one, still used by the sealed view in
     # publication/paper_views.json. Same dict object, so they cannot drift.
@@ -27,9 +22,7 @@ PAPER_SERIES_STYLES = {
     "Without curvature control": _CURVATURE_ABLATION,
     r"No magnitude rule: $\Delta A=-\eta W_A$": _MAGNITUDE_ABLATION,
     "Without magnitude rescale": _MAGNITUDE_ABLATION,
-    r"Neither: $P=Q=I$, $\Delta A=-\eta W_A$": {
-        "color": "#CC79A7", "marker": "P",
-    },
+    r"Neither: $P=Q=I$, $\Delta A=-\eta W_A$": _DOUBLE_ABLATION,
     r"Product: $C_B=B^\top P B,\ C_A=A Q A^\top$": {
         "color": "#0072B2", "marker": "s",
     },
@@ -61,29 +54,7 @@ def resolve_paper_styles(tokens) -> dict[str, dict[str, str]]:
     reserved = ["#000000", *(
         style["color"] for style in PAPER_SERIES_STYLES.values()
     )]
-    # Take SERIES_PALETTE in order, keeping only entries clear of the colors
-    # PAPER_SERIES_STYLES already spent. Order matters: the previous code tried
-    # "tab10", then "tab20", "tab20b", "Set3", and inside each one
-    # `distinct_palette` picks greedy farthest-first -- both the map that
-    # answered and the colors it chose depended on HOW MANY unregistered series
-    # the panel had, so one series came out #2ca02c green in a five-arm panel
-    # and #ff7f0e orange in a three-arm one. In order, the nth series always
-    # gets the nth free color, whatever else is on the panel.
-    palette = [
-        color for color in SERIES_PALETTE
-        if all(_color_distance(color, r) > 0.15 for r in reserved)
-    ]
-    if len(palette) < len(remaining):
-        # More unregistered series than the palette holds. Append rather than
-        # reorder, so the series that already had colors keep them.
-        palette = palette + distinct_palette(
-            len(remaining) - len(palette),
-            reserved=reserved + palette,
-            source=[
-                _rgb_to_hex(c) for cmap in ("tab20", "tab20b", "tab20c")
-                for c in _get_cmap(cmap).colors
-            ],
-        )
+    palette = series_colors(len(remaining), reserved=reserved)
 
     used_markers = {style["marker"] for style in resolved.values()}
     marker_order = [marker for marker in _MARKERS if marker not in used_markers]

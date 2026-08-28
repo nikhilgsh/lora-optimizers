@@ -294,10 +294,9 @@ def _recorded_revision(cfg: Mapping[str, Any], field: str) -> Any:
     none, so it is what an unversioned run ran under. A LATER revision still
     conflicts with an unversioned run, which is the boundary this guards.
     """
-    from .run_schema import DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION
+    from .run_schema import UNVERSIONED_RUN_REVISION
     recorded = cfg.get(field)
-    return (DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION if recorded is None
-            else recorded)
+    return UNVERSIONED_RUN_REVISION if recorded is None else recorded
 
 
 def _semantic_signature(

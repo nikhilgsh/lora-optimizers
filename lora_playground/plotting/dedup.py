@@ -64,21 +64,16 @@ def _shipped_defaults() -> dict:
     a leaderboard regeneration once (see the `cw_metric_init` note in
     `labels._shared_knobs`).
     """
-    from ..run_schema import DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION
+    from ..run_schema import REVISION_FIELDS, UNVERSIONED_RUN_REVISION
     from .arms import _cli_defaults, _config_defaults
     return {
         **_config_defaults(),
         **_cli_defaults(),
-        # `train.py` stamps these two only from run_schema.RUN_SCHEMA_VERSION 2
-        # onward, so an older run records neither. Revision 1 is the first value
-        # of both counters and the value `optimizer_implementation_revision`
-        # returns for a class that declares none, i.e. what an unversioned run
-        # ran under -- so recording revision 1 and not recording it at all are
-        # the same series, while a LATER revision still splits.
-        # `comparison._recorded_revision` resolves the same two fields the same
-        # way for the measurement/pipeline conflict check.
-        "optimizer_impl_revision": DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION,
-        "measurement_semantics_revision": DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION,
+        # Recording the first revision and not recording one at all are the same
+        # series; a LATER revision still splits. `run_schema` owns both the field
+        # list and the value, so this and `comparison._recorded_revision` cannot
+        # drift, and a third counter is picked up without editing either.
+        **{field: UNVERSIONED_RUN_REVISION for field in REVISION_FIELDS},
     }
 
 
@@ -93,25 +88,49 @@ def _constructor_defaults(optimizer: str | None) -> dict:
     the spec's per-variant constants layered on top (those are what the variant
     actually passes). ``{}`` for an unregistered name or a ``build``-callable
     spec, which is conservative: nothing is normalized away.
+
+    The walk goes through ``forwardable_constructor_parameters``, the same
+    MRO-aware primitive `arms._inert_fields` and `optim.optimizer_config_dict`
+    use, NOT a bare ``inspect.signature`` on ``spec.cls.__init__``. Most polar
+    variants are declared ``__init__(self, model, **kwargs)`` and delegate, so
+    the bare signature saw 3 parameters for ``adam-soap-polar-product-lora``
+    against 57 real ones. Every missing name then fell through to the
+    block-recorded branch below, which drops a key with NO value comparison --
+    so ``ns_steps=5`` and ``ns_steps=8`` produced one series_id and would have
+    been averaged together.
+
+    Constructor names are mapped through ``optim_config.ALIAS`` to the config
+    spellings the flattened cfg actually uses (ctor ``ns_steps`` is cfg
+    ``muon_ns_steps``, ctor ``delta`` is cfg ``precond_delta``); without that
+    the lookup in `_series_items` misses on every aliased field.
     """
     import inspect
     if not optimizer:
         return {}
     try:
         from ..optim_specs import REGISTRY
+        from ..constructor_introspection import (
+            forwardable_constructor_parameters,
+        )
+        from ..optim_config import ALIAS
     except Exception:
         return {}
     spec = REGISTRY.get(optimizer)
     if spec is None or spec.cls is None:
         return {}
     try:
-        sig = inspect.signature(spec.cls.__init__)
+        parameters = forwardable_constructor_parameters(spec.cls)
     except (TypeError, ValueError):
         return {}
-    defaults = {p.name: p.default for p in sig.parameters.values()
+    defaults = {p.name: p.default for p in parameters
                 if p.default is not inspect.Parameter.empty}
     defaults.update(spec.defaults or {})
     defaults.update(spec.fixed or {})
+    # Both spellings: the cfg may carry either, depending on whether the value
+    # came from the CLI (config name) or the optimizer block (ctor name).
+    for ctor_name, config_name in ALIAS.items():
+        if ctor_name in defaults:
+            defaults.setdefault(config_name, defaults[ctor_name])
     return defaults
 
 
@@ -128,6 +147,16 @@ def _recorded_block_keys(cfg: dict) -> frozenset:
         if isinstance(b, dict):
             keys |= {k for k in b if isinstance(k, str)}
     return frozenset(keys)
+
+
+@lru_cache(maxsize=None)
+def _hashed_defaults(producer, *args) -> dict:
+    """``{field: _hashable(default)}`` for a default-map producer, computed once.
+
+    Keyed on the producer and its arguments, so `_shipped_defaults` is hashed
+    once per process and `_constructor_defaults` once per optimizer name.
+    """
+    return {k: _hashable(v) for k, v in producer(*args).items()}
 
 
 def _series_items(cfg: dict, axis_fields: frozenset[str]):
@@ -158,8 +187,12 @@ def _series_items(cfg: dict, axis_fields: frozenset[str]):
     unrecognized field the current schema has never seen, both split the series.
     Explicit off-default ``False`` / ``0`` / ``""`` are series-defining.
     """
-    shipped = _shipped_defaults()
-    ctor = _constructor_defaults(cfg.get("optimizer"))
+    # Pre-hashed: the two default maps are per-process constants, so hashing
+    # their values inside the loop redid the same work for every field of every
+    # cfg -- measured +42% on `series_id` over the 2469-run catalog (130.5 ms
+    # against 91.9 ms per pass), essentially all of it recoverable here.
+    shipped = _hashed_defaults(_shipped_defaults)
+    ctor = _hashed_defaults(_constructor_defaults, cfg.get("optimizer"))
     block_keys = None
     for k, v in cfg.items():
         # Underscore-prefixed keys are loader/parser namespaces (`_derived`,
@@ -170,10 +203,10 @@ def _series_items(cfg: dict, axis_fields: frozenset[str]):
             continue
         h = _hashable(v)
         if k in shipped:
-            if h == _hashable(shipped[k]):
+            if h == shipped[k]:
                 continue
         elif k in ctor:
-            if h == _hashable(ctor[k]):
+            if h == ctor[k]:
                 continue
         else:
             if block_keys is None:
@@ -222,14 +255,16 @@ def _label_collision_report(runs, group_key_fn, *,
     for (label, bucket_vals), cfgs in buckets.items():
         if len(cfgs) < 2:
             continue
-        ids = {series_id(c, axis_fields=axis_fields) for c in cfgs}
+        # One `_series_items` pass, reused for both the identity set and the
+        # per-field diff below; `series_id` would recompute it per cfg.
+        norm = [dict(_series_items(c, axis_fields)) for c in cfgs]
+        ids = {frozenset(n.items()) for n in norm}
         if len(ids) == 1:
             continue
-        # Identify the specific cfg fields that disagree across these runs.
-        # Read through `_series_items` — the SAME normalization series_id used —
-        # so the reported diff is a field that actually split the bucket, not a
-        # schema-growth artifact the identity already discounted.
-        norm = [dict(_series_items(c, axis_fields)) for c in cfgs]
+        # The specific cfg fields that disagree across these runs, read from the
+        # SAME normalization the identity used, so the reported diff names a
+        # field that actually split the bucket rather than a schema-growth
+        # artifact the identity already discounted.
         all_keys: set[str] = set().union(*(set(n) for n in norm))
         differing: dict[str, set] = {}
         for k in all_keys:

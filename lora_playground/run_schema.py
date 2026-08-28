@@ -23,6 +23,27 @@ DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION = 1
 OPTIMIZER_IMPLEMENTATION_REVISION_ATTR = "IMPLEMENTATION_REVISION"
 MEASUREMENT_SEMANTICS_REVISION = 1
 
+REVISION_FIELDS = ("optimizer_impl_revision", "measurement_semantics_revision")
+"""The config fields carrying a semantics-revision counter."""
+
+UNVERSIONED_RUN_REVISION = 1
+"""The revision a run that records NO counter ran under.
+
+`train.py` stamps every field in `REVISION_FIELDS` only from
+`RUN_SCHEMA_VERSION` 2 onward, so an older run records none of them and ran
+under the FIRST value of each counter. Analysis code resolving an absent field
+must use this, so that `X=1` and "no X recorded" are one series while a later
+revision still splits.
+
+Deliberately its own constant rather than a reference to
+`MEASUREMENT_SEMANTICS_REVISION` or
+`DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION`: those two are the CURRENT values
+of their counters and happen to equal 1 today. Reading either as the
+absent-field default is correct only until it is bumped, at which point an
+unversioned run would resolve to the new current revision instead of the one it
+actually ran under -- inverting the comparison it is meant to protect.
+"""
+
 ATTEMPT_ID_ENV = "LORA_ATTEMPT_ID"
 CHECKPOINT_IDENTITY_ENV = "LORA_CHECKPOINT_IDENTITY"
 
@@ -133,7 +154,9 @@ __all__ = [
     "DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION",
     "MEASUREMENT_SEMANTICS_REVISION",
     "OPTIMIZER_IMPLEMENTATION_REVISION_ATTR",
+    "REVISION_FIELDS",
     "RUN_SCHEMA_VERSION",
+    "UNVERSIONED_RUN_REVISION",
     "attempt_metadata",
     "optimizer_implementation_revision",
     "semantic_revisions",

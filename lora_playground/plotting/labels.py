@@ -19,10 +19,7 @@ Both derive from one field extractor (`_axes`) so they can never diverge.
 from __future__ import annotations
 
 from ..publication_identity import lora_init_label_suffix
-from .colors import (
-    OPTIM_COLORS, SERIES_PALETTE, _color_distance, _rgb_to_hex,
-    distinct_palette,
-)
+from .colors import OPTIM_COLORS, series_colors
 
 OPT_ADAMW = "adamw"
 OPT_CT = "adam-polar-product-lora-coupled-spectral-chord-tight"
@@ -424,8 +421,8 @@ def pinned_label_color(label: str) -> str | None:
 def canonical_colors(labels) -> dict:
     """AdamW → reserved black; pinned labels (protagonist, iMuon, E2 arms) →
     their fixed colors; every other label → a distinct color kept clear of the
-    reserved set via `distinct_palette`. Deterministic given the label set."""
-    from .colors import ColorCollisionError
+    reserved set via `colors.series_colors`. Deterministic given the label
+    set."""
     ordered = order_labels(labels)
     colors = {}
     if "AdamW" in ordered:
@@ -439,29 +436,6 @@ def canonical_colors(labels) -> dict:
     palette = []
     if rest:
         reserved = ["#000000"] + sorted(set(colors.values()))
-        # Take SERIES_PALETTE IN ORDER, skipping only entries a pin already
-        # spent. Deliberately not `distinct_palette`'s greedy farthest-first:
-        # that maximises separation for the arm count it is handed, so the
-        # answer changes with the count and one arm's color moved between
-        # panels. In order, the nth series always gets the nth free color.
-        palette = [c for c in SERIES_PALETTE
-                   if all(_color_distance(c, r) > 0.15 for r in reserved)]
-        if len(palette) < len(rest):
-            # More series than the palette holds. Widen the pool by appending,
-            # so the series that already had colors keep them.
-            import matplotlib.pyplot as plt
-            big = [_rgb_to_hex(c) for cm in ("tab20", "tab20b", "tab20c")
-                   for c in plt.get_cmap(cm).colors]
-            try:
-                palette = palette + distinct_palette(
-                    len(rest) - len(palette),
-                    reserved=reserved + palette, source=big,
-                )
-            except ColorCollisionError:  # still too tight — relax the spacing
-                palette = palette + distinct_palette(
-                    len(rest) - len(palette),
-                    reserved=reserved + palette, source=big,
-                    min_distance=0.08,
-                )
+        palette = series_colors(len(rest), reserved=reserved)
     colors.update({l: palette[i] for i, l in enumerate(rest)})
     return colors

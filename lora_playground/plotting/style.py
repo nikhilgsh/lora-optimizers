@@ -103,12 +103,11 @@ NOTEBOOK_RCPARAMS = {
     # cells (which reach for 'C0'/'C3'/f'C{i}') drew in matplotlib's tab10
     # while every panel beside them drew in SERIES_PALETTE.
     "axes.prop_cycle": _cycler("color", list(SERIES_PALETTE)),
-    # A trajectory is a polyline through the eval samples, so every sample is a
-    # joint. Mitred joints show as corners on a thick stroke and read as kinks
-    # in the loss; rounding the joint is a stroke property and changes no value.
-    # (Splining BETWEEN samples would invent losses that were never measured.)
+    # Round line ENDS. The joint style is left alone: matplotlib already
+    # defaults `lines.solid_joinstyle` to "round", so setting it changed
+    # nothing, and the faceting between eval samples is inherent to the
+    # polyline (splining it would invent losses never measured).
     "lines.solid_capstyle": "round",
-    "lines.solid_joinstyle": "round",
     "lines.dash_capstyle": "round",
     # Grid is a background reference, so it sits under the data and stays
     # lighter than the axis frame.
@@ -129,16 +128,12 @@ NOTEBOOK_RCPARAMS = {
     "ytick.color": "#4a4f58",
     "xtick.labelcolor": "#1a1d21",
     "ytick.labelcolor": "#1a1d21",
-    "xtick.direction": "out",
-    "ytick.direction": "out",
     "xtick.major.size": 4.0,
     "ytick.major.size": 4.0,
     "xtick.major.width": 0.9,
     "ytick.major.width": 0.9,
-    "legend.labelspacing": 0.5,
     "figure.dpi": 110,
     "savefig.dpi": 200,
-    "savefig.bbox": None,
 }
 
 

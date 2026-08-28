@@ -93,3 +93,40 @@ def test_assert_splits_buckets_by_lora_r():
          "precond_delta": 0.01}  # differs on a non-axis field
     runs = [(a, []), (b, [])]
     assert_label_discriminates(runs, lambda c: c["optimizer"])
+
+
+def test_series_id_splits_on_a_ctor_knob_recorded_in_the_optimizer_block():
+    """A real algorithm knob must split series even when only the block records it.
+
+    Most polar variants are declared ``__init__(self, model, **kwargs)`` and
+    delegate down the MRO, so a bare ``inspect.signature`` on the class sees
+    almost nothing -- 3 parameters for ``adam-soap-polar-product-lora`` against
+    57 real ones. Every name it missed fell through `_series_items`' last
+    branch, which drops a key recorded only inside ``optimizer_config`` with NO
+    value comparison, on the grounds that the constructor no longer accepts it.
+    For a knob the constructor DOES accept that premise is false, and
+    ``ns_steps=5`` and ``ns_steps=8`` collapsed to one series_id -- two
+    different Newton-Schulz iteration counts averaged together.
+    """
+    optimizer = "adam-soap-polar-product-lora"
+
+    def cfg(ns_steps):
+        return {"optimizer": optimizer, "lr": 1e-3,
+                "optimizer_config": {"ns_steps": ns_steps},
+                "ns_steps": ns_steps}
+
+    assert series_id(cfg(5)) != series_id(cfg(8))
+
+
+def test_series_id_still_merges_a_block_recorded_knob_at_its_own_default():
+    """The split above must not resurrect the schema-growth splitting."""
+    from lora_playground.plotting.dedup import _constructor_defaults
+
+    optimizer = "adam-soap-polar-product-lora"
+    default = _constructor_defaults(optimizer)["ns_steps"]
+    recorded = {"optimizer": optimizer, "lr": 1e-3,
+                "optimizer_config": {"ns_steps": default},
+                "ns_steps": default}
+    absent = {"optimizer": optimizer, "lr": 1e-3}
+
+    assert series_id(recorded) == series_id(absent)

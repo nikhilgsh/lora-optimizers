@@ -68,26 +68,32 @@ def _is_logged_semantic_field(key: Any) -> bool:
     )
 
 
+# `logged_effective_value`'s authority order: the logged blocks in
+# `_LOGGED_CONFIG_BLOCKS` order, with `None` marking the raw top level.
+_LOGGED_VALUE_ORDER = (
+    "_cli_args", "optimizer_config", None, "optimizer_effective",
+)
+
+
 def logged_effective_value(
     raw_config: Mapping[str, Any], field: str
 ) -> tuple[bool, Any]:
     """Resolve one recorded semantic field in canonical authority order."""
     if not _is_logged_semantic_field(field):
         return False, None
+    # Later wins. The order is `_LOGGED_CONFIG_BLOCKS` with the raw top level
+    # spliced in where `logged_effective_config` places it, so the two cannot
+    # disagree about authority if a block is added or reordered. This stays a
+    # per-field walk rather than a call to `logged_effective_config`: the run
+    # catalog resolves a handful of header fields per run and must not flatten
+    # every cfg to do it.
     present = False
     value = None
-    for block_name in ("_cli_args", "optimizer_config"):
-        block = raw_config.get(block_name)
+    for block_name in _LOGGED_VALUE_ORDER:
+        block = raw_config if block_name is None else raw_config.get(block_name)
         if isinstance(block, Mapping) and field in block:
             present = True
             value = block[field]
-    if field in raw_config:
-        present = True
-        value = raw_config[field]
-    block = raw_config.get("optimizer_effective")
-    if isinstance(block, Mapping) and field in block:
-        present = True
-        value = block[field]
     return present, value
 
 
