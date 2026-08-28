@@ -159,6 +159,21 @@ def _shared_knobs(cfg: dict) -> str:
     # `_residual_knobs` (that derives from PINNED_FIELDS, i.e. OptimizerConfig),
     # so it is spelled out here; the default comes from run_schema, not a
     # literal, so a bump there does not suffix every run.
+    # The factorwise-slot freeze. Not an `OptimizerConfig` field on this
+    # branch -- it exists only where the ablation is implemented -- so
+    # `_residual_knobs` (which derives from PINNED_FIELDS, i.e. the config
+    # dataclass) cannot see it, exactly like `optimizer_impl_revision` below.
+    # Without it a frozen-slot continuation and the dynamic run it forked from
+    # share one label while `series_id` splits them on the fork's
+    # `resume_debug_replay`, so they collide in one bucket instead of being two
+    # arms.
+    # `is True`, not truthiness: this function is fed BOTH recorded configs and
+    # arm PREDICATE dicts, and a predicate may pin a field with a callable
+    # ("any value satisfying this"). A callable is truthy, so testing
+    # truthiness made the slots-live arm -- pinned `lambda v: not v` -- label
+    # itself as frozen and collide with the slots-frozen arm.
+    if cfg.get("freeze_factorwise_slots") is True:
+        s += " frozen-slots"
     if (rev := cfg.get("optimizer_impl_revision")) is not None:
         from ..run_schema import DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION
         if rev != DEFAULT_OPTIMIZER_IMPLEMENTATION_REVISION:

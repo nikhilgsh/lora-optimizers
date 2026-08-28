@@ -457,6 +457,18 @@ ONESIDED = {**PROTO, "precond": "one-sided"}     # C_B = C_A = I everywhere
 NOPRODUCT = {**arm("kl-diag-polar-lora", **CW_PRODUCTION, precond="factorwise"),
              "optimizer": ("kl-diag-polar-lora", "kl-shampoo-polar-lora")}
 
+# The same arm with the slots frozen at a checkpoint: the ablation asking
+# whether the r x r ESTIMATE earns its place, or only its shape.
+#
+# Only the FROZEN side pins the field. The live side cannot: `field_matches`
+# returns False for a field absent from the cfg, and `freeze_factorwise_slots`
+# exists only on the branch implementing the ablation, so every run predating it
+# lacks the key -- a `lambda v: not v` pin excluded 46 of them from the
+# factorwise arm. Panels classify runs by `canonical_arm_label`, which carries
+# " frozen-slots" only when the field is recorded True, so the two arms separate
+# there without the live side pinning anything.
+NOPRODUCT_FROZEN = {**NOPRODUCT, "freeze_factorwise_slots": True}
+
 # ─── the `msign` axis: how accurately the matrix sign is applied ─────────────
 # Orthogonal to `precond`. "diag" approximates the Gram inside the matrix sign by
 # its diagonal, i.e. rownorm(Z_A) / colnorm(Z_B) — no r x r inverse sqrt. Run at
@@ -565,12 +577,30 @@ PRECOND_BETA2_ARMS = {
 # by its diagonal (row/column normalization) with the slot present, and with it
 # gone? (one-sided, diag) is the O(rd) configuration — no r x r matmul or inverse
 # square root anywhere in the direction.
+# `msign` is ORTHOGONAL to `precond`, so the question "can the matrix sign be
+# cheapened" has one answer per slot content, not one answer overall. The
+# factorwise row was missing: `paper.msign.v1` is sealed over the product and
+# one-sided rows only, so the cross was 2x2 where the axes are 3x2.
+NOPRODUCT_DIAG = {**NOPRODUCT, "msign": "diag"}
+
 MSIGN_ARMS = {
     "AdamW": ADAMW,
     "product, msign": PROTO,
     "product, diagonal msign": PROTO_DIAG,
     "one-sided, msign": ONESIDED,
     "one-sided, diagonal msign": ONESIDED_DIAG,
+}
+
+# The full cross, for the live panel. Labels name the slot content and the
+# accuracy of the sign, in the same words the precond panels use.
+MSIGN_BY_PRECOND_ARMS = {
+    "AdamW": ADAMW,
+    r"Product, $\mathrm{msign}$": PROTO,
+    r"Product, diagonal sign": PROTO_DIAG,
+    r"Identity, $\mathrm{msign}$": ONESIDED,
+    r"Identity, diagonal sign": ONESIDED_DIAG,
+    r"Factorwise, $\mathrm{msign}$": NOPRODUCT,
+    r"Factorwise, diagonal sign": NOPRODUCT_DIAG,
 }
 MAGNITUDE_RULE_ARMS = {
     r"PoLoRA: $\rho=\eta/(\sigma_{\max}(A)+\sigma_{\max}(B))$": PROTO,
@@ -586,6 +616,7 @@ ALL_ARM_DICTS = {
     "DERIVATION_ARMS": DERIVATION_ARMS,
     "PRECOND_ARMS": PRECOND_ARMS,
     "MSIGN_ARMS": MSIGN_ARMS,
+    "MSIGN_BY_PRECOND_ARMS": MSIGN_BY_PRECOND_ARMS,
     "MAGNITUDE_RULE_ARMS": MAGNITUDE_RULE_ARMS,
     "PROTO_BETA2_ARMS": PROTO_BETA2_ARMS,
     "ADAMW_BETA2_ARMS": ADAMW_BETA2_ARMS,

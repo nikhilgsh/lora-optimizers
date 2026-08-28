@@ -1034,3 +1034,55 @@ def magnitude_rule_tracking_panel(rank=256):
         best_lr, points = min(by_lr.items(), key=lambda kv: kv[1][-1][1])
         print(f"{name}: best eta={best_lr:g} final={points[-1][1]:.4f} "
               f"({len(by_lr)} learning rates)")
+
+
+def msign_by_precond_panel(rank=256):
+    """Can the matrix sign be cheapened, at each of the three slot contents?
+
+    `msign` is orthogonal to `precond`, so the answer can differ per slot:
+    `paper.msign.v1` is sealed over the product and one-sided rows only, which
+    makes the cross 2x2 where the axes are 3x2. This adds the factorwise row,
+    so "diagonal sign is/is not enough" is answered with the slot present, with
+    it gone, and with it filled from the factor gradients.
+    """
+    from lora_playground.workloads import find_workload
+    workload = find_workload("meta-llama/Llama-3.2-1B", "openmath", rank)
+    return _records_figure(
+        _arms.MSIGN_BY_PRECOND_ARMS,
+        workload,
+        r"Product, $\mathrm{msign}$",
+        rf"Matrix sign by slot content — Llama-3.2-1B openmath, $r={rank}$",
+        semantic_view="precond",
+    )
+
+
+FREEZE_ARMS = {
+    r"Factorwise, slots live": _arms.NOPRODUCT,
+    r"Factorwise, slots frozen at step 2000": _arms.NOPRODUCT_FROZEN,
+}
+
+
+def factorwise_freeze_panel(rank=256, model="Qwen/Qwen2.5-1.5B",
+                            model_label="Qwen2.5-1.5B"):
+    """Does the r x r factorwise ESTIMATE earn its place, or only its shape?
+
+    The frozen arm forks its own dynamic control at step 2000 and continues to
+    the horizon with the ``P_A``/``Q_B`` EMA writes stopped, so the two arms
+    share identical history up to the fork and differ only in whether those two
+    matrices keep updating. Shared history makes this a paired comparison --
+    noise up to step 2000 cancels -- but it is one seed per learning rate.
+    """
+    from lora_playground.workloads import find_workload
+    workload = find_workload(model, "openmath", rank)
+    return _records_figure(
+        FREEZE_ARMS,
+        workload,
+        r"Factorwise, slots live",
+        rf"Freezing the $r\times r$ slots — {model_label} openmath, $r={rank}$",
+        target_label=None,
+        # Both arms are factorwise, so both are subject to the slot fix. Without
+        # the projection the live arm pooled pre-fix runs from
+        # `e2_precond_qwen25_openmath_r256_xl` with the post-fix control the
+        # frozen arm forked from, and `comparison` refused the mixed revisions.
+        semantic_view="precond",
+    )
