@@ -23,6 +23,7 @@ from .run_records import (
     RunRecord,
     freeze_value,
     logged_effective_config,
+    logged_effective_value,
     physical_run_id,
 )
 
@@ -221,6 +222,8 @@ class RunCatalog:
         "_runtime_issues",
         "_files",
         "_headers",
+        "_semantic_headers",
+        "_semantic_values",
         "_record_cache",
     )
 
@@ -232,6 +235,8 @@ class RunCatalog:
         object.__setattr__(self, "_runtime_issues", {})
         object.__setattr__(self, "_files", {})
         object.__setattr__(self, "_headers", {})
+        object.__setattr__(self, "_semantic_headers", {})
+        object.__setattr__(self, "_semantic_values", {})
         object.__setattr__(self, "_record_cache", {})
 
     def __setattr__(self, name, value) -> None:
@@ -289,12 +294,29 @@ class RunCatalog:
         if key in self._headers:
             return self._headers[key]
         try:
-            config = parse_run_header(path).raw_config()
+            config = parse_run_header(path).frozen_raw_config()
         except (OSError, ValueError, TypeError, KeyError):
             config = None
-        frozen = None if config is None else freeze_value(config)
-        self._headers[key] = frozen
-        return frozen
+        self._headers[key] = config
+        return config
+
+    def _header_semantic_config(
+        self,
+        group_name: str,
+        path: Path,
+    ) -> Mapping[str, Any] | None:
+        """Return the flattened startup semantics once per catalog snapshot."""
+        key = str(path)
+        if key in self._semantic_headers:
+            return self._semantic_headers[key]
+        raw = self._header_config(group_name, path)
+        semantic = None
+        if raw is not None:
+            semantic, _issues = logged_effective_config(
+                raw, source=f"{group_name}/{path.name}"
+            )
+        self._semantic_headers[key] = semantic
+        return semantic
 
     def _record_issue(self, group_name: str, issue: RunIssue) -> None:
         current = self._runtime_issues.get(group_name, ())
@@ -313,8 +335,8 @@ class RunCatalog:
         descriptor = self._descriptor(group_name)
         try:
             parsed = parse_run_file(path, include_optim_steps=False)
-            config = parsed.raw_config()
-            history = parsed.mutable_evals()
+            config = parsed.frozen_raw_config()
+            history = parsed.evals
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self._record_issue(group_name, RunIssue(
                 code="parser_error",
@@ -374,10 +396,9 @@ class RunCatalog:
                 if config is None:
                     continue
                 fields.update(config)
-                semantic, _issues = logged_effective_config(
-                    config, source=f"{group}/{path.name}"
-                )
-                fields.update(semantic)
+                semantic = self._header_semantic_config(group, path)
+                if semantic is not None:
+                    fields.update(semantic)
         return frozenset(fields)
 
     @staticmethod
@@ -426,10 +447,6 @@ class RunCatalog:
                         selected.append(record)
                     continue
 
-                semantic, _issues = logged_effective_config(
-                    raw, source=f"{group}/{path.name}"
-                )
-
                 def header_value(field: str) -> tuple[bool, Any]:
                     if field == "group":
                         return True, group
@@ -442,9 +459,12 @@ class RunCatalog:
                             log_filename=path.name,
                             fallback_index=index,
                         )
-                    if field not in semantic:
-                        return False, None
-                    return True, semantic[field]
+                    key = (str(path), field)
+                    cached = self._semantic_values.get(key)
+                    if cached is None:
+                        cached = logged_effective_value(raw, field)
+                        self._semantic_values[key] = cached
+                    return cached
 
                 rejected = False
                 for field, expected in equals.items():

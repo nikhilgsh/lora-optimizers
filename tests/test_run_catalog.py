@@ -7,6 +7,10 @@ import pytest
 
 from lora_playground.run_catalog import RunCatalog
 from lora_playground.run_parsing import parse_run_file
+from lora_playground.run_records import (
+    logged_effective_config,
+    logged_effective_value,
+)
 
 
 _MISSING = object()
@@ -163,23 +167,118 @@ def test_semantic_query_header_rejects_without_full_history_parse(
     assert calls == ["log_0.out"]
 
 
+def test_query_header_screening_does_not_flatten_whole_configs(
+    tmp_path, monkeypatch
+):
+    _write_group(tmp_path, "group", filename="log_0.out", config={
+        "optimizer": "adamw",
+        "_cli_args": {"lora_r": 16},
+    })
+    _write_group(tmp_path, "group", filename="log_1.out", config={
+        "optimizer": "muon",
+        "_cli_args": {"lora_r": 64},
+    })
+
+    import lora_playground.run_catalog as run_catalog_module
+
+    original = run_catalog_module.logged_effective_config
+    calls = []
+
+    def counted(raw, *, source):
+        calls.append(source)
+        return original(raw, source=source)
+
+    monkeypatch.setattr(run_catalog_module, "logged_effective_config", counted)
+    catalog = RunCatalog(tmp_path)
+
+    assert len(catalog.query(equals={"optimizer": "adamw"})) == 1
+    assert len(catalog.query(equals={"optimizer": "muon"})) == 1
+
+    assert calls == []
+
+
+def test_single_field_header_lookup_matches_full_semantic_authority():
+    raw = {
+        "event": "config",
+        "command": "python train.py",
+        "_cli_args": {"optimizer": "cli", "lora_r": 16},
+        "optimizer_config": {"optimizer": "built", "beta2": 0.9},
+        "optimizer": "top-level",
+        "optimizer_effective": {"optimizer": "effective", "beta2": 0.99},
+    }
+    full, _issues = logged_effective_config(raw, source="test")
+
+    for field in ("optimizer", "lora_r", "beta2", "missing"):
+        present, value = logged_effective_value(raw, field)
+        assert present == (field in full)
+        assert value == full.get(field)
+    assert logged_effective_value(raw, "command") == (False, None)
+
+
+def test_distinct_queries_cache_each_header_field_once(tmp_path, monkeypatch):
+    _write_group(tmp_path, "group", filename="log_0.out", config={
+        "optimizer": "adamw",
+        "_cli_args": {"lora_r": 16},
+    })
+    _write_group(tmp_path, "group", filename="log_1.out", config={
+        "optimizer": "muon",
+        "_cli_args": {"lora_r": 64},
+    })
+
+    import lora_playground.run_catalog as run_catalog_module
+
+    original = run_catalog_module.logged_effective_value
+    calls = []
+
+    def counted(raw, field):
+        calls.append((raw["optimizer"], field))
+        return original(raw, field)
+
+    monkeypatch.setattr(run_catalog_module, "logged_effective_value", counted)
+    catalog = RunCatalog(tmp_path)
+
+    catalog.query(equals={"optimizer": "adamw"})
+    catalog.query(equals={"optimizer": "muon"})
+
+    assert calls == [("adamw", "optimizer"), ("muon", "optimizer")]
+
+
 def test_catalog_fast_parse_omits_diagnostics_but_preserves_config_and_evals(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
     path = tmp_path / "group" / "run_info" / "logs" / "log_0.out"
     path.parent.mkdir(parents=True)
     events = [
         {"event": "config", "optimizer": "adamw", "lr": 1e-3},
-        {"event": "optim_step", "step": 1, "large_probe": list(range(100))},
+        # Production emitters use sort_keys=True, which puts event after this
+        # alphabetically earlier diagnostic field. The fast-path detector must
+        # not depend on event being the first key.
+        {"event": "optim_step", "step": 1, "a_large_probe": list(range(100))},
+        {"event": "train_norms", "step": 1, "param_l2": 3.0},
+        {"event": "train_step", "step": 1, "loss": 0.9},
         {"event": "eval", "step": 10, "eval_loss": 0.8, "lr": 1e-3},
     ]
-    path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+    path.write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n"
+    )
 
     diagnostic_parse = parse_run_file(path)
+    import lora_playground.run_parsing as run_parsing
+
+    real_loads = run_parsing.json.loads
+    decoded_lines = 0
+
+    def counted_loads(line):
+        nonlocal decoded_lines
+        decoded_lines += 1
+        return real_loads(line)
+
+    monkeypatch.setattr(run_parsing.json, "loads", counted_loads)
     record = RunCatalog(tmp_path).records[0]
 
     assert len(diagnostic_parse.optim_steps) == 1
     assert diagnostic_parse.raw_config()["_optim_steps"][0]["step"] == 1
+    assert decoded_lines == 2  # config + eval; the sorted diagnostic was skipped
     assert "_optim_steps" not in record.raw_config
     assert record.semantic_config["optimizer"] == "adamw"
     assert record.history == diagnostic_parse.evals

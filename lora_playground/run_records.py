@@ -8,9 +8,10 @@ effective values from schema blocks that were themselves logged by the run.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 
 # Cfg fields that describe physical execution/provenance rather than the
@@ -54,8 +55,57 @@ _LOGGED_CONFIG_BLOCKS = (
 )
 
 
+def _is_logged_semantic_field(key: Any) -> bool:
+    return (
+        isinstance(key, str)
+        and key not in _AUDIT_FIELDS
+        and key not in _LOGGED_CONFIG_BLOCKS
+        and not key.startswith("_")
+    )
+
+
+def logged_effective_value(
+    raw_config: Mapping[str, Any], field: str
+) -> tuple[bool, Any]:
+    """Resolve one recorded semantic field in canonical authority order."""
+    if not _is_logged_semantic_field(field):
+        return False, None
+    present = False
+    value = None
+    for block_name in ("_cli_args", "optimizer_config"):
+        block = raw_config.get(block_name)
+        if isinstance(block, Mapping) and field in block:
+            present = True
+            value = block[field]
+    if field in raw_config:
+        present = True
+        value = raw_config[field]
+    block = raw_config.get("optimizer_effective")
+    if isinstance(block, Mapping) and field in block:
+        present = True
+        value = block[field]
+    return present, value
+
+
 def freeze_value(value: Any) -> Any:
     """Recursively copy JSON-like data into immutable containers."""
+    value_type = type(value)
+    # Run configs and events are JSON-shaped, so nearly every leaf is one of
+    # these exact scalar types.  Return those before the abstract-container
+    # checks below: header screening visits millions of scalar leaves while
+    # building a cold catalog, and collections.abc instance checks dominated
+    # that path without changing any value.
+    if value is None or value_type in (str, int, float, bool):
+        return value
+    if value_type is dict:
+        return MappingProxyType({key: freeze_value(item)
+                                 for key, item in value.items()})
+    if value_type is list or value_type is tuple:
+        return tuple(freeze_value(item) for item in value)
+    if value_type is set or value_type is frozenset:
+        return frozenset(freeze_value(item) for item in value)
+    # Preserve support for non-builtin Mapping/sequence containers used by
+    # callers outside the JSON parser.
     if isinstance(value, Mapping):
         return MappingProxyType({key: freeze_value(item)
                                  for key, item in value.items()})
@@ -109,7 +159,9 @@ def physical_run_id(
         if isinstance(explicit, str):
             return explicit
         try:
-            return json.dumps(explicit, sort_keys=True, separators=(",", ":"))
+            return json.dumps(
+                thaw_value(explicit), sort_keys=True, separators=(",", ":")
+            )
         except (TypeError, ValueError):
             return repr(explicit)
     if log_filename:
@@ -137,14 +189,6 @@ def logged_effective_config(
     effective: dict[str, Any] = {}
     issues: list[RunIssue] = []
 
-    def is_semantic_field(key: Any) -> bool:
-        return (
-            isinstance(key, str)
-            and key not in _AUDIT_FIELDS
-            and key not in _LOGGED_CONFIG_BLOCKS
-            and not key.startswith("_")
-        )
-
     for block_name in ("_cli_args", "optimizer_config"):
         block = raw_config.get(block_name)
         if block is None:
@@ -157,10 +201,10 @@ def logged_effective_config(
             ))
             continue
         effective.update({key: value for key, value in block.items()
-                          if is_semantic_field(key)})
+                          if _is_logged_semantic_field(key)})
 
     for key, value in raw_config.items():
-        if not is_semantic_field(key):
+        if not _is_logged_semantic_field(key):
             continue
         effective[key] = value
 
@@ -168,7 +212,7 @@ def logged_effective_config(
     if block is not None:
         if isinstance(block, Mapping):
             effective.update({key: value for key, value in block.items()
-                              if is_semantic_field(key)})
+                              if _is_logged_semantic_field(key)})
         else:
             issues.append(RunIssue(
                 code="invalid_config_block",
@@ -215,9 +259,8 @@ class RunRecord:
         fallback_index: int = 0,
     ) -> "RunRecord":
         """Build a record without mutating or default-filling parser output."""
-        raw_copy = {key: thaw_value(freeze_value(value))
-                    for key, value in raw_config.items()}
-        log_filename = raw_copy.get("_log_filename")
+        raw_frozen = freeze_value(raw_config)
+        log_filename = raw_frozen.get("_log_filename")
         source = (f"{group}/{log_filename}" if log_filename
                   else f"{group}/run[{fallback_index}]")
         record_issues = list(issues)
@@ -229,11 +272,12 @@ class RunRecord:
             ))
 
         effective, config_issues = logged_effective_config(
-            raw_copy, source=source
+            raw_frozen, source=source
         )
         record_issues.extend(config_issues)
         audit_config = {
-            key: value for key, value in raw_copy.items() if key in _AUDIT_FIELDS
+            key: value for key, value in raw_frozen.items()
+            if key in _AUDIT_FIELDS
         }
         provenance = AuditProvenance(
             group=group,
@@ -243,13 +287,13 @@ class RunRecord:
         )
         return cls(
             physical_id=physical_run_id(
-                raw_copy,
+                raw_frozen,
                 group=group,
                 log_filename=log_filename,
                 fallback_index=fallback_index,
             ),
-            raw_config=freeze_value(raw_copy),
-            history=tuple(freeze_value(dict(event)) for event in history),
+            raw_config=raw_frozen,
+            history=tuple(freeze_value(event) for event in history),
             audit_provenance=provenance,
             effective_config=effective,
             issues=tuple(record_issues),
@@ -497,6 +541,7 @@ __all__ = [
     "RunView",
     "freeze_value",
     "logged_effective_config",
+    "logged_effective_value",
     "physical_run_id",
     "project_run_semantics",
     "run_view",
