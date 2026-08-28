@@ -49,7 +49,7 @@ from lora_playground.training_kernel import build_peft_model
 
 def energy_shape(opt, model, batches, dev, npairs):
     """diag(G_A^T C_B^-1 G_A) per pair, accumulated over `batches` -- the exact
-    quantity optim.py folds into D_in."""
+    quantity optim.py folds into Q."""
     opt.zero_grad(set_to_none=True)
     for b in batches:
         out = model(**b)
@@ -60,8 +60,8 @@ def energy_shape(opt, model, batches, dev, npairs):
             A, B = opt.pairs[i]
             st = opt.pair_state[i]
             gA = A.grad.float()
-            doutB = opt._rdinv(st['D_out'].unsqueeze(0)).squeeze(0)
-            P = (doutB * doutB).reciprocal()
+            P_isqrt = opt._rdinv(st['P'].unsqueeze(0)).squeeze(0)
+            P = P_isqrt.square().reciprocal()
             Bw = B.detach().float()
             CB = Bw.T @ (P.unsqueeze(-1) * Bw)
             CB = 0.5 * (CB + CB.T)

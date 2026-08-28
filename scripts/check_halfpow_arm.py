@@ -70,15 +70,15 @@ for name in ["kl-diag-flatout-lora", "kl-diag-lora", "kl-diag-polar-lora"]:
     gA = GA[5]
     mA = st['m_A'] * b1 + gA * (1 - b1)
     Mhat = mA * b1 + gA * (1 - b1)
-    dinA = o._rdinv(st['D_in'].unsqueeze(0)).squeeze(0)
-    doutB = o._rdinv(st['D_out'].unsqueeze(0)).squeeze(0)
+    Q_isqrt = o._rdinv(st['Q'].unsqueeze(0)).squeeze(0)
+    P_isqrt = o._rdinv(st['P'].unsqueeze(0)).squeeze(0)
     Bw = o.pairs[0][1].detach().float()
-    CB = Bw.T @ ((doutB * doutB).reciprocal().unsqueeze(-1) * Bw)
+    CB = Bw.T @ (P_isqrt.square().reciprocal().unsqueeze(-1) * Bw)
     CB = 0.5 * (CB + CB.T)
     CBh = gram_ns_inv_sqrt(CB.unsqueeze(0), nsteps=o.higham_iters,
                            eps=o.delta, eps_relative=True).squeeze(0)
-    HALF = CBh @ Mhat * dinA.unsqueeze(0)                            # C_B^-1/2 Mhat Q^-1/2
-    FULL = CBh @ (CBh @ Mhat * dinA.unsqueeze(0)) * dinA.unsqueeze(0)  # C_B^-1 Mhat Q^-1
+    HALF = CBh @ Mhat * Q_isqrt.unsqueeze(0)                            # C_B^-1/2 Mhat Q^-1/2
+    FULL = CBh @ (CBh @ Mhat * Q_isqrt.unsqueeze(0)) * Q_isqrt.unsqueeze(0)  # C_B^-1 Mhat Q^-1
     sv = torch.linalg.svdvals(dA.float())
     print(f"{name:26s} flat_outer={str(o.flat_outer):5s} use_polar={str(o.use_polar):5s}")
     print(f"{'':26s} cos(dA, HALF) = {cos(-dA, HALF):.6f}   "

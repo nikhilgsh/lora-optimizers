@@ -9,7 +9,7 @@ same metric and beta2 is inert; if it drifts, beta2 matters.
 So measure the shape directly rather than inferring it from loss curves. At each
 step record the per-coordinate energy the metric is actually built from --
 diag(G_A^T C_B^-1 G_A) for the input side and diag(G_B C_A^-1 G_B^T) for the output
-side, i.e. the exact quantities optim.py accumulates into D_in / D_out -- and
+side, i.e. the exact quantities optim.py accumulates into Q/P -- and
 report cos(d_t, d_{t+k}) against lag k, averaged over t and over LoRA pairs.
 
 cos near 1 at large lag  => shape static  => beta2 inert
@@ -91,8 +91,8 @@ def main():
                 A, B = opt.pairs[i]
                 st = opt.pair_state[i]
                 gA = A.grad.float()
-                doutB = opt._rdinv(st['D_out'].unsqueeze(0)).squeeze(0)
-                P = (doutB * doutB).reciprocal()
+                P_isqrt = opt._rdinv(st['P'].unsqueeze(0)).squeeze(0)
+                P = P_isqrt.square().reciprocal()
                 Bw = B.detach().float()
                 CB = Bw.T @ (P.unsqueeze(-1) * Bw)
                 CB = 0.5 * (CB + CB.T)

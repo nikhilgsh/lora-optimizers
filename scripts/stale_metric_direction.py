@@ -1,6 +1,6 @@
 """Does the one-step-stale metric corrupt the update DIRECTION, or only its scale?
 
-PoLoRA's diagonal metric state D_in/D_out is read at the top of
+PoLoRA's diagonal metric state Q/P is read at the top of
 CurvatureWhitenLoRA._cw_apply_grouped (lora_playground/optim.py:1849-1850), used to
 build the entire update, and only THEN accumulated with the current step's gradient
 (optim.py:2079-2080 coupled, :2087-2088 else). So the metric that shapes step t has
@@ -82,7 +82,7 @@ def snapshot(opt, npairs):
 
 def restore(opt, snap, npairs, keep_metric=None):
     """Put the optimizer back at the snapshot. `keep_metric`, when given, is a list of
-    (D_in, D_out) that OVERRIDE the snapshot's -- that is how the fresh arm keeps the
+    (Q, P) that override the snapshot's -- that is how the fresh arm keeps the
     post-accumulation metric while rewinding everything else."""
     for i in range(npairs):
         A, B = opt.pairs[i]
@@ -93,8 +93,8 @@ def restore(opt, snap, npairs, keep_metric=None):
         opt.pair_state[i] = {k: (v.clone() if torch.is_tensor(v) else v)
                              for k, v in snap[i]['state'].items()}
         if keep_metric is not None:
-            opt.pair_state[i]['D_in'] = keep_metric[i][0].clone()
-            opt.pair_state[i]['D_out'] = keep_metric[i][1].clone()
+            opt.pair_state[i]['Q'] = keep_metric[i][0].clone()
+            opt.pair_state[i]['P'] = keep_metric[i][1].clone()
 
 
 def merged_delta(pre_A, pre_B, post_A, post_B):
@@ -170,7 +170,7 @@ def main():
                 (out.loss / a.grad_accum_steps).backward()
             return out.loss.item()
 
-        for _ in range(a.warm_steps):        # warm D_in/D_out to a realistic metric
+        for _ in range(a.warm_steps):        # warm Q/P to a realistic metric
             grads(); opt.step()
 
         cW, cA_, cB_, ratio = [], [], [], []
@@ -182,8 +182,8 @@ def main():
             opt.step()
             stale = [(opt.pairs[i][0].detach().clone(), opt.pairs[i][1].detach().clone())
                      for i in range(npairs)]
-            fresh_metric = [(opt.pair_state[i]['D_in'].clone(),
-                             opt.pair_state[i]['D_out'].clone())
+            fresh_metric = [(opt.pair_state[i]['Q'].clone(),
+                             opt.pair_state[i]['P'].clone())
                             for i in range(npairs)]
 
             # --- CONTROL: restore with the snapshot's OWN metric and re-step. This

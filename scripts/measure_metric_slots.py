@@ -110,9 +110,9 @@ def main():
             Mhat = mA * b1 + gA * (1 - b1)              # Nesterov look-ahead
             Bw = B.detach().float()
 
-            dinA = opt._rdinv(st['D_in'].unsqueeze(0)).squeeze(0)     # Q^{-1/2}
-            doutB = opt._rdinv(st['D_out'].unsqueeze(0)).squeeze(0)   # P^{-1/2}
-            P = (doutB * doutB).reciprocal()
+            Q_isqrt = opt._rdinv(st['Q'].unsqueeze(0)).squeeze(0)
+            P_isqrt = opt._rdinv(st['P'].unsqueeze(0)).squeeze(0)
+            P = P_isqrt.square().reciprocal()
             CB = Bw.T @ (P.unsqueeze(-1) * Bw)                        # C_B = B^T P B
             CB = 0.5 * (CB + CB.T)
 
@@ -122,10 +122,10 @@ def main():
             CBh = gram_ns_inv_sqrt(CB.unsqueeze(0), nsteps=opt.higham_iters,
                                    eps=opt.delta, eps_relative=True).squeeze(0)
             # true update direction
-            D_true = CBh @ polar(CBh @ Mhat * dinA.unsqueeze(0)) * dinA.unsqueeze(0)
+            D_true = CBh @ polar(CBh @ Mhat * Q_isqrt.unsqueeze(0)) * Q_isqrt.unsqueeze(0)
             # LEFT slot flattened to a scalar multiple of I (its mean eigenvalue):
             # the scalar cancels, so the direction is msign(Mhat Q^-1/2) Q^-1/2.
-            D_isoCB = polar(Mhat * dinA.unsqueeze(0)) * dinA.unsqueeze(0)
+            D_isoCB = polar(Mhat * Q_isqrt.unsqueeze(0)) * Q_isqrt.unsqueeze(0)
             # RIGHT slot flattened likewise: direction is C_B^-1/2 msign(C_B^-1/2 Mhat).
             D_isoQ = CBh @ polar(CBh @ Mhat)
 
@@ -133,7 +133,7 @@ def main():
             ev = ev.clamp_min(0)
             # effective spectrum after the optimizer's relative damping
             ev_eff = ev + opt.delta * ev.max()
-            q = st['D_in'].double()
+            q = st['Q'].double()
             q_eff = q / q.max().clamp_min(1e-30) + opt.delta
             rows.append(dict(
                 pair=i, r=A.shape[0], d_in=A.shape[1], d_out=B.shape[0],
