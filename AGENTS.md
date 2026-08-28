@@ -10,6 +10,28 @@ Default course: base model `allenai/OLMo-2-0425-1B`, dataset `ise-uiuc/Magicoder
 
 Read `docs/experimental_protocol.md` and `docs/model_dataset_selection.md` before changing model, data, metrics, or smoke-test settings.
 
+## What this repo does and does not track
+
+Two things dominated `.git` (592 MB) and neither is a build input.
+
+**`docs/papers/*.pdf` is a local reading store, gitignored.** 75 PDFs, 233 MB.
+They stay on disk and you are still expected to open the cited one before
+describing a method — but a clone does not need them. The companion `.md`
+notes (`gram_newton_schulz_dao_2026.md`, `schulman_lora_without_regret_2025.md`,
+`hyperball_wen2025.md`, `su_spectral_norm_kexue_11736.md`) ARE tracked, so a
+citation that must survive a fresh clone goes in a note, not in a PDF path.
+Filenames follow `{short_name}_{arxiv_id}.pdf`, which
+`check_arxiv_pdf_name.sh` enforces.
+
+**Commit `paper/paper_plots.ipynb` only when a cell's SOURCE changes.** Its
+outputs are embedded base64 PNGs, so every re-render writes a fresh ~5.5 MB
+blob: 100 revisions cost 211 MB on disk, 36% of the repository, for figures
+that regenerate in 23 minutes. Re-run it freely; just leave the working-tree
+change uncommitted when you only re-rendered. Outputs are NOT stripped on
+commit -- they are how the figures get reviewed.
+
+Neither measure reclaims anything already in history; both stop the growth.
+
 ## PoLoRA public-release boundary
 
 `~/polora` is the public release tree, while this repository is private

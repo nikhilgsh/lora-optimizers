@@ -100,3 +100,7 @@ paper/manuscript/appendix_E_rewrites/figs/
 # disBatch smoke/bench output (575 MB and growing; regenerate by re-running
 # the bench, never a build input).
 scripts/results/
+
+# Reference PDFs are a local reading store, not a build input: 233 MB that a
+# clone does not need. The companion .md notes stay tracked.
+docs/papers/*.pdf
