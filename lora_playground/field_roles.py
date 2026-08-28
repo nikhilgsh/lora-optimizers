@@ -155,9 +155,12 @@ _EXTRA_ALGORITHM: frozenset[str] = frozenset({
 # what keeps a value with no derivable default out of series identity; the role
 # is what puts it in the display label.
 #   * retired curvature-whiten ablation flags: ``cw_picard_mode``,
-#     ``cw_no_rr_precond``, ``cw_eigh_seed``, ``freeze_factorwise_slots``
-#     (the last is why `labels._FEATURED_KNOBS` can spell ` frozen-slots` at
-#     all — nothing else in the codebase can see that flag).
+#     ``cw_no_rr_precond``, ``cw_eigh_seed``.
+#     ``freeze_factorwise_slots`` was here for the same reason until the
+#     optimizer side of the ablation was merged; it is now a real
+#     ``CurvatureWhitenLoRA`` constructor parameter and an ``OptimizerConfig``
+#     field, so ``_constructor_knobs`` classifies it and listing it here would
+#     hide a knob that now has a derivable default.
 #   * a side-branch Riemannian-Muon optimizer's own block (14 runs):
 #     ``nesterov``, ``wd``, ``adamw_betas``, ``adamw_eps``, ``adamw_params``,
 #     ``muon_params``, ``lora_precond``, ``lora_precond_eps``,
@@ -165,7 +168,6 @@ _EXTRA_ALGORITHM: frozenset[str] = frozenset({
 #     which sub-optimizer, which is part of the update, not a log detail.
 _RECORDED_ONLY_ALGORITHM: frozenset[str] = frozenset({
     "cw_picard_mode", "cw_no_rr_precond", "cw_eigh_seed",
-    "freeze_factorwise_slots",
     "nesterov", "wd", "adamw_betas", "adamw_eps", "adamw_params",
     "muon_params", "lora_precond", "lora_precond_eps",
     "lora_riemannian_adjust_lr", "lora_riemannian_muon",

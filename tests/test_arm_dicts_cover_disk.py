@@ -179,6 +179,9 @@ SWEPT_SEPARATELY = {
     "lora_init_b":      "zero vs symmetric, tied to the magnitude ablations",
     "msign":            "swept by MSIGN_ARMS",
     "precond":          "swept by PRECOND_ARMS",
+    "freeze_factorwise_slots":
+        "the frozen-slot ablation is its own arm (arms.NOPRODUCT_FROZEN); a "
+        "frozen run is a different experiment from the live one it forked",
 }
 
 

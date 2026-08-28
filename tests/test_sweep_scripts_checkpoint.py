@@ -49,8 +49,51 @@ REQUIRED = (
 )
 
 
+import re
+
+# A wrapper that only dispatches: it sets env vars and hands off to another
+# wrapper, which carries the canonical block. Following the handoff is what
+# keeps the contract honest without exempting the file.
+_EXEC_DELEGATE = re.compile(r"^\s*exec\s+scripts/sweep/(\S+\.sh)", re.M)
+
+
 def _sweep_scripts() -> list[Path]:
     return sorted(SWEEP_DIR.glob("*.sh"))
+
+
+def _resumable(path: Path, seen: frozenset[str] = frozenset()) -> list[str]:
+    """What ``path`` is missing for a wall-timeout to be resumable, if anything.
+
+    Three structures satisfy the contract, and requiring one spelling of it
+    rejected two of them:
+
+    - The canonical ``ckpt_args`` block, which is what almost every wrapper
+      uses.
+    - A DISPATCHER that sets env vars and ``exec``s another wrapper
+      (``sweep_precond_r256_postfix_state.sh`` -> ``sweep_protagonist_precond.sh``).
+      The checkpointing is wired one level down, so follow the handoff.
+    - A wrapper that resumes from a FORK rather than from its own checkpoint
+      dir (``sweep_factorwise_slot_freeze.sh``, whose whole purpose is to
+      continue from a checkpoint another run wrote). It still has to pass the
+      injected ``--checkpoint_dir "$CHECKPOINT_DIR"`` so a timeout has
+      somewhere to resume FROM, but ``--resume_from`` is necessarily its own
+      resolved fork path.
+    """
+    text = path.read_text()
+    if not [tok for tok in REQUIRED if tok not in text]:
+        return []
+    delegate = _EXEC_DELEGATE.search(text)
+    if delegate and delegate.group(1) not in seen:
+        target = SWEEP_DIR / delegate.group(1)
+        if target.is_file():
+            return _resumable(target, seen | {delegate.group(1)})
+        return [f'exec target {delegate.group(1)} does not exist']
+    missing = []
+    if '--checkpoint_dir "$CHECKPOINT_DIR"' not in text:
+        missing.append('--checkpoint_dir "$CHECKPOINT_DIR"')
+    if "--resume_from" not in text:
+        missing.append("--resume_from <the checkpoint to continue>")
+    return missing
 
 
 def test_every_sweep_script_wires_checkpointing() -> None:
@@ -59,8 +102,7 @@ def test_every_sweep_script_wires_checkpointing() -> None:
         pytest.skip("no sweep scripts under scripts/sweep/")
     offending = []
     for p in scripts:
-        text = p.read_text()
-        missing = [tok for tok in REQUIRED if tok not in text]
+        missing = _resumable(p)
         if missing:
             offending.append((p.name, missing))
     assert not offending, (

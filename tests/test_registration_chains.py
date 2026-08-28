@@ -68,20 +68,41 @@ def _all_family_members() -> frozenset:
     return frozenset(o for members in OPTIM_FAMILIES.values() for o in members)
 
 
+_FOREIGN_CMD = re.compile(r"\bpython[0-9.]*\s+(?:-\S+\s+)*(\S+\.py)\b")
+
+
 @lru_cache(maxsize=1)
 def _wrapper_lines() -> tuple[tuple[str, int, str], ...]:
-    """``(wrapper name, line number, line)`` for every non-comment line.
+    """``(wrapper name, line number, line)`` for every non-comment line that
+    belongs to the wrapper itself or to its ``train_lora.py`` invocation.
+
+    Lines inside a DIFFERENT program's argument list are dropped, because the
+    flags there are that program's, not train.py's.
+    `sweep_factorwise_slot_freeze.sh` shells out to
+    ``python lora_playground/submission.py resolve-factorwise-freeze-resume``
+    to resolve the checkpoint it forks from, and its ten flags
+    (``--base-checkpoint``, ``--destination-root``, ...) were all reported as
+    train.py flags train.py does not accept.
 
     Cached and materialized rather than a generator: two tests iterate it, and
     re-reading all ~120 scripts/sweep/*.sh costs ~135 ms per pass over files
     that are static for the duration of the run.
     """
-    return tuple(
-        (Path(path).name, i, line)
-        for path in WRAPPERS
-        for i, line in enumerate(Path(path).read_text().split("\n"), 1)
-        if not line.strip().startswith("#")
-    )
+    out = []
+    for path in WRAPPERS:
+        foreign = False
+        for i, line in enumerate(Path(path).read_text().split("\n"), 1):
+            stripped = line.strip()
+            match = _FOREIGN_CMD.search(line)
+            if match:
+                foreign = not match.group(1).endswith("train_lora.py")
+            if not stripped.startswith("#") and not foreign:
+                out.append((Path(path).name, i, line))
+            # A command's argument list ends with the first line that does not
+            # continue.
+            if foreign and not stripped.endswith("\\"):
+                foreign = False
+    return tuple(out)
 
 
 # ── the OPTIM_FAMILIES link, previously a warning only ──────────────────────

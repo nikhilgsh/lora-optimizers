@@ -27,7 +27,14 @@ def test_profile_harness_discovers_current_notebook_entrypoints():
     profiler = _load_profiler_module()
     expressions = profiler.discover_entrypoints(ROOT / "paper" / "paper_plots.ipynb")
 
-    assert len(expressions) == 28
+    # A FLOOR, not an equality. The exact count is a property of how many
+    # figures the notebook currently draws, and pinning it here meant every
+    # added figure failed a test about discovery rather than about the figure --
+    # it read 28 while the notebook drew 33. The count that must stay in step is
+    # the one in the checked baseline, which the test below compares and
+    # `profile_paper_plots.py --no-baseline` regenerates deliberately. This
+    # floor still catches discovery returning nothing or collapsing.
+    assert len(expressions) >= 28
     assert expressions[0].startswith("P.panel_n(0)")
     assert "P.precond_panel(256)" in expressions
     assert "P.beta2_panel(256)" in expressions

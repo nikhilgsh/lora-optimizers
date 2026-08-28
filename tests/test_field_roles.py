@@ -163,9 +163,18 @@ def test_recorded_only_algorithm_entries_are_not_constructor_knobs():
         f"parameters; drop them and let `_constructor_knobs` classify them")
     for name in fr._RECORDED_ONLY_ALGORITHM:
         assert fr.role_of(name) == fr.ALGORITHM
-    # The worked example: nothing else in the codebase can see this flag, which
-    # is why `labels._FEATURED_KNOBS` can only spell it via its role.
-    assert "freeze_factorwise_slots" in fr._RECORDED_ONLY_ALGORITHM
+    # `freeze_factorwise_slots` was the worked example here until the optimizer
+    # side of the ablation merged. It is now a real `CurvatureWhitenLoRA`
+    # constructor parameter, so the derived constructor walk classifies it --
+    # and it must still come out ALGORITHM, because that is what lets
+    # `labels._FEATURED_KNOBS` spell " frozen-slots".
+    assert "freeze_factorwise_slots" not in fr._RECORDED_ONLY_ALGORITHM
+    assert ctor_names.get("freeze_factorwise_slots")
+    assert fr.role_of("freeze_factorwise_slots") == fr.ALGORITHM
+    # The worked example is now a flag no registered constructor accepts, which
+    # is the only case the hand-listed set is for.
+    assert "cw_picard_mode" in fr._RECORDED_ONLY_ALGORITHM
+    assert not ctor_names.get("cw_picard_mode")
 
 
 def test_alias_ctor_spelling_inherits_its_config_fields_role():

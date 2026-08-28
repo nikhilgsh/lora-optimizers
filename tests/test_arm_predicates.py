@@ -271,3 +271,39 @@ def test_every_arm_in_a_dict_has_its_own_arm_label(name):
         f"other in _canonical_variant_key: "
         + "; ".join(f"{k!r} <- {sorted(set(v))}" for k, v in collisions.items())
     )
+
+
+def test_an_absent_field_matches_a_pin_on_its_default_and_nothing_else():
+    """A run that predates a flag ran with that flag's default behaviour.
+
+    When the optimizer side of the factorwise-slot freeze merged,
+    `freeze_factorwise_slots` became an `OptimizerConfig` field, so `arm()`
+    began pinning it to False on every curvature-whiten arm -- and the 315 of
+    355 `kl-diag-polar-lora` runs recorded before the flag existed stopped
+    matching, dropping `NOPRODUCT` from 56 runs to 10. Pinning a NON-default
+    value must still exclude them, which is the only thing keeping the frozen
+    and live arms apart.
+    """
+    from lora_playground.plotting.arms import (
+        NOPRODUCT, NOPRODUCT_FROZEN, field_matches, pred_matches,
+    )
+
+    assert field_matches({}, "freeze_factorwise_slots", False)
+    assert not field_matches({}, "freeze_factorwise_slots", True)
+    assert field_matches({"freeze_factorwise_slots": True},
+                         "freeze_factorwise_slots", True)
+    assert not field_matches({"freeze_factorwise_slots": True},
+                             "freeze_factorwise_slots", False)
+
+    # A callable pin is never satisfied by absence: it was written to inspect a
+    # recorded value, so applying it to a default it has never seen is a guess.
+    assert not field_matches({}, "freeze_factorwise_slots", lambda v: not v)
+
+    # A name that is not an OptimizerConfig field has no default to fall back
+    # on, so absence still excludes.
+    assert not field_matches({}, "not_a_config_field_at_all", False)
+
+    # End to end on the two arms the distinction exists for.
+    pre_flag = {"optimizer": "kl-diag-polar-lora", "precond": "factorwise"}
+    assert pred_matches({**NOPRODUCT, **pre_flag}, NOPRODUCT)
+    assert not pred_matches({**NOPRODUCT, **pre_flag}, NOPRODUCT_FROZEN)

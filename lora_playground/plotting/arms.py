@@ -149,8 +149,28 @@ def field_matches(cfg: dict, field: str, want) -> bool:
     can never disagree with the predicate it explains.
     """
     if field not in cfg:
-        return False
-    c = cfg[field]
+        # A run that predates a flag ran with that flag's default behaviour, so
+        # an absent field matches a pin ON THE DEFAULT and nothing else. Without
+        # this, merging the optimizer side of an ablation silently empties every
+        # arm: `freeze_factorwise_slots` became an `OptimizerConfig` field, so
+        # `arm()` pinned it to False on every curvature-whiten arm, and the 315
+        # of 355 `kl-diag-polar-lora` runs recorded before it existed stopped
+        # matching -- `NOPRODUCT` fell to 10 runs. A pin on a NON-default value
+        # (`NOPRODUCT_FROZEN`'s True) still excludes them, which is what keeps
+        # the frozen and live arms apart.
+        #
+        # A callable pin is never satisfied by absence: it was written to
+        # inspect a recorded value, and calling it on a default it has never
+        # seen is a guess. This is the `lambda v: not v` case that excluded 46
+        # runs before the live/frozen arms were separated by label instead.
+        if callable(want) or field not in (defaults := _config_defaults()):
+            return False
+        return _value_matches(defaults[field], want)
+    return _value_matches(cfg[field], want)
+
+
+def _value_matches(c, want) -> bool:
+    """Compare one recorded (or defaulted) value against one pin."""
     if callable(want):
         return bool(want(c))
     if isinstance(want, (list, set, tuple, frozenset)):
