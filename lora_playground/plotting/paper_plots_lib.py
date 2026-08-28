@@ -340,14 +340,6 @@ def _dataset_predicate(key):
     )
 
 
-def om(rank):
-    """common_where for Llama-3.2-1B / openmath at a rank -- the ablation cell."""
-    return dict(
-        model_name="meta-llama/Llama-3.2-1B",
-        lora_r=rank,
-        data_dir=_dataset_predicate("openmath"),
-    )
-
 
 def cell(model, data_key, rank):
     """common_where for one (model, corpus, rank) cell."""
