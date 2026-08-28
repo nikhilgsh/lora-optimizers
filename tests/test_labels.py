@@ -117,10 +117,14 @@ def test_paper_series_styles_are_stable_and_collision_free():
     product = r"Product: $C_B=B^\top P B,\ C_A=A Q A^\top$"
     identity = r"Identity: $C_B=C_A=I$"
     factorwise = r"Factorwise: $C_B=P_A,\ C_A=Q_B$"
+    factorwise_diag = (
+        r"Diagonal factorwise: $C_B=\operatorname{Diag}(P_A),\ "
+        r"C_A=\operatorname{Diag}(Q_B)$"
+    )
     sets = (
         ("AdamW", "PoLoRA", "iMuon", "Muon (naive)", "LoRA-RITE"),
-        ("AdamW", product, identity, factorwise),
-        (product, identity, factorwise),
+        ("AdamW", product, identity, factorwise, factorwise_diag),
+        (product, identity, factorwise, factorwise_diag),
     )
     observed = {}
     for tokens in sets:

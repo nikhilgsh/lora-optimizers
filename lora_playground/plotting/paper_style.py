@@ -32,6 +32,9 @@ PAPER_SERIES_STYLES = {
     r"Factorwise: $C_B=P_A,\ C_A=Q_B$": {
         "color": "#8E6BAE", "marker": "D",
     },
+    r"Diagonal factorwise: $C_B=\operatorname{Diag}(P_A),\ C_A=\operatorname{Diag}(Q_B)$": {
+        "color": "#56B4E9", "marker": "v",
+    },
 }
 
 _MARKERS = ("o", "s", "^", "D", "v", "P", "X", ">", "<", "h")
