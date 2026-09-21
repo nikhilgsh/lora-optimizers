@@ -134,7 +134,7 @@ mdframed={
   backgroundcolor={theoremblue},
   innerleftmargin=8pt,
   innerrightmargin=8pt,
-  innertopmargin=6pt,
+  innertopmargin=10pt,
   innerbottommargin=6pt}
 ]{shaded}
 
@@ -373,11 +373,11 @@ The steepest descent method
 \end{equation}
 is equivalent to
 \begin{equation}\label{eq:precond-muon-constraint}
-\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad \left\| \mat{P}^{1/2} \Delta\mat{W} \mat{Q}^{1/2} \right\|_2 \le \tau,
+\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad \sqrt{\mathrm{rank}(\mat{\Sigma})/\delta}\,\left\| \mat{P}^{1/2} \Delta\mat{W} \mat{Q}^{1/2} \right\|_2 \le \tau,
 \end{equation}
-up to a rescaling of $\tau$. To which a closed form is given by
+whose minimizers are the positive multiples of
 \begin{equation} \label{eq:polorafull-update}
- \Delta\mat{W} = -\tau\, \mat{P}^{-1/2} \msign(\mat{P}^{-1/2} \mat{G} \mat{Q}^{-1/2}) \mat{Q}^{-1/2}.
+ -\mat{P}^{-1/2} \msign(\mat{P}^{-1/2} \mat{G} \mat{Q}^{-1/2}) \mat{Q}^{-1/2}.
 \end{equation}
 \end{restatable}
 
@@ -385,7 +385,7 @@ up to a rescaling of $\tau$. To which a closed form is given by
 \rev{[TODO: $\mat{\Sigma}=\mat{I}$ recovers Muon.]}
 \begin{restatable}[Muon controls the per-sample loss]{corollary}{muonview}
   \label{lem:muon}
-  At $\mat{\Sigma}=\mat{I}$ the solution of~\eqref{eq:precond-muon-super} is the Muon update $\Delta\mat{W}=-\eta\,\msign(\mat{G})$ with $\eta=\tau$. Consequently a Muon step satisfies $|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$ with probability at least $1-\delta$.
+  At $\mat{\Sigma}=\mat{I}$ the minimizers of~\eqref{eq:precond-muon-super} are the positive multiples of $-\msign(\mat{G})$.
 \end{restatable}
 \end{revblock}
 
@@ -491,7 +491,7 @@ By definition of the spectral norm, and using the definitions in~\eqref{eq:ours-
 \qquad
 \norm{\mat{P}^{1/2}\Delta\mat{B} \mat{A} \mat{Q}^{1/2}}_2=\norm{\mat{P}^{1/2}\Delta\mat{B} \mat{C}_A^{1/2}}_2 .
 \end{equation}
-Since substituting~\eqref{eq:collapse-constraint} into~\eqref{eq:decoupled-direction-lmo} makes each factorwise LMO an instance of \Cref{lem:precond-muon} with $L=1$, the two minimizers are $\Delta\mat{A} = -\tau \mat{D}_A$ and $\Delta\mat{B} = -\tau \mat{D}_B$, where
+Since substituting~\eqref{eq:collapse-constraint} into~\eqref{eq:decoupled-direction-lmo} makes each factorwise LMO an instance of \Cref{lem:precond-muon}, the minimizers are the positive multiples of $-\mat{D}_A$ and $-\mat{D}_B$, where
 \begin{equation}
   \begin{aligned}
   \mat{D}_A &=
@@ -936,15 +936,8 @@ statement follows from Lemma C.2~\cite{parshakova2026muon}.
 Muon follows from \Cref{lem:precond-muon} by setting the metric to the identity.
 \muonview*
 \begin{proof}
-Apply \Cref{lem:precond-muon} with $\mat{P}=\mat{Q}=\mat{I}$. The constraint
-in~\eqref{eq:precond-muon-constraint} becomes $\norm{\Delta\mat{W}}_2\le\tau$
-and~\eqref{eq:polorafull-update} becomes $\Delta\mat{W}=-\tau\,\msign(\mat{G})$,
-which is the Muon update with $\eta=\tau$. For the second claim, at
-$\mat{\Sigma}=\mat{I}$ the membership test in~\eqref{eq:outgrad-precon} reads
-$\norm{\widetilde{\mat{G}}}_F^2\le d_{\mathrm{out}} d_{\mathrm{in}}/\delta$, which
-by \Cref{lem:expectation} and Markov's inequality holds for $\mat{G}(x)$ with
-probability at least $1-\delta$, so~\eqref{eq:outgrad1} gives
-$|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$ on that event.
+Apply \Cref{lem:precond-muon} with $\mat{P}=\mat{Q}=\mat{I}$, for which
+$\mat{P}^{-1/2}\msign(\mat{P}^{-1/2}\mat{G}\mat{Q}^{-1/2})\mat{Q}^{-1/2}=\msign(\mat{G})$.
 \end{proof}
 \end{revblock}
 
@@ -1006,7 +999,7 @@ Since $\mathcal{G}_\delta(\mat{Q}\otimes \mat{P})$ is centrally symmetric, the c
 \[
   \sqrt c\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2\le\tau,
 \]
-and rescaling $\tau$ gives~\eqref{eq:precond-muon-constraint}.
+which is~\eqref{eq:precond-muon-constraint}.
 
 It remains to solve the preconditioned spectral-norm LMO. Set
 \[
@@ -1015,17 +1008,18 @@ It remains to solve the preconditioned spectral-norm LMO. Set
   \widetilde{\mat{G}} := \mat{P}^{-1/2}\mat{G}\mat{Q}^{-1/2}.
 \]
 Then $\ip{\mat{G},\Delta\mat{W}}=\ip{\widetilde{\mat{G}},\Delta\widetilde{\mat{W}}}$ and the constraint is
-$\norm{\Delta\widetilde{\mat{W}}}_2\le\tau$. By \Cref{lem:muon-lmo}, a least Frobenius-norm solution is
+$\norm{\Delta\widetilde{\mat{W}}}_2\le\tau/\sqrt c$. By \Cref{lem:muon-lmo}, a least Frobenius-norm solution is
 \[
   \Delta\widetilde{\mat{W}}
   =
-  -\tau\,\msign(\widetilde{\mat{G}}).
+  -\frac{\tau}{\sqrt c}\,\msign(\widetilde{\mat{G}}),
 \]
+a positive multiple of $-\msign(\widetilde{\mat{G}})$.
 Undoing the change of variables gives
 \[
   \Delta\mat{W}
   =
-  -\tau\,
+  -\frac{\tau}{\sqrt c}\,
   \mat{P}^{-1/2}\msign(\mat{P}^{-1/2}\mat{G}\mat{Q}^{-1/2})\mat{Q}^{-1/2},
 \]
 which is~\eqref{eq:polorafull-update}.
