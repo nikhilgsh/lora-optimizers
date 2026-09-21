@@ -242,9 +242,7 @@ Our open-source implementation is available at:
 \end{quote}
 \fi
 
-The rest of the paper proceeds as follows. In \Cref{sec:muon} we
-first give a new interpretation of Muon as a descent method that controls the change in the per-sample loss.
-We then use this viewpoint to motivate a preconditioned Muon in \Cref{sec:preconditioned-muon}. In \Cref{sec:product-muon} we show how to make a Muon update product-aware for LoRA, resulting in Product Muon. 
+The rest of the paper proceeds as follows. \rev{In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss, and show that Muon is its isotropic special case.} In \Cref{sec:product-muon} we show how to make a Muon update product-aware for LoRA, resulting in Product Muon. 
 We finally arrive at \methodname{} by combining preconditioned Muon, product aware Muon and a magnitude balancing rule in~\Cref{sec:method}. This magnitude balancing is a separate rescaling that guarantees that each low rank factor has the same update magnitude in spectral norm, while also controlling the magnitude of the merged-weight updates. All proofs are in \Cref{app:proofs}.
 
 
@@ -258,12 +256,13 @@ Finally, in \Cref{sec:related} we place \methodname{} in the context of prior an
 
 
 
-\section{A new loss sensitivity \texorpdfstring{\rev{viewpoint}}{viewpoint} on Muon}\label{sec:muon}
-Our first step towards deriving  \methodname{} is to re-interpret Muon as a descent method that controls the change in the per-sample loss. 
-For this section we will temporarily ignore the product structure of LoRA~\eqref{eq:lora} and consider a single linear layer $\mat{W} \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with loss $\cL(\mat{W})$ and gradient $\mat{G} = \nabla_W \mathcal{L}(\mat{W})$.
+\section{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
+\begin{revblock}
+Every optimizer we compare against minimizes the same linearization $\ip{\mat{G},\Delta\mat{W}}$ of the loss and differs only in the set from which $\Delta\mat{W}$ is drawn. We fix that frame and ask which set is right for LoRA.
+\end{revblock}
+For this section we ignore the product structure of LoRA~\eqref{eq:lora} and consider a single linear layer $\mat{W} \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with loss $\cL(\mat{W})$ and gradient $\mat{G} = \nabla_W \mathcal{L}(\mat{W})$.
 
-
-Muon is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned} where in the LMO minimizes the local linearization of the loss subject to a ball constraint,
+Muon is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned}, which minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta\mat{W}}{\mathrm{minimize}} &
@@ -273,162 +272,116 @@ Muon is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,ca
   \norm{\Delta\mat{W}}_2
   \le \eta,
   \end{array}
-  \qquad \mbox{where }\qquad 
+  \qquad \mbox{where }\qquad
 \|\mat{W}\|_2 := \max_{\|x\|_2 =1} \|\mat{W} x \|_2.
   \label{eq:lmo}
 \end{equation}
-% where $\|\cdot\|_2$ is the spectral norm 
-% \[
-% \|\mat{W}\|_2 := \max_{\|x\|_2 =1} \|\mat{W} x \|_2.
-% \]
-Bounding the spectral norm is appealing because it controls the largest amount by which the update can change the layer's output over all unit-norm inputs~\cite{yang2023spectral}.
-A solution to~\eqref{eq:lmo} is given by 
+A solution to~\eqref{eq:lmo} is given by
 \[
     \Delta\mat{W} = -\eta \msign(\mat{G}),
 \]
 where $\msign(\mat{G})=\mat{U}\mat{V}^\top$ is the matrix sign~\cite{bernstein2025modular}
-and $\mat{G}=\mat{U}\mat{\Sigma} \mat{V}^\top$ is the reduced SVD (see~\Cref{lem:muon-lmo}). Though 
-in practice, Muon replaces the gradient with its momentum, an exponential
+and $\mat{G}=\mat{U}\mat{\Sigma} \mat{V}^\top$ is the reduced SVD (see~\Cref{lem:muon-lmo}). In
+practice, Muon replaces the gradient with its momentum, an exponential
 moving average (EMA) of past gradients, and uses a polynomial approximation
-to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}). 
+to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}).
 
-% Next we show how to adapt this LMO to be aware of the product structure in LoRA~\eqref{eq:lora}.
-
-
-\subsection{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
-
-Here we show a new viewpoint for Muon. To describe this viewpoint, we first introduce some notation.
-  Let $x\sim \cD$ be the distribution of inputs to the layer, thus for an input $x\in \R^{d_{\mathrm{in}}}$ the output is $\mat{W}x\in \R^{d_{\mathrm{out}}}$. The distribution $\cD$ is induced by the distribution of the data and by the parameters of the \chg{preceeding}{preceding} layers,  but we will omit this dependence for  simplicity.
-Let 
-$\cL(\mat{W}) =\EE{x\sim \cD}{ \ell(\mat{W}x)}$ be the loss, where $\ell(\mat{W}x)$ is the loss on a single input $x$. 
-% We denote the gradient of the loss with respect to $\mat{W}$ as $\mat{G} = \nabla \cL(\mat{W})$.
-
-
+Let $x\sim \cD$ be the distribution of inputs to the layer, so that for an input $x\in \R^{d_{\mathrm{in}}}$ the output is $\mat{W}x\in \R^{d_{\mathrm{out}}}$. The distribution $\cD$ is induced by the distribution of the data and by the parameters of the \chg{preceeding}{preceding} layers, but we omit this dependence for simplicity. Let
+$\cL(\mat{W}) =\EE{x\sim \cD}{ \ell(\mat{W}x)}$ be the loss, where $\ell(\mat{W}x)$ is the loss on a single input $x$.
 
 The justification for using the spectral norm in Muon is that it is conservative, since the constraint $\norm{\Delta\mat{W}}_2 \le \eta$ is equivalent to bounding the change in the layer's output,
 \[\norm{\Delta\mat{W} x}_2 \leq \eta \quad \text{for all } \norm{x}_2 \leq 1.\]
-However, this viewpoint is not entirely satisfying, since it does not directly relate to the loss function $\ell$ that we are trying to minimize.
-Here we instead motivate Muon through a \emph{loss} sensitivity bound. 
+However, this viewpoint is not entirely satisfying, since it does not directly relate to the loss function $\ell$ that we are trying to minimize. \rev{We therefore replace this trust region on the output by one on the loss.}
 
+\begin{cut}
 For this viewpoint we will suppose the gradient is $L>0$ bounded for every input:
-\begin{equation} \label{eq:Lipschitz}
-    \| \nabla_W \ell(\mat{W}x) \|_F \leq L, \quad \mbox{for every } x \in \support(\cD).
-\end{equation} 
+\[ \| \nabla_W \ell(\mat{W}x) \|_F \leq L, \quad \mbox{for every } x \in \support(\cD). \]
+\end{cut}
 For training to be stable, we need the changes in the loss to be stable, and not fluctuate too much. We can enforce this by using the following loss sensitivity constraint
 \begin{equation}\label{eq:loss-diff}
      |\ell((\mat{W} +\Delta\mat{W})x) - \ell (\mat{W}x)|\leq \tau, \qquad \mbox{for all } x \in \support(\cD).
-\end{equation} 
+\end{equation}
 Since the loss is nonlinear and nonconvex, for tractability we replace it with a local linearization,
-\[  
+\[
 \ell((\mat{W} +\Delta\mat{W})x) -\ell (\mat{W}x)  \approx \ip{\mat{G}(x), \Delta\mat{W}},
 \]
-where $\mat{G}(x) = \nabla_W \ell(\mat{W}x)$ is the per-input gradient. 
+where $\mat{G}(x) = \nabla_W \ell(\mat{W}x)$ is the per-input gradient.
 Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the spectral-norm constraint within~\eqref{eq:lmo} gives
 \begin{equation}
  \begin{array}{lll}
   \underset{\Delta\mat{W}}{\mathrm{minimize}} &
-  \ip{\mat{G}, \Delta\mat{W}}  \quad 
+  \ip{\mat{G}, \Delta\mat{W}}  \quad
   \mbox{subject to} &
-  \displaystyle  
+  \displaystyle
 |\ip{\mat{G}(x), \Delta\mat{W}}|
   \le \tau, \qquad x \in \support(\cD).
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$.
-So instead, we will enforce it indirectly, by defining an outer-gradient set $\mathcal{G}_L$ that contains all possible per-input gradients $\mat{G}(x)$ (and negative gradients $-\mat{G}(x)$), so that
+The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since \rev{backpropagation returns the batch gradient $\mat{G}$ and never the per-input gradients $\mat{G}(x)$}. So instead, we enforce it indirectly, by defining an outer-gradient set $\mathcal{G}$ that contains all possible per-input gradients $\mat{G}(x)$ (and negative gradients $-\mat{G}(x)$), so that
 \begin{equation} \label{eq:outgrad1}
     \max_{x \in \support(\cD)}  |\ip{\mat{G}(x), \Delta\mat{W}}|
-    \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}_L} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}}.
+    \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}}.
 \end{equation}
 Thus imposing that the right-hand side of \eqref{eq:outgrad1}
 is less than $\tau$ is a sufficient condition for the constraint in~\eqref{eq:sample-lmo} to hold.
-To build $\mathcal{G}_L$ we collect some  properties of the $\mat{G}(x)$ gradients in the following lemma.
-\begin{restatable}[Properties of gradients]{lemma}{gradprop} 
-  \label{lem:gradprop} Suppose the gradient is $L$ bounded according to~\eqref{eq:Lipschitz}. 
-    Let $g(x)=\vec(\mat{G}(x)) \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}}$ for $x \in \support(\cD)$.  The gradients satisfy the following properties:
-    \begin{enumerate}
-        \item {\bf Rank one:} $\mat{G}(x) = b(x) x^\top$  for some $x \in \R^{d_{\mathrm{in}}}$ and $b(x) \in \R^{d_{\mathrm{out}}}$
-        \item {\bf Bounded product:} $\| g(x)\|_2 = \|b(x)\|_2  \|x\|_2\leq L. $
-        \end{enumerate}
+
+\begin{revblock}
+Any set containing the per-input gradients makes~\eqref{eq:outgrad1} valid, but a loose one buys a needlessly small step, so we make $\mathcal{G}$ as tight as what we know about $\mat{G}(x)$. Its shape is fixed by the chain rule.
+\end{revblock}
+\begin{restatable}[Gradients are rank one]{lemma}{gradprop}
+  \label{lem:gradprop}
+    For every $x \in \support(\cD)$ the per-input gradient factors as
+    $\mat{G}(x) = b(x)\, x^\top$, where
+    $b(x) = \left.\tfrac{d}{dz}\ell(z)\right|_{z=\mat{W}x} \in \R^{d_{\mathrm{out}}}$
+    is the output-side gradient.
 \end{restatable}
-
-\noindent The above properties motivate the choice of the following outergradient set
-\begin{equation} 
-\label{eq:outgrad} 
-\mathcal{G}_L := \left \{ \widetilde{\mat{G}} = b x^\top ~\bigg |~  
-b\in\mathbb{R}^{d_{\mathrm{out}}},
-    \ x\in\mathbb{R}^{d_{\mathrm{in}}}, \
-\|b\|_2\|x\|_2 \leq L \right \}.
-\end{equation}
-Since $\mat{G}(x) \in \mathcal{G}_L$ by~\Cref{lem:gradprop}, we can use this $\mathcal{G}_L$ in our upper bound~\eqref{eq:outgrad1}.
-
-Next we show that Muon can be seen as \chg{a}{an} LMO method such as~\eqref{eq:sample-lmo}, but where gradients are taken from the outer-gradient set.
-  \begin{restatable}[Loss bounded View of Muon]{lemma}{muonview}  \label{lem:muon}
-The closed form to the steepest descent method
-\begin{equation}\label{eq:muon-alt}
-    \min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad
-|\langle \hat{\mat{G}},\Delta\mat{W} \rangle| \le \tau \qquad \text{for  every }\quad  \hat{\mat{G}} \in \mathcal{G}_L,
-\end{equation}
-is given by the Muon update
-\[ \Delta\mat{W} =  - \eta  \,\mat{U} \mat{V}^\top,\]
-where $\mat{U}  D \mat{V}^\top = \mat{G}$  is the reduced SVD and $ \eta:= \frac{\tau}{L} $ is the step size.
-\end{restatable}
-
-What this lemma tells us is that  the Muon update guarantees that the linearized sensitivity constraint remains bounded. \chg{Specfically}{Specifically}, if we use Muon with a learning rate $\eta$ and our gradients are $L$ bounded, then due to~\eqref{eq:outgrad1} we know that 
-\[ |\ip{\mat{G}(x), \Delta\mat{W}} | \leq \eta L, \quad \mbox{for every} \quad x \in \support(\cD). \]
-If either the step size $\eta$ or the Lipschitz constant is too big, then we have little control over the oscillations of the function. 
-% In particular if the step size is too big, then the local linearization of the loss becomes a poor proxy for the loss.
-% Finally, 
-Yet a further issue is that this view relies on the assumption that the gradient is $L$ bounded~\eqref{eq:Lipschitz}, but this does not always hold in practice or may be effectively infinite. In particular, even for simple linear regression problems these gradients can be unbounded. 
-
-\subsection{Preconditioned Muon}\label{sec:preconditioned-muon}
-
-Our derivation of Muon in~\Cref{lem:muon} relied on assuming the gradients are bounded in the standard Frobenius norm~\eqref{eq:Lipschitz}. Though this is a common assumption, it does not always hold, or it may give a loose bound. 
-Even for functions for which the gradients are not bounded in the standard Frobenius norm, they may be bounded in a \emph{local} metric such as
-\begin{equation} \label{eq:Lipschitz-local}
-    \| \mat{G}(x) \|_{\mat{\Sigma}} \leq L, \quad \mbox{for every } x \in \support(\cD),
-\end{equation}
-where $\mat{G}(x) = \nabla_W \ell(\mat{W}x)$ and
-\begin{align}
-    \| \mat{G}(x) \|_{\mat{\Sigma}}^2 
-    &:= \vec(\mat{G}(x))^\top \mat{\Sigma}^\dagger \vec(\mat{G}(x)),  \label{eq:leverage-score} \; \mbox{where} \;
-    \mat{\Sigma} \;:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top} \in \R^{nm \times nm}.
-\end{align} 
-
-The scalars $\| \mat{G}(x) \|_{\mat{\Sigma}}$ in~\eqref{eq:Lipschitz-local} are often referred to as leverage scores, which are well studied quantities for which  there are many known bounds from approximation theory and randomized linear algebra~\cite{CohenDavenportLeviatan2013,CohenMigliorati2017,RauhutWard2012}. We will refer 
-% to~\eqref{eq:Lipschitz-local} as the local gradient bound, since it depends on a local metric defined by $\mat{\Sigma},$ and 
-the scalars $\| \mat{G}(x) \|_{\mat{\Sigma}}$  as the gradient leverage scores.
 
 \begin{cut}
-The gradients leverage scores are bounded in many setting where the gradients are unbounded in the Frobenius norm. In~\Cref{asec:grad-leverage} we discuss several examples of this, including linear regression~\Cref{lem:leverage-bound-sphere} where gradient leverage scores are bounded and constant but the Frobenius norm of the gradients is unbounded. We also show that gradient leverage scores are bounded by a constant when the set of inputs are finite (regardless of $\mat{W}$) (\Cref{lem:finite-support}), and  in expectation for any distribution~(\Cref{lem:expectation}).
+\noindent The above properties motivate the choice of the following outergradient set
+\[ \mathcal{G}_L := \left \{ \widetilde{\mat{G}} = b x^\top ~\big|~ b\in\R^{d_{\mathrm{out}}},\ x\in\R^{d_{\mathrm{in}}},\ \|b\|_2\|x\|_2 \leq L \right \}. \]
+Next we show that Muon can be seen as an LMO method, but where gradients are taken from the outer-gradient set.
+\textbf{Lemma (Loss bounded View of Muon).} The closed form to the steepest descent method
+$\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}}$ subject to $|\ip{\hat{\mat{G}},\Delta\mat{W}}| \le \tau$ for every $\hat{\mat{G}} \in \mathcal{G}_L$
+is given by the Muon update $\Delta\mat{W} = -\eta\,\mat{U}\mat{V}^\top$, where $\eta:=\tau/L$.
+What this lemma tells us is that the Muon update guarantees that the linearized sensitivity constraint remains bounded. If either the step size $\eta$ or the Lipschitz constant is too big, then we have little control over the oscillations of the function. Yet a further issue is that this view relies on the assumption that the gradient is $L$ bounded, but this does not always hold in practice or may be effectively infinite. Our derivation of Muon relied on assuming the gradients are bounded in the standard Frobenius norm. Though this is a common assumption, it does not always hold, or it may give a loose bound.
 \end{cut}
-\rev{[The Markov-inequality argument replaces this paragraph.]}
-
-In conclusion, assuming locally bounded gradients~\eqref{eq:Lipschitz-local} can often be a more reasonable assumption than assuming globally bounded gradients~\eqref{eq:Lipschitz}. 
-Which in turn suggests we should use~\eqref{eq:Lipschitz-local} in place of~\eqref{eq:Lipschitz} to define an outer-gradient set given by 
-\begin{equation} 
-\label{eq:outgrad-precon} 
-\mathcal{G}_L(\mat{\Sigma}) := \left \{ \widetilde{\mat{G}} = b x^\top ~\bigg |~  
+\begin{revblock}
+Rank one fixes the \emph{shape} of $\mathcal{G}$; its \emph{size} still needs a scale. Bounding $\norm{\mat{G}(x)}_F$ by a constant is the obvious choice, but no such constant need exist, and when it does it is set by the single worst input, which leaves the constraint loose everywhere else. The scale we use instead is the one the gradients set themselves, their second moment
+\end{revblock}
+\begin{align}
+    \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top} \in \R^{d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}},
+    \qquad
+    \| \mat{G}(x) \|_{\mat{\Sigma}}^2
+    := \vec(\mat{G}(x))^\top \mat{\Sigma}^\dagger \vec(\mat{G}(x)),  \label{eq:leverage-score}
+\end{align}
+\begin{revblock}
+which is also the one quantity of this kind that an optimizer can accumulate online. We ask that the gradients be bounded in this metric,
+\end{revblock}
+\begin{equation} \label{eq:Lipschitz-local}
+    \| \mat{G}(x) \|_{\mat{\Sigma}}^2 \leq L, \quad \mbox{for every } x \in \support(\cD),
+\end{equation}
+\rev{[Markov-inequality argument goes here: $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma})$ exactly, so $L = \mathrm{rank}(\mat{\Sigma})/\delta$ holds off a set of probability $\delta$.]}
+which gives the outer-gradient set
+\begin{equation}
+\label{eq:outgrad-precon}
+\mathcal{G}_L(\mat{\Sigma}) := \left \{ \widetilde{\mat{G}} = b x^\top ~\bigg |~
 b\in\mathbb{R}^{d_{\mathrm{out}}},
     \ x\in\mathbb{R}^{d_{\mathrm{in}}}, \
 \ip{\mat{\Sigma}^\dagger \vec(\widetilde{\mat{G}}), \vec(\widetilde{\mat{G}})} \leq L \right \}.
 \end{equation}
-Though this is a mathematically sound approach, using $\mathcal{G}_L(\mat{\Sigma})$ within an LMO approach such as~\eqref{eq:muon-alt} leads to an impractical algorithm that relies on storing and computing inverse square roots of $\mat{\Sigma}$ which is a large $nm \times nm$ matrix. To arrive at a practical algorithm, \chg{will we}{we will} use a Kronecker approximation of $\mat{\Sigma}$.
-
-
+\rev{Since the LMO supplies only a direction and we set the magnitude separately in \Cref{sec:method}, the value of $L$, and hence of $\tau$, does not affect the resulting update.}
 
 \paragraph{Kronecker approximation.}
-Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
+Storing $\mat{\Sigma}$ is out of the question at $d_{\mathrm{out}} d_{\mathrm{in}}$ squared entries, let alone inverting it. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
 \begin{equation} \label{eq:pq-factor}
-     \mat{\Sigma}  \approx \mat{Q} \otimes \mat{P}.
+     \mat{\Sigma}  \approx \mat{Q} \otimes \mat{P},
 \end{equation}
-We treat the \emph{preconditioners} $\mat{P}$ and $\mat{Q}$ as given for now, deferring their update rule to \Cref{app:matnormal}.
+\rev{which keeps one scale per output coordinate and one per input coordinate, the two spaces the rank-one gradient of \Cref{lem:gradprop} already lives in.} We treat the \emph{preconditioners} $\mat{P}$ and $\mat{Q}$ as given for now, deferring their update rule to \Cref{app:matnormal}.
 
+Using the factorization $\mat{\Sigma}  \approx \mat{Q} \otimes \mat{P}$ above in the outergradient set~\eqref{eq:outgrad-precon} and using this outergradient set in~\eqref{eq:sample-lmo} gives a preconditioned version of Muon.
 
-Using the factorization $\mat{\Sigma}  \approx \mat{Q} \otimes \mat{P}$ above in the outergradient set~\eqref{eq:outgrad-precon}  and using this outergradient set in~\eqref{eq:sample-lmo} gives a preconditioned version of Muon.
-
-\begin{restatable}[Preconditioned Muon]{lemma}{precomuon} 
+\begin{restatable}[Preconditioned Muon]{lemma}{precomuon}
 \label{lem:precond-muon}
 The steepest descent method
 \begin{equation}\label{eq:precond-muon-super}
@@ -443,8 +396,15 @@ To which a closed form is given by
  \Delta\mat{W} = -\frac{\tau}{\sqrt L} \mat{P}^{-1/2} \msign(\mat{P}^{-1/2} \mat{G} \mat{Q}^{-1/2}) \mat{Q}^{-1/2}.
 \end{equation}
 \end{restatable}
-In the next two sections we will show how to adapt the Muon and preconditioned Muon ~\eqref{eq:polorafull-update} to be aware of the product structure in LoRA~\eqref{eq:lora}, which will yield \methodname{}.
 
+\begin{revblock}
+Muon is the isotropic case of this step. Taking $\mat{\Sigma}=\mat{I}$ makes~\eqref{eq:outgrad-precon} the rank-one Frobenius ball $\{bx^\top : \norm{b}_2\norm{x}_2\le\sqrt L\}$, and $\mat{P}=\mat{Q}=\mat{I}$ in~\eqref{eq:polorafull-update} returns $\Delta\mat{W}=-(\tau/\sqrt L)\,\msign(\mat{G})$.
+\begin{restatable}[Muon controls the per-sample loss]{corollary}{muonview}
+  \label{lem:muon}
+  At $\mat{\Sigma}=\mat{I}$ the solution of~\eqref{eq:precond-muon-super} is the Muon update $\Delta\mat{W}=-\eta\,\msign(\mat{G})$ with $\eta=\tau/\sqrt L$. Consequently a Muon step satisfies $|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$ for every $x\in\support(\cD)$ whenever $\norm{\mat{G}(x)}_F^2\le L$.
+\end{restatable}
+So Muon controls the per-sample loss under an isotropic gradient metric, and \methodname{} differs from it by measuring that metric instead of assuming it.
+\end{revblock}
 
 \section{Product Muon}\label{sec:product-muon}
 
@@ -905,7 +865,7 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 
 
 
-We first collect the gradient properties used to motivate the outergradient set~\eqref{eq:outgrad}.
+We first collect the gradient properties used to motivate the outergradient set~\eqref{eq:outgrad-precon}.
 \gradprop*
 \begin{proof}[Proof of \Cref{lem:gradprop}]
 The rank-one property is the chain rule: $\mat{W}$ encodes a linear layer
@@ -916,10 +876,6 @@ $x \mapsto \mat{W} x$, so
 =b(x)x^\top,
 \]
 where $b(x) = \left.\frac{d }{dz} \ell(z)  \right|_{z =\mat{W}x}$ is the output-side gradient.
-The bounded-product property then follows from~\eqref{eq:Lipschitz}, since
-\[
-\norm{g(x)}_2=\norm{\mat{G}(x)}_F=\norm{b(x)x^\top}_F=\norm{b(x)}_2\norm{x}_2\le L .
-\]
 \end{proof}
 
 We verify that the per-sample LMO~\eqref{eq:sample-lmo} is well-posed.
@@ -937,7 +893,7 @@ The feasible set is nonempty, closed, and convex, since it is an intersection of
 so the objective $\ip{\mat{G},\Delta\mat{W}}$ is bounded below by $-\tau$. Let $S$ be the span of $\{\mat{G}(x):x\in\support(\cD)\}$. The objective and constraints are unchanged by projecting $\Delta\mat{W}$ onto $S$, and the feasible set restricted to $S$ is compact. Therefore the minimum is attained. The minimizer need not be unique, since the objective is constant along $S^\perp$.
 \end{proof}
 
-Next we solve the spectral-norm LMO whose solution is the Muon update direction (\Cref{sec:muon}).
+Next we solve the spectral-norm LMO whose solution is the Muon update direction (\Cref{sec:sample-loss-lmo}).
 \begin{lemma}[Spectral norm LMO]\label{lem:muon-lmo}
 Let $\mat{G}\in\mathbb{R}^{m\times n}$ and $\eta>0$, and write
 $\norm{\mat{G}}_{\mathrm{nuc}}=\sum_i\sigma_i(\mat{G})$ for the nuclear norm, the sum of the
@@ -978,34 +934,20 @@ so it attains the lower bound and is therefore optimal. The minimum-norm
 statement follows from Lemma C.2~\cite{parshakova2026muon}.
 \end{proof}
 
-Next we give the proof for the alternative characterization of Muon.
-%%%%%%%%%%%%%%%%%%%%
+\begin{revblock}
+Muon follows from \Cref{lem:precond-muon} by setting the metric to the identity.
 \muonview*
-%%%%%%%%%%%%%%%%%%%%
 \begin{proof}
-  First note that given $\hat{\mat{G}} = b x^\top$ we have that
-  \[ |\ip{\hat{\mat{G}},\Delta\mat{W}}| \leq \tau \Leftrightarrow |b^\top \Delta\mat{W} x| \le \tau.\]
-Consequently
-  the constraints in~\eqref{eq:muon-alt} can be written as
-  \begin{equation} \label{eq:ernaoidnwlaiwnd}
-       \max_{x \in \R^{m}, b \in \R^n\;:\;   \|x\|_2\|b\|_2 \leq L}   |b^\top \Delta\mat{W} x| \le \tau. \end{equation}
-  The above is equal to the operator norm  $L\|\Delta\mat{W}\|_2$. Indeed, we have by  Cauchy-Schwarz and the definition of the operator norm that
-  \[ |b^\top \Delta\mat{W} x| \leq  \|b\|_2 \|\Delta\mat{W} x\|_2 \leq  \|b\|_2 \|\Delta\mat{W} \| \| x\|_2  = L \|\Delta\mat{W} \|. \]
-  Thus $L\|\Delta\mat{W}\|_2$ is an upper bound to~\eqref{eq:ernaoidnwlaiwnd}. Furthermore this upper bound is realized by simply choosing $x = \sqrt{L} u_1$ and $b = \sqrt{L} v_1,$ where $u_1$ and $v_1$ are the unit left and right singular vectors, respectively, associated to the largest singular value $d_1 = \|\Delta\mat{W}\|_2.$  Thus we have proven that~\eqref{eq:muon-alt} can be re-written as 
-  \begin{equation}\label{eq:muon-alt-}
-    \min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad
-L \|\Delta\mat{W}\|_2 \leq \tau,
-\end{equation}
-to which the solution is
-\begin{equation}
-  \Delta\mat{W} = - \frac{\tau}{L} \mat{U} \mat{V}^\top.
-\end{equation}
-
+Apply \Cref{lem:precond-muon} with $\mat{P}=\mat{Q}=\mat{I}$. The constraint
+in~\eqref{eq:precond-muon-constraint} becomes $\norm{\Delta\mat{W}}_2\le\tau/\sqrt L$
+and~\eqref{eq:polorafull-update} becomes $\Delta\mat{W}=-(\tau/\sqrt L)\msign(\mat{G})$,
+which is the Muon update with $\eta=\tau/\sqrt L$. For the second claim, at
+$\mat{\Sigma}=\mat{I}$ the membership test in~\eqref{eq:outgrad-precon} reads
+$\norm{\widetilde{\mat{G}}}_F^2\le L$, so $\norm{\mat{G}(x)}_F^2\le L$ places every
+per-input gradient in $\mathcal{G}_L(\mat{I})$ and~\eqref{eq:outgrad1} gives
+$|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$.
 \end{proof}
-
-
-
-
+\end{revblock}
 
 Using those properties, we evaluate the outergradient support function under a Kronecker-factored metric, turning the per-sample loss constraint (\Cref{sec:sample-loss-lmo}) into a preconditioned spectral norm.
 \begin{lemma}[Outergradient set under a Kronecker factorization]
