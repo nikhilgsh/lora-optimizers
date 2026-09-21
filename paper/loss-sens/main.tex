@@ -341,13 +341,12 @@ $\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}}$ subject to $|\ip{\hat{\mat{G}
 is given by the Muon update $\Delta\mat{W} = -\eta\,\mat{U}\mat{V}^\top$, where $\eta:=\tau/L$.
 What this lemma tells us is that the Muon update guarantees that the linearized sensitivity constraint remains bounded. If either the step size $\eta$ or the Lipschitz constant is too big, then we have little control over the oscillations of the function. Yet a further issue is that this view relies on the assumption that the gradient is $L$ bounded, but this does not always hold in practice or may be effectively infinite. Our derivation of Muon relied on assuming the gradients are bounded in the standard Frobenius norm. Though this is a common assumption, it does not always hold, or it may give a loose bound.
 \end{cut}
-Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second-moment of the gradients
+Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second-moment of the gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
 \begin{align}
     \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top},~
     \| \mat{M} \|_{\mat{\Sigma}}^2
     := \vec(\mat{M})^\top \mat{\Sigma}^\dagger \vec(\mat{M}),  \label{eq:leverage-score}
 \end{align}
-and $\|\cdot\|_{\mat{\Sigma}}$ the associated Mahalanobis norm on $\mat{M}\in\R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$,
 then $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma})$ and so by Markov's inequality, the set
 \begin{equation}
 \label{eq:outgrad-precon}
@@ -355,7 +354,7 @@ then $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma})$ and
 b\in\mathbb{R}^{d_{\mathrm{out}}},
     \ x\in\mathbb{R}^{d_{\mathrm{in}}},  \| \widetilde{\mat{G}} \|_{\mat{\Sigma}}^2 \leq \mathrm{rank}(\mat{\Sigma}) / \delta  \right \}.
 \end{equation}
-gives a valid outer-gradient set (\Cref{lem:expectation}). \rev{Since the LMO supplies only a direction and the magnitude is set separately in \Cref{sec:method}, neither $\delta$ nor $\tau$ affects the resulting update.}
+gives a valid outer-gradient set (\Cref{lem:expectation}).
 
 \paragraph{Kronecker approximation.}
 Storing $\mat{\Sigma}$ is out of the question at $d_{\mathrm{out}} d_{\mathrm{in}}$ squared entries, let alone inverting it. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
@@ -376,7 +375,7 @@ is equivalent to
 \begin{equation}\label{eq:precond-muon-constraint}
 \min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad \left\| \mat{P}^{1/2} \Delta\mat{W} \mat{Q}^{1/2} \right\|_2 \le \tau,
 \end{equation}
-after absorbing $\sqrt{\mathrm{rank}(\mat{\Sigma})/\delta}$ into $\tau$. To which a closed form is given by
+up to a rescaling of $\tau$. To which a closed form is given by
 \begin{equation} \label{eq:polorafull-update}
  \Delta\mat{W} = -\tau\, \mat{P}^{-1/2} \msign(\mat{P}^{-1/2} \mat{G} \mat{Q}^{-1/2}) \mat{Q}^{-1/2}.
 \end{equation}
@@ -1007,7 +1006,7 @@ Since $\mathcal{G}_\delta(\mat{Q}\otimes \mat{P})$ is centrally symmetric, the c
 \[
   \sqrt c\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2\le\tau,
 \]
-and absorbing $\sqrt c$ into $\tau$ gives~\eqref{eq:precond-muon-constraint}.
+and rescaling $\tau$ gives~\eqref{eq:precond-muon-constraint}.
 
 It remains to solve the preconditioned spectral-norm LMO. Set
 \[
