@@ -101,7 +101,6 @@
 \newcommand{\EE}[2]{\mathbb{E}_{#1}\left[#2\right] } 
 \DeclareMathOperator{\diag}{diag}
 \DeclareMathOperator{\Tr}{Tr}
-\DeclareMathOperator{\trace}{trace}
 \DeclareMathOperator{\EMA}{EMA}
 \DeclareMathOperator*{\argmin}{arg\,min}
 \DeclareMathOperator*{\argmax}{arg\,max}
@@ -371,7 +370,7 @@ The steepest descent method
 \begin{equation}\label{eq:precond-muon-super}
     \min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad |\ip{\hat{\mat{G}},\Delta\mat{W}}| \le \tau \qquad \text{for  every } \quad\hat{\mat{G}} \in \mathcal{G}_\delta(\mat{Q} \otimes \mat{P}),
 \end{equation}
-is equivalent, after rescaling $\tau$, to
+is equivalent (\Cref{lem:pseudogradient-spectral}), after rescaling $\tau$, to
 \begin{equation}\label{eq:precond-muon-constraint}
 \min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad \left\| \mat{P}^{1/2} \Delta\mat{W} \mat{Q}^{1/2} \right\|_2 \le \tau,
 \end{equation}
@@ -380,14 +379,11 @@ which has the closed-form solution
  \Delta\mat{W} = -\tau\, \mat{P}^{-1/2} \msign(\mat{P}^{-1/2} \mat{G} \mat{Q}^{-1/2}) \mat{Q}^{-1/2}.
 \end{equation}
 \end{restatable}
-
-\begin{revblock}
-\rev{[TODO: $\mat{\Sigma}=\mat{I}$ recovers Muon.]}
-\begin{restatable}[Muon controls the per-sample loss]{corollary}{muonview}
+\begin{corollary}[Isotropic case]
   \label{lem:muon}
-  At $\mat{\Sigma}=\mat{I}$ the solution of~\eqref{eq:precond-muon-super} is $\Delta\mat{W} = -\tau\,\msign(\mat{G})$.
-\end{restatable}
-\end{revblock}
+  If $\mat{\Sigma}\propto\mat{I}$ then the solution of~\eqref{eq:precond-muon-super} is $\Delta\mat{W} = -\tau\,\msign(\mat{G})$, which is the solution of the spectral LMO~\eqref{eq:lmo} with $\eta=\tau$.
+\end{corollary}
+\rev{Preconditioned Muon therefore spends the step budget across directions according to $\mat{\Sigma}$, where Muon spreads it uniformly.}
 
 \section{Product Muon}\label{sec:product-muon}
 
@@ -870,8 +866,8 @@ By definition of $\mat{\Sigma}$ and linearity of trace and expectation,
 \begin{align*}
  \EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} 
  &= \EE{x}{\vec(\mat{G}(x))^\top \mat{\Sigma}^\dagger \vec(\mat{G}(x))}  \\
- &= \EE{x}{\trace{\mat{\Sigma}^\dagger \vec(\mat{G}(x))\vec(\mat{G}(x))^\top}}  \\
- &= \trace{\mat{\Sigma}^\dagger \mat{\Sigma}} = \mathrm{rank}(\mat{\Sigma}),
+ &= \EE{x}{\Tr(\mat{\Sigma}^\dagger \vec(\mat{G}(x))\vec(\mat{G}(x))^\top)}  \\
+ &= \Tr(\mat{\Sigma}^\dagger \mat{\Sigma}) = \mathrm{rank}(\mat{\Sigma}),
  \end{align*}
 which is at most $d_{\mathrm{out}} d_{\mathrm{in}}$ since $\mat{\Sigma} \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}\times d_{\mathrm{out}} d_{\mathrm{in}}}$.
 \end{proof}
@@ -931,15 +927,6 @@ is feasible and satisfies
 so it attains the lower bound and is therefore optimal. The minimum-norm
 statement follows from Lemma C.2~\cite{parshakova2026muon}.
 \end{proof}
-
-\begin{revblock}
-Muon follows from \Cref{lem:precond-muon} by setting the metric to the identity.
-\muonview*
-\begin{proof}
-Apply \Cref{lem:precond-muon} with $\mat{P}=\mat{Q}=\mat{I}$, for which
-$\mat{P}^{-1/2}\msign(\mat{P}^{-1/2}\mat{G}\mat{Q}^{-1/2})\mat{Q}^{-1/2}=\msign(\mat{G})$.
-\end{proof}
-\end{revblock}
 
 Using those properties, we evaluate the outergradient support function under a Kronecker-factored metric, turning the per-sample loss constraint (\Cref{sec:sample-loss-lmo}) into a preconditioned spectral norm.
 \begin{lemma}[Outergradient set under a Kronecker factorization]
