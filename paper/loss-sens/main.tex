@@ -257,11 +257,9 @@ Finally, in \Cref{sec:related} we place \methodname{} in the context of prior an
 
 
 \section{Per-Sample Loss Control}\label{sec:sample-loss-lmo}
-\rev{[TODO: lead-in from \Cref{sec:intro} --- Muon wins in pretraining but not on LoRA; the constraint is the design choice.]}
-
 For this section we ignore the product structure of LoRA~\eqref{eq:lora} and consider a single linear layer $\mat{W} \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with loss $\cL(\mat{W})$ and gradient $\mat{G} = \nabla_W \mathcal{L}(\mat{W})$.
 
-Muon is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned}, which minimizes the local linearization of the loss subject to a ball constraint,
+As mentioned in \Cref{sec:intro}, Muon has found success in pretraining, but has not been as immediately fruitful in LoRA finetuning. The Muon update is based on a spectral LMO~\cite{bernstein2025modular,pmlr-v38-carlson15,carlson2015preconditioned}, which minimizes the local linearization of the loss subject to a ball constraint,
 \begin{equation}
  \begin{array}{ll}
   \underset{\Delta\mat{W}}{\mathrm{minimize}} &
@@ -317,15 +315,14 @@ Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the s
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. So instead, we enforce it indirectly, by defining an outer-gradient set $\mathcal{G}$ that contains all possible per-input gradients $\mat{G}(x)$ (and negative gradients $-\mat{G}(x)$), so that
+The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. Instead we enforce it with high probability, by defining a centrally symmetric outer-gradient set $\mathcal{G}$ that contains a random sample gradient $\mat{G}(x)$, so that
 \begin{equation} \label{eq:outgrad1}
-    \max_{x \in \support(\cD)}  |\ip{\mat{G}(x), \Delta\mat{W}}|
-    \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}}.
+   |\ip{\mat{G}(x), \Delta\mat{W}}|
+    \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}},
 \end{equation}
+with probability at least $1 - \delta$.
 Thus imposing that the right-hand side of \eqref{eq:outgrad1}
-is less than $\tau$ is a sufficient condition for the constraint in~\eqref{eq:sample-lmo} to hold.
-
-\rev{[TODO: a tighter $\mathcal{G}$ permits a larger step; the chain rule fixes its shape.]}
+is less than $\tau$ is a sufficient condition for the constraint in~\eqref{eq:sample-lmo} to hold for $x$ in a high-probability event. To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank-one.
 
 \begin{restatable}[Gradients are rank one]{lemma}{gradprop}
   \label{lem:gradprop}
@@ -344,27 +341,21 @@ $\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}}$ subject to $|\ip{\hat{\mat{G}
 is given by the Muon update $\Delta\mat{W} = -\eta\,\mat{U}\mat{V}^\top$, where $\eta:=\tau/L$.
 What this lemma tells us is that the Muon update guarantees that the linearized sensitivity constraint remains bounded. If either the step size $\eta$ or the Lipschitz constant is too big, then we have little control over the oscillations of the function. Yet a further issue is that this view relies on the assumption that the gradient is $L$ bounded, but this does not always hold in practice or may be effectively infinite. Our derivation of Muon relied on assuming the gradients are bounded in the standard Frobenius norm. Though this is a common assumption, it does not always hold, or it may give a loose bound.
 \end{cut}
-\rev{[TODO: rank one fixes the shape of $\mathcal{G}$; the scale comes from the gradients' own second moment. Why this rather than a Frobenius ball: sphere around an anisotropic cloud versus the matched ellipsoid. Both admit a high-probability radius, so the argument is tightness, not existence.]}
+Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second-moment of the gradients
 \begin{align}
-    \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top} \in \R^{d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}},
-    \qquad
+    \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top} \in \R^{d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}},~
     \| \mat{G}(x) \|_{\mat{\Sigma}}^2
     := \vec(\mat{G}(x))^\top \mat{\Sigma}^\dagger \vec(\mat{G}(x)),  \label{eq:leverage-score}
 \end{align}
-\rev{[TODO: $\mat{\Sigma}$ is estimable online. State the bound:]}
-\begin{equation} \label{eq:Lipschitz-local}
-    \| \mat{G}(x) \|_{\mat{\Sigma}}^2 \leq L, \quad \mbox{for every } x \in \support(\cD),
-\end{equation}
-\rev{[Markov-inequality argument goes here: $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma})$ exactly, so $L = \mathrm{rank}(\mat{\Sigma})/\delta$ holds off a set of probability $\delta$.]}
-which gives the outer-gradient set
+and $\|\cdot\|_{\mat{\Sigma}}$ the associated Mahalanobis norm,
+then $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma})$ and so by Markov's inequality, the set
 \begin{equation}
 \label{eq:outgrad-precon}
-\mathcal{G}_L(\mat{\Sigma}) := \left \{ \widetilde{\mat{G}} = b x^\top ~\bigg |~
+\mathcal{G}_\delta(\mat{\Sigma}) := \left \{ \widetilde{\mat{G}} = b x^\top ~\bigg |~
 b\in\mathbb{R}^{d_{\mathrm{out}}},
-    \ x\in\mathbb{R}^{d_{\mathrm{in}}}, \
-\ip{\mat{\Sigma}^\dagger \vec(\widetilde{\mat{G}}), \vec(\widetilde{\mat{G}})} \leq L \right \}.
+    \ x\in\mathbb{R}^{d_{\mathrm{in}}},  \| \widetilde{\mat{G}} \|_{\mat{\Sigma}}^2 \leq \mathrm{rank}(\mat{\Sigma}) / \delta  \right \}.
 \end{equation}
-\rev{Since the LMO supplies only a direction and we set the magnitude separately in \Cref{sec:method}, the value of $L$, and hence of $\tau$, does not affect the resulting update.}
+gives a valid outer-gradient set. \rev{Since the LMO supplies only a direction and we set the magnitude separately in \Cref{sec:method}, the value of $L$, and hence of $\tau$, does not affect the resulting update.}
 
 \paragraph{Kronecker approximation.}
 Storing $\mat{\Sigma}$ is out of the question at $d_{\mathrm{out}} d_{\mathrm{in}}$ squared entries, let alone inverting it. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
@@ -871,6 +862,21 @@ $x \mapsto \mat{W} x$, so
 where $b(x) = \left.\frac{d }{dz} \ell(z)  \right|_{z =\mat{W}x}$ is the output-side gradient.
 \end{proof}
 
+The Markov bound behind the outergradient set~\eqref{eq:outgrad-precon} rests on the following identity.
+\begin{lemma}[Holds in expectation]\label{lem:expectation}
+For any distribution $\cD$ we have that $\displaystyle \EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma}) \le d_{\mathrm{out}} d_{\mathrm{in}}.$
+\end{lemma}
+\begin{proof}
+By definition of $\mat{\Sigma}$ and linearity of trace and expectation,
+\begin{align*}
+ \EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} 
+ &= \EE{x}{\vec(\mat{G}(x))^\top \mat{\Sigma}^\dagger \vec(\mat{G}(x))}  \\
+ &= \EE{x}{\trace{\mat{\Sigma}^\dagger \vec(\mat{G}(x))\vec(\mat{G}(x))^\top}}  \\
+ &= \trace{\mat{\Sigma}^\dagger \mat{\Sigma}} = \mathrm{rank}(\mat{\Sigma}),
+ \end{align*}
+which is at most $d_{\mathrm{out}} d_{\mathrm{in}}$ since $\mat{\Sigma} \in \R^{d_{\mathrm{out}} d_{\mathrm{in}}\times d_{\mathrm{out}} d_{\mathrm{in}}}$.
+\end{proof}
+
 We verify that the per-sample LMO~\eqref{eq:sample-lmo} is well-posed.
 \begin{proposition}[Well-posedness of the per-sample LMO]
 \label{prop:wellposed}
@@ -1292,20 +1298,6 @@ together gives
 
 The preceding example is not specific to the squared loss: analogous bounds can be obtained for broad classes of polynomial and power losses, including one-sided power losses such as squared ReLU, by expressing the stochastic gradients as linear images of suitable polynomial (or homogeneous) feature maps. More generally, uniform control of such leverage scores is closely related to bounds on Christoffel functions and coherence parameters, which have been extensively studied for polynomial and other structured feature spaces; see, e.g.,~\cite{CohenMigliorati2017,RauhutWard2012,PauwelsBachVert2018}.
 
-Furthermore, the gradient leverage scores are alwaus bounded in expectation, as the following lemma shows.
-\begin{lemma}[Holds in expectation]\label{lem:expectation}
-For any distribution $\cD$ we have that $\displaystyle \EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma}) \le nm.$
-\end{lemma}
-\begin{proof}
-By definition of $\mat{\Sigma}$ and linearity of trace and expectation,
-\begin{align*}
- \EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} 
- &= \EE{x}{\vec(\mat{G}(x))^\top \mat{\Sigma}^\dagger \vec(\mat{G}(x))}  \\
- &= \EE{x}{\trace{\mat{\Sigma}^\dagger \vec(\mat{G}(x))\vec(\mat{G}(x))^\top}}  \\
- &= \trace{\mat{\Sigma}^\dagger \mat{\Sigma}} = \mathrm{rank}(\mat{\Sigma}),
- \end{align*}
-which is at most $nm$ since $\mat{\Sigma} \in \R^{nm\times nm}$.
-\end{proof}
 
 
 As a simple example, if the set of inputs are finite, then the gradients scores are also bounded
@@ -1313,7 +1305,7 @@ As a simple example, if the set of inputs are finite, then the gradients scores 
 Suppose $\support(\cD) = \{x_1,\dots,x_N\}$ is finite with $N$ elements, 
 thus 
 $$\mat{\Sigma} = \EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top} = \frac{1}{N}\sum_{i=1}^N \vec(\mat{G}_i)\vec(\mat{G}_i)^\top,$$
- where $\mat{G}_i := \mat{G}(x_i)$. It follows that~\eqref{eq:Lipschitz-local} holds with $L=N$.
+ where $\mat{G}_i := \mat{G}(x_i)$. It follows that the local gradient bound holds with $L=N$.
 \end{lemma}
 \begin{proof}
 Let $g_i = \vec(\mat{G}_i)$ and $\mat{M} := [g_1, \ldots, g_N],$ so $g_i = \mat{M} e_i.$ It follows that 
