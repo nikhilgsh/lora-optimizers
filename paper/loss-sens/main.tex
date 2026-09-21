@@ -315,12 +315,12 @@ Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the s
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. Instead we enforce it with high probability, by defining a centrally symmetric outer-gradient set $\mathcal{G}$ that contains a random sample gradient $\mat{G}(x)$, so that
+The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. Instead we enforce it with high probability, by defining an \emph{outer-gradient} set $\mathcal{G}_{\delta}$ so that
 \begin{equation} \label{eq:outgrad1}
    |\ip{\mat{G}(x), \Delta\mat{W}}|
-    \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}},
+    \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}_\delta} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}}, \qquad x \sim \mathcal{D}
 \end{equation}
-with probability at least $1 - \delta$.
+holds with probability at least $1 - \delta$.
 Thus imposing that the right-hand side of \eqref{eq:outgrad1}
 is less than $\tau$ is a sufficient condition for the constraint in~\eqref{eq:sample-lmo} to hold for $x$ in a high-probability event. To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank-one.
 
@@ -343,11 +343,11 @@ What this lemma tells us is that the Muon update guarantees that the linearized 
 \end{cut}
 Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second-moment of the gradients
 \begin{align}
-    \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top} \in \R^{d_{\mathrm{out}} d_{\mathrm{in}} \times d_{\mathrm{out}} d_{\mathrm{in}}},~
-    \| \mat{G}(x) \|_{\mat{\Sigma}}^2
-    := \vec(\mat{G}(x))^\top \mat{\Sigma}^\dagger \vec(\mat{G}(x)),  \label{eq:leverage-score}
+    \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top},~
+    \| \mat{M} \|_{\mat{\Sigma}}^2
+    := \vec(\mat{M})^\top \mat{\Sigma}^\dagger \vec(\mat{M}),  \label{eq:leverage-score}
 \end{align}
-and $\|\cdot\|_{\mat{\Sigma}}$ the associated Mahalanobis norm,
+and $\|\cdot\|_{\mat{\Sigma}}$ the associated Mahalanobis norm on $\mat{M}\in\R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$,
 then $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma})$ and so by Markov's inequality, the set
 \begin{equation}
 \label{eq:outgrad-precon}
@@ -355,7 +355,7 @@ then $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2} = \mathrm{rank}(\mat{\Sigma})$ and
 b\in\mathbb{R}^{d_{\mathrm{out}}},
     \ x\in\mathbb{R}^{d_{\mathrm{in}}},  \| \widetilde{\mat{G}} \|_{\mat{\Sigma}}^2 \leq \mathrm{rank}(\mat{\Sigma}) / \delta  \right \}.
 \end{equation}
-gives a valid outer-gradient set. \rev{Since the LMO supplies only a direction and we set the magnitude separately in \Cref{sec:method}, the value of $L$, and hence of $\tau$, does not affect the resulting update.}
+gives a valid outer-gradient set (\Cref{lem:expectation}). \rev{Since the LMO supplies only a direction and the magnitude is set separately in \Cref{sec:method}, neither $\delta$ nor $\tau$ affects the resulting update.}
 
 \paragraph{Kronecker approximation.}
 Storing $\mat{\Sigma}$ is out of the question at $d_{\mathrm{out}} d_{\mathrm{in}}$ squared entries, let alone inverting it. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
@@ -370,15 +370,15 @@ Using the factorization $\mat{\Sigma}  \approx \mat{Q} \otimes \mat{P}$ above in
 \label{lem:precond-muon}
 The steepest descent method
 \begin{equation}\label{eq:precond-muon-super}
-    \min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad |\ip{\hat{\mat{G}},\Delta\mat{W}}| \le \tau \qquad \text{for  every } \quad\hat{\mat{G}} \in \mathcal{G}_L(\mat{Q} \otimes \mat{P}),
+    \min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad |\ip{\hat{\mat{G}},\Delta\mat{W}}| \le \tau \qquad \text{for  every } \quad\hat{\mat{G}} \in \mathcal{G}_\delta(\mat{Q} \otimes \mat{P}),
 \end{equation}
 is equivalent to
 \begin{equation}\label{eq:precond-muon-constraint}
-\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad \left\| \mat{P}^{1/2} \Delta\mat{W} \mat{Q}^{1/2} \right\|_2 \le \frac{\tau}{\sqrt L}.
+\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}} \quad \mbox{subject to} \quad \left\| \mat{P}^{1/2} \Delta\mat{W} \mat{Q}^{1/2} \right\|_2 \le \tau,
 \end{equation}
-To which a closed form is given by
+after absorbing $\sqrt{\mathrm{rank}(\mat{\Sigma})/\delta}$ into $\tau$. To which a closed form is given by
 \begin{equation} \label{eq:polorafull-update}
- \Delta\mat{W} = -\frac{\tau}{\sqrt L} \mat{P}^{-1/2} \msign(\mat{P}^{-1/2} \mat{G} \mat{Q}^{-1/2}) \mat{Q}^{-1/2}.
+ \Delta\mat{W} = -\tau\, \mat{P}^{-1/2} \msign(\mat{P}^{-1/2} \mat{G} \mat{Q}^{-1/2}) \mat{Q}^{-1/2}.
 \end{equation}
 \end{restatable}
 
@@ -386,7 +386,7 @@ To which a closed form is given by
 \rev{[TODO: $\mat{\Sigma}=\mat{I}$ recovers Muon.]}
 \begin{restatable}[Muon controls the per-sample loss]{corollary}{muonview}
   \label{lem:muon}
-  At $\mat{\Sigma}=\mat{I}$ the solution of~\eqref{eq:precond-muon-super} is the Muon update $\Delta\mat{W}=-\eta\,\msign(\mat{G})$ with $\eta=\tau/\sqrt L$. Consequently a Muon step satisfies $|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$ for every $x\in\support(\cD)$ whenever $\norm{\mat{G}(x)}_F^2\le L$.
+  At $\mat{\Sigma}=\mat{I}$ the solution of~\eqref{eq:precond-muon-super} is the Muon update $\Delta\mat{W}=-\eta\,\msign(\mat{G})$ with $\eta=\tau$. Consequently a Muon step satisfies $|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$ with probability at least $1-\delta$.
 \end{restatable}
 \end{revblock}
 
@@ -938,13 +938,14 @@ Muon follows from \Cref{lem:precond-muon} by setting the metric to the identity.
 \muonview*
 \begin{proof}
 Apply \Cref{lem:precond-muon} with $\mat{P}=\mat{Q}=\mat{I}$. The constraint
-in~\eqref{eq:precond-muon-constraint} becomes $\norm{\Delta\mat{W}}_2\le\tau/\sqrt L$
-and~\eqref{eq:polorafull-update} becomes $\Delta\mat{W}=-(\tau/\sqrt L)\msign(\mat{G})$,
-which is the Muon update with $\eta=\tau/\sqrt L$. For the second claim, at
+in~\eqref{eq:precond-muon-constraint} becomes $\norm{\Delta\mat{W}}_2\le\tau$
+and~\eqref{eq:polorafull-update} becomes $\Delta\mat{W}=-\tau\,\msign(\mat{G})$,
+which is the Muon update with $\eta=\tau$. For the second claim, at
 $\mat{\Sigma}=\mat{I}$ the membership test in~\eqref{eq:outgrad-precon} reads
-$\norm{\widetilde{\mat{G}}}_F^2\le L$, so $\norm{\mat{G}(x)}_F^2\le L$ places every
-per-input gradient in $\mathcal{G}_L(\mat{I})$ and~\eqref{eq:outgrad1} gives
-$|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$.
+$\norm{\widetilde{\mat{G}}}_F^2\le d_{\mathrm{out}} d_{\mathrm{in}}/\delta$, which
+by \Cref{lem:expectation} and Markov's inequality holds for $\mat{G}(x)$ with
+probability at least $1-\delta$, so~\eqref{eq:outgrad1} gives
+$|\ip{\mat{G}(x),\Delta\mat{W}}|\le\tau$ on that event.
 \end{proof}
 \end{revblock}
 
@@ -956,12 +957,12 @@ $\mat{P}\in\R^{d_{\mathrm{out}}\times d_{\mathrm{out}}}$ and
 $\mat{Q}\in\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}$ be symmetric positive definite,
 and let $\mat{\Sigma}=\mat{Q}\otimes \mat{P}$. Define the Kronecker-metric outergradient set
 \[
-\mathcal{G}(\mat{\Sigma})=\bigl\{\, bx^\top ~\big|~ b\in\R^{d_{\mathrm{out}}},\ x\in\R^{d_{\mathrm{in}}},\ \ip{\mat{\Sigma}^\dagger\vec(bx^\top),\vec(bx^\top)}\leq L\,\bigr\}.
+\mathcal{G}(\mat{\Sigma})=\bigl\{\, bx^\top ~\big|~ b\in\R^{d_{\mathrm{out}}},\ x\in\R^{d_{\mathrm{in}}},\ \ip{\mat{\Sigma}^\dagger\vec(bx^\top),\vec(bx^\top)}\leq c\,\bigr\}.
 \]
 Then for every $\Delta\mat{W}\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
 \[
   \max_{\widetilde{\mat{G}} \in \mathcal{G}(\mat{\Sigma})} \ip{ \widetilde{\mat{G}} , \Delta\mat{W}}
-  =\sqrt{L}\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2 .
+  =\sqrt{c}\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2 .
 \]
 \end{lemma}
 
@@ -977,15 +978,15 @@ $\vec(bx^\top)=x\otimes b$, so
 =(x^\top \mat{Q}^{-1}x)(b^\top \mat{P}^{-1}b).
 \]
 Writing $b=\mat{P}^{1/2}u$ and $x=\mat{Q}^{1/2}v$, the constraint becomes
-$\norm{u}_2^2\norm{v}_2^2\leq L$ and the objective becomes
+$\norm{u}_2^2\norm{v}_2^2\leq c$ and the objective becomes
 \[
 \ip{bx^\top,\Delta\mat{W}}=b^\top\Delta\mat{W} x=u^\top \mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}v .
 \]
 Maximizing over the balls gives the spectral norm,
 \[
 \max_{\widetilde{\mat{G}}\in\mathcal{G}(\mat{\Sigma})}\ip{\widetilde{\mat{G}},\Delta\mat{W}}
-=\max_{\norm{u}_2\norm{v}_2\leq\sqrt{L}}u^\top \mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}v
-=\sqrt{L}\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2. \qedhere
+=\max_{\norm{u}_2\norm{v}_2\leq\sqrt{c}}u^\top \mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}v
+=\sqrt{c}\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2. \qedhere
 \]
 \end{proof}
 
@@ -996,17 +997,17 @@ We then solve that preconditioned spectral-norm LMO, which sets the \methodname{
 \precomuon*
 %%%%%%%%%%%%%%%%%%%
 \begin{proof}
-By \Cref{lem:pseudogradient-spectral}, the support function of $\mathcal{G}_L(\mat{Q}\otimes \mat{P})$ is
+Write $c=\mathrm{rank}(\mat{\Sigma})/\delta$ for the level of $\mathcal{G}_\delta(\mat{Q}\otimes \mat{P})$. By \Cref{lem:pseudogradient-spectral}, its support function is
 \[
-  \max_{\widehat{\mat{G}}\in\mathcal{G}_L(\mat{Q}\otimes \mat{P})}
+  \max_{\widehat{\mat{G}}\in\mathcal{G}_\delta(\mat{Q}\otimes \mat{P})}
   \ip{\widehat{\mat{G}},\Delta\mat{W}}
-  =\sqrt L\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2 .
+  =\sqrt c\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2 .
 \]
-Since $\mathcal{G}_L(\mat{Q}\otimes \mat{P})$ is centrally symmetric, the constraint in~\eqref{eq:precond-muon-super} is therefore equivalent to
+Since $\mathcal{G}_\delta(\mat{Q}\otimes \mat{P})$ is centrally symmetric, the constraint in~\eqref{eq:precond-muon-super} is therefore equivalent to
 \[
-  \sqrt L\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2\le\tau,
+  \sqrt c\,\norm{\mat{P}^{1/2}\Delta\mat{W} \mat{Q}^{1/2}}_2\le\tau,
 \]
-which gives~\eqref{eq:precond-muon-constraint}.
+and absorbing $\sqrt c$ into $\tau$ gives~\eqref{eq:precond-muon-constraint}.
 
 It remains to solve the preconditioned spectral-norm LMO. Set
 \[
@@ -1015,17 +1016,17 @@ It remains to solve the preconditioned spectral-norm LMO. Set
   \widetilde{\mat{G}} := \mat{P}^{-1/2}\mat{G}\mat{Q}^{-1/2}.
 \]
 Then $\ip{\mat{G},\Delta\mat{W}}=\ip{\widetilde{\mat{G}},\Delta\widetilde{\mat{W}}}$ and the constraint is
-$\norm{\Delta\widetilde{\mat{W}}}_2\le\tau/\sqrt L$. By \Cref{lem:muon-lmo}, a least Frobenius-norm solution is
+$\norm{\Delta\widetilde{\mat{W}}}_2\le\tau$. By \Cref{lem:muon-lmo}, a least Frobenius-norm solution is
 \[
   \Delta\widetilde{\mat{W}}
   =
-  -\frac{\tau}{\sqrt L}\msign(\widetilde{\mat{G}}).
+  -\tau\,\msign(\widetilde{\mat{G}}).
 \]
 Undoing the change of variables gives
 \[
   \Delta\mat{W}
   =
-  -\frac{\tau}{\sqrt L}
+  -\tau\,
   \mat{P}^{-1/2}\msign(\mat{P}^{-1/2}\mat{G}\mat{Q}^{-1/2})\mat{Q}^{-1/2},
 \]
 which is~\eqref{eq:polorafull-update}.
