@@ -45,7 +45,7 @@
 \ifrevisions
   \newcommand{\rev}[1]{\textcolor{revadd}{#1}}
   \newcommand{\del}[1]{\textcolor{revdel}{\sout{#1}}}
-  \newcommand{\chg}[2]{\del{#1}\,\rev{#2}}
+  \newcommand{\chg}[2]{\del{#1}\,#2}
   \newenvironment{cut}%
     {\par\color{revdel}\noindent\textbf{[marked for deletion]}\par}{\par}
   \newenvironment{revblock}{\par\color{revadd}}{\par}
@@ -241,7 +241,7 @@ Our open-source implementation is available at:
 \end{quote}
 \fi
 
-The rest of the paper proceeds as follows. \rev{In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss, and show that Muon is its isotropic special case.} In \Cref{sec:product-muon} we show how to make a Muon update product-aware for LoRA, resulting in Product Muon. 
+The rest of the paper proceeds as follows. In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss, and show that Muon is its isotropic special case. In \Cref{sec:product-muon} we show how to make a Muon update product-aware for LoRA, resulting in Product Muon. 
 We finally arrive at \methodname{} by combining preconditioned Muon, product aware Muon and a magnitude balancing rule in~\Cref{sec:method}. This magnitude balancing is a separate rescaling that guarantees that each low rank factor has the same update magnitude in spectral norm, while also controlling the magnitude of the merged-weight updates. All proofs are in \Cref{app:proofs}.
 
 
@@ -282,17 +282,13 @@ practice, Muon replaces the gradient with its momentum, an exponential
 moving average (EMA) of past gradients, and uses a polynomial approximation
 to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}).
 
-Let $x\sim \cD$ be the distribution of inputs to the layer, so that for an input $x\in \R^{d_{\mathrm{in}}}$ the output is $\mat{W}x\in \R^{d_{\mathrm{out}}}$. The distribution $\cD$ is induced by the distribution of the data and by the parameters of the \chg{preceeding}{preceding} layers, but we omit this dependence for simplicity. Let
+Let $x\sim \cD$ be the distribution of inputs to the layer, so that for an input $x\in \R^{d_{\mathrm{in}}}$ the output is $\mat{W}x\in \R^{d_{\mathrm{out}}}$. The distribution $\cD$ is induced by the distribution of the data and by the parameters of the preceding layers, but we omit this dependence for simplicity. Let
 $\cL(\mat{W}) =\EE{x\sim \cD}{ \ell(\mat{W}x)}$ be the loss, where $\ell(\mat{W}x)$ is the loss on a single input $x$.
 
 The justification for using the spectral norm in Muon is that it is conservative, since the constraint $\norm{\Delta\mat{W}}_2 \le \eta$ is equivalent to bounding the change in the layer's output,
 \[\norm{\Delta\mat{W} x}_2 \leq \eta \quad \text{for all } \norm{x}_2 \leq 1.\]
 However, this viewpoint is not entirely satisfying, since it does not directly relate to the loss function $\ell$ that we are trying to minimize.
 
-\begin{cut}
-For this viewpoint we will suppose the gradient is $L>0$ bounded for every input:
-\[ \| \nabla_W \ell(\mat{W}x) \|_F \leq L, \quad \mbox{for every } x \in \support(\cD). \]
-\end{cut}
 For training to be stable, we need the changes in the loss to be stable, and not fluctuate too much. We can enforce this by using the following loss sensitivity constraint
 \begin{equation}\label{eq:loss-diff}
      |\ell((\mat{W} +\Delta\mat{W})x) - \ell (\mat{W}x)|\leq \tau, \qquad \mbox{for all } x \in \support(\cD).
@@ -331,15 +327,6 @@ is less than $\tau$ is a sufficient condition for the constraint in~\eqref{eq:sa
     is the output-side gradient.
 \end{restatable}
 
-\begin{cut}
-\noindent The above properties motivate the choice of the following outergradient set
-\[ \mathcal{G}_L := \left \{ \widetilde{\mat{G}} = b x^\top ~\big|~ b\in\R^{d_{\mathrm{out}}},\ x\in\R^{d_{\mathrm{in}}},\ \|b\|_2\|x\|_2 \leq L \right \}. \]
-Next we show that Muon can be seen as an LMO method, but where gradients are taken from the outer-gradient set.
-\textbf{Lemma (Loss bounded View of Muon).} The closed form to the steepest descent method
-$\min_{\Delta\mat{W}} \ip{\mat{G}, \Delta\mat{W}}$ subject to $|\ip{\hat{\mat{G}},\Delta\mat{W}}| \le \tau$ for every $\hat{\mat{G}} \in \mathcal{G}_L$
-is given by the Muon update $\Delta\mat{W} = -\eta\,\mat{U}\mat{V}^\top$, where $\eta:=\tau/L$.
-What this lemma tells us is that the Muon update guarantees that the linearized sensitivity constraint remains bounded. If either the step size $\eta$ or the Lipschitz constant is too big, then we have little control over the oscillations of the function. Yet a further issue is that this view relies on the assumption that the gradient is $L$ bounded, but this does not always hold in practice or may be effectively infinite. Our derivation of Muon relied on assuming the gradients are bounded in the standard Frobenius norm. Though this is a common assumption, it does not always hold, or it may give a loose bound.
-\end{cut}
 Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second-moment of the gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
 \begin{align}
     \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top},~
@@ -383,7 +370,6 @@ which has the closed-form solution
   \label{lem:muon}
   If $\mat{\Sigma}\propto\mat{I}$ then the solution of~\eqref{eq:precond-muon-super} is $\Delta\mat{W} = -\tau\,\msign(\mat{G})$, which is the solution of the spectral LMO~\eqref{eq:lmo} with $\eta=\tau$.
 \end{corollary}
-\rev{Preconditioned Muon therefore spends the step budget across directions according to $\mat{\Sigma}$, where Muon spreads it uniformly.}
 
 \section{Product Muon}\label{sec:product-muon}
 
