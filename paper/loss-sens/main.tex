@@ -468,14 +468,14 @@ Subadditivity of the spectral norm splits the coupled constraint in~\eqref{eq:jo
 \underset{\Delta\mat{A}}{\mathrm{minimize}} &
 \ip{\mat{G}_A,\Delta\mat{A}} \\[2pt]
 \mbox{subject to} &
-\norm{\mat{P}^{1/2}\mat{B}\Delta\mat{A} \mat{Q}^{1/2}}_2 \le \tau ,
+\norm{\mat{P}^{1/2}\mat{B}\Delta\mat{A} \mat{Q}^{1/2}}_2 \le \frac{\tau}{2},
 \end{array}
 &
 \begin{array}{ll}
 \underset{\Delta\mat{B}}{\mathrm{minimize}} &
 \ip{\mat{G}_B,\Delta\mat{B}} \\[2pt]
 \mbox{subject to} &
-\norm{\mat{P}^{1/2}\Delta\mat{B} \mat{A} \mat{Q}^{1/2}}_2 \le \tau .
+\norm{\mat{P}^{1/2}\Delta\mat{B} \mat{A} \mat{Q}^{1/2}}_2 \le \frac{\tau}{2} .
 \end{array}
 \end{array}
 \label{eq:decoupled-direction-lmo}
@@ -493,7 +493,7 @@ By definition of the spectral norm, and using the definitions in~\eqref{eq:ours-
 \qquad
 \norm{\mat{P}^{1/2}\Delta\mat{B} \mat{A} \mat{Q}^{1/2}}_2=\norm{\mat{P}^{1/2}\Delta\mat{B} \mat{C}_A^{1/2}}_2 .
 \end{equation}
-Since substituting~\eqref{eq:collapse-constraint} into~\eqref{eq:decoupled-direction-lmo} makes each factorwise LMO an instance of \Cref{lem:precond-muon}, the two minimizers are $\Delta\mat{A} = -\tau \mat{D}_A$ and $\Delta\mat{B} = -\tau \mat{D}_B$, where
+Since substituting~\eqref{eq:collapse-constraint} into~\eqref{eq:decoupled-direction-lmo} makes each factorwise LMO an instance of \Cref{lem:precond-muon}, the two minimizers are $\Delta\mat{A} = -\frac{\tau}{2} \mat{D}_A$ and $\Delta\mat{B} = -\frac{\tau}{2} \mat{D}_B$, where
 \begin{equation}
   \begin{aligned}
   \mat{D}_A &=
