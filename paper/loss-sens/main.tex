@@ -310,13 +310,13 @@ Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the s
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. Instead we relax the constraint from holding for every $x \in \support(\cD)$ to holding with high probability under $\cD$, by defining an \emph{outer-gradient} set $\mathcal{G}_{\delta}$ such that
+The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. Instead we relax the constraint from holding for every $x \in \support(\cD)$ to holding with high probability, by defining an \emph{outer-gradient} set $\mathcal{G}_{\delta}$ such that
 \begin{equation} \label{eq:outgrad1}
    |\ip{\mat{G}(x), \Delta\mat{W}}|
     \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}_\delta} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}}, \qquad x \sim \mathcal{D}
 \end{equation}
 holds with probability at least $1 - \delta$. Imposing that the right-hand side of \eqref{eq:outgrad1}
-is less than $\tau$ is then a sufficient condition for the constraint in~\eqref{eq:sample-lmo} to hold for $x$ in a high-probability event. To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank-one.
+is less than $\tau$ is then a sufficient condition for the constraint in~\eqref{eq:sample-lmo}. To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank-one.
 
 \begin{restatable}[Gradients are rank one]{lemma}{gradprop}
   \label{lem:gradprop}
