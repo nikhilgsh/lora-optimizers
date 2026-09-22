@@ -310,14 +310,13 @@ Imposing the linearized per-sample bounds~\eqref{eq:loss-diff} in place of the s
   \end{array}
   \label{eq:sample-lmo}
 \end{equation}
-The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. Instead we enforce it with high probability, by defining an \emph{outer-gradient} set $\mathcal{G}_{\delta}$ so that
+The above LMO is well-posed (\Cref{prop:wellposed}), but it cannot be easily solved, since we lack access to the distribution on inputs $\cD$. Instead we relax the constraint from holding for every $x \in \support(\cD)$ to holding with high probability under $\cD$, by defining an \emph{outer-gradient} set $\mathcal{G}_{\delta}$ such that
 \begin{equation} \label{eq:outgrad1}
    |\ip{\mat{G}(x), \Delta\mat{W}}|
     \leq   \max_{\widetilde{\mat{G}} \in \mathcal{G}_\delta} \; \ip{\widetilde{\mat{G}}, \Delta\mat{W}}, \qquad x \sim \mathcal{D}
 \end{equation}
-holds with probability at least $1 - \delta$.
-Thus imposing that the right-hand side of \eqref{eq:outgrad1}
-is less than $\tau$ is a sufficient condition for the constraint in~\eqref{eq:sample-lmo} to hold for $x$ in a high-probability event. To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank-one.
+holds with probability at least $1 - \delta$. Imposing that the right-hand side of \eqref{eq:outgrad1}
+is less than $\tau$ is then a sufficient condition for the constraint in~\eqref{eq:sample-lmo} to hold for $x$ in a high-probability event. To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank-one.
 
 \begin{restatable}[Gradients are rank one]{lemma}{gradprop}
   \label{lem:gradprop}
@@ -371,6 +370,7 @@ which has the closed-form solution
   If $\mat{\Sigma}\propto\mat{I}$ then the solution of~\eqref{eq:precond-muon-super} is $\Delta\mat{W} = -\tau\,\msign(\mat{G})$, which is the solution of the spectral LMO~\eqref{eq:lmo} with $\eta=\tau$.
 \end{corollary}
 
+\iffalse
 \section{Product Muon}\label{sec:product-muon}
 
 We now return to the product structure of LoRA~\eqref{eq:lora}. First we adapt the Muon LMO~\eqref{eq:lmo} to be aware of the product structure, which yields Product Muon. 
@@ -421,15 +421,35 @@ By \Cref{lem:precond-muon} with $\mat{P}=\mat{B}^\top \mat{B}$, $\mat{Q}=\mat{I}
 \end{aligned}
 \end{equation}
 As in Muon, these factor updates are computed using momentum estimates of the gradients.
-\section{\texorpdfstring{\methodname{}}{PoLoRA}: Preconditioned Orthogonalized LoRA}
+\fi
 
+\section{\texorpdfstring{\methodname{}}{PoLoRA}: Preconditioned Orthogonalized LoRA}
 \label{sec:method}
+
+So far we have described an update for the weight matrix $\mat{W} \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$.
+We now adapt it to LoRA~\eqref{eq:lora}, deriving the \emph{direction} first and then setting the \emph{magnitude} of the factor updates.
+Throughout, we set $\alpha=r$~\cite{loralearnsless,raschka}, 
+so $\mat{W}=\mat{W}_0+\mat{B}\mat{A}$. Updating both factors gives
+\begin{equation}
+\Delta\mat{W} = (\mat{B} + \Delta\mat{B})(\mat{A} + \Delta\mat{A}) - \mat{B}\mat{A} 
+\approx \mat{B} \Delta\mat{A} + \Delta\mat{B} \mat{A}.
+\label{eq:DeltaW-lin}
+\end{equation}
+% Linear layer depends on this merged update, so we constrain its linearization. 
+The factor gradients are 
+\begin{equation}\label{e-grad-wrt-factors}
+    \mat{G}_A := \nabla_A \mathcal{L}(\mat{W}_0+\mat{B}\mat{A}) = \mat{B}^\top \mat{G},
+    \qquad
+    \mat{G}_B := \nabla_B \mathcal{L}(\mat{W}_0+\mat{B}\mat{A}) = \mat{G} \mat{A}^\top.
+\end{equation}
+therefore, the linearized loss change is $\ip{\mat{G}_A,\Delta\mat{A}}+\ip{\mat{G}_B,\Delta\mat{B}}$.
+
 
 Here we combine the ideas of preconditioning and product-awareness to derive \methodname{}. We first derive the update direction, and then set the magnitude of the factor updates separately.
 
 
 \paragraph{Direction.}
-So far we have described an update for the weight matrix $\mat{W} \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$. We now adapt it to LoRA~\eqref{eq:lora}, deriving the \emph{direction} first and then setting the \emph{magnitude} of the factor updates. Replacing $\Delta\mat{W}$ in \eqref{eq:precond-muon-constraint} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
+Substituting $\Delta\mat{W}$ in \eqref{eq:precond-muon-constraint} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
 \begin{equation}
     \begin{array}{ll}
     \underset{\Delta\mat{A},\Delta\mat{B}}{\mathrm{minimize}} &
@@ -440,7 +460,7 @@ So far we have described an update for the weight matrix $\mat{W} \in \R^{d_{\ma
     \end{array}
     \label{eq:joint-direction-lmo}
   \end{equation}
-Just as for Product Muon in~\Cref{sec:product-muon}, subadditivity of the spectral norm splits the coupled constraint in~\eqref{eq:joint-direction-lmo} into one bound per factor. With the factor gradients~\eqref{e-grad-wrt-factors}, the product LMO then decouples into two factorwise LMOs
+Subadditivity of the spectral norm splits the coupled constraint in~\eqref{eq:joint-direction-lmo} into one bound per factor. With the factor gradients~\eqref{e-grad-wrt-factors}, the product LMO then decouples into two factorwise LMOs
 \begin{equation}
 \setlength{\arraycolsep}{2pt}
 \begin{array}{@{}c@{\qquad}c@{}}
