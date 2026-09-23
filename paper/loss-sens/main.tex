@@ -217,7 +217,7 @@ to each layer, with $\alpha$ a scaling parameter and $r$ the rank. With only the
 
 The standard optimization recipe for LoRA applies Adam~\cite{adam} to the two factors $\mat{A}$ and $\mat{B}$, treating all the parameters as a single flat vector and ignoring any matrix structure. In language-model pretraining, matrix-aware optimizers such as Muon~\cite{muon}, Scion~\cite{pmlr-v267-pethick25a}, and Shampoo~\cite{shampoo} treat each weight as a matrix and outperform Adam~\cite{liu2025muon,shampoo,benchmark_practices,optimizer_benchmarking,qiu2026hyperparameter}. Muon in particular and variants such as NorMuon~\cite{Normuon} have set records for training small language models~\cite{nanogpt,nanochat} and have been adopted in recent large-scale training runs~\cite{Deepseekv4,GLM}.
 
-It is natural to ask whether similar gains can carry over to LoRA. We found, however, that applying Muon to each factor does not improve over Adam. Part of the problem is structural: the model sees the \emph{product} $\mat{B}\mat{A}$, while the optimizer acts on the \emph{factors} $\mat{A}$ and $\mat{B}$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} correct this with variants of a product-aware Muon step we refer to as \emph{Product Muon} \eqref{eq:product-muon-step}.
+It is natural to ask whether similar gains can carry over to LoRA. We found, however, that applying Muon to each factor does not improve over Adam. Part of the problem is structural: the model sees the \emph{product} $\mat{B}\mat{A}$, while the optimizer acts on the \emph{factors} $\mat{A}$ and $\mat{B}$ individually. Several concurrent works~\cite{imuon,loramuon,tilde_csd} correct this with variants of a product-aware Muon step we refer to as \emph{Product Muon} (\Cref{sec:method}).
 In our experiments, the official iMuon implementation~\cite{imuon}, one of these variants, is also unable to consistently improve over Adam (\Cref{fig:hero}).
 
 \begin{figure}[H]
@@ -241,7 +241,7 @@ Our open-source implementation is available at:
 \end{quote}
 \fi
 
-The rest of the paper proceeds as follows. In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss, and show that Muon is its isotropic special case. In \Cref{sec:product-muon} we show how to make a Muon update product-aware for LoRA, resulting in Product Muon. 
+The rest of the paper proceeds as follows. In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss, and show that Muon is its isotropic special case. 
 We finally arrive at \methodname{} by combining preconditioned Muon, product aware Muon and a magnitude balancing rule in~\Cref{sec:method}. This magnitude balancing is a separate rescaling that guarantees that each low rank factor has the same update magnitude in spectral norm, while also controlling the magnitude of the merged-weight updates. All proofs are in \Cref{app:proofs}.
 
 
@@ -330,13 +330,13 @@ requires access to all possible input gradients. Instead we relax the constraint
 % \end{equation}
 % holds with probability at least $1 - \delta$. 
 We impose $|\ip{\widetilde{\mat{G}},\Delta\mat{W}}|\le\tau$ for every $\widetilde{\mat{G}}\in\mathcal{G}_\delta$. 
-By~\eqref{eq:outgrad1}, this bounds the first-order loss change~\eqref{eq:sample-lmo} with probability at least 
+By~\eqref{eq:outgrad1}, this bounds the per-sample constraint in~\eqref{eq:sample-lmo} with probability at least 
 $1-\delta$.
 % Imposing that the right-hand side of \eqref{eq:outgrad1}
 % is less than $\tau$ is then a sufficient condition for the constraint in~\eqref{eq:sample-lmo}. 
 % To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank one.
 
-We now construct the outer-gradient set using the rank one structure and second moment of the sample gradients. 
+We now construct the outer-gradient set using the rank-one structure and second moment of the sample gradients. 
 The chain rule gives the first property.
 \begin{restatable}[Gradients are rank one]{lemma}{gradprop}
   \label{lem:gradprop}
@@ -346,7 +346,7 @@ The chain rule gives the first property.
     is the output-side gradient.
 \end{restatable}
 % Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second moment of the gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
-The rank one property restricts the structure of the gradients.
+The rank-one property restricts the structure of the gradients.
 To bound their size with high probability, we use their second
 moment $\mat{\Sigma}$ and its associated Mahalanobis norm $\|\cdot\|_{\mat{\Sigma}}$:
 \begin{align}
@@ -464,7 +464,7 @@ Define the $r\times r$ matrices
 \label{eq:ours-closure}
 \end{equation}
 % By definition of the spectral norm, and using the definitions in~\eqref{eq:ours-closure}, the left-hand sides of the two constraints in \eqref{eq:decoupled-direction-lmo} can be rewritten as
-Using Gram matrices, we rewrite the two constraint norms as
+Using the $r\times r$ matrices~\eqref{eq:ours-closure}, we rewrite the two constraint norms as
 \begin{equation} \label{eq:collapse-constraint}
 \norm{\mat{P}^{1/2}\mat{B}\Delta\mat{A} \mat{Q}^{1/2}}_2=\norm{\mat{C}_B^{1/2}\Delta\mat{A} \mat{Q}^{1/2}}_2,
 \qquad
@@ -489,7 +489,7 @@ By~\eqref{eq:collapse-constraint} and \Cref{lem:precond-muon},
 \end{equation} 
 
 Setting $\mat{P}=\mat{I}$ and $\mat{Q}=\mat{I}$ in~\eqref{eq:factor-directions}
-gives the \emph{Product Muon}~\eqref{eq:product-muon-step}, see \Cref{app:memoryless}.
+gives the \emph{Product Muon} step~\eqref{eq:product-muon-step}, see \Cref{app:memoryless}.
 
 
 \paragraph{Magnitude.}
@@ -519,7 +519,7 @@ ensures $\norm{\Delta\mat{W}}_2\leq \eta$. As a result, using the directions $\m
 
 
 % The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(\mat{A},\mat{B})\mapsto(c\mat{A},c^{-1}\mat{B})$, which changes $\norm{\mat{A}}_2$ and $\norm{\mat{B}}_2$ while preserving $\mat{B}\mat{A}$. Among such rescalings $\rho$ is largest when $\norm{\mat{A}}_2=\norm{\mat{B}}_2$, and in our runs we observe that $\norm{\mat{B}}_2/\norm{\mat{A}}_2$ settles near $1$ (\Cref{app:gauge}).
-The magnitude $\rho$ in \eqref{eq:ours-rho} depends on factor scaling:
+The update size $\rho$ in \eqref{eq:ours-rho} depends on factor scaling:
 among scalar rescalings that preserve the product, it is largest when
 the factors have equal spectral norms (\Cref{app:gauge}).
 
@@ -716,7 +716,7 @@ qiu2026hyperparameter, benchmark_practices}. Muon~\cite{muon} solves the spectra
 for a weight matrix, producing an update equal to the matrix sign of the momentum
 gradient~\cite{polarexpress} (\Cref{lem:muon-lmo}). Shampoo~\cite{shampoo},
 SOAP~\cite{soap}, and KL-Shampoo~\cite{klshampoo} estimate the gradient curvature as
-Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second moment estimate to
+Kronecker-factored second moments. Mousse~\cite{mousse} uses such a second-moment estimate to
 whiten the gradient before a matrix-sign step. \methodname{} likewise applies a matrix-sign step to a preconditioned gradient, with a norm derived from controlling the per-sample loss change across the batch (\Cref{sec:sample-loss-lmo}). We carry this update from the full weight matrix to the LoRA product and add magnitude control, which removes the need for learning-rate grafting~\cite{shi2023distributed, mousse}. We adapt the KL-Shampoo estimator to LoRA, fitting the preconditioners from the factor gradients rather than the weight gradient (\Cref{app:matnormal}).
 
 \paragraph{Product-invariant LoRA optimizers.}
@@ -818,7 +818,7 @@ $\varepsilon$             & $10^{-8}$ & ---   & ---    & $10^{-6}$ \\
 Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 \bottomrule
 \end{tabular}
-\caption{Baseline hyperparameters. $\beta_1$ is the momentum decay, $\beta_2$ the second moment decay, and $\varepsilon$ the numerical-stability constant.}
+\caption{Baseline hyperparameters. $\beta_1$ is the momentum decay, $\beta_2$ the second-moment decay, and $\varepsilon$ the numerical-stability constant.}
 \label{tab:optim-config}
 \end{table}
 
@@ -840,7 +840,7 @@ Newton--Schulz iterations & ---       & $8$   & $5$    & ---       \\
 We first collect the gradient properties used to motivate the outergradient set~\eqref{eq:outgrad-precon}.
 \gradprop*
 \begin{proof}[Proof of \Cref{lem:gradprop}]
-The rank one property is the chain rule: $\mat{W}$ encodes a linear layer
+The rank-one property is the chain rule: $\mat{W}$ encodes a linear layer
 $x \mapsto \mat{W} x$, so
 \[
 \nabla_W \ell(\mat{W}x) =  \left. \frac{d }{dz} \ell(z)
@@ -904,8 +904,8 @@ satisfies
     \geq
     -\eta\norm{\mat{G}}_{\mathrm{nuc}}.
 \]
-Let $\mat{G}=\mat{U}\mat{\Sigma} \mat{V}^\top$ be a reduced singular value decomposition, so
-$\mat{\Sigma}=\diag(\sigma_i(\mat{G}))$. The choice
+Let $\mat{G}=\mat{U}\mat{S} \mat{V}^\top$ be a reduced singular value decomposition, so
+$\mat{S}=\diag(\sigma_i(\mat{G}))$. The choice
 \[
     \mat{X}=-\eta \mat{U}\mat{V}^\top=-\eta\msign(\mat{G})
 \]
@@ -913,7 +913,7 @@ is feasible and satisfies
 \[
     \ip{\mat{G},\mat{X}}
     =
-    -\eta\Tr(\mat{\Sigma})
+    -\eta\Tr(\mat{S})
     =
     -\eta\norm{\mat{G}}_{\mathrm{nuc}},
 \]
@@ -1320,7 +1320,7 @@ By \Cref{lem:precond-muon}, a solution to this LMO is
 \end{aligned}
 \label{eq:product-muon-step}
 \end{equation}
-We will use the fact that for any matrix $\mat{M}$ with full column rank and reduced SVD $\mat{M}=\mat{U}\mat{\Sigma} \mat{V}^\top$,
+We will use the fact that for any matrix $\mat{M}$ with full column rank and reduced SVD $\mat{M}=\mat{U}\mat{S} \mat{V}^\top$,
 the matrix sign equals
 \begin{equation}
   \mat{M}(\mat{M}^\top \mat{M})^{-1/2}=
@@ -1340,7 +1340,7 @@ With no accumulation, by \eqref{eq:polar-id} the middle factor is the matrix sig
   \Delta\mat{B}=-\eta \msign(\widehat{\mat{G}}_B) \mat{S}_A^{-1/2}
   =-\eta \msign \big(\mat{G}_B \mat{S}_A^{-1/2}\big) \mat{S}_A^{-1/2},
 \end{equation*}
-which is the $\mat{B}$-update solving the Product Muon LMO~\eqref{eq:product-muon-step} with budget $\tau=\eta$. Analogous arguments hold for the $\mat{A}$-update.
+which is the $\mat{B}$-update solving the Product Muon LMO~\eqref{eq:decoupled-lora-lmo} with budget $\tau=\eta$. Analogous arguments hold for the $\mat{A}$-update.
 
 
 \paragraph{iMuon, momentum-free.}
@@ -1403,7 +1403,7 @@ gradients~\eqref{e-grad-wrt-factors}.
 \[
   \EMA^{\beta}_{s\le t}[x_s]:=(1-\beta)\sum_{s\le t}\beta^{t-s} x_s,
 \]
-with decay factor $\beta$. Just as we replace the factor gradients $\mat{G}_A$ and $\mat{G}_B$ in the objective of \Cref{sec:sample-loss-lmo} with averaged versions $\widehat{\mat{M}}_A$ and $\widehat{\mat{M}}_B$ (line~\ref{ln:mom} of \Cref{alg:ours}), we replace the sample-gradient second moment matrix $\mat{\Sigma}$ (\Cref{lem:gradprop}) with the EMA of the outer products of the vectorized batch gradients,
+with decay factor $\beta$. Just as we replace the factor gradients $\mat{G}_A$ and $\mat{G}_B$ in the objective of \Cref{sec:sample-loss-lmo} with averaged versions $\widehat{\mat{M}}_A$ and $\widehat{\mat{M}}_B$ (line~\ref{ln:mom} of \Cref{alg:ours}), we replace the sample-gradient second-moment matrix $\mat{\Sigma}$ (\Cref{lem:gradprop}) with the EMA of the outer products of the vectorized batch gradients,
 \[
   \overline{\mat{\Sigma}}_t:=\EMA^{\beta_2}_{s\le t}[\vec(\mat{G}_s) \vec(\mat{G}_s)^\top],
 \]
@@ -1807,7 +1807,7 @@ the wall-clock time.
 
 \section{Factor Self-Balancing}
 \label{app:gauge}
-The update size $\rho=\eta/(\norm{\mat{A}}_2+\norm{\mat{B}}_2)$~\eqref{eq:ours-rho} depends on the factorization of the merged product $\mat{B}\mat{A}$. A rescaling $(\mat{A},\mat{B})\mapsto(cA,c^{-1}\mat{B})$ with $c>0$ preserves $\mat{B}\mat{A}$, and hence the layer's output, while changing the denominator to
+The update size $\rho=\eta/(\norm{\mat{A}}_2+\norm{\mat{B}}_2)$~\eqref{eq:ours-rho} depends on the factorization of the merged product $\mat{B}\mat{A}$. A rescaling $(\mat{A},\mat{B})\mapsto(c\mat{A},c^{-1}\mat{B})$ with $c>0$ preserves $\mat{B}\mat{A}$, and hence the layer's output, while changing the denominator to
 \[
 c\norm{\mat{A}}_2+c^{-1}\norm{\mat{B}}_2 \;\ge\; 2\sqrt{\norm{\mat{A}}_2\norm{\mat{B}}_2}.
 \]
