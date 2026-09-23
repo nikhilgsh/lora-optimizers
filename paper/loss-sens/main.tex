@@ -518,9 +518,7 @@ ensures $\norm{\Delta\mat{W}}_2\leq \eta$. As a result, using the directions $\m
 
 
 % The update size $\rho$ in \eqref{eq:ours-rho} is not invariant to the rescaling $(\mat{A},\mat{B})\mapsto(c\mat{A},c^{-1}\mat{B})$, which changes $\norm{\mat{A}}_2$ and $\norm{\mat{B}}_2$ while preserving $\mat{B}\mat{A}$. Among such rescalings $\rho$ is largest when $\norm{\mat{A}}_2=\norm{\mat{B}}_2$, and in our runs we observe that $\norm{\mat{B}}_2/\norm{\mat{A}}_2$ settles near $1$ (\Cref{app:gauge}).
-The update size $\rho$ in \eqref{eq:ours-rho} depends on factor scaling:
-among scalar rescalings that preserve the product, it is largest when
-the factors have equal spectral norms (\Cref{app:gauge}).
+Among rescalings $(\mat{A},\mat{B})\mapsto(c\mat{A},c^{-1}\mat{B})$, which preserve $\mat{B}\mat{A}$, the update size $\rho$ in \eqref{eq:ours-rho} is largest when $\norm{\mat{A}}_2=\norm{\mat{B}}_2$, and in our runs $\norm{\mat{B}}_2/\norm{\mat{A}}_2$ settles near $1$ (\Cref{app:gauge}).
 
 \paragraph{Optimizer step.}
 \methodname{}, summarized in \Cref{alg:ours}, makes the update~\eqref{eq:polora-update} practical with the following ingredients:
