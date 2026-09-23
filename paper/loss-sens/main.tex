@@ -339,7 +339,7 @@ To guide our design of the outergradient set, we first observe that per-sample g
     $b(x) = \left.\tfrac{d}{dz}\ell(z)\right|_{z=\mat{W}x} \in \R^{d_{\mathrm{out}}}$
     is the output-side gradient.
 \end{restatable}
-Secondly, we note that when measured in an appropriate norm, the size of sample gradients is bounded with high probability. Define $\mat{\Sigma}$ to be the second moment of the gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
+Secondly, we note that when measured in an appropriate norm, the size of per-sample gradients is bounded with high probability. Define $\mat{\Sigma}$ to be the second moment of the per-sample gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
 % To bound the size of $\mat{G}(x)$ with high probability, we use the second
 % moment $\mat{\Sigma}$ and its associated Mahalanobis norm $\|\cdot\|_{\mat{\Sigma}}$:
 \begin{align}
