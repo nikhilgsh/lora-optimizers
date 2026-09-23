@@ -242,7 +242,7 @@ Our open-source implementation is available at:
 \fi
 
 The rest of the paper proceeds as follows. In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss, and show that Muon is its isotropic special case. 
-We finally arrive at \methodname{} by combining preconditioned Muon, product aware Muon and a magnitude balancing rule in~\Cref{sec:method}. This magnitude balancing is a separate rescaling that guarantees that each low rank factor has the same update magnitude in spectral norm, while also controlling the magnitude of the merged-weight updates. All proofs are in \Cref{app:proofs}.
+We finally arrive at \methodname{} by combining preconditioned Muon, product-aware Muon and a magnitude balancing rule in~\Cref{sec:method}. This magnitude balancing is a separate rescaling that guarantees that each low-rank factor has the same update magnitude in spectral norm, while also controlling the magnitude of the merged-weight updates. All proofs are in \Cref{app:proofs}.
 
 
 In \Cref{sec:exp} we evaluate \methodname{}, comparing it in terms of step and wall-clock speedups over Adam and other baselines.
@@ -320,7 +320,7 @@ Replacing the spectral constraint in~\eqref{eq:lmo} with the linearized loss bou
   \label{eq:sample-lmo}
 \end{equation}
 This LMO is well-posed (\Cref{prop:wellposed}), but enforcing its constraints 
-requires access to all possible input gradients. Instead we relax the constraint from holding for every $x \in \support(\cD)$ to holding with high probability, by defining an \emph{outer-gradient} set $\mathcal{G}_{\delta}$ such that
+requires access to all possible input gradients. Instead we relax the constraint from holding for every $x \in \support(\cD)$ to holding with high probability, by defining an \emph{outergradient} set $\mathcal{G}_{\delta}$ such that
 \begin{equation} \label{eq:outgrad1}
    \Pr_{x\sim\cD}\!\left(\mat{G}(x)\in\mathcal{G}_\delta\right)\ge 1-\delta.
 \end{equation}
@@ -334,9 +334,9 @@ By~\eqref{eq:outgrad1}, this bounds the per-sample constraint in~\eqref{eq:sampl
 $1-\delta$.
 % Imposing that the right-hand side of \eqref{eq:outgrad1}
 % is less than $\tau$ is then a sufficient condition for the constraint in~\eqref{eq:sample-lmo}. 
-% To guide our design of the outer-gradient set, we first make the structural observation that sample-wise gradients of linear layers are rank one.
+% To guide our design of the outergradient set, we first make the structural observation that sample-wise gradients of linear layers are rank one.
 
-We now construct the outer-gradient set using the rank-one structure and second moment of the sample gradients. 
+We now construct the outergradient set using the rank-one structure and second moment of the sample gradients. 
 The chain rule gives the first property.
 \begin{restatable}[Gradients are rank one]{lemma}{gradprop}
   \label{lem:gradprop}
