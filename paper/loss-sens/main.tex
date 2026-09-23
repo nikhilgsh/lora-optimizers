@@ -241,8 +241,7 @@ Our open-source implementation is available at:
 \end{quote}
 \fi
 
-The rest of the paper proceeds as follows. In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss, and show that Muon is its isotropic special case. 
-We finally arrive at \methodname{} by combining preconditioned Muon, product-aware Muon and a magnitude balancing rule in~\Cref{sec:method}. This magnitude balancing is a separate rescaling that guarantees that each low-rank factor has the same update magnitude in spectral norm, while also controlling the magnitude of the merged-weight updates. All proofs are in \Cref{app:proofs}.
+The rest of the paper proceeds as follows. In \Cref{sec:sample-loss-lmo} we derive a steepest descent step whose constraint controls the change in the per-sample loss. Approximating the gradient second moment by a Kronecker product gives a preconditioned Muon step, which recovers Muon in the isotropic case. In \Cref{sec:method} we make this step product-aware for LoRA. Product Muon is equivalent to this product-aware step with the preconditioners set to the identity. We then set both factor updates to have the same spectral norm so that the spectral norm of the merged update is bounded. All proofs are in \Cref{app:proofs}.
 
 
 In \Cref{sec:exp} we evaluate \methodname{}, comparing it in terms of step and wall-clock speedups over Adam and other baselines.
