@@ -44,7 +44,9 @@ build_or_die() {
     timeout 600 latexmk -pdf -interaction=nonstopmode main.tex </dev/null >"$log" 2>&1 ) || true
   local errs undef
   errs=$(grep -c '^!' "$log" || true)
-  undef=$(grep -ci 'undefined' "$PREFIX/main.log" 2>/dev/null || echo 0)
+  # grep -c prints 0 AND exits 1 on no match, so `|| echo 0` would yield "0\n0".
+  undef=$(grep -ci 'undefined' "$PREFIX/main.log" 2>/dev/null || true)
+  undef=${undef:-0}
   if [ "$errs" -ne 0 ]; then
     echo "refusing to push: $errs LaTeX error(s)."; grep -m5 '^!' "$log"; exit 1
   fi
