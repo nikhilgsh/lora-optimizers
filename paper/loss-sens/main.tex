@@ -491,7 +491,7 @@ gives the \emph{Product Muon} step~\eqref{eq:product-muon-step}, which we discus
 
 
 \paragraph{Magnitude.}
-Having derived the direction, we now set the magnitude directly rather than through the budget $\tau$, controlling the size of the factor updates in spectral norm. Treating $\mat{A}$ and $\mat{B}$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta\mat{A}}_2=\norm{\Delta\mat{B}}_2=\rho$. Furthermore, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+Having derived the direction, we now set the magnitude by controlling the size of the factor updates in spectral norm. Treating $\mat{A}$ and $\mat{B}$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta\mat{A}}_2=\norm{\Delta\mat{B}}_2=\rho$. Furthermore, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta\mat{W}}_2
 \approx
