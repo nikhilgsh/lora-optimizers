@@ -712,7 +712,7 @@ spectral-norm LMOs~\cite{imuon,loramuon,tilde_csd}. As discussed in \Cref{app:me
 and Compositional Muon's half-split rule all coincide with \eqref{eq:decoupled-lora-lmo}, as does iMuon's intrinsic LMO. \methodname{} does not satisfy this invariance, but it outperforms iMuon in our experiments (\Cref{sec:exp-main}), suggesting that invariance is not the limiting factor in this setting.
 
 \paragraph{Magnitude control for low-rank products.}
-Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{\mat{B}\Delta\mat{A}}_2$ and $\norm{\Delta\mat{B} \mat{A}}_2$ but not the factor steps $\norm{\Delta\mat{A}}_2$ and $\norm{\Delta\mat{B}}_2$. As a result, when $\mat{A}$ or $\mat{B}$ has small singular values, the updates $\Delta\mat{A}$ and $\Delta\mat{B}$ can be large enough to destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack} explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{\mat{A}}_2+\norm{\mat{B}}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{\mat{A}}_2+\norm{\mat{B}}_2)$. With the $+1$ in its denominator, Spectron's bound also covers the quadratic term $\Delta\mat{B} \Delta\mat{A}$, which \methodname{} drops (\Cref{rem:quadratic} verifies that restoring it leaves the bound essentially unchanged).
+Product Muon~\eqref{eq:decoupled-lora-lmo} bounds $\norm{\mat{B}\Delta\mat{A}}_2$ and $\norm{\Delta\mat{B} \mat{A}}_2$ but not the factor steps $\norm{\Delta\mat{A}}_2$ and $\norm{\Delta\mat{B}}_2$. As a result, when $\mat{A}$ or $\mat{B}$ has small singular values, the updates $\Delta\mat{A}$ and $\Delta\mat{B}$ can be large enough to destabilize training. Spectron~\cite{spectron} and QuacK~\cite{quack} explicitly control the factor steps by scaling them with the factor norms. Spectron rescales both steps to spectral norm $\eta/(\norm{\mat{A}}_2+\norm{\mat{B}}_2+1)$, and QuacK scales each factor's learning rate by the inverse norm of the other. Similar to Spectron, \methodname{} rescales both factor steps to a common spectral norm $\rho=\eta/(\norm{\mat{A}}_2+\norm{\mat{B}}_2)$. With the $+1$ in its denominator, Spectron's bound also covers the quadratic term $\Delta\mat{B} \Delta\mat{A}$ (for $\rho<1$), which \methodname{} drops (\Cref{rem:quadratic} verifies that restoring it leaves the bound essentially unchanged).
 
 % ===========================================================================
 
@@ -757,7 +757,7 @@ This section gives the full configuration behind \Cref{sec:exp-setup}. Within ea
   \item Loss is computed on response tokens only; prompt and padding tokens are masked.
 \end{itemize}
 
-\paragraph{Fixed training configuration.} \Cref{tab:config} lists the settings held fixed across all runs. We adapt all linear layers except \texttt{lm\_head} to isolate the efficacy of the optimizer. Prior work, however, suggests that adapting only a subset of modules recovers most of the performance~\cite{lorawithoutregret, plop}.
+\paragraph{Fixed training configuration.} \Cref{tab:config} lists the settings held fixed across all runs. We adapt all linear layers except \texttt{lm\_head} to isolate the efficacy of the optimizer. Prior work, however, suggests that adapting only a subset of modules recovers most of the performance~\cite{schulman2025lora, plop}.
 \begin{table}[ht]
 \centering\small
 \begin{tabular}{@{}ll@{}}
@@ -1078,9 +1078,9 @@ iMuon relies on a choice of \emph{ambient matrix} $\mat{H}\in\R^{d_{\mathrm{out}
   \label{eq:imuon-lmo-ambient}
 \end{equation}
 For the base Algorithm~1 in~\cite{imuon}, the ambient matrix is the raw gradient $\mat{G}$, so~\eqref{eq:imuon-lmo-ambient}
-again gives the Product Muon update directions of~\eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation from Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update, as we show next.
+again gives the Product Muon update directions of~\eqref{eq:product-muon-step}. Our experiments benchmark the official iMuon implementation, whose momentum scheme is described in Appendix~K of~\cite{imuon}, which differs from this momentum-free decoupled update, as we show next.
 
-\paragraph{iMuon, with momentum.} The official implementation (their Appendix~K) does not pass the raw gradient to the intrinsic LMO~\eqref{eq:imuon-lmo-ambient}. It maintains momentum buffers $m_A$ and $m_B$ with parameter $\beta$, forms the look-aheads $\widetilde{\mat{G}}_A=\mat{G}_A+\beta m_A$ and $\widetilde{\mat{G}}_B=\mat{G}_B+\beta m_B$, and uses as input the combined ambient matrix
+\paragraph{iMuon, with momentum.} The official implementation (described in their Appendix~K) does not pass the raw gradient to the intrinsic LMO~\eqref{eq:imuon-lmo-ambient}. It maintains momentum buffers $m_A$ and $m_B$ with parameter $\beta$, forms the look-aheads $\widetilde{\mat{G}}_A=\mat{G}_A+\beta m_A$ and $\widetilde{\mat{G}}_B=\mat{G}_B+\beta m_B$, and uses as input the combined ambient matrix
 \begin{equation*}
   \widehat{\mat{M}}=\widetilde{\mat{G}}_B \mat{A}+\mat{B}\widetilde{\mat{G}}_A .
 \end{equation*}
