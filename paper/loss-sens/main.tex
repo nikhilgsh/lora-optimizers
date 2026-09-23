@@ -361,7 +361,7 @@ with probability at least $1-\delta$.
 
 
 \paragraph{Kronecker approximation.}
-Storing $\mat{\Sigma}$ is out of the question at $d_{\mathrm{out}} d_{\mathrm{in}}$ squared entries, let alone inverting it. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
+Since $\mat{\Sigma}$ has $(d_{\mathrm{out}} d_{\mathrm{in}})^2$ entries, storing and inverting it is infeasible. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
 \begin{equation} \label{eq:pq-factor}
      \mat{\Sigma}  \approx \mat{Q} \otimes \mat{P},
 \end{equation}
