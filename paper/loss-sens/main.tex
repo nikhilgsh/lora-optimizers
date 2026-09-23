@@ -290,7 +290,7 @@ moving average (EMA) of past gradients, and uses a polynomial approximation
 to the polar factor~\cite{polarexpress,gram_ns} (see \Cref{app:gramns}).
 
 
-The justification for using the spectral norm in Muon is that it is conservative, since the constraint $\norm{\Delta\mat{W}}_2 \le \eta$ is equivalent to bounding the change in the layer's output,
+A justification for using the spectral norm in Muon is that it is conservative, since the constraint $\norm{\Delta\mat{W}}_2 \le \eta$ is equivalent to bounding the change in the layer's output,
 \[\norm{\Delta\mat{W} x}_2 \leq \eta, \quad \text{for all } \norm{x}_2 \leq 1.\]
 However, this viewpoint is not entirely satisfying, since it does not directly relate to the loss function $\ell$ that we are trying to minimize.
 
