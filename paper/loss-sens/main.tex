@@ -264,7 +264,7 @@ The distribution $\cD$ is induced by the distribution of the data and by the par
 The expected loss 
 is $\cL(\mat{W})=\EE{x}{\ell(\mat{W}x)}$, 
 with gradient $\mat{G}=\nabla_W\cL(\mat{W})=\EE{x}{\mat{G}(x)}$, 
-where $\mat{G}(x)=\nabla_W\ell(\mat{W}x)$ is the per-input gradient.
+where $\mat{G}(x)=\nabla_W\ell(\mat{W}x)$ is the per-sample gradient.
   
 % For this section we ignore the product structure of LoRA~\eqref{eq:lora} and consider a single linear layer $\mat{W} \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$ with loss $\cL(\mat{W})$ and gradient $\mat{G} = \nabla_W \mathcal{L}(\mat{W})$.
 
@@ -319,7 +319,7 @@ Replacing the spectral constraint in~\eqref{eq:lmo} with the linearized loss bou
   \label{eq:sample-lmo}
 \end{equation}
 This LMO is well-posed (\Cref{prop:wellposed}), but enforcing its constraints 
-requires access to all possible input gradients. Instead we relax the constraint from holding for every $x \in \support(\cD)$ to holding with high probability, by defining an \emph{outergradient} set $\mathcal{G}_{\delta}$ such that
+requires every per-sample gradient $\mat{G}(x)$. Instead we relax the constraint from holding for every $x \in \support(\cD)$ to holding with high probability, by defining an \emph{outergradient} set $\mathcal{G}_{\delta}$ such that
 \begin{equation} \label{eq:outgrad1}
    \Pr_{x\sim\cD}\!\left(\mat{G}(x)\in\mathcal{G}_\delta\right)\ge 1-\delta.
 \end{equation}
@@ -335,11 +335,11 @@ $1-\delta$.
 % is less than $\tau$ is then a sufficient condition for the constraint in~\eqref{eq:sample-lmo}. 
 % To guide our design of the outergradient set, we first make the structural observation that sample-wise gradients of linear layers are rank one.
 
-We now construct the outergradient set using the rank-one structure and second moment of the sample gradients. 
+We now construct the outergradient set using the rank-one structure and second moment of the per-sample gradients. 
 The chain rule gives the first property.
 \begin{restatable}[Gradients are rank one]{lemma}{gradprop}
   \label{lem:gradprop}
-    For every $x \in \support(\cD)$ the per-input gradient factors as
+    For every $x \in \support(\cD)$ the per-sample gradient factors as
     $\mat{G}(x) = b(x)\, x^\top$, where
     $b(x) = \left.\tfrac{d}{dz}\ell(z)\right|_{z=\mat{W}x} \in \R^{d_{\mathrm{out}}}$
     is the output-side gradient.
@@ -865,7 +865,7 @@ which is at most $d_{\mathrm{out}} d_{\mathrm{in}}$ since $\mat{\Sigma} \in \R^{
 We verify that the per-sample LMO~\eqref{eq:sample-lmo} is well-posed.
 \begin{proposition}[Well-posedness of the per-sample LMO]
 \label{prop:wellposed}
-Let $\tau\ge 0$, let $\mat{G}(x)$ be the per-input gradients in~\eqref{eq:sample-lmo}, and let $\mat{G}=\EE{x\sim\cD}{\mat{G}(x)}$. Then the per-sample LMO~\eqref{eq:sample-lmo} attains a finite minimum.
+Let $\tau\ge 0$, let $\mat{G}(x)$ be the per-sample gradients in~\eqref{eq:sample-lmo}, and let $\mat{G}=\EE{x\sim\cD}{\mat{G}(x)}$. Then the per-sample LMO~\eqref{eq:sample-lmo} attains a finite minimum.
 \end{proposition}
 \begin{proof}
 The feasible set is nonempty, closed, and convex, since it is an intersection of closed slabs and contains $\Delta\mat{W}=0$. For every feasible $\Delta\mat{W}$, by \rev{Jensen's inequality} \del{Jensen's} we have that 
@@ -1400,7 +1400,7 @@ gradients~\eqref{e-grad-wrt-factors}.
 \[
   \EMA^{\beta}_{s\le t}[x_s]:=(1-\beta)\sum_{s\le t}\beta^{t-s} x_s,
 \]
-with decay factor $\beta$. Just as we replace the factor gradients $\mat{G}_A$ and $\mat{G}_B$ in the objective of \Cref{sec:sample-loss-lmo} with averaged versions $\widehat{\mat{M}}_A$ and $\widehat{\mat{M}}_B$ (line~\ref{ln:mom} of \Cref{alg:ours}), we replace the sample-gradient second-moment matrix $\mat{\Sigma}$ (\Cref{lem:gradprop}) with the EMA of the outer products of the vectorized batch gradients,
+with decay factor $\beta$. Just as we replace the factor gradients $\mat{G}_A$ and $\mat{G}_B$ in the objective of \Cref{sec:sample-loss-lmo} with averaged versions $\widehat{\mat{M}}_A$ and $\widehat{\mat{M}}_B$ (line~\ref{ln:mom} of \Cref{alg:ours}), we replace the second-moment matrix $\mat{\Sigma}$ of the per-sample gradients (\Cref{lem:gradprop}) with the EMA of the outer products of the vectorized batch gradients,
 \[
   \overline{\mat{\Sigma}}_t:=\EMA^{\beta_2}_{s\le t}[\vec(\mat{G}_s) \vec(\mat{G}_s)^\top],
 \]
