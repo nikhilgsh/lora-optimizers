@@ -345,8 +345,7 @@ The chain rule gives the first property.
     is the output-side gradient.
 \end{restatable}
 % Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second moment of the gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
-The rank-one property restricts the structure of the gradients.
-To bound their size with high probability, we use their second
+To bound the size of $\mat{G}(x)$ with high probability, we use the second
 moment $\mat{\Sigma}$ and its associated Mahalanobis norm $\|\cdot\|_{\mat{\Sigma}}$:
 \begin{align}
     \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top}, \qquad 
