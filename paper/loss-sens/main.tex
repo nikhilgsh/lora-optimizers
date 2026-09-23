@@ -339,9 +339,9 @@ To guide our design of the outergradient set, we first observe that per-sample g
     $b(x) = \left.\tfrac{d}{dz}\ell(z)\right|_{z=\mat{W}x} \in \R^{d_{\mathrm{out}}}$
     is the output-side gradient.
 \end{restatable}
-% Secondly, we can observe that if we define $\mat{\Sigma}$ to be the second moment of the gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
-To bound the size of $\mat{G}(x)$ with high probability, we use the second
-moment $\mat{\Sigma}$ and its associated Mahalanobis norm $\|\cdot\|_{\mat{\Sigma}}$:
+Secondly, we note that when measured in an appropriate norm, the size of sample gradients is bounded with high probability. Define $\mat{\Sigma}$ to be the second moment of the gradients and $\|\cdot\|_{\mat{\Sigma}}$ to be the associated Mahalanobis norm
+% To bound the size of $\mat{G}(x)$ with high probability, we use the second
+% moment $\mat{\Sigma}$ and its associated Mahalanobis norm $\|\cdot\|_{\mat{\Sigma}}$:
 \begin{align}
     \mat{\Sigma} \;&:=\EE{x}{\vec(\mat{G}(x))\vec(\mat{G}(x))^\top}, \qquad 
     \| \mat{M} \|_{\mat{\Sigma}}^2
@@ -349,15 +349,16 @@ moment $\mat{\Sigma}$ and its associated Mahalanobis norm $\|\cdot\|_{\mat{\Sigm
 \end{align}
 By \Cref{lem:expectation},
 $\EE{x}{\|\mat{G}(x)\|_{\mat{\Sigma}}^2}
-=\mathrm{rank}(\mat{\Sigma})$.
-By Markov's inequality, the following set contains $\mat{G}(x)$
-with probability at least $1-\delta$
+=\mathrm{rank}(\mat{\Sigma})$ and so Markov's inequality combined with \Cref{lem:gradprop} implies that the set
 \begin{equation}
 \label{eq:outgrad-precon}
 \mathcal{G}_\delta(\mat{\Sigma}) := \left \{ \widetilde{\mat{G}} = b x^\top ~\bigg |~
 b\in\mathbb{R}^{d_{\mathrm{out}}},
-    \ x\in\mathbb{R}^{d_{\mathrm{in}}},  \| \widetilde{\mat{G}} \|_{\mat{\Sigma}}^2 \leq \mathrm{rank}(\mat{\Sigma}) / \delta  \right \}.
+    \ x\in\mathbb{R}^{d_{\mathrm{in}}},  \| \widetilde{\mat{G}} \|_{\mat{\Sigma}}^2 \leq \mathrm{rank}(\mat{\Sigma}) / \delta  \right \}
 \end{equation} 
+satisfies \eqref{eq:outgrad1} since it contains $\mat{G}(x)$
+with probability at least $1-\delta$.
+
 
 \paragraph{Kronecker approximation.}
 Storing $\mat{\Sigma}$ is out of the question at $d_{\mathrm{out}} d_{\mathrm{in}}$ squared entries, let alone inverting it. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
