@@ -361,13 +361,13 @@ with probability at least $1-\delta$.
 
 
 \paragraph{Kronecker approximation.}
-Since $\mat{\Sigma}$ has $(d_{\mathrm{out}} d_{\mathrm{in}})^2$ entries, storing and inverting it is infeasible. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
+Since $\mat{\Sigma}$ contains $(d_{\mathrm{out}} d_{\mathrm{in}})^2$ entries, storing and inverting it is infeasible. Following~\cite{shampoo,kfac}, we approximate $\mat{\Sigma}$ by a Kronecker product of symmetric positive definite matrices $\mat{P}\in \R^{d_{\mathrm{out}} \times d_{\mathrm{out}}}$ and $\mat{Q} \in\R^{d_{\mathrm{in}} \times d_{\mathrm{in}}}$,
 \begin{equation} \label{eq:pq-factor}
      \mat{\Sigma}  \approx \mat{Q} \otimes \mat{P},
 \end{equation}
-We treat the \emph{preconditioners} $\mat{P}$ and $\mat{Q}$ as given for now, deferring to \Cref{app:matnormal} their update rule, which estimates $\mat{\Sigma}$ online from batch gradients (\Cref{lem:batch-moment}).
+We treat the \emph{preconditioners} $\mat{P}$ and $\mat{Q}$ as given for now, deferring to \Cref{app:matnormal} their update rule, which estimates $\mat{\Sigma}$ online using the approximation \eqref{eq:pq-factor} from batch gradients (\Cref{lem:batch-moment}).
 
-Using the factorization $\mat{\Sigma}  \approx \mat{Q} \otimes \mat{P}$ above in the outergradient set~\eqref{eq:outgrad-precon} and using this outergradient set in~\eqref{eq:sample-lmo} gives a preconditioned version of Muon (\Cref{lem:precond-muon}).
+Using the factorization $\mat{\Sigma}  \approx \mat{Q} \otimes \mat{P}$ in the outergradient set~\eqref{eq:outgrad-precon} and imposing the constraint in~\eqref{eq:sample-lmo} over $\widetilde{\mat{G}}$ in $\mathcal{G}_\delta(\mat{Q} \otimes \mat{P})$ gives the following preconditioned version of Muon (\Cref{lem:precond-muon}).
 
 \begin{restatable}[Preconditioned Muon]{lemma}{precomuon}
 \label{lem:precond-muon}
@@ -386,7 +386,11 @@ which has the closed-form solution
 \end{restatable}
 \begin{corollary}[Isotropic case]
   \label{lem:muon}
-  If $\mat{\Sigma}\propto\mat{I}$ then, up to rescaling $\tau$, the solution of~\eqref{eq:precond-muon-super} is $\Delta\mat{W} = -\tau\,\msign(\mat{G})$, which is the solution of the spectral LMO~\eqref{eq:lmo} with $\eta=\tau$.
+  If $\mat{\Sigma}\propto\mat{I}$ then, up to rescaling $\tau$, the solution of~\eqref{eq:precond-muon-super} is 
+  \[
+  \Delta\mat{W} = -\tau\,\msign(\mat{G}),
+  \]
+  which is the solution of the spectral LMO~\eqref{eq:lmo} with $\eta=\tau$.
 \end{corollary}
 
 
