@@ -255,6 +255,7 @@ $\mat{W} \in \R^{d_{\mathrm{out}} \times d_{\mathrm{in}}}$
 and defer the LoRA product structure to \Cref{sec:method}. 
 With the preceding layers fixed, let $x\sim\cD$ denote the 
 layer input and $\ell(\mat{W}x)$ its loss. 
+In a transformer, $x$ ranges over the inputs to the layer at individual token positions, so $\mat{G}(x)$ is the contribution of one token to the gradient.
 The distribution $\cD$ is induced by the distribution of the data and by the parameters of the preceding layers, but we omit this dependence for simplicity.
 The expected loss 
 is $\cL(\mat{W})=\EE{x}{\ell(\mat{W}x)}$, 
@@ -616,7 +617,7 @@ The essential ingredients in \methodname{} can be decomposed into three componen
   \item \textbf{Curvature}. Preconditioning the gradient by an adaptive curvature estimate makes the update account for how different directions change the loss~\eqref{eq:pq-factor}.
   \item \textbf{Magnitude}. The sizes of the factor steps and the merged update are both controlled~\eqref{eq:ours-rho}.
 \end{itemize}
-Removing the curvature preconditioning ($\mat{P}$ and $\mat{Q}$ set to identity) and the magnitude control ($\tau = \eta/2$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and the curvature and magnitude components each account for about half the speedup gap between Product Muon and \methodname{}.
+Removing the curvature preconditioning ($\mat{P}$ and $\mat{Q}$ set to identity) and the magnitude control ($\tau = \eta/2$ in \eqref{eq:decoupled-direction-lmo}) reduces \methodname{} to Product Muon \eqref{eq:product-muon-step}. On Llama-3.2-1B finetuned on math (\Cref{fig:ablation}), Product Muon has no speedup over Adam, and removing the two components sequentially shows that each accounts for about half the speedup gap between Product Muon and \methodname{}.
 
 \begin{figure}[t]
   \centering
@@ -1299,7 +1300,7 @@ one, the damped matrices are simply $\mat{P}+\delta \mat{I}$ and $\mat{Q}+\delta
 \label{app:smax}
 \Cref{alg:ours} requires repeated estimates of spectral norms.  
 We estimate each $\norm{\mat{M}}_2$ by warm-started power iteration on the smaller of the two Gram matrices $\mat{M}\mat{M}^\top$ and $\mat{M}^\top \mat{M}$ (\Cref{alg:smax}), caching the leading vector across optimizer steps so it starts near the top singular vector. A cold or stale start
-can underestimate $\norm{\mat{M}}_2$, and since the optimizer divides by this estimate, that would risk destabilizing training.  We therefore return the larger of the power-iteration value and the maximum row norm of $\mat{M}$, which does not depend on the cached start vector. We use $K_{\mathrm{pow}} = 8$ iterations.
+can underestimate $\norm{\mat{M}}_2$, and since the optimizer divides by this estimate, that would risk destabilizing training.  We therefore return the larger of the power-iteration value and the maximum row norm of $\mat{M}$, which does not depend on the cached start vector. We use $K_{\mathrm{pow}} = 8$ iterations. Since power iteration returns a lower bound on $\norm{\mat{M}}_2$, the bound $\norm{\Delta\mat{W}}_2\le\eta$ in~\eqref{eq:ours-prodcap} holds up to the error of this estimate.
 
 \begin{algorithm}[ht]
 \caption{Guarded spectral-norm estimate of $\norm{\mat{M}}_2$}
