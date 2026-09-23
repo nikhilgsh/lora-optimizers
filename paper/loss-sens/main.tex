@@ -335,8 +335,7 @@ $1-\delta$.
 % is less than $\tau$ is then a sufficient condition for the constraint in~\eqref{eq:sample-lmo}. 
 % To guide our design of the outergradient set, we first make the structural observation that sample-wise gradients of linear layers are rank one.
 
-We now construct the outergradient set using the rank-one structure and second moment of the per-sample gradients. 
-The chain rule gives the first property.
+To guide our design of the outergradient set, we first observe that per-sample gradients of linear layers are rank one.
 \begin{restatable}[Gradients are rank one]{lemma}{gradprop}
   \label{lem:gradprop}
     For every $x \in \support(\cD)$ the per-sample gradient factors as
