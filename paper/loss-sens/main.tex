@@ -435,18 +435,16 @@ so $\mat{W}=\mat{W}_0+\mat{B}\mat{A}$. Updating both factors gives
 \approx \mat{B} \Delta\mat{A} + \Delta\mat{B} \mat{A}.
 \label{eq:DeltaW-lin}
 \end{equation}
-% Linear layer depends on this merged update, so we constrain its linearization. 
-The factor gradients are 
+The corresponding first-order loss change is
+$\ip{\mat{G}_A,\Delta\mat{A}}+\ip{\mat{G}_B,\Delta\mat{B}}$,
+where the chain rule gives the factor gradients
 \begin{equation}\label{e-grad-wrt-factors}
-    \mat{G}_A := \nabla_A \mathcal{L}(\mat{W}_0+\mat{B}\mat{A}) = \mat{B}^\top \mat{G},
+    \mat{G}_A := \nabla_A \mathcal{L}(\mat{W}_0+\mat{B}\mat{A})
+    = \mat{B}^\top \mat{G},
     \qquad
-    \mat{G}_B := \nabla_B \mathcal{L}(\mat{W}_0+\mat{B}\mat{A}) = \mat{G} \mat{A}^\top.
+    \mat{G}_B := \nabla_B \mathcal{L}(\mat{W}_0+\mat{B}\mat{A})
+    = \mat{G}\mat{A}^\top.
 \end{equation}
-therefore, the linearized loss change is $\ip{\mat{G}_A,\Delta\mat{A}}+\ip{\mat{G}_B,\Delta\mat{B}}$.
-
-
-Here we combine the ideas of preconditioning and product-awareness to derive \methodname{}. We first derive the update direction, and then set the magnitude of the factor updates separately.
-
 
 \paragraph{Direction.}
 Substituting $\Delta\mat{W}$ in \eqref{eq:precond-muon-constraint} with its linearized product update~\eqref{eq:DeltaW-lin} gives the LMO
@@ -510,7 +508,7 @@ Since substituting~\eqref{eq:collapse-constraint} into~\eqref{eq:decoupled-direc
 give the factor update directions.
 
 \paragraph{Magnitude.}
-Having derived the direction, we now set the magnitude directly rather than through the budget $\tau$, controlling the size of the factor updates in spectral norm. Treating $\mat{A}$ and $\mat{B}$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta\mat{A}}_2=\norm{\Delta\mat{B}}_2=\rho$. Furthermore, like Product Muon, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
+Having derived the direction, we now set the magnitude directly rather than through the budget $\tau$, controlling the size of the factor updates in spectral norm. Treating $\mat{A}$ and $\mat{B}$ symmetrically, we use a single update size $\rho$ for both factors, and set $\norm{\Delta\mat{A}}_2=\norm{\Delta\mat{B}}_2=\rho$. Furthermore, we ensure that the linearized merged update \eqref{eq:DeltaW-lin} has spectral norm bounded by the learning rate $\eta$. By the triangle inequality and submultiplicativity,
 \begin{equation}
 \norm{\Delta\mat{W}}_2
 \approx
